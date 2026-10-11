@@ -102,9 +102,11 @@ convert64/                      cargo workspace only (Rust 2024)
 └─ docs/                        PDD, TAD, adr/, reference/, TOOLING, github/
 ```
 
-Crates: `image` (decode), own OKLab code, `rayon` behind a `parallel` feature, `serde` (project file + command args), `clap`, `rmcp`, `eframe`/`egui`, `egui_material_icons` (icons, ADR-007), `rfd` (file dialogs), `insta` + `proptest` (tests). No `std::fs` in core.
+Crates: `image` (decode), own OKLab code, `rayon` behind a `parallel` feature, `serde` (project file + command args), `clap`, `serde_json` (CLI/MCP JSON output, Figma token import), `toml` (fixture thresholds, project config), `rmcp`, `eframe`/`egui`, `egui_material_icons` (icons, ADR-007), `rfd` (file dialogs), `insta` + `proptest` (tests). No `std::fs` in core.
 
 As built in E1 (2026-10-11): `eframe` runs on the **`glow`** (OpenGL / WebGL2) renderer, not its default `wgpu`, keeping ADR-006's no-wgpu rule; `rust-toolchain.toml` pins stable with `rustfmt`, `clippy` and the `wasm32-unknown-unknown` target; the app's web build uses the eframe web template with no extra JS-side crates (eframe re-exports what it needs). See [ADR-005](adr/ADR-005-command-engine-with-cli-json-mcp.md) and [ADR-006](adr/ADR-006-egui-single-rust-workspace.md).
+
+As built in E3 (2026-10-11): `serde_json` and `toml` replaced the hand-written JSON writer (`convert64 validate --json`) and `thresholds.toml` reader that E3 shipped before they were listed here. `rmcp` already depends on `serde_json`, `thresholds.toml` needs comments and nested tables, and [figma.md](figma.md) plans a `tokens.json` import. Neither crate is a dependency of `convert64-core`'s library; the golden-test harness uses `toml` as a dev-dependency only.
 
 ### 4.1 Image model (`convert64-core::model`)
 
