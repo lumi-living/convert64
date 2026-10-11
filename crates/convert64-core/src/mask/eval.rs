@@ -6,7 +6,7 @@ use crate::geom::{PxRect, SuperGrid};
 use crate::scratch;
 
 /// Feather σ (target px) from which the blur runs at half resolution (#76, #98).
-pub const HALF_RES_FEATHER: f32 = 8.0;
+pub const HALF_RES_FEATHER: f32 = 4.0;
 
 /// Whether a feather of σ `feather` target px is blurred at half resolution.
 pub(crate) fn half_res(feather: f32) -> bool {
