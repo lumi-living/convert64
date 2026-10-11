@@ -1,6 +1,6 @@
 # Convert64 — UX foundations
 
-**Status:** v0.1 (2026-10-11). Design starting point for E8/E12. Decisions here are conventions to follow until a usability test says otherwise; anything marked *open* is a question for the first build.
+**Status:** v0.2 (2026-10-11). Design starting point for E8/E12. v0.2: the C64 result lives permanently at the top of the right dock; the main canvas is a working view that defaults to the source and flips to the result for inspection. Decisions here are conventions to follow until a usability test says otherwise; anything marked *open* is a question for the first build.
 
 Sources: a survey of Photoshop, Affinity Photo 2, PhotoCraft, GIMP 3, Krita 5, Aseprite, Pixelmator Pro and Photopea; of C64/retro converters (retropixels+, png2c64, ArcPaint64, C64CC, ALBERT, Multipaint, Disco Volante, convertron3000, retropic) and dithering tools (Ditherista, Dither Boy, Dither Machine, Photoshop/GIMP/Aseprite indexed-colour dialogs); and egui 0.36 capabilities. Key references are listed at the end.
 
@@ -18,7 +18,7 @@ The core loop is the same for all three: **open → see the C64 result immediate
 
 ## 2. Design principles
 
-1. **The C64 result is the hero.** The preview is the largest thing on screen, at integer zoom, in hardware colours, never themed. Everything else is chrome around it.
+1. **The C64 result is always visible.** A 320×200 result at 1× is small on any modern display, so it does not fight for the main canvas: it lives at the top of the right dock, always on, in hardware colours, never themed, and updates with every change. The main canvas is where the user *works* (on the 16-bit source) and *inspects* (the result, zoomed, compared).
 2. **Every change is live; nothing is modal.** No "Convert" button, no apply dialogs. Dragging a slider re-solves (fast path while dragging, full search on release). The one exception is a *pause* toggle for slow modes.
 3. **Legality is visible, quantified and navigable.** Clash count in the status bar at all times; a heatmap overlay on demand; jump-to-worst-cell. Users never discover illegality at export.
 4. **Steering survives re-solving.** Pins, locks and region overrides are part of the project, not edits of the output. Re-run from scratch and they still apply.
@@ -28,45 +28,73 @@ The core loop is the same for all three: **open → see the C64 result immediate
 
 ## 3. Layout
 
-Consensus across the surveyed editors: menu bar → options/tool bar → canvas in the centre → a right dock with properties above layers → status bar. Convert64 follows it, minus the left tool palette (a converter has four tools, which fit in the toolbar).
+Consensus across the surveyed editors: menu bar → options/tool bar → canvas in the centre → a right dock with a navigator on top, properties in the middle, layers below → status bar. Convert64 follows it, with the C64 result taking the navigator's place and no left tool palette (a converter has four tools, which fit in the toolbar).
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
 │ Menu bar  File  Edit  View  Layer  Export  Help        ◐ theme │ 26 px
 ├────────────────────────────────────────────────────────────────┤
-│ Toolbar   [Mode ▾ Multicolor] │ ✥ Nudge  📌 Pin  🔒 Lock  🖌 Region │ ⊞ Grid  ▦ Clashes  ◫ Compare ▾ │ zoom ▾ │ 36 px
+│ Toolbar  [Source ▾ view] │ ✥ Nudge 📌 Pin 🔒 Lock 🖌 Region │ ⊞ Grid ▦ Clashes ◫ Compare ▾ │ zoom ▾ │ 36 px
 ├──────────────────────────────────────────┬─────────────────────┤
-│                                          │ RECIPE / ADJUSTMENTS│
-│                                          │  (selected layer)   │
-│              PREVIEW                     │  collapsible groups │
-│         320×200 at 2×/3×/4×              │                     │ right dock
-│         border, overlays                 ├─────────────────────┤ 320 px
-│                                          │ LAYERS              │ (260–420)
-│                                          │  stack, drag-reorder│
-│                                          │  + ─ ⧉ 🗑 at bottom │
+│                                          │ RESULT  Multicolor ▾│ 320×200 at 1×
+│                                          │ ┌─────────────────┐ │ + border,
+│          WORKING VIEW                    │ │   C64 result    │ │ always on,
+│                                          │ │  (hardware px)  │ │ clash dots
+│   Source (16-bit, layers, masks)         │ └─────────────────┘ │
+│   or Result (zoomed, overlays, compare)  │ 0 clashes · 38 ms   │
+│                                          ├─────────────────────┤
+│                                          │ RECIPE / ADJUSTMENTS│ right dock
+│                                          │  (selected layer)   │ 320 px
+│                                          ├─────────────────────┤ (260–420)
+│                                          │ LAYERS              │
+│                                          │  + ─ ⧉ 🗑            │
 ├──────────────────────────────────────────┴─────────────────────┤
-│ Status  200% │ cell 17,9 │ 3 colours+bg │ 12 clashes (worst 31,4) │ solve 38 ms │ Koala, 10 003 B │ 22 px
+│ Status  200% │ Source │ cell 17,9 │ 3 colours+bg │ 12 clashes (worst 31,4) │ Koala, 10 003 B │ 22 px
 └────────────────────────────────────────────────────────────────┘
 ```
 
-- **Right dock, two stacked groups**, Recipe above Layers (Photoshop, PhotoCraft, Photopea, GIMP all put properties above layers). Default 320 px, resizable 260–420. Collapses to an icon rail; `Tab` hides it (Photoshop/GIMP/Krita convention), `Shift+Tab` hides only the dock.
-- **Preview** gets all remaining space; shows a transparency checkerboard behind the C64 border so the frame reads in both themes.
+- **Right dock, three stacked groups:** **Result** (fixed height, never scrolls away), **Recipe** and **Layers** (share the remaining height, draggable divider, default 55 : 45). Default width 320 px = one C64 result at 1× plus padding; resizable 260–420, and the result scales down (never up) if the dock is narrower than 320. `Tab` hides all chrome, `Shift+Tab` hides only the dock (Photoshop/GIMP convention); when the dock is hidden the result is gone too, which is the point of `Tab` — full-screen working.
+- **Working view** gets all remaining space and has two modes, **Source** and **Result**, switched with `Q` or the toolbar dropdown. Source is the default on open. The status bar always names the current mode.
+- **The result panel is also a navigator:** when the working view is in Result mode and zoomed, the panel shows the visible rectangle; clicking or dragging on the panel pans the working view there (Photoshop Navigator behaviour). In Source mode a click on the panel switches the working view to Result and centres on that spot.
 - **No docking framework in v1.** Fixed `egui::Panel`s with persisted sizes; egui_tiles only if users ask to rearrange.
-- Below ~900 px wide the dock starts collapsed; below ~700 px (browser on a laptop half-screen) the Layers group becomes a tab inside the Recipe group.
+- Below ~900 px wide the Recipe and Layers groups collapse to headers but the Result stays; below ~700 px the dock becomes a single tabbed group with Result pinned above the tabs.
 
-## 4. The preview
+## 4. The working view and the result panel
+
+### 4.1 Source mode (default)
+
+The 16-bit composite of all layers at any zoom, with the C64 cell grid projected onto it (supersample-aware, so a cell is a 32×32 or 16×32 source-pixel region at 4×). This is where the user nudges, scales, paints masks and regions, and sets pins — cells are addressed by C64 coordinates in both modes, so a pin set here is the same pin seen in Result mode.
+
+| Aspect | Decision |
+|---|---|
+| Zoom | fractional allowed (it is a source image): 25 %–800 %, `Cmd/Ctrl +/−`, `Cmd/Ctrl 0` fit, `Cmd/Ctrl 1` 100 %, wheel around the cursor |
+| Aspect | square source pixels; the projected cell grid shows the 2:1 stretch of multicolor modes as 4×8-equivalent rectangles |
+| Overlays | **Cell grid** `Cmd/Ctrl '`, **Pins & locks**, **Regions**, **Clashes** (the heatmap projected onto source cells), **Result ghost** (result at 30 % over the source — the reverse of the ghost in Result mode) |
+| Selection | the selected layer's bounds are outlined; its transform handles are drawn in Source mode only |
+
+### 4.2 Result mode
+
+The solved C64 image, for inspection and comparison.
 
 | Aspect | Decision | Why |
 |---|---|---|
-| Zoom | Integer only: 1×, 2×, 3×, 4×, 6×, 8×; `Cmd/Ctrl +/−`, `Cmd/Ctrl 0` fit, `Cmd/Ctrl 1` 100 %; wheel zooms around the cursor | nearest-neighbour texture; fractional zoom blurs pixels |
+| Zoom | Integer only: 1×, 2×, 3×, 4×, 6×, 8×; same keys as above; `Cmd/Ctrl 0` fits to the largest integer zoom | nearest-neighbour texture; fractional zoom blurs pixels |
 | Aspect | 2:1 pixels in multicolor modes rendered as 2 device px per C64 px at 1×; optional "PAL 0.936" correction toggle, off by default | what the solver optimised, then what a TV would show |
-| Pan | `Space`+drag, middle-drag, scroll | universal |
+| Pan | `Space`+drag, middle-drag, scroll, or the result panel as navigator | universal |
 | Border | 32 px-equivalent border in the chosen border colour, toggle `View › Border` | judging edge colours against the frame is part of the craft |
-| Overlays (toggle, stack) | **Grid** `Cmd/Ctrl '` (cell grid 8×8 / 4×8), **Clashes** `Shift+C` (heatmap: per-cell error, colour-starved cells outlined), **Pins & locks** (always on when the tool is active, else faint), **Attribute map** (debug: which recipe governs each pixel), **Source ghost** (source at 30 % over the result) | all painter calls over the same rect; overlays use semantic theme colours, never palette colours |
-| Compare | **Hold `\`** shows the source (Photoshop/Pixelmator hold-to-see-original); **Split** draggable divider (Affinity/GIMP); **A/B flicker** at 2 Hz; **Side by side** source \| result with linked cursor | three habits from three editor families; cheap to offer all |
+| Overlays | **Grid**, **Clashes** `Shift+C` (heatmap: per-cell error, colour-starved cells outlined), **Pins & locks**, **Attribute map** (debug: which recipe governs each pixel), **Source ghost** (source at 30 % over the result) | painter calls over the same rect; overlays in semantic theme colours |
+| Compare | **Hold `\`** shows the source in place (and in Source mode, hold `\` shows the result — the key always flips to the other one); **Split** draggable divider; **A/B flicker** at 2 Hz; **Side by side** source \| result with linked cursor; `,` cycles | three habits from three editor families; cheap to offer all |
 | Cursor readout | status bar: cursor cell x,y; the cell's colour set; its error; its pin/lock state | the "why is this cell like that" question answered without a dialog |
 
-The preview is **never themed**: hardware palette on a border, overlays in semantic colours chosen per theme for contrast against any of the 16 palette colours (test: readable over Black, White, Yellow and Blue).
+### 4.3 The result panel (right dock, top)
+
+- Always visible while the dock is visible; 320×200 at 1× (2:1 pixels already applied), with the border, inside a frame that reads in both themes. It never scales up; it scales down only if the dock is narrower than 320.
+- Header row: mode dropdown (*Multicolor · Hi-res · Charset…*) and the clash count in `clash` colour; one line below: `0 clashes · solve 38 ms`. The clash count is a button that enables the Clashes overlay and switches the working view to Result at the worst cell.
+- Overlays on the panel: clash dots only (not the full heatmap), and the navigator rectangle in Result mode.
+- Mode switching re-solves immediately; the panel desaturates slightly while a full search runs (>200 ms) and shows `Solving…` in place of the timing.
+- The working view and the panel are the same texture at two sizes; there is no second render.
+
+The result is **never themed**: hardware palette on a border, overlays in semantic colours chosen per theme for contrast against any of the 16 palette colours (test: readable over Black, White, Yellow and Blue).
 
 ## 5. Layers panel
 
@@ -117,13 +145,15 @@ Right-click on any cell: a small menu — *Pin colours · Lock · Clear pin/lock
 | Export again, same settings | `Shift Cmd E` | our own; the Makefile case |
 | Undo / Redo | `Cmd Z` / `Shift Cmd Z` (also `Cmd Y`) | all; `Cmd Y` for GIMP users |
 | Zoom in / out / fit / 100 % | `Cmd =` / `Cmd −` / `Cmd 0` / `Cmd 1` | Photoshop family; bare `1` also = 100 % for Krita/Aseprite users |
+| Working view: Source ⇄ Result | `Q` | ours (unused by the Photoshop family for anything we need) |
+| Jump to result at cursor | click the result panel | Photoshop Navigator |
 | Pan | `Space` + drag, `H` | all |
 | New layer from file / Duplicate / Delete | `Shift Cmd N` / `Cmd J` / `Delete` | Photoshop family |
 | Toggle layer visibility | `Cmd ,` ; click eye | Photoshop/Pixelmator |
 | Nudge 1 / 10 / 0.25 px | `←↑↓→` / `Shift+` / `Alt+` | editors / ours |
 | Tools: Nudge, Pin, Lock, Region | `V`, `P`, `L`, `R` | single-key tools (Photoshop style) |
 | Grid / Clashes / Border | `Cmd '` / `Shift C` / `Cmd B` | Affinity/Pixelmator for grid; ours |
-| Hold-to-compare source | `\` (hold) | Photoshop |
+| Hold-to-compare (flips to the other image) | `\` (hold) | Photoshop |
 | Split / A-B / side-by-side | `,` cycles | Affinity's "split view cycle" |
 | Next / previous worst cell | `Shift Cmd ]` / `[` | ours |
 | Hide dock / hide all chrome | `Shift Tab` / `Tab` | GIMP / Photoshop |
@@ -154,8 +184,8 @@ Copy rules (ux-writing defaults): sentence case; verb-first buttons (**Open imag
 
 Sample strings:
 
-- Status, healthy: `200 % · cell 17,9 · 3 colours + bg · 0 clashes · solve 38 ms`
-- Status, with clashes: `… · 12 clashes, worst at 31,4 · …` (the "worst at" is a link; click jumps there)
+- Status, healthy: `Source · 200 % · cell 17,9 · 3 colours + bg · 0 clashes · solve 38 ms`
+- Status, with clashes: `… · 12 clashes, worst at 31,4 · …` (the "worst at" is a link; click switches to Result and jumps there)
 - Export success (toast, 3 s): `Exported title.kla (10 003 B) and title.asm`
 - Export blocked: `Can't export: 12 cells still exceed 4 colours. Use Clashes to find them, or let the solver resolve them (Layer › Fitting › Adaptive).`
 - Slow solve: `Solving charset budget… 2 of 16 backgrounds` with a **Pause** button, never a spinner alone.
@@ -200,11 +230,12 @@ Brushes, pencil, fill, selection marquees, text, transforms beyond translate/sca
 
 ## 14. Open questions for the first build (E8)
 
-1. Right dock split ratio Recipe : Layers — start 60 : 40, make the divider draggable, see where users leave it.
+1. Right dock split ratio Recipe : Layers under the fixed Result panel — start 55 : 45, make the divider draggable, see where users leave it. On short windows (<800 px), does the Result panel need a collapse-to-half-height option?
 2. Does the sub-pixel nudge need a visible 0.25 px grid, or is the status-bar readout enough?
 3. Clash heatmap: per-cell error magnitude (continuous) or clash/no-clash (binary) by default?
 4. Should "Region" be a pseudo-layer in the Layers list (discoverable) or stay a tool-only object (simpler)?
-5. First usability test: 5 users (2 game devs, 2 graphicians, 1 coder), tasks: convert the `title` fixture with a smooth sky; pin the soldier's face colours; export a Koala that loads in VICE. Measure time-to-first-legal-export and whether anyone finds Clashes without a hint.
+5. Does anyone stay in Result mode to work, or is Source-by-default right? Log mode time in the test.
+6. First usability test: 5 users (2 game devs, 2 graphicians, 1 coder), tasks: convert the `title` fixture with a smooth sky; pin the soldier's face colours; export a Koala that loads in VICE. Measure time-to-first-legal-export and whether anyone finds Clashes without a hint.
 
 ## References
 
