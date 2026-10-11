@@ -45,12 +45,12 @@ Until the solver exists (E5), the solver under test is an identity stub fed the 
 
 ```sh
 cargo xtask regen-goldens --report                         # list what would change; exit 1 if anything does
-cargo xtask regen-goldens --accept --reason "why"          # replace the goldens and log the reason
+cargo xtask regen-goldens --accept --reason "why" --pr N   # replace the goldens and log the reason
 ```
 
-`--report` (also the default) changes no committed file, so it runs on uncommitted work. `--accept` needs a clean tree: commit your code change first, because the changelog records the commit that produced the goldens.
+`--report` (also the default) changes no committed file, so it runs on uncommitted work. `--accept` needs a clean tree: commit your code change first, so the goldens come from committed code. Open the pull request first too: `--pr` is its number, which the changelog cites (squash merges make branch commit hashes unreachable from main).
 
-`--accept` writes the new `expected_*.snap` and `expected.png` files. It appends one line per changed fixture to [`fixtures/CHANGELOG.md`](fixtures/CHANGELOG.md), with the date, commit, files and reason, and re-runs the harness. Commit the result together with your PR, and quote the `mse_vs_png2c64` lines in its description.
+`--accept` writes the new `expected_*.snap` and `expected.png` files. It appends one line per changed fixture to [`fixtures/CHANGELOG.md`](fixtures/CHANGELOG.md), with the date, pull request, files and reason, and re-runs the harness. Commit the result together with your PR, and quote the `mse_vs_png2c64` lines in its description.
 
 ## Format references
 

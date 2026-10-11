@@ -593,7 +593,8 @@ fn fold(
                     break;
                 }
                 if let Some((xs, src, mask)) = row_slices(b, area, y) {
-                    unclaimed -= blend::claim(&mut attr[xs], src, mask, b.code, b.strength);
+                    unclaimed -=
+                        blend::claim(&mut attr[xs], src, mask, b.code, b.strength, b.opacity);
                 }
             }
             for (j, region) in regions.iter().enumerate() {
@@ -1396,6 +1397,36 @@ mod tests {
         assert!(!cells.is_empty());
         assert_eq!(cells.intersection(footprint), cells);
         assert!(cells.len() < footprint.len() + 1);
+    }
+
+    /// #99: opacity scales the attribute map's strength, not which layer governs.
+    #[test]
+    fn opacity_scales_dither_strength() {
+        use crate::layer::{DitherKind, Recipe};
+        let g = grid(Mode::HiresBitmap, 2);
+        let mut bottom = Layer::new("flat", solid(320, 200, [0.4, 0.4, 0.4, 1.0]));
+        bottom.set_recipe(Recipe::with_method(DitherKind::Bayer4, 1.0).unwrap());
+        let mut fog = Layer::new("fog", solid(320, 200, [0.9, 0.9, 0.9, 1.0]));
+        fog.set_recipe(Recipe::with_method(DitherKind::FloydSteinberg, 0.8).unwrap());
+        fog.set_opacity(0.5).unwrap();
+        let mut c = Compositor::new(g);
+        c.composite(&[bottom.clone(), fog.clone()]);
+        let a = c.attribute_map().get(100, 100);
+        assert_eq!(a.source, AttrSource::Layer(1));
+        assert!(
+            (a.strength - 0.4).abs() < 1e-6,
+            "0.5 opacity × 0.8 strength: {}",
+            a.strength
+        );
+        fog.set_opacity(0.0).unwrap();
+        c.composite(&[bottom, fog]);
+        let a = c.attribute_map().get(100, 100);
+        assert_eq!(
+            a.source,
+            AttrSource::Layer(0),
+            "an invisible layer governs nothing"
+        );
+        assert!((a.strength - 1.0).abs() < 1e-6);
     }
 
     proptest! {

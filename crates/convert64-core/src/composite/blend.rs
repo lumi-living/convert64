@@ -113,17 +113,21 @@ pub(crate) fn span(
 
 /// One layer's attribute contribution, applied **top-down**: every pixel of `attr` still
 /// unclaimed whose effective alpha (`alpha × mask`) is above zero takes this layer's
-/// `code` and `strength × alpha × mask`. Running the layers from the top makes the first
-/// claim the top-most one, so each pixel is written once. Returns how many pixels this
-/// layer claimed, so a row can stop once every pixel is claimed.
+/// `code` and `strength × alpha × mask × opacity` (#99: a 30 %-opaque layer fades its
+/// dither as a feathered edge does). Opacity scales the strength only; whether the layer
+/// claims the pixel depends on `alpha × mask` alone. Running the layers from the top
+/// makes the first claim the top-most one, so each pixel is written once. Returns how
+/// many pixels this layer claimed, so a row can stop once every pixel is claimed.
 pub(crate) fn claim(
     attr: &mut [AttrPx],
     src: &[[f32; 4]],
     mask: Option<&[f32]>,
     code: u16,
     strength: f32,
+    opacity: f32,
 ) -> usize {
     let unclaimed = AttrPx::EMPTY.code;
+    let scale = strength * opacity;
     let mut claimed = 0;
     for (k, a) in attr.iter_mut().enumerate() {
         if a.code != unclaimed {
@@ -133,7 +137,7 @@ pub(crate) fn claim(
         if alpha > 0.0 {
             *a = AttrPx {
                 code,
-                strength: strength * alpha,
+                strength: scale * alpha,
             };
             claimed += 1;
         }

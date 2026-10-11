@@ -3,7 +3,7 @@
 //! - `png2c64-baselines --png2c64 <path>`: regenerate every fixture's png2c64 baseline
 //!   (`baseline.kla` or `baseline.art`, `baseline.png`) and the baseline section of its
 //!   README.
-//! - `regen-goldens [--report | --accept --reason "..."]`: list golden-test changes
+//! - `regen-goldens [--report | --accept --reason "..." --pr N]`: list golden-test changes
 //!   (report mode, works on a dirty tree); accept them only with a reason, recorded in
 //!   `fixtures/CHANGELOG.md` (needs a clean tree).
 //! - `vice-check [--x64sc <path>]`: show each png2c64 baseline in VICE and compare the
@@ -62,9 +62,9 @@ enum Command {
     /// candidates with the committed goldens and lists what differs (exit 1 if anything
     /// does). It changes no committed file and works on a dirty tree.
     ///
-    /// Accept mode (`--accept --reason "..."`): replaces the goldens and appends one line
-    /// per fixture to `fixtures/CHANGELOG.md`. Refuses a dirty git tree, because the
-    /// changelog records the commit that produced the goldens.
+    /// Accept mode (`--accept --reason "..." --pr N`): replaces the goldens and appends one
+    /// line per fixture to `fixtures/CHANGELOG.md`, citing pull request N (open the PR
+    /// first). Refuses a dirty git tree, so the goldens come from committed code.
     RegenGoldens {
         /// Only list what differs (the default); allowed on a dirty tree.
         #[arg(long, conflicts_with = "accept")]
@@ -75,6 +75,10 @@ enum Command {
         /// Why the goldens change; recorded in fixtures/CHANGELOG.md.
         #[arg(long, requires = "accept")]
         reason: Option<String>,
+        /// The pull request the new goldens go into; recorded in fixtures/CHANGELOG.md
+        /// instead of a commit hash (squash merges make branch hashes unreachable).
+        #[arg(long, requires = "accept")]
+        pr: Option<u32>,
     },
 }
 
@@ -95,7 +99,8 @@ fn main() -> ExitCode {
             report: _,
             accept,
             reason,
-        } => goldens::run(accept, reason.as_deref()),
+            pr,
+        } => goldens::run(accept, reason.as_deref(), pr),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

@@ -73,6 +73,13 @@ feathered mask twice, as ADR-002 requires: as alpha when blending colour, and
 as the `strength` multiplier in the attribute map, so dither fades across the
 feather instead of stopping at an edge. Feather is clamped to 0–32 target px.
 
+*Amended 2026-10-11 (#99):* in the attribute map, strength is multiplied by the
+three-factor product `png_alpha × mask × opacity`, so a 30 %-opaque layer fades its
+dither the way a feathered edge does instead of imposing its full recipe. Which
+layer governs a pixel is unchanged: the top-most one whose `png_alpha × mask` is
+above zero (opacity 0 hides the layer altogether). Colour compositing is unchanged;
+there opacity is applied by the blend as before.
+
 ### SnapToCells
 
 Unique to this product: `SnapToCells { Off | Expand | Contract | Nearest }`
