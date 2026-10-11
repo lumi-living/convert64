@@ -20,3 +20,7 @@ workspace = true
 [[bin]]
 name = "convert64-app"
 path = "src/main.rs"
+
+# Built and released by cargo-dist (dist-workspace.toml).
+[package.metadata.dist]
+dist = true
