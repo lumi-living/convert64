@@ -98,7 +98,7 @@ most converters lack.
 | `yliluoma3` | algorithm 3 (gamma-aware, knoll-style) | |
 | `knoll` | Thomas Knoll pattern dithering (Photoshop's "Pattern"; patent expired) | 8×8 Bayer with candidate list per pixel |
 | `luma` | dither on L only, hue from nearest set colour | avoids the colour speckle 16 colours produce |
-| `pair` | same-luma pair weaving | the C64 trick: alternate two near-luma colours to fake a third; needs the metric's pair bias |
+| `pair` | same-luma pair weaving | the C64 trick: alternate two near-luma colours to fake a third; needs the metric's pair bias; pairs in [`colour-pairs.md`](colour-pairs.md) |
 
 ## 5. Modifiers (orthogonal to the method)
 
