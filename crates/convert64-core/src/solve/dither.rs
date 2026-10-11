@@ -218,6 +218,26 @@ pub fn pass(
     }
 }
 
+/// Where each layer's layer-locked patterns are anchored: its top-left corner in whole
+/// target pixels (rounded down), so a pattern moves with the layer one target pixel at a
+/// time.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "layer positions are far inside i64 after flooring"
+)]
+pub fn layer_origins(
+    grid: crate::geom::SuperGrid,
+    layers: &[crate::layer::Layer],
+) -> Vec<(i64, i64)> {
+    layers
+        .iter()
+        .map(|l| {
+            let t = grid.canvas_to_target(l.transform().translate());
+            (t.x.floor() as i64, t.y.floor() as i64)
+        })
+        .collect()
+}
+
 /// Whether a cell with colours `set` has the colour a pixel at `target` wants: the
 /// nearest of all 16.
 fn accepts(metric: Metric, target: [f32; 3], set: ColourSet, tables: &MetricTables) -> bool {
@@ -351,6 +371,71 @@ mod tests {
         let s = sets(&input, 2);
         let r = pass(&input, &t, &s, Some(ColourIndex::BLACK), &[]);
         assert!(r.received.iter().all(|e| *e == [0.0; 3]));
+    }
+
+    /// Left half ordered (Bayer 4), right half diffused (Floyd–Steinberg), in one pass.
+    fn halves(
+        left: DitherKind,
+        right: DitherKind,
+        mode: Mode,
+    ) -> (Input, MetricTables, Vec<Layer>) {
+        let ramp = |x0: u32| -> Vec<[f32; 4]> {
+            (0..160 * 200)
+                .map(|i| {
+                    let (x, y) = ((i % 160 + x0) as f32 / 320.0, (i / 160) as f32 / 200.0);
+                    [x, y, 0.5 * (x + y), 1.0]
+                })
+                .collect()
+        };
+        let mut a = Layer::new(
+            "left",
+            Arc::new(SourceImage::from_linear(160, 200, ramp(0)).unwrap()),
+        );
+        a.set_recipe(Recipe::with_method(left, 1.0).unwrap());
+        let mut b = Layer::new(
+            "right",
+            Arc::new(SourceImage::from_linear(160, 200, ramp(160)).unwrap()),
+        );
+        b.set_recipe(Recipe::with_method(right, 1.0).unwrap());
+        b.set_transform(
+            crate::layer::Transform::translated(crate::geom::Vec2::new(160.0, 0.0)).unwrap(),
+        );
+        let grid = SuperGrid::new(mode, 1).unwrap();
+        let mut c = Compositor::new(grid);
+        let layers = vec![a, b];
+        c.update(&layers, &[]);
+        let t = MetricTables::new(&Palette::pepto_pal());
+        (
+            Input::new(c.frame(), &t, InputOptions::default()),
+            t,
+            layers,
+        )
+    }
+
+    #[test]
+    fn ordered_and_diffused_pixels_coexist_in_one_row() {
+        for mode in [Mode::HiresBitmap, Mode::MulticolorBitmap] {
+            let (mixed, t, layers) = halves(DitherKind::Bayer4, DitherKind::FloydSteinberg, mode);
+            let (left_only, _, _) = halves(DitherKind::Bayer4, DitherKind::None, mode);
+            let (right_only, _, _) = halves(DitherKind::None, DitherKind::FloydSteinberg, mode);
+            let s = sets(&mixed, 3);
+            let bg = (mode == Mode::MulticolorBitmap).then_some(ColourIndex::BLACK);
+            let origins = layer_origins(mixed.grid(), &layers);
+            let m = pass(&mixed, &t, &s, bg, &origins);
+            let l = pass(&left_only, &t, &s, bg, &origins);
+            let r = pass(&right_only, &t, &s, bg, &origins);
+            let w = mixed.size.0;
+            for (i, c) in m.out.iter().enumerate() {
+                let want = if i % w < w / 2 { l.out[i] } else { r.out[i] };
+                assert_eq!(
+                    *c, want,
+                    "{mode} pixel {i}: each half dithers by its own method"
+                );
+            }
+            // And both families really are present in a single row.
+            let row = &m.out[100 * w..101 * w];
+            assert_ne!(row[..w / 2], row[w / 2..]);
+        }
     }
 
     #[test]
