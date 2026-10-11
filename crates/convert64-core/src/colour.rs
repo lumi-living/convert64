@@ -3,11 +3,14 @@
 //! Index semantics never change between palettes (`docs/reference/vic-ii-constraints.md` §1):
 //! a palette only decides what RGB value an index is shown as.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// A VIC-II colour, `0..=15`. Every colour stored anywhere in Convert64 uses this type,
-/// so an out-of-range value cannot exist once constructed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// so an out-of-range value cannot exist once constructed. Serialises as a plain number;
+/// deserialising rejects values above 15.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "u8", into = "u8")]
 pub struct ColourIndex(u8);
 
 /// Error for a value that is not a palette index `0..=15` (validator rule 2).
@@ -160,9 +163,89 @@ impl fmt::Display for ColourIndex {
     }
 }
 
+/// A set of [`ColourIndex`] values, stored as a 16-bit mask. Used for "which colours
+/// does this cell use" questions without allocating.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ColourSet(u16);
+
+impl ColourSet {
+    /// The empty set.
+    pub const EMPTY: Self = Self(0);
+
+    /// Adds `c`.
+    pub const fn insert(&mut self, c: ColourIndex) {
+        self.0 |= 1 << c.0;
+    }
+
+    /// The set with `c` added.
+    #[must_use]
+    pub const fn with(mut self, c: ColourIndex) -> Self {
+        self.insert(c);
+        self
+    }
+
+    /// Whether `c` is in the set.
+    pub const fn contains(self, c: ColourIndex) -> bool {
+        self.0 & (1 << c.0) != 0
+    }
+
+    /// Number of colours in the set.
+    pub const fn len(self) -> u32 {
+        self.0.count_ones()
+    }
+
+    /// Whether the set is empty.
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Colours in either set.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Colours in `self` but not in `other`.
+    #[must_use]
+    pub const fn difference(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
+    /// The colours in index order.
+    pub fn iter(self) -> impl Iterator<Item = ColourIndex> {
+        ColourIndex::ALL
+            .into_iter()
+            .filter(move |&c| self.contains(c))
+    }
+}
+
+impl FromIterator<ColourIndex> for ColourSet {
+    fn from_iter<I: IntoIterator<Item = ColourIndex>>(iter: I) -> Self {
+        let mut set = Self::EMPTY;
+        for c in iter {
+            set.insert(c);
+        }
+        set
+    }
+}
+
+impl fmt::Display for ColourSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        for c in self.iter() {
+            if !first {
+                f.write_str(", ")?;
+            }
+            first = false;
+            write!(f, "{}", c.get())?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ColourIndex, InvalidColourIndex};
+    use super::{ColourIndex, ColourSet, InvalidColourIndex};
 
     #[test]
     fn accepts_0_to_15_and_rejects_16() {
@@ -185,5 +268,35 @@ mod tests {
             assert_eq!(c.as_usize(), i);
         }
         assert_eq!(ColourIndex::LIGHT_GREY.name(), "Light Grey");
+    }
+
+    #[test]
+    fn colour_set_operations() {
+        let a: ColourSet = [ColourIndex::BLACK, ColourIndex::RED, ColourIndex::RED]
+            .into_iter()
+            .collect();
+        assert_eq!(a.len(), 2);
+        assert!(a.contains(ColourIndex::RED) && !a.contains(ColourIndex::WHITE));
+        let b = ColourSet::EMPTY
+            .with(ColourIndex::RED)
+            .with(ColourIndex::WHITE);
+        assert_eq!(a.union(b).len(), 3);
+        assert_eq!(
+            a.difference(b).iter().collect::<Vec<_>>(),
+            [ColourIndex::BLACK]
+        );
+        assert_eq!(a.union(b).to_string(), "0, 1, 2");
+        assert!(ColourSet::EMPTY.is_empty());
+    }
+
+    #[test]
+    fn deserialising_checks_the_range() {
+        use serde::Deserialize;
+        use serde::de::IntoDeserializer;
+        use serde::de::value::{Error, U8Deserializer};
+        let ok: U8Deserializer<Error> = 9_u8.into_deserializer();
+        assert_eq!(ColourIndex::deserialize(ok), Ok(ColourIndex::BROWN));
+        let bad: U8Deserializer<Error> = 16_u8.into_deserializer();
+        assert!(ColourIndex::deserialize(bad).is_err());
     }
 }

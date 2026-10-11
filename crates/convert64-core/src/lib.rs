@@ -6,9 +6,16 @@
 
 pub mod colour;
 pub mod mode;
+pub mod model;
 pub mod palette;
 pub mod par;
+pub mod rule;
 
-pub use colour::{ColourIndex, InvalidColourIndex};
+pub use colour::{ColourIndex, ColourSet, InvalidColourIndex};
 pub use mode::{Mode, ModeSpec};
+pub use model::{
+    BitmapImage, CellPos, CharColour, CharsetGlobals, CharsetImage, IndexedBitmap, ModelError,
+    Sprite, SpriteSet,
+};
 pub use palette::Palette;
+pub use rule::Rule;
