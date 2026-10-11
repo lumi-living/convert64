@@ -717,4 +717,40 @@ mod tests {
         assert_ne!(&t, s.tables());
         assert_eq!(s.palette().name(), "Colodore");
     }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(6))]
+        /// Whatever the picture and recipe, the solver's output validates (E2's rules).
+        #[test]
+        fn any_solver_output_validates(
+            seed in 0u32..10_000,
+            kind in 0usize..9,
+            strength in 0.0f32..=1.0,
+            mc in proptest::prelude::any::<bool>(),
+        ) {
+            let mode = if mc { Mode::MulticolorBitmap } else { Mode::HiresBitmap };
+            let mut st = seed;
+            let px: Vec<[f32; 4]> = (0..320 * 200)
+                .map(|i| {
+                    if i % 37 == 0 {
+                        st = st.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                    }
+                    let v = (st >> 8) as f32 / 16_777_216.0;
+                    let x = (i % 320) as f32 / 320.0;
+                    [v, (v + x) % 1.0, (1.0 - v) * x, 1.0]
+                })
+                .collect();
+            let mut l = Layer::new("r", Arc::new(SourceImage::from_linear(320, 200, px).unwrap()));
+            l.set_recipe(Recipe::with_method(DitherKind::ALL[kind], strength).unwrap());
+            let mut c = Compositor::new(SuperGrid::new(mode, 1).unwrap());
+            c.update(&[l], &[]);
+            let sol = Solver::new(&Palette::pepto_pal()).solve(
+                c.frame(),
+                &Steering::new(),
+                None,
+                &SolveOptions::default(),
+            );
+            proptest::prop_assert_eq!(validate(&sol.image.to_indexed()), Ok(()));
+        }
+    }
 }

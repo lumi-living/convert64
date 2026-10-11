@@ -31,10 +31,10 @@ Every file in the repository, test data included, must be MIT-compatible: no GPL
 
 - **`format::<fixture>`, bit-exact.** The fixture's png2c64 baseline is read and serialised again. The bytes are compared with `fixtures/<fixture>/expected_kla.snap` (or `expected_art.snap`). That file is an `insta` snapshot holding an annotated hex dump: one line per bitmap cell, one per Screen or Colour RAM row. A failure prints a diff naming the cell or row that changed.
 - **`prg::<fixture>`, bit-exact.** The display PRG `convert64-formats` builds from the baseline (the one `cargo xtask vice-check` runs in VICE) must be the same on every run and carry the baseline file verbatim. Its hex dump is `fixtures/<fixture>/expected_prg.snap`: the BASIC line and loader in rows of 16 bytes, then the embedded file.
-- **`solver::<fixture>`, perceptual.** The solver's output is rendered through Pepto PAL and compared with `fixtures/<fixture>/expected.png` by mean squared OKLab distance. The test fails above `mse_vs_golden_max` in `fixtures/<fixture>/thresholds.toml`. Each case prints a line you can paste into your PR:
+- **`solver::<fixture>`, perceptual.** The fixture's `source.png` is composited at 4× and solved with the recipe closest to png2c64's baseline settings (Bayer 2×2 at 70 % for multicolor, no dither for `lineart`). The result is rendered through Pepto PAL and compared by mean squared OKLab distance with `fixtures/<fixture>/expected.png` (at most `mse_vs_golden_max`) and with the source box-filtered to the target grid. That distance must be within png2c64's own (`png2c64_mse_vs_source` in `thresholds.toml`) + 2 %. Each case prints a line you can paste into your PR:
 
   ```
-  portrait, multicolor-bitmap, mse_vs_golden=0.000000, mse_vs_png2c64=0.000000
+  portrait, multicolor-bitmap, mse_vs_golden=0.000000, mse_vs_png2c64=0.014809, mse_vs_source=0.003540, png2c64_vs_source=0.010606
   ```
 
   `mse_vs_png2c64` is the distance to png2c64's baseline, the delta `CLAUDE.md` asks solver PRs to report. Run with `-- --nocapture` to see the lines.

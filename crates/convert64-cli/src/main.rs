@@ -40,6 +40,43 @@ enum Command {
         #[arg(long, value_enum)]
         format: Option<FormatArg>,
     },
+    /// Convert a PNG to a legal C64 picture (Koala for multicolor, Art Studio for hi-res).
+    ///
+    /// The image is scaled to fill the 320×200 screen, composited at the supersample
+    /// factor, solved (background search and refinement) and written. Exits 0 on
+    /// success, 2 when the input cannot be read or an option is invalid.
+    Convert {
+        /// The source image (PNG).
+        input: PathBuf,
+        /// Target mode.
+        #[arg(long, value_enum, default_value = "mc")]
+        mode: ModeArg,
+        /// Colour metric: oklab, cielab, pepto-yuv or rgb.
+        #[arg(long, default_value = "oklab")]
+        metric: String,
+        /// Dither method, e.g. none, bayer2, bayer4, bayer8, blue-noise,
+        /// floyd-steinberg, atkinson, jarvis-judice-ninke, sierra.
+        #[arg(long, default_value = "floyd-steinberg")]
+        dither: String,
+        /// Dither strength, 0–1.
+        #[arg(long, default_value_t = 1.0)]
+        strength: f32,
+        /// Background: auto (search all 16) or a colour index 0–15 (multicolor only).
+        #[arg(long, default_value = "auto")]
+        bg: String,
+        /// Supersample factor, 1–8.
+        #[arg(long, default_value_t = 4)]
+        supersample: u8,
+        /// Output file (.kla for multicolor, .art for hi-res).
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Print the clash summary.
+        #[arg(long)]
+        report: bool,
+        /// Print the result (and clash report) as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Work with recipe files: layers plus commands, in JSON.
     Recipe {
         #[command(subcommand)]
@@ -74,6 +111,14 @@ enum RecipeAction {
     },
     /// List the commands a recipe can contain.
     Commands,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ModeArg {
+    /// Multicolor bitmap (160×200, Koala).
+    Mc,
+    /// Hi-res bitmap (320×200, Art Studio).
+    Hires,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -114,6 +159,34 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Validate { file, json, format } => run_validate(&file, json, format),
+        Command::Convert {
+            input,
+            mode,
+            metric,
+            dither,
+            strength,
+            bg,
+            supersample,
+            output,
+            report,
+            json,
+        } => {
+            let opts = ConvertOptions {
+                mode,
+                metric,
+                dither,
+                strength,
+                bg,
+                supersample,
+            };
+            match run_convert(&input, &opts, &output, report, json) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         Command::Recipe { action } => match action {
             RecipeAction::Apply {
                 file,
@@ -191,6 +264,125 @@ fn run_recipe(
             );
         } else {
             print_summary(session.solution().expect("solved above"));
+        }
+    }
+    Ok(())
+}
+
+struct ConvertOptions {
+    mode: ModeArg,
+    metric: String,
+    dither: String,
+    strength: f32,
+    bg: String,
+    supersample: u8,
+}
+
+/// A serde enum value from its kebab-case name.
+fn named<T: serde::de::DeserializeOwned>(what: &str, name: &str) -> Result<T, String> {
+    serde_json::from_value(serde_json::Value::String(name.to_owned()))
+        .map_err(|_| format!("unknown {what} {name:?}"))
+}
+
+fn run_convert(
+    input: &Path,
+    o: &ConvertOptions,
+    output: &Path,
+    report: bool,
+    json: bool,
+) -> Result<(), String> {
+    use convert64_core::geom::Vec2;
+    use convert64_core::layer::{DitherKind, Layer, Method, Metric, Recipe, Transform};
+    use convert64_core::mode::Mode;
+    use convert64_core::solve::{Background, SolveOptions, Solver, Steering};
+    use convert64_core::{Compositor, Palette, SuperGrid};
+    use convert64_formats::BitmapFormat;
+    let mode = match o.mode {
+        ModeArg::Mc => Mode::MulticolorBitmap,
+        ModeArg::Hires => Mode::HiresBitmap,
+    };
+    let kind: DitherKind = named("dither method", &o.dither)?;
+    let metric: Metric = named("metric", &o.metric)?;
+    let background = match o.bg.as_str() {
+        "auto" => Background::Auto,
+        n => Background::Fixed(
+            n.parse::<u8>()
+                .ok()
+                .and_then(|v| convert64_core::ColourIndex::new(v).ok())
+                .ok_or_else(|| format!("--bg must be auto or 0–15, got {n:?}"))?,
+        ),
+    };
+    let d = Recipe::default();
+    let recipe = Recipe::new(
+        Method::new(kind),
+        o.strength,
+        d.phase(),
+        metric,
+        d.allowed(),
+        d.fit_mode(),
+    )
+    .map_err(|e| e.to_string())?;
+    let src = convert64_cli::recipe::load_source(input).map_err(|e| e.to_string())?;
+    let (w, h) = src.size();
+    let mut layer = Layer::new("source", std::sync::Arc::new(src));
+    layer.set_transform(
+        Transform::new(
+            Vec2::ZERO,
+            Vec2::new(320.0 / w as f32, 200.0 / h as f32),
+            false,
+            false,
+        )
+        .map_err(|e| e.to_string())?,
+    );
+    layer.set_recipe(recipe);
+    let grid = SuperGrid::new(mode, o.supersample).map_err(|e| e.to_string())?;
+    let mut c = Compositor::new(grid);
+    c.update(&[layer], &[]);
+    let started = std::time::Instant::now();
+    let sol = Solver::new(&Palette::default()).solve(
+        c.frame(),
+        &Steering::new(),
+        None,
+        &SolveOptions {
+            background,
+            ..SolveOptions::default()
+        },
+    );
+    let ms = started.elapsed().as_secs_f64() * 1000.0;
+    let format = BitmapFormat::for_mode(mode).expect("bitmap mode");
+    let bytes = format.write(&sol.image).map_err(|e| e.to_string())?;
+    std::fs::write(output, &bytes).map_err(|e| format!("{}: {e}", output.display()))?;
+    if json {
+        let order = sol.report.worst_first();
+        let worst: Vec<_> = order
+            .iter()
+            .take(10)
+            .filter_map(|c| sol.report.cell(*c))
+            .collect();
+        let v = serde_json::json!({
+            "input": input.display().to_string(),
+            "output": output.display().to_string(),
+            "mode": mode,
+            "format": format.name(),
+            "background": sol.background,
+            "error": sol.error,
+            "solve_ms": ms,
+            "summary": sol.report.summary(),
+            "worst": if report { serde_json::json!(worst) } else { serde_json::Value::Null },
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!(
+            "{} -> {} ({}, {ms:.0} ms)",
+            input.display(),
+            output.display(),
+            format.name()
+        );
+        if report {
+            print_summary(&sol);
         }
     }
     Ok(())

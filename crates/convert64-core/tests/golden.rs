@@ -5,35 +5,43 @@
 //!   read into the model and serialised again. The bytes are snapshotted with `insta` as
 //!   an annotated hex dump (`fixtures/<name>/expected_<ext>.snap`). Every byte is in the
 //!   snapshot, so any change fails, and the diff names the section and cell that moved.
-//!   When E6's writers land, they replace the re-serialisation here.
+//!   The re-serialisation is the formats crate's writer (`BitmapFile::to_bytes`).
 //! - **Display PRG, bit-exact.** `convert64_formats::prg::display_prg` is run on the
 //!   baseline file twice: both runs must give the same bytes, and the picture file
 //!   embedded at `PAYLOAD_OFFSET` must equal the baseline. The PRG is snapshotted as a
 //!   hex dump (`fixtures/<name>/expected_prg.snap`): the BASIC line and loader in rows
 //!   of 16 bytes, then the embedded file in the format case's layout. `cargo xtask
 //!   vice-check` runs these PRGs in VICE.
-//! - **Solver, perceptual.** The solver's output is rendered through the palette and
-//!   compared with `fixtures/<name>/expected.png` by OKLab mean squared error. The test
-//!   fails above `mse_vs_golden_max` in `fixtures/<name>/thresholds.toml`, and prints
-//!   `fixture, mode, mse_vs_golden, mse_vs_png2c64` so PRs can report the delta to
-//!   png2c64 (`CLAUDE.md`).
-//!
-//! The solver does not exist yet (E5, #5). Until it does, [`solve`] is an identity stub
-//! fed the png2c64 baseline, which exercises the whole comparison path; replace its body
-//! with the real solver and the source image as input.
+//! - **Solver, perceptual.** The fixture's `source.png` is composited at 4× to fill the
+//!   screen and solved with the recipe closest to the png2c64 baseline settings (see
+//!   [`baseline_recipe`]). The result is rendered through the palette and compared by
+//!   OKLab mean squared error with `fixtures/<name>/expected.png` (it must stay within
+//!   `mse_vs_golden_max`) and with the source itself, box-filtered to the target grid.
+//!   The png2c64 baseline is scored against the same source by the same code; ours must
+//!   be within `png2c64_mse_vs_source × 1.02` (`thresholds.toml` records png2c64's
+//!   value, and the test checks it still holds). Each case prints `fixture, mode,
+//!   mse_vs_golden, mse_vs_png2c64, mse_vs_source, png2c64_vs_source` so PRs can report
+//!   the delta to png2c64 (`CLAUDE.md`).
 //!
 //! Golden candidates: with `CONVERT64_GOLDEN_OUT=<dir>` set, each solver case also writes
 //! its rendering to `<dir>/<fixture>/expected.png`. `cargo xtask regen-goldens` uses this
 //! (and `INSTA_UPDATE=new`) to list and accept changes.
 
 use convert64_core::Palette;
+use convert64_core::composite::TargetFrame;
+use convert64_core::geom::Vec2;
+use convert64_core::layer::{DitherKind, Layer, Recipe, SourceImage, Transform};
 use convert64_core::model::IndexedBitmap;
-use convert64_core::palette::{Rgb8, oklab_of};
+use convert64_core::palette::{Rgb8, linear_to_srgb8, oklab_of};
+use convert64_core::solve::{SolveOptions, Solver, Steering};
 use convert64_core::validate;
+use convert64_core::{Compositor, SuperGrid};
 use convert64_formats::prg::{LOAD_ADDRESS, PAYLOAD_ADDRESS, PAYLOAD_OFFSET, SYS_ADDRESS};
 use convert64_formats::{BitmapFile, BitmapFormat};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 fn fixture_dir(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -63,14 +71,8 @@ fn read_baseline(name: &str, format: BitmapFormat) -> (Vec<u8>, BitmapFile) {
 /// Serialises a picture file in its format's byte layout
 /// (`docs/reference/file-formats.md`).
 fn serialise(file: &BitmapFile) -> Vec<u8> {
-    let mut out = file.load_address.to_le_bytes().to_vec();
-    out.extend(file.image.bitmap());
-    out.extend(file.image.screen_bytes());
-    if file.format == BitmapFormat::Koala {
-        out.extend(file.image.colour_bytes());
-        out.push(file.image.background().map_or(0, |c| c.get()));
-    }
-    out
+    file.to_bytes()
+        .expect("the baseline's mode fits its format")
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -183,10 +185,88 @@ fn check_prg(name: &str, format: BitmapFormat) {
 // ---------------------------------------------------------------------------------------
 // Solver: perceptual.
 
-/// The solver under test. Identity stub until E5 (#5): returns its input. Replace with
-/// the real bitmap solver, fed the fixture's `source.png`.
-fn solve(input: &IndexedBitmap) -> IndexedBitmap {
-    input.clone()
+/// The recipe closest to the png2c64 baseline settings (`fixtures/README.md`):
+/// png2c64 ran `--dither checker --dither-strength 0.7` in OKLab-like error space for the
+/// multicolor fixtures, which is a 2 × 2 ordered pattern at 70 %, and `--dither none`
+/// for `lineart`.
+fn baseline_recipe(format: BitmapFormat) -> Recipe {
+    match format {
+        BitmapFormat::Koala => Recipe::with_method(DitherKind::Bayer2, 0.7),
+        BitmapFormat::ArtStudio => Recipe::with_method(DitherKind::None, 0.0),
+    }
+    .expect("valid recipe")
+}
+
+fn mode_of(format: BitmapFormat) -> convert64_core::mode::Mode {
+    match format {
+        BitmapFormat::Koala => convert64_core::mode::Mode::MulticolorBitmap,
+        BitmapFormat::ArtStudio => convert64_core::mode::Mode::HiresBitmap,
+    }
+}
+
+/// A fixture's source composited at 4× to fill the screen, and the real solver's output.
+struct Solved {
+    frame: TargetFrame,
+    output: IndexedBitmap,
+}
+
+/// Composites and solves each fixture once per test binary.
+fn solved(name: &str, format: BitmapFormat) -> Arc<Solved> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<Solved>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Mutex::default);
+    if let Some(s) = cache.lock().expect("cache").get(name) {
+        return Arc::clone(s);
+    }
+    let path = fixture_dir(name).join("source.png");
+    let img = image::open(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        .to_rgba8();
+    let (w, h) = img.dimensions();
+    let src = Arc::new(SourceImage::from_srgba8(w, h, img.as_raw()).expect("decoded PNG"));
+    let mut layer = Layer::new(name, src);
+    layer.set_transform(
+        Transform::new(
+            Vec2::ZERO,
+            Vec2::new(320.0 / w as f32, 200.0 / h as f32),
+            false,
+            false,
+        )
+        .expect("fit to screen"),
+    );
+    layer.set_recipe(baseline_recipe(format));
+    let grid = SuperGrid::with_default_factor(mode_of(format)).expect("bitmap grid");
+    let mut c = Compositor::new(grid);
+    c.update(&[layer], &[]);
+    let frame = c.frame().clone();
+    let output = Solver::new(&Palette::pepto_pal())
+        .solve(&frame, &Steering::new(), None, &SolveOptions::default())
+        .image
+        .to_indexed();
+    let s = Arc::new(Solved { frame, output });
+    cache
+        .lock()
+        .expect("cache")
+        .insert(name.to_owned(), Arc::clone(&s));
+    s
+}
+
+/// The source as the solver saw it: the composite on the target grid, in sRGB, rendered
+/// at 320×200 like a picture.
+fn reference(frame: &TargetFrame) -> Vec<Rgb8> {
+    let (tw, _) = frame.grid().target_size();
+    let x_scale = 320 / tw as usize;
+    let colours: Vec<Rgb8> = frame
+        .colour()
+        .iter()
+        .map(|c| {
+            let [r, g, b] = c.map(linear_to_srgb8);
+            Rgb8::new(r, g, b)
+        })
+        .collect();
+    (0..200)
+        .flat_map(|y| (0..320).map(move |x| (x, y)))
+        .map(|(x, y)| colours[y * tw as usize + x / x_scale])
+        .collect()
 }
 
 /// Renders a bitmap picture at the 320×200 display size (multicolor pixels doubled).
@@ -254,6 +334,8 @@ fn oklab_mse(a: &[Rgb8], b: &[Rgb8]) -> f64 {
 #[serde(deny_unknown_fields)]
 struct Thresholds {
     mse_vs_golden_max: f64,
+    /// png2c64's OKLab MSE against the source (the quality bar: ours must be within 2 %).
+    png2c64_mse_vs_source: Option<f64>,
     #[serde(default)]
     mode: std::collections::BTreeMap<String, ModeThresholds>,
 }
@@ -277,12 +359,10 @@ impl Thresholds {
     }
 }
 
-fn threshold(name: &str, mode: &str) -> f64 {
+fn thresholds(name: &str) -> Thresholds {
     let path = fixture_dir(name).join("thresholds.toml");
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    Thresholds::parse(&text)
-        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
-        .mse_vs_golden_max(mode)
+    Thresholds::parse(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
 fn mode_name(format: BitmapFormat) -> &'static str {
@@ -295,19 +375,22 @@ fn mode_name(format: BitmapFormat) -> &'static str {
 struct SolverScores {
     mse_vs_golden: f64,
     mse_vs_png2c64: f64,
+    mse_vs_source: f64,
+    png2c64_vs_source: f64,
     threshold: f64,
 }
 
-/// Scores `solver` on one fixture. Only the real solver's cases write golden
-/// candidates (`write_candidate`), never the self-tests' deliberately broken solvers.
+/// Scores the solver's output on one fixture, after `post` (identity for the real case;
+/// the self-test passes a deliberate change). Only the real case writes golden
+/// candidates (`write_candidate`).
 fn score(
     name: &str,
     format: BitmapFormat,
-    solver: fn(&IndexedBitmap) -> IndexedBitmap,
+    post: fn(&IndexedBitmap) -> IndexedBitmap,
     write_candidate: bool,
 ) -> SolverScores {
-    let (_, file) = read_baseline(name, format);
-    let output = solver(&file.image.to_indexed());
+    let s = solved(name, format);
+    let output = post(&s.output);
     assert_eq!(
         validate(&output),
         Ok(()),
@@ -326,19 +409,39 @@ fn score(
         panic!("{name}: fixtures/{name}/expected.png is missing; run `cargo xtask regen-goldens`")
     });
     let baseline = load_png(&dir.join("baseline.png")).expect("png2c64 baseline.png");
+    let source = reference(&s.frame);
     SolverScores {
         mse_vs_golden: oklab_mse(&rendered, &golden),
         mse_vs_png2c64: oklab_mse(&rendered, &baseline),
-        threshold: threshold(name, mode_name(format)),
+        mse_vs_source: oklab_mse(&rendered, &source),
+        png2c64_vs_source: oklab_mse(&baseline, &source),
+        threshold: thresholds(name).mse_vs_golden_max(mode_name(format)),
     }
 }
 
 fn check_solver(name: &str, format: BitmapFormat) {
     let mode = mode_name(format);
-    let s = score(name, format, solve, true);
+    let s = score(name, format, |o| o.clone(), true);
     println!(
-        "{name}, {mode}, mse_vs_golden={:.6}, mse_vs_png2c64={:.6}",
-        s.mse_vs_golden, s.mse_vs_png2c64
+        "{name}, {mode}, mse_vs_golden={:.6}, mse_vs_png2c64={:.6}, mse_vs_source={:.6}, \
+         png2c64_vs_source={:.6}",
+        s.mse_vs_golden, s.mse_vs_png2c64, s.mse_vs_source, s.png2c64_vs_source
+    );
+    let bar = thresholds(name).png2c64_mse_vs_source.unwrap_or_else(|| {
+        panic!(
+            "{name}: thresholds.toml needs png2c64_mse_vs_source = {:.6}",
+            s.png2c64_vs_source
+        )
+    });
+    assert!(
+        (s.png2c64_vs_source - bar).abs() <= bar * 0.01,
+        "{name}: png2c64 now scores {:.6} against the source, thresholds.toml says {bar:.6}",
+        s.png2c64_vs_source
+    );
+    assert!(
+        s.mse_vs_source <= bar * 1.02,
+        "{name}, {mode}: OKLab MSE vs source {:.6} is worse than png2c64's {bar:.6} + 2 %",
+        s.mse_vs_source
     );
     assert!(
         s.mse_vs_golden <= s.threshold,
@@ -804,7 +907,10 @@ fn thresholds_parse_comments_and_nested_mode_tables() {
 #[test]
 fn every_committed_thresholds_file_parses() {
     for &(name, format) in ALL {
-        let t = threshold(name, mode_name(format));
+        let th = thresholds(name);
+        let t = th.mse_vs_golden_max(mode_name(format));
         assert!(t > 0.0 && t < 0.01, "{name}: {t}");
+        let bar = th.png2c64_mse_vs_source.expect("png2c64_mse_vs_source");
+        assert!(bar > 0.0 && bar < 1.0, "{name}: {bar}");
     }
 }

@@ -24,6 +24,8 @@ Total   9002
 ```
 Some files carry 7 trailing padding bytes (9009 total); readers should accept both.
 
+`convert64-formats` reads both formats (`BitmapFormat::read`) and writes them (`BitmapFormat::write`, `BitmapFile::to_bytes`): Koala at load address `$6000`, Art Studio at `$2000` without padding. Every committed fixture baseline round-trips byte for byte.
+
 ### Advanced Art Studio (`.ocp`, `.mpic`) — multicolor bitmap
 ```
 0       2     Load address $2000

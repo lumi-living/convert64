@@ -20,3 +20,9 @@ Every change to a golden file (`fixtures/<name>/expected_*.snap`, `fixtures/<nam
 - 2026-10-11 #93 **composite/title-multiply-hires** (expected_1x.png, expected_attr.png): E4 #85: first composite scenes (portrait-over-title, title-multiply-hires): 1× composite and attribute-map debug render
 - 2026-10-11 #101 **composite/title-multiply-hires** (expected_attr.png): opacity now scales strength (#99)
 - 2026-10-11 #125 **composite/portrait-over-title** (expected_1x.png, expected_attr.png): half-res feather from σ ≥ 4 target px (#98)
+- 2026-10-11 #135 **gradient** (expected.png): real solver replaces the identity stub; recipe closest to png2c64 (#111)
+- 2026-10-11 #135 **lineart** (expected.png): real solver replaces the identity stub; recipe closest to png2c64 (#111)
+- 2026-10-11 #135 **photo** (expected.png): real solver replaces the identity stub; recipe closest to png2c64 (#111)
+- 2026-10-11 #135 **portrait** (expected.png): real solver replaces the identity stub; recipe closest to png2c64 (#111)
+- 2026-10-11 #135 **terrain** (expected.png): real solver replaces the identity stub; recipe closest to png2c64 (#111)
+- 2026-10-11 #135 **title** (expected.png): real solver replaces the identity stub; recipe closest to png2c64 (#111)

@@ -41,6 +41,39 @@ impl BitmapFormat {
         }
     }
 
+    /// The load address files of this format normally carry: `$6000` (Koala) or `$2000`
+    /// (Art Studio).
+    pub const fn default_load_address(self) -> u16 {
+        match self {
+            Self::Koala => 0x6000,
+            Self::ArtStudio => 0x2000,
+        }
+    }
+
+    /// The format for a bitmap mode, if one of these formats stores it.
+    pub const fn for_mode(mode: convert64_core::mode::Mode) -> Option<Self> {
+        match mode {
+            convert64_core::mode::Mode::MulticolorBitmap => Some(Self::Koala),
+            convert64_core::mode::Mode::HiresBitmap => Some(Self::ArtStudio),
+            _ => None,
+        }
+    }
+
+    /// Writes `image` in this format with the default load address, byte for byte as
+    /// `docs/reference/file-formats.md` lays it out (Art Studio without padding).
+    ///
+    /// # Errors
+    /// [`WriteError`] when the image's mode is not the format's (multicolor for Koala,
+    /// hi-res for Art Studio).
+    pub fn write(self, image: &BitmapImage) -> Result<Vec<u8>, WriteError> {
+        BitmapFile {
+            format: self,
+            load_address: self.default_load_address(),
+            image: image.clone(),
+        }
+        .to_bytes()
+    }
+
     /// The format a file of `len` bytes must be, if its size is unique to one format.
     pub fn from_size(len: usize) -> Option<Self> {
         [Self::Koala, Self::ArtStudio]
@@ -78,6 +111,32 @@ pub struct BitmapFile {
 }
 
 impl BitmapFile {
+    /// The file's bytes: load address, then the format's layout.
+    ///
+    /// # Errors
+    /// [`WriteError`] when the image's mode does not fit the format.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, WriteError> {
+        let img = &self.image;
+        let ok = match self.format {
+            BitmapFormat::Koala => img.background().is_some(),
+            BitmapFormat::ArtStudio => img.background().is_none(),
+        };
+        if !ok {
+            return Err(WriteError {
+                format: self.format,
+                mode: img.mode(),
+            });
+        }
+        let mut out = self.load_address.to_le_bytes().to_vec();
+        out.extend(img.bitmap());
+        out.extend(img.screen_bytes());
+        if let Some(bg) = img.background() {
+            out.extend(img.colour_bytes());
+            out.push(bg.get());
+        }
+        Ok(out)
+    }
+
     /// Where the file puts its bitmap in C64 memory: the bitmap is the first block
     /// after the load address in both formats. Screen and Colour RAM follow it
     /// unaligned in the file and are copied to their display addresses by a viewer, so
@@ -86,6 +145,28 @@ impl BitmapFile {
         Placement::new().with(BlockKind::Bitmap, self.load_address)
     }
 }
+
+/// Why a picture could not be written in a format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteError {
+    /// The format asked for.
+    pub format: BitmapFormat,
+    /// The image's mode, which the format cannot store.
+    pub mode: convert64_core::mode::Mode,
+}
+
+impl fmt::Display for WriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} cannot store a {} picture",
+            self.format.name(),
+            self.mode
+        )
+    }
+}
+
+impl std::error::Error for WriteError {}
 
 /// Why a picture file could not be read.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -312,5 +393,41 @@ mod tests {
         assert_eq!(BitmapFormat::from_size(10_003), Some(BitmapFormat::Koala));
         assert_eq!(BitmapFormat::from_size(9009), Some(BitmapFormat::ArtStudio));
         assert_eq!(BitmapFormat::from_size(64), None);
+    }
+
+    /// Every committed fixture baseline reads and writes back byte for byte.
+    #[test]
+    fn writers_round_trip_the_fixture_baselines() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+        for (name, file, format) in [
+            ("portrait", "baseline.kla", BitmapFormat::Koala),
+            ("terrain", "baseline.kla", BitmapFormat::Koala),
+            ("title", "baseline.kla", BitmapFormat::Koala),
+            ("gradient", "baseline.kla", BitmapFormat::Koala),
+            ("photo", "baseline.kla", BitmapFormat::Koala),
+            ("lineart", "baseline.art", BitmapFormat::ArtStudio),
+        ] {
+            let bytes = std::fs::read(root.join(name).join(file)).unwrap();
+            let read = format.read(&bytes).unwrap();
+            assert_eq!(read.to_bytes().unwrap(), bytes, "{name}");
+            assert_eq!(
+                format.write(&read.image).unwrap(),
+                bytes,
+                "{name}: default load address"
+            );
+        }
+    }
+
+    #[test]
+    fn writers_reject_the_wrong_mode() {
+        let kla = read_koala(&koala_bytes(0x6000, 0)).unwrap();
+        let err = BitmapFormat::ArtStudio.write(&kla.image).unwrap_err();
+        assert_eq!(err.mode, Mode::MulticolorBitmap);
+        let art = read_art_studio(&art_bytes(0x2000, false)).unwrap();
+        assert!(BitmapFormat::Koala.write(&art.image).is_err());
+        assert_eq!(
+            BitmapFormat::for_mode(Mode::HiresBitmap),
+            Some(BitmapFormat::ArtStudio)
+        );
     }
 }
