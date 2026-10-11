@@ -39,3 +39,33 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
       - name: cargo test
         run: cargo test --workspace
+
+  # Fixed name: branch protection on main requires the "wasm" context.
+  wasm:
+    name: wasm
+    runs-on: ubuntu-latest
+    env:
+      TRUNK_VERSION: v0.21.14
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # rust-toolchain.toml already lists the wasm32-unknown-unknown target.
+      - name: Install pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.9.2
+      - name: Install trunk
+        run: |
+          curl -sSfL "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xzf - -C "$HOME/.cargo/bin" trunk
+          trunk --version
+      # Default features only: fails if the core gains a dependency that does
+      # not build for wasm32 outside the `parallel` feature.
+      - name: cargo check core (wasm32)
+        run: cargo check -p convert64-core --target wasm32-unknown-unknown
+      - name: trunk build --release
+        working-directory: crates/convert64-app
+        run: trunk build --release
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: convert64-web
+          path: crates/convert64-app/dist/
+          if-no-files-found: error
