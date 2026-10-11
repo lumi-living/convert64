@@ -1,0 +1,2 @@
+# Golden snapshots compare text exactly; keep LF on every platform.
+*.snap text eol=lf

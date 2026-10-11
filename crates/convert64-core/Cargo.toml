@@ -21,6 +21,9 @@ serde = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+insta = { workspace = true }
+image = { workspace = true }
+convert64-formats = { workspace = true }
 
 [lints]
 workspace = true

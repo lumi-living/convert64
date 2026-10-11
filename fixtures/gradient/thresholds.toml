@@ -1,0 +1,7 @@
+# Golden-harness thresholds for this fixture (crates/convert64-core/tests/golden.rs).
+#
+# mse_vs_golden_max: highest allowed mean squared OKLab distance between the solver's
+# rendered output and expected.png. 0.0002 is about a quarter of a just-noticeable
+# OKLab difference (~0.03) squared, averaged over every pixel: tiny drifts pass,
+# visible changes fail. Raise it only with a reason in the PR.
+mse_vs_golden_max = 0.0002
