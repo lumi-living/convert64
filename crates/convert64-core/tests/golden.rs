@@ -1,11 +1,17 @@
-//! Golden-test harness (`docs/TAD.md` §6, #40). One format case and one solver case per
-//! fixture:
+//! Golden-test harness (`docs/TAD.md` §6, #40). One format case, one display-PRG case
+//! and one solver case per fixture:
 //!
 //! - **Format, bit-exact.** The fixture's png2c64 baseline (`baseline.kla`/`.art`) is
 //!   read into the model and serialised again. The bytes are snapshotted with `insta` as
 //!   an annotated hex dump (`fixtures/<name>/expected_<ext>.snap`). Every byte is in the
 //!   snapshot, so any change fails, and the diff names the section and cell that moved.
 //!   When E6's writers land, they replace the re-serialisation here.
+//! - **Display PRG, bit-exact.** `convert64_formats::prg::display_prg` is run on the
+//!   baseline file twice: both runs must give the same bytes, and the picture file
+//!   embedded at `PAYLOAD_OFFSET` must equal the baseline. The PRG is snapshotted as a
+//!   hex dump (`fixtures/<name>/expected_prg.snap`): the BASIC line and loader in rows
+//!   of 16 bytes, then the embedded file in the format case's layout. `cargo xtask
+//!   vice-check` runs these PRGs in VICE.
 //! - **Solver, perceptual.** The solver's output is rendered through the palette and
 //!   compared with `fixtures/<name>/expected.png` by OKLab mean squared error. The test
 //!   fails above `mse_vs_golden_max` in `fixtures/<name>/thresholds.toml`, and prints
@@ -24,6 +30,7 @@ use convert64_core::Palette;
 use convert64_core::model::IndexedBitmap;
 use convert64_core::palette::{Rgb8, oklab_of};
 use convert64_core::validate;
+use convert64_formats::prg::{LOAD_ADDRESS, PAYLOAD_ADDRESS, PAYLOAD_OFFSET, SYS_ADDRESS};
 use convert64_formats::{BitmapFile, BitmapFormat};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -123,6 +130,53 @@ fn check_format(name: &str, format: BitmapFormat) {
     settings.set_omit_expression(true);
     settings.bind(|| {
         insta::assert_snapshot!(format!("expected_{ext}"), hex_dump(format, &bytes));
+    });
+}
+
+// ---------------------------------------------------------------------------------------
+// Display PRG: bit-exact.
+
+/// The display PRG as an annotated hex dump: the BASIC line, loader and padding in rows
+/// of 16 bytes with their C64 addresses, then the embedded picture file as
+/// [`hex_dump`] lays it out.
+fn prg_dump(format: BitmapFormat, prg: &[u8]) -> String {
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "Display PRG ({format}), {} bytes, load address ${:02x}{:02x}, SYS {}, \
+         picture file at offset {PAYLOAD_OFFSET} (${PAYLOAD_ADDRESS:04x})",
+        prg.len(),
+        prg[1],
+        prg[0],
+        SYS_ADDRESS
+    );
+    for (i, row) in prg[2..PAYLOAD_OFFSET].chunks(16).enumerate() {
+        let addr = usize::from(LOAD_ADDRESS) + i * 16;
+        let _ = writeln!(s, "stub ${addr:04x}  {}", hex(row));
+    }
+    s.push_str(&hex_dump(format, &prg[PAYLOAD_OFFSET..]));
+    s
+}
+
+fn check_prg(name: &str, format: BitmapFormat) {
+    let (original, _) = read_baseline(name, format);
+    let build = || {
+        convert64_formats::prg::display_prg(format, &original)
+            .unwrap_or_else(|e| panic!("{name}: {e}"))
+    };
+    let prg = build();
+    assert_eq!(prg, build(), "{name}: the display PRG differs between runs");
+    assert_eq!(
+        prg[PAYLOAD_OFFSET..],
+        original[..],
+        "{name}: the display PRG does not carry the baseline file verbatim"
+    );
+    let mut settings = insta::Settings::clone_current();
+    settings.set_snapshot_path(fixture_dir(name));
+    settings.set_prepend_module_to_snapshot(false);
+    settings.set_omit_expression(true);
+    settings.bind(|| {
+        insta::assert_snapshot!("expected_prg", prg_dump(format, &prg));
     });
 }
 
@@ -302,6 +356,10 @@ macro_rules! golden_cases {
         mod format {
             use convert64_formats::BitmapFormat;
             $(#[test] fn $name() { super::check_format(stringify!($name), $format); })*
+        }
+        mod prg {
+            use convert64_formats::BitmapFormat;
+            $(#[test] fn $name() { super::check_prg(stringify!($name), $format); })*
         }
         mod solver {
             use convert64_formats::BitmapFormat;

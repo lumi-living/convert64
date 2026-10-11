@@ -8,3 +8,9 @@ Every change to a golden file (`fixtures/<name>/expected_*.snap`, `fixtures/<nam
 - 2026-10-11 `ed223a3b2113` **portrait** (expected_kla.snap, expected.png): initial goldens from #40, the identity solver stub on the png2c64 baseline
 - 2026-10-11 `ed223a3b2113` **terrain** (expected_kla.snap, expected.png): initial goldens from #40, the identity solver stub on the png2c64 baseline
 - 2026-10-11 `ed223a3b2113` **title** (expected_kla.snap, expected.png): initial goldens from #40, the identity solver stub on the png2c64 baseline
+- 2026-10-11 `0fcd8cf48298` **gradient** (expected_prg.snap): new display-PRG snapshots from #81: convert64-formats::prg on the png2c64 baseline
+- 2026-10-11 `0fcd8cf48298` **lineart** (expected_prg.snap): new display-PRG snapshots from #81: convert64-formats::prg on the png2c64 baseline
+- 2026-10-11 `0fcd8cf48298` **photo** (expected_prg.snap): new display-PRG snapshots from #81: convert64-formats::prg on the png2c64 baseline
+- 2026-10-11 `0fcd8cf48298` **portrait** (expected_prg.snap): new display-PRG snapshots from #81: convert64-formats::prg on the png2c64 baseline
+- 2026-10-11 `0fcd8cf48298` **terrain** (expected_prg.snap): new display-PRG snapshots from #81: convert64-formats::prg on the png2c64 baseline
+- 2026-10-11 `0fcd8cf48298` **title** (expected_prg.snap): new display-PRG snapshots from #81: convert64-formats::prg on the png2c64 baseline

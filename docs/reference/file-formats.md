@@ -155,6 +155,60 @@ The format has changed across versions and the authoritative definition is CharP
 
 A `.prg` is a 2-byte load address followed by data. Convert64's PRG exports prepend a tiny machine-code viewer (BASIC SYS line + a loop that sets `$DD00`, `$D011`, `$D016`, `$D018`, copies Colour RAM to `$D800` and sets `$D020/$D021`) in front of the picture data so the file runs directly in VICE or on hardware. Data placement follows the conventional load addresses in [vic-ii-constraints.md §5](vic-ii-constraints.md#5-memory-and-alignment-for-exports-and-prg-stubs).
 
+### Koala / Art Studio display PRG (`convert64_formats::prg::display_prg`)
+
+The picture file is embedded **verbatim**, its own 2-byte load address included, at a fixed file offset, so `prg[257..]` is the `.kla`/`.art` file byte for byte. `cargo xtask vice-check` runs these PRGs in VICE; the golden harness snapshots them (`fixtures/<name>/expected_prg.snap`).
+
+```
+Offset  C64 address    Size  Content
+0       —              2     Load address $0801 ($01 $08)
+2       $0801–$080C    12    BASIC: 10 SYS2061
+                               0B 08     link to $080B (end of program)
+                               0A 00     line number 10
+                               9E        SYS token
+                               32 30 36 31  "2061"
+                               00        end of line
+                               00 00     end of program
+14      $080D–         —     Loader (main program, then the copy routine); Koala 120 bytes
+                             ($080D–$0884), Art Studio 96 bytes ($080D–$086C)
+        … –$08FF             Zero padding up to $0900
+257     $0900–         n     The picture file verbatim: Koala 10003 bytes ($0900–$3012),
+                             Art Studio 9002 or 9009 bytes ($0900–$2C29 / $2C30)
+Total                        257 + n: Koala 10260, Art Studio 9259 (9266 padded)
+```
+
+The loader, at `SYS 2061` (`$080D`):
+
+```
+SEI                         IRQs off: no KERNAL interrupt writes to the screen
+LDA $DD00 / AND #$FC / ORA #$02 / STA $DD00
+                            VIC bank 1 ($4000–$7FFF); the other port A bits are kept
+copy $0902 → $6000, 32 pages   bitmap (8000 bytes)
+copy $2842 → $5C00,  4 pages   Screen RAM (1000 bytes)
+copy $2C2A → $D800,  4 pages   Colour RAM (1000 bytes), Koala only
+LDA #$78 / STA $D018        Screen RAM at bank + $1C00 (bits 4–7 = 7), bitmap at bank + $2000 (bit 3)
+LDA #$3B / STA $D011        bitmap mode, display on, 25 rows, Y scroll 3
+LDA #$18 / STA $D016        Koala: multicolor, 40 columns, X scroll 0
+LDA #$08 / STA $D016        Art Studio: hi-res, 40 columns, X scroll 0
+LDA $3012 / STA $D021       Koala: background (bit pair 00) from the file's last byte
+LDA #$00 / STA $D021        Art Studio: $D021 is not shown in hi-res bitmap mode; black
+LDA #$00 / STA $D020        border black (neither format stores a border colour)
+JMP *                       loop forever
+```
+
+Each "copy" is `LDA #<src / STA $FB / LDA #>src / STA $FC / LDA #<dst / STA $FD / LDA #>dst / STA $FE / LDX #pages / JSR copy`, and the copy routine right after the main program is:
+
+```
+copy: LDY #$00
+loop: LDA ($FB),Y / STA ($FD),Y / INY / BNE loop
+      INC $FC / INC $FE / DEX / BNE loop
+      RTS
+```
+
+Copy routine address: `$0874` (Koala), `$085C` (Art Studio). Zero page `$FB`–`$FE` is free for user programs.
+
+**Why these destinations.** The payload occupies `$0900`–`$3012` at most. Bank 1 puts the bitmap at `$6000` and Screen RAM at `$5C00`, both above the payload, so the copies never overlap their source and a plain forward copy is safe; bank 1 also has no character-ROM shadow. The file's own load address (`$6000` Koala, `$2000` Art Studio) is ignored: the loader always copies. Whole pages are copied, so the bytes past each block land in memory the VIC-II does not show (`$7F40`–`$7FFF` after the bitmap, `$5FE8`–`$5FFF` after Screen RAM, `$DBE8`–`$DBFF` after Colour RAM).
+
 ## Assembler source we emit
 
 Every export can be written as source for the four common cross-assemblers. The data is identical; only directives differ.

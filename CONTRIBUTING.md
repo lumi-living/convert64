@@ -27,9 +27,10 @@ Every file in the repository, test data included, must be MIT-compatible: no GPL
 
 ## Golden tests
 
-`cargo test -p convert64-core --test golden` runs two cases per fixture in `fixtures/`:
+`cargo test -p convert64-core --test golden` runs three cases per fixture in `fixtures/`:
 
 - **`format::<fixture>`, bit-exact.** The fixture's png2c64 baseline is read and serialised again. The bytes are compared with `fixtures/<fixture>/expected_kla.snap` (or `expected_art.snap`). That file is an `insta` snapshot holding an annotated hex dump: one line per bitmap cell, one per Screen or Colour RAM row. A failure prints a diff naming the cell or row that changed.
+- **`prg::<fixture>`, bit-exact.** The display PRG `convert64-formats` builds from the baseline (the one `cargo xtask vice-check` runs in VICE) must be the same on every run and carry the baseline file verbatim. Its hex dump is `fixtures/<fixture>/expected_prg.snap`: the BASIC line and loader in rows of 16 bytes, then the embedded file.
 - **`solver::<fixture>`, perceptual.** The solver's output is rendered through Pepto PAL and compared with `fixtures/<fixture>/expected.png` by mean squared OKLab distance. The test fails above `mse_vs_golden_max` in `fixtures/<fixture>/thresholds.toml`. Each case prints a line you can paste into your PR:
 
   ```

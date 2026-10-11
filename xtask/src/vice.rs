@@ -3,10 +3,10 @@
 //!
 //! For each fixture the task:
 //!
-//! 1. takes png2c64's display PRG from `target/xtask/png2c64/<fixture>/baseline.prg`
-//!    (written by `cargo xtask png2c64-baselines`) and checks that the picture data it
-//!    carries equals the committed `baseline.kla`/`.art` byte for byte, so VICE shows
-//!    exactly what is committed;
+//! 1. builds a self-displaying PRG from the committed `baseline.kla`/`.art` with
+//!    `convert64_formats::prg::display_prg`, writes it to
+//!    `target/xtask/vice/<fixture>.prg` and checks that the picture file it carries
+//!    equals the baseline byte for byte, so VICE shows exactly what is committed;
 //! 2. runs `x64sc` on it (PAL, Pepto palette with neutral colour settings, no CRT
 //!    filter, warp) until a fixed cycle count, and saves the exit screenshot to
 //!    `fixtures/<fixture>/vice.png`;
@@ -18,10 +18,13 @@
 //!    VICE version, command and result in the fixture README.
 //!
 //! VICE is not on the CI runners, so this is a local developer check, documented in
-//! `docs/TAD.md` §6.
+//! `docs/TAD.md` §6. It needs nothing but VICE and a clone of the repository. The
+//! comparison itself runs in CI on the committed `vice.png` captures, with negative
+//! controls (the tests at the end of this file).
 
 use convert64_core::model::{CellPos, IndexedBitmap};
 use convert64_core::{ColourIndex, ColourSet, Palette};
+use convert64_formats::prg::{PAYLOAD_OFFSET, display_prg};
 use convert64_formats::{BitmapFile, BitmapFormat};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -40,9 +43,6 @@ const FIXTURES: [(&str, BitmapFormat); 6] = [
 
 /// Pixel agreement required to pass. Never lower this to make a fixture pass.
 const MIN_AGREEMENT: f64 = 99.5;
-
-/// Offset of the picture data in png2c64's display PRG (see `baselines.rs`).
-const PRG_DATA_OFFSET: usize = 2 + 0x2000 - 0x0801;
 
 /// VICE's PAL frame with normal borders, and where the 320×200 display window sits.
 const FRAME: (u32, u32) = (384, 272);
@@ -144,23 +144,17 @@ fn check(
         .read(&baseline_bytes)
         .map_err(|e| format!("{name}/{file_name}: {e}"))?;
 
-    // 1. The PRG must carry exactly the committed picture.
-    let prg_path = root
-        .join("target/xtask/png2c64")
-        .join(name)
-        .join("baseline.prg");
-    let prg = fs::read(&prg_path).map_err(|e| {
-        format!(
-            "{}: {e}; run `cargo xtask png2c64-baselines --png2c64 <bin>` first",
-            prg_path.display()
-        )
-    })?;
-    let picture = &baseline_bytes[2..format.sizes()[0]];
-    if prg.get(PRG_DATA_OFFSET..) != Some(picture) {
+    // 1. Build the display PRG; it must carry exactly the committed picture file.
+    let prg = display_prg(format, &baseline_bytes).map_err(|e| format!("{name}: {e}"))?;
+    if prg.get(PAYLOAD_OFFSET..) != Some(&baseline_bytes[..]) {
         return Err(format!(
-            "{name}: the display PRG does not carry the committed {file_name}; regenerate it"
+            "{name}: the display PRG does not carry the committed {file_name}"
         ));
     }
+    let dir = root.join("target/xtask/vice");
+    fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let prg_path = dir.join(format!("{name}.prg"));
+    fs::write(&prg_path, &prg).map_err(|e| format!("{}: {e}", prg_path.display()))?;
 
     // 2. Run VICE.
     let shot = fixture.join("vice.png");
@@ -219,11 +213,49 @@ fn nearest(palette: &Palette, rgb: [u8; 3]) -> ColourIndex {
     best.1
 }
 
+/// How a capture's display window matches a baseline.
+struct Score {
+    agreement: f64,
+    cells_total: usize,
+    cells_outside: usize,
+    /// Bounding box `(min, max)` of the differing pixels, if any differ.
+    differing: Option<((u32, u32), (u32, u32))>,
+}
+
 fn compare(
     name: &str,
     capture: &image::RgbImage,
     baseline: &IndexedBitmap,
 ) -> Result<Outcome, String> {
+    let s = score(capture, baseline);
+    let diff_crop = if let Some((min, max)) = s.differing {
+        let dir = repo_root().join("target/xtask/vice");
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join(format!("{name}-diff.png"));
+        let crop = image::imageops::crop_imm(
+            capture,
+            WINDOW.0 + min.0,
+            WINDOW.1 + min.1,
+            max.0 - min.0 + 1,
+            max.1 - min.1 + 1,
+        )
+        .to_image();
+        crop.save(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        Some(path)
+    } else {
+        None
+    };
+    Ok(Outcome {
+        agreement: s.agreement,
+        cells_total: s.cells_total,
+        cells_outside: s.cells_outside,
+        diff_crop,
+    })
+}
+
+/// Scores the 320×200 display window of a 384×272 VICE frame against a baseline.
+fn score(capture: &image::RgbImage, baseline: &IndexedBitmap) -> Score {
     let palette = Palette::pepto_pal();
     let x_scale = 320 / u32::from(baseline.width());
     let spec = baseline.spec();
@@ -262,30 +294,12 @@ fn compare(
             !used.difference(baseline.cell_colours(cell)).is_empty()
         })
         .count();
-    let diff_crop = if agree < 64_000 {
-        let dir = repo_root().join("target/xtask/vice");
-        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let path = dir.join(format!("{name}-diff.png"));
-        let crop = image::imageops::crop_imm(
-            capture,
-            WINDOW.0 + min.0,
-            WINDOW.1 + min.1,
-            max.0 - min.0 + 1,
-            max.1 - min.1 + 1,
-        )
-        .to_image();
-        crop.save(&path)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        Some(path)
-    } else {
-        None
-    };
-    Ok(Outcome {
+    Score {
         agreement: f64::from(agree) / 640.0,
         cells_total: seen.len(),
         cells_outside,
-        diff_crop,
-    })
+        differing: (agree < 64_000).then_some((min, max)),
+    }
 }
 
 const START: &str = "<!-- vice-check:start -->";
@@ -296,7 +310,7 @@ fn write_readme_line(root: &Path, name: &str, version: &str, o: &Outcome) -> Res
     let readme = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let line = format!(
         "{START}\n- VICE check (`cargo xtask vice-check`): {version}, `x64sc {} -autostart baseline.prg \
-         -exitscreenshot vice.png` on png2c64's display PRG for this baseline. [vice.png](vice.png) \
+         -exitscreenshot vice.png` on the display PRG `convert64-formats` builds from this baseline. [vice.png](vice.png) \
          agrees with the baseline on {:.3} % of pixels; {} of {} cells show only the baseline's colours.\n{END}",
         X64SC_ARGS.join(" "),
         o.agreement,
@@ -325,8 +339,120 @@ fn write_readme_line(root: &Path, name: &str, version: &str, o: &Outcome) -> Res
 
 #[cfg(test)]
 mod tests {
-    use super::{MIN_AGREEMENT, nearest};
+    use super::{FIXTURES, FRAME, MIN_AGREEMENT, Score, nearest, score};
+    use convert64_core::model::IndexedBitmap;
     use convert64_core::{ColourIndex, Palette};
+    use convert64_formats::BitmapFormat;
+    use convert64_formats::prg::{PAYLOAD_OFFSET, display_prg};
+    use std::path::PathBuf;
+
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures")
+            .join(name)
+    }
+
+    fn baseline_bytes(name: &str, format: BitmapFormat) -> Vec<u8> {
+        let file = match format {
+            BitmapFormat::Koala => "baseline.kla",
+            BitmapFormat::ArtStudio => "baseline.art",
+        };
+        let path = fixture(name).join(file);
+        std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    fn baseline(name: &str, format: BitmapFormat) -> IndexedBitmap {
+        format
+            .read(&baseline_bytes(name, format))
+            .unwrap_or_else(|e| panic!("{name}: {e}"))
+            .image
+            .to_indexed()
+    }
+
+    /// The committed VICE capture of a fixture.
+    fn capture(name: &str) -> image::RgbImage {
+        let path = fixture(name).join("vice.png");
+        let img = image::open(&path)
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+            .to_rgb8();
+        assert_eq!(img.dimensions(), FRAME, "{}", path.display());
+        img
+    }
+
+    /// The capture moved `dx` pixels right and `dy` down; vacated pixels repeat the
+    /// edge.
+    fn shifted(img: &image::RgbImage, dx: u32, dy: u32) -> image::RgbImage {
+        image::RgbImage::from_fn(img.width(), img.height(), |x, y| {
+            *img.get_pixel(x.saturating_sub(dx), y.saturating_sub(dy))
+        })
+    }
+
+    fn passes(s: &Score) -> bool {
+        s.agreement >= MIN_AGREEMENT && s.cells_outside == 0
+    }
+
+    #[test]
+    fn every_capture_matches_its_own_baseline() {
+        for (name, format) in FIXTURES {
+            let s = score(&capture(name), &baseline(name, format));
+            println!(
+                "{name}: {:.3} % agree, {} cells outside",
+                s.agreement, s.cells_outside
+            );
+            assert!(s.agreement >= MIN_AGREEMENT, "{name}: {:.3} %", s.agreement);
+            assert_eq!(s.cells_outside, 0, "{name}");
+        }
+    }
+
+    /// Negative control: a capture compared with another fixture's baseline fails.
+    #[test]
+    fn a_capture_fails_against_another_fixtures_baseline() {
+        for (i, (name, _)) in FIXTURES.iter().enumerate() {
+            let (other, format) = FIXTURES[(i + 1) % FIXTURES.len()];
+            let s = score(&capture(name), &baseline(other, format));
+            println!(
+                "{name} vs {other}: {:.3} % agree, {} cells outside",
+                s.agreement, s.cells_outside
+            );
+            assert!(
+                s.agreement < MIN_AGREEMENT,
+                "{name} vs {other}: {:.3} %",
+                s.agreement
+            );
+            assert!(!passes(&s));
+        }
+    }
+
+    /// Negative control: a capture one pixel off in either direction fails.
+    #[test]
+    fn a_capture_shifted_by_one_pixel_fails() {
+        for (name, format) in FIXTURES {
+            let (img, want) = (capture(name), baseline(name, format));
+            for (dir, dx, dy) in [("right", 1, 0), ("down", 0, 1)] {
+                let s = score(&shifted(&img, dx, dy), &want);
+                println!(
+                    "{name} shifted {dir}: {:.3} % agree, {} cells outside",
+                    s.agreement, s.cells_outside
+                );
+                assert!(
+                    s.agreement < MIN_AGREEMENT,
+                    "{name} shifted {dir}: {:.3} %",
+                    s.agreement
+                );
+                assert!(!passes(&s));
+            }
+        }
+    }
+
+    /// The PRG vice-check runs carries the committed baseline at the documented offset.
+    #[test]
+    fn display_prgs_carry_the_committed_baselines() {
+        for (name, format) in FIXTURES {
+            let bytes = baseline_bytes(name, format);
+            let prg = display_prg(format, &bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(prg[PAYLOAD_OFFSET..], bytes[..], "{name}");
+        }
+    }
 
     #[test]
     fn nearest_maps_exact_and_shifted_colours() {

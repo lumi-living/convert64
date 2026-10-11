@@ -1,0 +1,1073 @@
+---
+source: crates/convert64-core/tests/golden.rs
+assertion_line: 179
+---
+Display PRG (Koala), 10260 bytes, load address $0801, SYS 2061, picture file at offset 257 ($0900)
+stub $0801  0b 08 0a 00 9e 32 30 36 31 00 00 00 78 ad 00 dd
+stub $0811  29 fc 09 02 8d 00 dd a9 02 85 fb a9 09 85 fc a9
+stub $0821  00 85 fd a9 60 85 fe a2 20 20 74 08 a9 42 85 fb
+stub $0831  a9 28 85 fc a9 00 85 fd a9 5c 85 fe a2 04 20 74
+stub $0841  08 a9 2a 85 fb a9 2c 85 fc a9 00 85 fd a9 d8 85
+stub $0851  fe a2 04 20 74 08 a9 78 8d 18 d0 a9 3b 8d 11 d0
+stub $0861  a9 18 8d 16 d0 ad 12 30 8d 21 d0 a9 00 8d 20 d0
+stub $0871  4c 71 08 a0 00 b1 fb 91 fd c8 d0 f9 e6 fc e6 fe
+stub $0881  ca d0 f2 60 00 00 00 00 00 00 00 00 00 00 00 00
+stub $0891  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+stub $08a1  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+stub $08b1  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+stub $08c1  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+stub $08d1  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+stub $08e1  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+stub $08f1  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+Koala file, 10003 bytes, load address $6000
+bitmap cell ( 0,  0)  00 00 00 00 00 00 00 00
+bitmap cell ( 1,  0)  00 00 00 00 00 00 00 00
+bitmap cell ( 2,  0)  00 00 00 00 00 00 00 00
+bitmap cell ( 3,  0)  00 00 00 00 00 00 00 00
+bitmap cell ( 4,  0)  00 00 00 00 00 00 00 00
+bitmap cell ( 5,  0)  00 00 00 00 00 00 00 00
+bitmap cell ( 6,  0)  00 00 00 00 00 00 00 00
+bitmap cell ( 7,  0)  00 00 00 00 00 00 00 00
+bitmap cell ( 8,  0)  00 00 00 00 00 00 00 00
+bitmap cell ( 9,  0)  00 00 00 00 00 00 00 00
+bitmap cell (10,  0)  00 00 00 00 00 00 00 00
+bitmap cell (11,  0)  00 00 00 00 00 00 00 00
+bitmap cell (12,  0)  00 00 00 00 00 00 00 00
+bitmap cell (13,  0)  00 00 00 00 00 00 00 00
+bitmap cell (14,  0)  00 00 00 00 00 00 00 00
+bitmap cell (15,  0)  00 00 00 00 00 00 00 00
+bitmap cell (16,  0)  00 00 00 00 00 00 00 00
+bitmap cell (17,  0)  00 00 00 00 00 00 00 00
+bitmap cell (18,  0)  00 00 00 00 00 00 00 00
+bitmap cell (19,  0)  00 00 00 00 00 00 00 00
+bitmap cell (20,  0)  00 00 00 00 00 00 00 00
+bitmap cell (21,  0)  00 00 00 00 00 00 00 00
+bitmap cell (22,  0)  00 00 00 00 00 00 00 00
+bitmap cell (23,  0)  00 00 00 00 00 00 00 00
+bitmap cell (24,  0)  00 00 00 00 00 00 00 00
+bitmap cell (25,  0)  00 00 00 00 00 00 00 00
+bitmap cell (26,  0)  00 00 00 00 00 00 00 00
+bitmap cell (27,  0)  00 00 00 00 00 00 00 00
+bitmap cell (28,  0)  00 00 00 00 00 00 00 00
+bitmap cell (29,  0)  00 00 00 00 00 00 00 00
+bitmap cell (30,  0)  00 00 00 00 00 00 00 00
+bitmap cell (31,  0)  00 00 00 00 00 00 00 00
+bitmap cell (32,  0)  00 00 00 00 00 00 00 00
+bitmap cell (33,  0)  00 00 00 00 00 00 00 00
+bitmap cell (34,  0)  00 00 00 00 00 00 00 00
+bitmap cell (35,  0)  00 00 00 00 00 00 00 00
+bitmap cell (36,  0)  00 00 00 00 00 00 00 00
+bitmap cell (37,  0)  00 00 00 00 00 00 00 00
+bitmap cell (38,  0)  00 00 00 00 00 00 00 00
+bitmap cell (39,  0)  00 00 00 00 00 00 00 00
+bitmap cell ( 0,  1)  00 00 00 00 00 00 00 00
+bitmap cell ( 1,  1)  00 00 00 00 00 00 00 00
+bitmap cell ( 2,  1)  00 00 00 00 00 00 00 00
+bitmap cell ( 3,  1)  00 00 00 00 00 00 00 00
+bitmap cell ( 4,  1)  00 00 00 00 00 00 00 00
+bitmap cell ( 5,  1)  00 00 00 00 00 00 00 00
+bitmap cell ( 6,  1)  00 00 00 00 00 00 00 00
+bitmap cell ( 7,  1)  00 00 00 00 00 00 00 00
+bitmap cell ( 8,  1)  00 00 00 00 00 00 00 00
+bitmap cell ( 9,  1)  00 00 00 00 00 00 00 00
+bitmap cell (10,  1)  00 00 00 00 00 00 00 00
+bitmap cell (11,  1)  00 00 00 00 00 00 00 00
+bitmap cell (12,  1)  00 00 00 00 00 00 00 00
+bitmap cell (13,  1)  00 00 00 00 00 00 00 00
+bitmap cell (14,  1)  00 00 00 00 00 00 00 00
+bitmap cell (15,  1)  00 00 00 00 00 00 00 00
+bitmap cell (16,  1)  00 00 00 00 00 00 00 00
+bitmap cell (17,  1)  00 00 00 00 00 00 00 03
+bitmap cell (18,  1)  00 00 00 03 0e 3b bb c8
+bitmap cell (19,  1)  00 00 2b bc c4 00 00 00
+bitmap cell (20,  1)  00 c0 0f 00 54 00 00 10
+bitmap cell (21,  1)  00 00 00 00 00 00 04 14
+bitmap cell (22,  1)  00 00 00 00 00 00 00 c0
+bitmap cell (23,  1)  00 00 00 00 00 00 00 00
+bitmap cell (24,  1)  00 00 00 00 00 00 00 00
+bitmap cell (25,  1)  00 00 00 00 00 00 00 00
+bitmap cell (26,  1)  00 00 00 00 00 00 00 00
+bitmap cell (27,  1)  00 00 00 00 00 00 00 00
+bitmap cell (28,  1)  00 00 00 00 00 00 00 00
+bitmap cell (29,  1)  00 00 00 00 00 00 00 00
+bitmap cell (30,  1)  00 00 00 00 00 00 00 00
+bitmap cell (31,  1)  00 00 00 00 00 00 00 00
+bitmap cell (32,  1)  00 00 00 00 00 00 00 00
+bitmap cell (33,  1)  00 00 00 00 00 00 00 00
+bitmap cell (34,  1)  00 00 00 00 00 00 00 00
+bitmap cell (35,  1)  00 00 00 00 00 00 00 00
+bitmap cell (36,  1)  00 00 00 00 00 00 00 00
+bitmap cell (37,  1)  00 00 00 00 00 00 00 00
+bitmap cell (38,  1)  00 00 00 00 00 00 00 00
+bitmap cell (39,  1)  00 00 00 00 00 00 00 00
+bitmap cell ( 0,  2)  00 00 00 00 00 00 00 00
+bitmap cell ( 1,  2)  00 00 00 00 00 00 00 00
+bitmap cell ( 2,  2)  00 00 00 00 00 00 00 00
+bitmap cell ( 3,  2)  00 00 00 00 00 00 00 00
+bitmap cell ( 4,  2)  00 00 00 00 00 00 00 00
+bitmap cell ( 5,  2)  00 00 00 00 00 00 00 00
+bitmap cell ( 6,  2)  00 00 00 00 00 00 00 00
+bitmap cell ( 7,  2)  00 00 00 00 00 00 00 00
+bitmap cell ( 8,  2)  00 00 00 00 00 00 00 00
+bitmap cell ( 9,  2)  00 00 00 00 00 00 00 00
+bitmap cell (10,  2)  00 00 00 00 00 00 00 00
+bitmap cell (11,  2)  00 00 00 00 00 00 00 00
+bitmap cell (12,  2)  00 00 00 00 00 00 00 00
+bitmap cell (13,  2)  00 00 00 00 00 00 00 00
+bitmap cell (14,  2)  00 00 00 00 00 00 00 00
+bitmap cell (15,  2)  00 00 00 00 00 00 00 00
+bitmap cell (16,  2)  00 00 00 02 02 09 0d 06
+bitmap cell (17,  2)  0f 3c b3 ab bf 80 00 00
+bitmap cell (18,  2)  00 20 b0 c1 00 11 00 13
+bitmap cell (19,  2)  00 00 40 00 00 f1 c1 85
+bitmap cell (20,  2)  00 00 00 01 00 01 40 51
+bitmap cell (21,  2)  54 55 55 55 55 45 01 01
+bitmap cell (22,  2)  34 0c 50 55 55 55 55 55
+bitmap cell (23,  2)  00 00 00 00 40 40 40 10
+bitmap cell (24,  2)  00 00 00 00 00 00 00 00
+bitmap cell (25,  2)  00 00 00 00 00 00 00 00
+bitmap cell (26,  2)  00 00 00 00 00 00 00 00
+bitmap cell (27,  2)  00 00 00 00 00 00 00 00
+bitmap cell (28,  2)  00 00 00 00 00 00 00 00
+bitmap cell (29,  2)  00 00 00 00 00 00 00 00
+bitmap cell (30,  2)  00 00 00 00 00 00 00 00
+bitmap cell (31,  2)  00 00 00 00 00 00 00 00
+bitmap cell (32,  2)  00 00 00 00 00 00 00 00
+bitmap cell (33,  2)  00 00 00 00 00 00 00 00
+bitmap cell (34,  2)  00 00 00 00 00 00 00 00
+bitmap cell (35,  2)  00 00 00 00 00 00 00 00
+bitmap cell (36,  2)  00 00 00 00 00 00 00 00
+bitmap cell (37,  2)  00 00 00 00 00 00 00 00
+bitmap cell (38,  2)  00 00 00 00 00 00 00 00
+bitmap cell (39,  2)  00 00 00 00 00 00 00 00
+bitmap cell ( 0,  3)  00 00 00 00 00 00 00 00
+bitmap cell ( 1,  3)  00 00 00 00 00 00 00 00
+bitmap cell ( 2,  3)  00 00 00 00 00 00 00 00
+bitmap cell ( 3,  3)  00 00 00 00 00 00 00 00
+bitmap cell ( 4,  3)  00 00 00 00 00 00 00 00
+bitmap cell ( 5,  3)  00 00 00 00 00 00 00 00
+bitmap cell ( 6,  3)  00 00 00 00 00 00 00 00
+bitmap cell ( 7,  3)  00 00 00 00 00 00 00 00
+bitmap cell ( 8,  3)  00 00 00 00 00 00 00 00
+bitmap cell ( 9,  3)  00 00 00 00 00 00 00 00
+bitmap cell (10,  3)  00 00 00 00 00 00 00 00
+bitmap cell (11,  3)  00 00 00 00 00 00 00 00
+bitmap cell (12,  3)  00 00 00 00 00 00 00 00
+bitmap cell (13,  3)  00 00 00 00 00 00 00 00
+bitmap cell (14,  3)  00 00 00 00 00 00 00 00
+bitmap cell (15,  3)  00 00 00 00 00 03 03 03
+bitmap cell (16,  3)  38 18 10 e8 60 40 80 80
+bitmap cell (17,  3)  00 00 00 00 f0 bb 11 00
+bitmap cell (18,  3)  42 02 0f 0c 00 03 2c 80
+bitmap cell (19,  3)  05 14 14 00 00 fc 00 c0
+bitmap cell (20,  3)  55 55 7a 45 15 10 1a 1c
+bitmap cell (21,  3)  40 01 00 0c 44 40 40 10
+bitmap cell (22,  3)  54 40 40 40 01 15 05 11
+bitmap cell (23,  3)  00 10 40 10 54 54 14 44
+bitmap cell (24,  3)  00 00 00 00 00 00 00 00
+bitmap cell (25,  3)  00 00 00 00 00 00 00 00
+bitmap cell (26,  3)  00 00 00 00 00 00 00 00
+bitmap cell (27,  3)  00 00 00 00 00 00 00 00
+bitmap cell (28,  3)  00 00 00 00 00 00 00 00
+bitmap cell (29,  3)  00 00 00 00 00 00 00 00
+bitmap cell (30,  3)  00 00 00 00 00 00 00 00
+bitmap cell (31,  3)  00 00 00 00 00 00 00 00
+bitmap cell (32,  3)  00 00 00 00 00 00 00 00
+bitmap cell (33,  3)  00 00 00 00 00 00 00 00
+bitmap cell (34,  3)  00 00 00 00 00 00 00 00
+bitmap cell (35,  3)  00 00 00 00 00 00 00 00
+bitmap cell (36,  3)  00 00 00 00 00 00 00 00
+bitmap cell (37,  3)  00 00 00 00 00 00 00 00
+bitmap cell (38,  3)  00 00 00 00 00 00 00 00
+bitmap cell (39,  3)  00 00 00 00 00 00 00 00
+bitmap cell ( 0,  4)  00 00 00 00 00 00 00 00
+bitmap cell ( 1,  4)  00 00 00 00 00 00 00 00
+bitmap cell ( 2,  4)  00 00 00 00 00 00 00 00
+bitmap cell ( 3,  4)  00 00 00 00 00 00 00 00
+bitmap cell ( 4,  4)  00 00 00 00 00 00 00 00
+bitmap cell ( 5,  4)  00 00 00 00 00 00 00 00
+bitmap cell ( 6,  4)  00 00 00 00 00 00 00 00
+bitmap cell ( 7,  4)  00 00 00 00 00 00 00 00
+bitmap cell ( 8,  4)  00 00 00 00 00 00 00 00
+bitmap cell ( 9,  4)  00 00 00 00 00 00 00 00
+bitmap cell (10,  4)  00 00 00 00 00 00 00 00
+bitmap cell (11,  4)  00 00 00 00 00 00 00 00
+bitmap cell (12,  4)  00 00 00 00 00 00 00 00
+bitmap cell (13,  4)  00 00 00 00 00 00 00 00
+bitmap cell (14,  4)  00 00 00 00 00 00 00 00
+bitmap cell (15,  4)  02 03 02 03 09 0a 00 20
+bitmap cell (16,  4)  00 00 00 03 0c b0 01 03
+bitmap cell (17,  4)  02 30 c1 00 10 44 d8 b4
+bitmap cell (18,  4)  1f 3b 2e 40 00 40 00 04
+bitmap cell (19,  4)  a0 68 a8 00 00 00 02 ac
+bitmap cell (20,  4)  10 11 00 0c 33 33 0c 08
+bitmap cell (21,  4)  40 00 00 00 c4 d0 13 00
+bitmap cell (22,  4)  05 11 15 55 55 15 04 01
+bitmap cell (23,  4)  54 11 44 05 45 41 41 5d
+bitmap cell (24,  4)  00 40 00 40 40 40 40 40
+bitmap cell (25,  4)  00 00 00 00 00 00 00 00
+bitmap cell (26,  4)  00 00 00 00 00 00 00 00
+bitmap cell (27,  4)  00 00 00 00 00 00 00 00
+bitmap cell (28,  4)  00 00 00 00 00 00 00 00
+bitmap cell (29,  4)  00 00 00 00 00 00 00 00
+bitmap cell (30,  4)  00 00 00 00 00 00 00 00
+bitmap cell (31,  4)  00 00 00 00 00 00 00 00
+bitmap cell (32,  4)  00 00 00 00 00 00 00 00
+bitmap cell (33,  4)  00 00 00 00 00 00 00 00
+bitmap cell (34,  4)  00 00 00 00 00 00 00 00
+bitmap cell (35,  4)  00 00 00 00 00 00 00 00
+bitmap cell (36,  4)  00 00 00 00 00 00 00 00
+bitmap cell (37,  4)  00 00 00 00 00 00 00 00
+bitmap cell (38,  4)  00 00 00 00 00 00 00 00
+bitmap cell (39,  4)  00 00 00 00 00 00 00 00
+bitmap cell ( 0,  5)  00 00 00 00 00 00 00 00
+bitmap cell ( 1,  5)  00 00 00 00 00 00 00 00
+bitmap cell ( 2,  5)  00 00 00 00 00 00 00 00
+bitmap cell ( 3,  5)  00 00 00 00 00 00 00 00
+bitmap cell ( 4,  5)  00 00 00 00 00 00 00 00
+bitmap cell ( 5,  5)  00 00 00 00 00 00 00 00
+bitmap cell ( 6,  5)  00 00 00 00 00 00 00 00
+bitmap cell ( 7,  5)  00 00 00 00 00 00 00 00
+bitmap cell ( 8,  5)  00 00 00 00 00 00 00 00
+bitmap cell ( 9,  5)  00 00 00 00 00 00 00 00
+bitmap cell (10,  5)  00 00 00 00 00 00 00 00
+bitmap cell (11,  5)  00 00 00 00 00 00 00 00
+bitmap cell (12,  5)  00 00 00 00 00 00 00 00
+bitmap cell (13,  5)  00 00 00 00 00 00 00 00
+bitmap cell (14,  5)  00 00 00 00 00 00 00 00
+bitmap cell (15,  5)  20 00 00 80 c2 07 0e 0b
+bitmap cell (16,  5)  02 0b 0e 88 10 90 e0 40
+bitmap cell (17,  5)  de 47 03 47 0e 0b 2e b7
+bitmap cell (18,  5)  2e bb ee b8 ae b8 e4 9f
+bitmap cell (19,  5)  ec 80 3a b0 d4 4f ee 8a
+bitmap cell (20,  5)  01 31 15 51 ee ba aa ac
+bitmap cell (21,  5)  40 55 55 15 ba ef 80 00
+bitmap cell (22,  5)  00 10 50 54 05 e9 3a 0a
+bitmap cell (23,  5)  50 10 07 00 00 40 13 c4
+bitmap cell (24,  5)  40 40 40 40 00 c0 00 c0
+bitmap cell (25,  5)  00 00 00 00 00 00 00 00
+bitmap cell (26,  5)  00 00 00 00 00 00 00 00
+bitmap cell (27,  5)  00 00 00 00 00 00 00 00
+bitmap cell (28,  5)  00 00 00 00 00 00 00 00
+bitmap cell (29,  5)  00 00 00 00 00 00 00 00
+bitmap cell (30,  5)  00 00 00 00 00 00 00 00
+bitmap cell (31,  5)  00 00 00 00 00 00 00 00
+bitmap cell (32,  5)  00 00 00 00 00 00 00 00
+bitmap cell (33,  5)  00 00 00 00 00 00 00 00
+bitmap cell (34,  5)  00 00 00 00 00 00 00 00
+bitmap cell (35,  5)  00 00 00 00 00 00 00 00
+bitmap cell (36,  5)  00 00 00 00 00 00 00 00
+bitmap cell (37,  5)  00 00 00 00 00 00 00 00
+bitmap cell (38,  5)  00 00 00 00 00 00 00 00
+bitmap cell (39,  5)  00 00 00 00 00 00 00 00
+bitmap cell ( 0,  6)  00 00 00 00 00 00 00 00
+bitmap cell ( 1,  6)  00 00 00 00 00 00 00 00
+bitmap cell ( 2,  6)  00 00 00 00 00 00 00 00
+bitmap cell ( 3,  6)  00 00 00 00 00 00 00 00
+bitmap cell ( 4,  6)  00 00 00 00 00 00 00 00
+bitmap cell ( 5,  6)  00 00 00 00 00 00 00 00
+bitmap cell ( 6,  6)  00 00 00 00 00 00 00 00
+bitmap cell ( 7,  6)  00 00 00 00 00 00 00 00
+bitmap cell ( 8,  6)  00 00 00 00 00 00 00 00
+bitmap cell ( 9,  6)  00 00 00 00 00 00 00 00
+bitmap cell (10,  6)  00 00 00 00 00 00 00 00
+bitmap cell (11,  6)  00 00 00 00 00 00 00 00
+bitmap cell (12,  6)  00 00 00 00 00 00 00 00
+bitmap cell (13,  6)  00 00 00 00 00 00 00 00
+bitmap cell (14,  6)  00 00 00 00 00 00 00 00
+bitmap cell (15,  6)  1e 3b 2d f4 e2 b7 e3 f6
+bitmap cell (16,  6)  02 0a 1a 28 20 84 d4 40
+bitmap cell (17,  6)  a2 8d 34 80 0b 6e 0a aa
+bitmap cell (18,  6)  42 28 a2 82 ab ac b1 c1
+bitmap cell (19,  6)  ea e8 e0 80 01 45 55 55
+bitmap cell (20,  6)  c1 11 55 55 55 55 55 55
+bitmap cell (21,  6)  55 55 55 55 55 55 55 55
+bitmap cell (22,  6)  44 15 55 55 55 55 55 55
+bitmap cell (23,  6)  f4 3d 53 54 55 55 55 55
+bitmap cell (24,  6)  30 30 30 c0 70 5c 57 54
+bitmap cell (25,  6)  00 00 00 00 00 00 00 00
+bitmap cell (26,  6)  00 00 00 00 00 00 00 00
+bitmap cell (27,  6)  00 00 00 00 00 00 00 00
+bitmap cell (28,  6)  00 00 00 00 00 00 00 00
+bitmap cell (29,  6)  00 00 00 00 00 00 00 00
+bitmap cell (30,  6)  00 00 00 00 00 00 00 00
+bitmap cell (31,  6)  00 00 00 00 00 00 00 00
+bitmap cell (32,  6)  00 00 00 00 00 00 00 00
+bitmap cell (33,  6)  00 00 00 00 00 00 00 00
+bitmap cell (34,  6)  00 00 00 00 00 00 00 00
+bitmap cell (35,  6)  00 00 00 00 00 00 00 00
+bitmap cell (36,  6)  00 00 00 00 00 00 00 00
+bitmap cell (37,  6)  00 00 00 00 00 00 00 00
+bitmap cell (38,  6)  00 00 00 00 00 00 00 00
+bitmap cell (39,  6)  00 00 00 00 00 00 00 00
+bitmap cell ( 0,  7)  00 00 00 00 00 00 00 00
+bitmap cell ( 1,  7)  00 00 00 00 00 00 00 00
+bitmap cell ( 2,  7)  00 00 00 00 00 00 00 00
+bitmap cell ( 3,  7)  00 00 00 00 00 00 00 00
+bitmap cell ( 4,  7)  00 00 00 00 00 00 00 00
+bitmap cell ( 5,  7)  00 00 00 00 00 00 00 00
+bitmap cell ( 6,  7)  00 00 00 00 00 00 00 00
+bitmap cell ( 7,  7)  00 00 00 00 00 00 00 00
+bitmap cell ( 8,  7)  00 00 00 00 00 00 00 00
+bitmap cell ( 9,  7)  00 00 00 00 00 00 00 00
+bitmap cell (10,  7)  00 00 00 00 00 00 00 00
+bitmap cell (11,  7)  00 00 00 00 00 00 00 00
+bitmap cell (12,  7)  00 00 00 00 00 00 00 00
+bitmap cell (13,  7)  00 00 00 00 00 00 00 00
+bitmap cell (14,  7)  00 00 00 00 00 00 00 00
+bitmap cell (15,  7)  ee f8 f8 fb e3 f0 21 f1
+bitmap cell (16,  7)  26 9a 0a 6f b8 c0 01 15
+bitmap cell (17,  7)  bf fc e0 01 05 15 55 55
+bitmap cell (18,  7)  d5 55 55 55 55 55 55 50
+bitmap cell (19,  7)  55 55 55 55 55 55 44 00
+bitmap cell (20,  7)  55 55 55 55 55 11 04 00
+bitmap cell (21,  7)  55 55 55 55 55 01 00 00
+bitmap cell (22,  7)  55 55 55 55 55 15 45 01
+bitmap cell (23,  7)  55 55 55 55 55 55 54 54
+bitmap cell (24,  7)  55 55 55 55 55 55 54 54
+bitmap cell (25,  7)  00 40 40 40 40 00 00 00
+bitmap cell (26,  7)  00 00 00 00 00 00 00 00
+bitmap cell (27,  7)  00 00 00 00 00 00 00 00
+bitmap cell (28,  7)  00 00 00 00 00 00 00 00
+bitmap cell (29,  7)  00 00 00 00 00 00 00 00
+bitmap cell (30,  7)  00 00 00 00 00 00 00 00
+bitmap cell (31,  7)  00 00 00 00 00 00 00 00
+bitmap cell (32,  7)  00 00 00 00 00 00 00 00
+bitmap cell (33,  7)  00 00 00 00 00 00 00 00
+bitmap cell (34,  7)  00 00 00 00 00 00 00 00
+bitmap cell (35,  7)  00 00 00 00 00 00 00 00
+bitmap cell (36,  7)  00 00 00 00 00 00 00 00
+bitmap cell (37,  7)  00 00 00 00 00 00 00 00
+bitmap cell (38,  7)  00 00 00 00 00 00 00 00
+bitmap cell (39,  7)  00 00 00 00 00 00 00 00
+bitmap cell ( 0,  8)  00 00 00 00 00 00 00 00
+bitmap cell ( 1,  8)  00 00 00 00 00 00 00 00
+bitmap cell ( 2,  8)  00 00 00 00 00 00 00 00
+bitmap cell ( 3,  8)  00 00 00 00 00 00 00 00
+bitmap cell ( 4,  8)  00 00 00 00 00 00 00 00
+bitmap cell ( 5,  8)  00 00 00 00 00 00 00 00
+bitmap cell ( 6,  8)  00 00 00 00 00 00 00 00
+bitmap cell ( 7,  8)  00 00 00 00 00 00 00 00
+bitmap cell ( 8,  8)  00 00 00 00 00 00 00 00
+bitmap cell ( 9,  8)  00 00 00 00 00 00 00 00
+bitmap cell (10,  8)  00 00 00 00 00 00 00 00
+bitmap cell (11,  8)  00 00 00 00 00 00 00 00
+bitmap cell (12,  8)  00 00 00 00 00 00 00 00
+bitmap cell (13,  8)  00 00 00 00 00 00 00 00
+bitmap cell (14,  8)  00 00 00 00 00 00 00 00
+bitmap cell (15,  8)  c1 c1 c5 b5 c5 d5 14 d4
+bitmap cell (16,  8)  40 0a 2f 2f 3f 3f 3f bf
+bitmap cell (17,  8)  14 aa ff fe ff fe fa fa
+bitmap cell (18,  8)  42 af aa 80 a9 05 80 e8
+bitmap cell (19,  8)  aa ca 02 54 50 50 50 10
+bitmap cell (20,  8)  00 54 15 05 09 08 09 6c
+bitmap cell (21,  8)  00 cc f0 f0 05 01 05 15
+bitmap cell (22,  8)  00 01 54 15 55 55 55 50
+bitmap cell (23,  8)  50 50 4c 5c 57 53 54 14
+bitmap cell (24,  8)  44 04 04 04 04 10 10 10
+bitmap cell (25,  8)  00 00 00 00 00 00 00 00
+bitmap cell (26,  8)  00 00 00 00 00 00 00 00
+bitmap cell (27,  8)  00 00 00 00 00 00 00 00
+bitmap cell (28,  8)  00 00 00 00 00 00 00 00
+bitmap cell (29,  8)  00 00 00 00 00 00 00 00
+bitmap cell (30,  8)  00 00 00 00 00 00 00 00
+bitmap cell (31,  8)  00 00 00 00 00 00 00 00
+bitmap cell (32,  8)  00 00 00 00 00 00 00 00
+bitmap cell (33,  8)  00 00 00 00 00 00 00 00
+bitmap cell (34,  8)  00 00 00 00 00 00 00 00
+bitmap cell (35,  8)  00 00 00 00 00 00 00 00
+bitmap cell (36,  8)  00 00 00 00 00 00 00 00
+bitmap cell (37,  8)  00 00 00 00 00 00 00 00
+bitmap cell (38,  8)  00 00 00 00 00 00 00 00
+bitmap cell (39,  8)  00 00 00 00 00 00 00 00
+bitmap cell ( 0,  9)  00 00 00 00 00 00 00 00
+bitmap cell ( 1,  9)  00 00 00 00 00 00 00 00
+bitmap cell ( 2,  9)  00 00 00 00 00 00 00 00
+bitmap cell ( 3,  9)  00 00 00 00 00 00 00 00
+bitmap cell ( 4,  9)  00 00 00 00 00 00 00 00
+bitmap cell ( 5,  9)  00 00 00 00 00 00 00 00
+bitmap cell ( 6,  9)  00 00 00 00 00 00 00 00
+bitmap cell ( 7,  9)  00 00 00 00 00 00 00 00
+bitmap cell ( 8,  9)  00 00 00 00 00 00 00 00
+bitmap cell ( 9,  9)  00 00 00 00 00 00 00 00
+bitmap cell (10,  9)  00 00 00 00 00 00 00 00
+bitmap cell (11,  9)  00 00 00 00 00 00 00 00
+bitmap cell (12,  9)  00 00 00 00 00 00 00 00
+bitmap cell (13,  9)  00 00 00 00 00 00 00 00
+bitmap cell (14,  9)  00 00 00 02 03 03 01 00
+bitmap cell (15,  9)  14 10 54 d0 e0 f8 3c ac
+bitmap cell (16,  9)  7f 7f 7f bf 7f 7f 7f bf
+bitmap cell (17,  9)  fb fb fe e8 f0 eb f9 7d
+bitmap cell (18,  9)  f0 ec a5 85 24 fc fa fa
+bitmap cell (19,  9)  50 10 44 12 42 8b 0b 1b
+bitmap cell (20,  9)  7d fd f9 f9 7d fd fd f9
+bitmap cell (21,  9)  55 15 14 15 14 10 11 15
+bitmap cell (22,  9)  50 01 45 15 11 00 00 40
+bitmap cell (23,  9)  04 44 54 50 54 14 04 00
+bitmap cell (24,  9)  10 d0 cc dc c0 c4 c4 c4
+bitmap cell (25,  9)  00 00 00 00 00 00 00 00
+bitmap cell (26,  9)  00 00 00 00 00 00 00 00
+bitmap cell (27,  9)  00 00 00 00 00 00 00 00
+bitmap cell (28,  9)  00 00 00 00 00 00 00 00
+bitmap cell (29,  9)  00 00 00 00 00 00 00 00
+bitmap cell (30,  9)  00 00 00 00 00 00 00 00
+bitmap cell (31,  9)  00 00 00 00 00 00 00 00
+bitmap cell (32,  9)  00 00 00 00 00 00 00 00
+bitmap cell (33,  9)  00 00 00 00 00 00 00 00
+bitmap cell (34,  9)  00 00 00 00 00 00 00 00
+bitmap cell (35,  9)  00 00 00 00 00 00 00 00
+bitmap cell (36,  9)  00 00 00 00 00 00 00 00
+bitmap cell (37,  9)  00 00 00 00 00 00 00 00
+bitmap cell (38,  9)  00 00 00 00 00 00 00 00
+bitmap cell (39,  9)  00 00 00 00 00 00 00 00
+bitmap cell ( 0, 10)  00 00 00 00 00 00 00 00
+bitmap cell ( 1, 10)  00 00 00 00 00 00 00 00
+bitmap cell ( 2, 10)  00 00 00 00 00 00 00 00
+bitmap cell ( 3, 10)  00 00 00 00 00 00 00 00
+bitmap cell ( 4, 10)  00 00 00 00 00 00 00 00
+bitmap cell ( 5, 10)  00 00 00 00 00 00 00 00
+bitmap cell ( 6, 10)  00 00 00 00 00 00 00 00
+bitmap cell ( 7, 10)  00 00 00 00 00 00 00 00
+bitmap cell ( 8, 10)  00 00 00 00 00 00 00 00
+bitmap cell ( 9, 10)  00 00 00 00 00 00 00 00
+bitmap cell (10, 10)  00 00 00 00 00 00 00 00
+bitmap cell (11, 10)  00 00 00 00 00 00 00 00
+bitmap cell (12, 10)  00 00 00 00 00 00 00 00
+bitmap cell (13, 10)  00 00 00 00 00 00 00 00
+bitmap cell (14, 10)  00 00 01 00 01 01 02 03
+bitmap cell (15, 10)  a9 a9 a6 be a1 96 97 d7
+bitmap cell (16, 10)  6b 6a 6b 6a 6b 5a 2a 2a
+bitmap cell (17, 10)  69 7b db 7a 5e 56 df 55
+bitmap cell (18, 10)  a5 e5 aa f9 b9 e9 aa aa
+bitmap cell (19, 10)  17 df 5f 7b 6b fb ea fb
+bitmap cell (20, 10)  f6 f6 f7 f7 ff 7f ff ff
+bitmap cell (21, 10)  04 91 00 10 03 90 83 80
+bitmap cell (22, 10)  40 01 40 00 00 c0 c0 c0
+bitmap cell (23, 10)  00 00 33 ff 3f 3f 3f 0c
+bitmap cell (24, 10)  d4 d0 c4 c0 c4 d0 d0 d0
+bitmap cell (25, 10)  00 00 00 00 00 00 00 00
+bitmap cell (26, 10)  00 00 00 00 00 00 00 00
+bitmap cell (27, 10)  00 00 00 00 00 00 00 00
+bitmap cell (28, 10)  00 00 00 00 00 00 00 00
+bitmap cell (29, 10)  00 00 00 00 00 00 00 00
+bitmap cell (30, 10)  00 00 00 00 00 00 00 00
+bitmap cell (31, 10)  00 00 00 00 00 00 00 00
+bitmap cell (32, 10)  00 00 00 00 00 00 00 00
+bitmap cell (33, 10)  00 00 00 00 00 00 00 00
+bitmap cell (34, 10)  00 00 00 00 00 00 00 00
+bitmap cell (35, 10)  00 00 00 00 00 00 00 00
+bitmap cell (36, 10)  00 00 00 00 00 00 00 00
+bitmap cell (37, 10)  00 00 00 00 00 00 00 00
+bitmap cell (38, 10)  00 00 00 00 00 00 00 00
+bitmap cell (39, 10)  00 00 00 00 00 00 00 00
+bitmap cell ( 0, 11)  00 00 00 00 00 00 00 00
+bitmap cell ( 1, 11)  00 00 00 00 00 00 00 00
+bitmap cell ( 2, 11)  00 00 00 00 00 00 00 00
+bitmap cell ( 3, 11)  00 00 00 00 00 00 00 00
+bitmap cell ( 4, 11)  00 00 00 00 00 00 00 00
+bitmap cell ( 5, 11)  00 00 00 00 00 00 00 00
+bitmap cell ( 6, 11)  00 00 00 00 00 00 00 00
+bitmap cell ( 7, 11)  00 00 00 00 00 00 00 00
+bitmap cell ( 8, 11)  00 00 00 00 00 00 00 00
+bitmap cell ( 9, 11)  00 00 00 00 00 00 00 00
+bitmap cell (10, 11)  00 00 00 00 00 00 00 00
+bitmap cell (11, 11)  00 00 00 00 00 00 00 00
+bitmap cell (12, 11)  00 00 00 00 00 00 00 00
+bitmap cell (13, 11)  00 00 00 00 00 00 00 00
+bitmap cell (14, 11)  03 00 00 00 00 00 00 00
+bitmap cell (15, 11)  97 da 9a 96 67 ad aa 6b
+bitmap cell (16, 11)  3f 7f 6b df 9f df 8f 8f
+bitmap cell (17, 11)  d5 b7 ab aa aa aa aa aa
+bitmap cell (18, 11)  aa aa ba fe 9d b7 95 a7
+bitmap cell (19, 11)  b5 d6 9f fa ea ea aa aa
+bitmap cell (20, 11)  ff ff ff f7 f7 7e ba 08
+bitmap cell (21, 11)  80 80 80 c1 80 80 14 15
+bitmap cell (22, 11)  30 cc 00 cc 30 0c 4c 00
+bitmap cell (23, 11)  00 01 00 00 04 10 04 10
+bitmap cell (24, 11)  d0 d0 c0 c0 c0 10 00 00
+bitmap cell (25, 11)  00 00 00 00 00 00 00 00
+bitmap cell (26, 11)  00 00 00 00 00 00 00 00
+bitmap cell (27, 11)  00 00 00 00 00 00 00 00
+bitmap cell (28, 11)  00 00 00 00 00 00 00 00
+bitmap cell (29, 11)  00 00 00 00 00 00 00 00
+bitmap cell (30, 11)  00 00 00 00 00 00 00 00
+bitmap cell (31, 11)  00 00 00 00 00 00 00 00
+bitmap cell (32, 11)  00 00 00 00 00 00 00 00
+bitmap cell (33, 11)  00 00 00 00 00 00 00 00
+bitmap cell (34, 11)  00 00 00 00 00 00 00 00
+bitmap cell (35, 11)  00 00 00 00 00 00 00 00
+bitmap cell (36, 11)  00 00 00 00 00 00 00 00
+bitmap cell (37, 11)  00 00 00 00 00 00 00 00
+bitmap cell (38, 11)  00 00 00 00 00 00 00 00
+bitmap cell (39, 11)  00 00 00 00 00 00 00 00
+bitmap cell ( 0, 12)  00 00 00 00 00 00 00 00
+bitmap cell ( 1, 12)  00 00 00 00 00 00 00 00
+bitmap cell ( 2, 12)  00 00 00 00 00 00 00 00
+bitmap cell ( 3, 12)  00 00 00 00 00 00 00 00
+bitmap cell ( 4, 12)  00 00 00 00 00 00 00 00
+bitmap cell ( 5, 12)  00 00 00 00 00 00 00 00
+bitmap cell ( 6, 12)  00 00 00 00 00 00 00 00
+bitmap cell ( 7, 12)  00 00 00 00 00 00 00 00
+bitmap cell ( 8, 12)  00 00 00 00 00 00 00 00
+bitmap cell ( 9, 12)  00 00 00 00 00 00 00 00
+bitmap cell (10, 12)  00 00 00 00 00 00 00 00
+bitmap cell (11, 12)  00 00 00 00 00 00 00 00
+bitmap cell (12, 12)  00 00 00 00 00 00 00 00
+bitmap cell (13, 12)  00 00 00 00 00 00 00 00
+bitmap cell (14, 12)  00 00 00 00 00 00 00 00
+bitmap cell (15, 12)  3d 3d 0f 0f 0b 01 00 00
+bitmap cell (16, 12)  9b cb d7 ca 9b 5a 2b 1e
+bitmap cell (17, 12)  ff ff fb ff bf bf bf ef
+bitmap cell (18, 12)  bf a6 be be ba aa ba aa
+bitmap cell (19, 12)  99 ad 6a 7e bb be fa e9
+bitmap cell (20, 12)  50 29 b9 fc b8 e0 a0 a8
+bitmap cell (21, 12)  55 15 44 10 10 90 84 c5
+bitmap cell (22, 12)  40 00 00 10 03 c0 33 30
+bitmap cell (23, 12)  44 10 07 10 00 00 04 c0
+bitmap cell (24, 12)  70 00 40 00 40 00 00 00
+bitmap cell (25, 12)  00 00 00 00 00 00 00 00
+bitmap cell (26, 12)  00 00 00 00 00 00 00 00
+bitmap cell (27, 12)  00 00 00 00 00 00 00 00
+bitmap cell (28, 12)  00 00 00 00 00 00 00 00
+bitmap cell (29, 12)  00 00 00 00 00 00 00 00
+bitmap cell (30, 12)  00 00 00 00 00 00 00 00
+bitmap cell (31, 12)  00 00 00 00 00 00 00 00
+bitmap cell (32, 12)  00 00 00 00 00 00 00 00
+bitmap cell (33, 12)  00 00 00 00 00 00 00 00
+bitmap cell (34, 12)  00 00 00 00 00 00 00 00
+bitmap cell (35, 12)  00 00 00 00 00 00 00 00
+bitmap cell (36, 12)  00 00 00 00 00 00 00 00
+bitmap cell (37, 12)  00 00 00 00 00 00 00 00
+bitmap cell (38, 12)  00 00 00 00 00 00 00 00
+bitmap cell (39, 12)  00 00 00 00 00 00 00 00
+bitmap cell ( 0, 13)  00 00 00 00 00 00 00 00
+bitmap cell ( 1, 13)  00 00 00 00 00 00 00 00
+bitmap cell ( 2, 13)  00 00 00 00 00 00 00 00
+bitmap cell ( 3, 13)  00 00 00 00 00 00 00 00
+bitmap cell ( 4, 13)  00 00 00 00 00 00 00 00
+bitmap cell ( 5, 13)  00 00 00 00 00 00 00 00
+bitmap cell ( 6, 13)  00 00 00 00 00 00 00 00
+bitmap cell ( 7, 13)  00 00 00 00 00 00 00 00
+bitmap cell ( 8, 13)  00 00 00 00 00 00 00 00
+bitmap cell ( 9, 13)  00 00 00 00 00 00 00 00
+bitmap cell (10, 13)  00 00 00 00 00 00 00 00
+bitmap cell (11, 13)  00 00 00 00 00 00 00 00
+bitmap cell (12, 13)  00 00 00 00 00 00 00 00
+bitmap cell (13, 13)  00 00 00 00 00 00 00 00
+bitmap cell (14, 13)  00 00 00 00 00 00 00 00
+bitmap cell (15, 13)  00 00 00 00 00 00 00 00
+bitmap cell (16, 13)  1b 0a 07 06 07 06 02 02
+bitmap cell (17, 13)  bf af af ef bb ff ff fe
+bitmap cell (18, 13)  bb aa aa ae aa a9 b6 ba
+bitmap cell (19, 13)  fa e5 a6 af ab ae 98 40
+bitmap cell (20, 13)  a0 a8 be eb aa 0a 14 a1
+bitmap cell (21, 13)  c5 c1 c0 90 54 55 55 15
+bitmap cell (22, 13)  70 00 40 10 07 10 47 50
+bitmap cell (23, 13)  01 01 00 00 00 10 00 10
+bitmap cell (24, 13)  00 00 00 00 00 00 00 00
+bitmap cell (25, 13)  00 00 00 00 00 00 00 00
+bitmap cell (26, 13)  00 00 00 00 00 00 00 00
+bitmap cell (27, 13)  00 00 00 00 00 00 00 00
+bitmap cell (28, 13)  00 00 00 00 00 00 00 00
+bitmap cell (29, 13)  00 00 00 00 00 00 00 00
+bitmap cell (30, 13)  00 00 00 00 00 00 00 00
+bitmap cell (31, 13)  00 00 00 00 00 00 00 00
+bitmap cell (32, 13)  00 00 00 00 00 00 00 00
+bitmap cell (33, 13)  00 00 00 00 00 00 00 00
+bitmap cell (34, 13)  00 00 00 00 00 00 00 00
+bitmap cell (35, 13)  00 00 00 00 00 00 00 00
+bitmap cell (36, 13)  00 00 00 00 00 00 00 00
+bitmap cell (37, 13)  00 00 00 00 00 00 00 00
+bitmap cell (38, 13)  00 00 00 00 00 00 00 00
+bitmap cell (39, 13)  00 00 00 00 00 00 00 00
+bitmap cell ( 0, 14)  00 00 00 00 00 00 00 00
+bitmap cell ( 1, 14)  00 00 00 00 00 00 00 00
+bitmap cell ( 2, 14)  00 00 00 00 00 00 00 00
+bitmap cell ( 3, 14)  00 00 00 00 00 00 00 00
+bitmap cell ( 4, 14)  00 00 00 00 00 00 00 00
+bitmap cell ( 5, 14)  00 00 00 00 00 00 00 00
+bitmap cell ( 6, 14)  00 00 00 00 00 00 00 00
+bitmap cell ( 7, 14)  00 00 00 00 00 00 00 00
+bitmap cell ( 8, 14)  00 00 00 00 00 00 00 00
+bitmap cell ( 9, 14)  00 00 00 00 00 00 00 00
+bitmap cell (10, 14)  00 00 00 00 00 00 00 00
+bitmap cell (11, 14)  00 00 00 00 00 00 00 00
+bitmap cell (12, 14)  00 00 00 00 00 00 00 00
+bitmap cell (13, 14)  00 00 00 00 00 00 00 00
+bitmap cell (14, 14)  00 00 00 00 00 00 00 00
+bitmap cell (15, 14)  00 00 00 00 00 00 00 00
+bitmap cell (16, 14)  02 05 09 0c 08 0a 0b 07
+bitmap cell (17, 14)  be ee 6b 5f 2b 1a 16 02
+bitmap cell (18, 14)  be fe ba fd ba ba b6 65
+bitmap cell (19, 14)  06 3a 7a ae ba a9 a5 94
+bitmap cell (20, 14)  fa fe fa ea e5 85 84 81
+bitmap cell (21, 14)  a4 e0 80 01 40 01 44 15
+bitmap cell (22, 14)  43 10 04 00 04 15 44 15
+bitmap cell (23, 14)  04 04 44 14 04 10 50 10
+bitmap cell (24, 14)  00 00 00 00 00 00 00 00
+bitmap cell (25, 14)  00 00 00 00 00 00 00 00
+bitmap cell (26, 14)  00 00 00 00 00 00 00 00
+bitmap cell (27, 14)  00 00 00 00 00 00 00 00
+bitmap cell (28, 14)  00 00 00 00 00 00 00 00
+bitmap cell (29, 14)  00 00 00 00 00 00 00 00
+bitmap cell (30, 14)  00 00 00 00 00 00 00 00
+bitmap cell (31, 14)  00 00 00 00 00 00 00 00
+bitmap cell (32, 14)  00 00 00 00 00 00 00 00
+bitmap cell (33, 14)  00 00 00 00 00 00 00 00
+bitmap cell (34, 14)  00 00 00 00 00 00 00 00
+bitmap cell (35, 14)  00 00 00 00 00 00 00 00
+bitmap cell (36, 14)  00 00 00 00 00 00 00 00
+bitmap cell (37, 14)  00 00 00 00 00 00 00 00
+bitmap cell (38, 14)  00 00 00 00 00 00 00 00
+bitmap cell (39, 14)  00 00 00 00 00 00 00 00
+bitmap cell ( 0, 15)  00 00 00 00 00 00 00 00
+bitmap cell ( 1, 15)  00 00 00 00 00 00 00 00
+bitmap cell ( 2, 15)  00 00 00 00 00 00 00 00
+bitmap cell ( 3, 15)  00 00 00 00 00 00 00 00
+bitmap cell ( 4, 15)  00 00 00 00 00 00 00 00
+bitmap cell ( 5, 15)  00 00 00 00 00 00 00 00
+bitmap cell ( 6, 15)  00 00 00 00 00 00 00 00
+bitmap cell ( 7, 15)  00 00 00 00 00 00 00 00
+bitmap cell ( 8, 15)  00 00 00 00 00 00 00 00
+bitmap cell ( 9, 15)  00 00 00 00 00 00 00 00
+bitmap cell (10, 15)  00 00 00 00 00 00 00 00
+bitmap cell (11, 15)  00 00 00 00 00 00 00 00
+bitmap cell (12, 15)  00 00 00 00 00 00 00 00
+bitmap cell (13, 15)  00 00 00 00 00 00 00 00
+bitmap cell (14, 15)  00 00 00 00 00 00 00 00
+bitmap cell (15, 15)  00 00 00 01 03 08 0d 0c
+bitmap cell (16, 15)  23 83 83 13 13 13 53 53
+bitmap cell (17, 15)  02 d2 c2 c0 e4 f0 f8 f8
+bitmap cell (18, 15)  ba e0 f0 a0 a8 00 00 50
+bitmap cell (19, 15)  55 4d 1f 1e 1f 15 11 45
+bitmap cell (20, 15)  20 fc 7a 7a 7a e8 a0 80
+bitmap cell (21, 15)  45 01 80 80 b0 80 80 80
+bitmap cell (22, 15)  45 15 55 15 55 55 55 55
+bitmap cell (23, 15)  50 40 40 50 14 14 14 15
+bitmap cell (24, 15)  00 00 00 00 00 00 00 00
+bitmap cell (25, 15)  00 00 00 00 00 00 00 00
+bitmap cell (26, 15)  00 00 00 00 00 00 00 00
+bitmap cell (27, 15)  00 00 00 00 00 00 00 00
+bitmap cell (28, 15)  00 00 00 00 00 00 00 00
+bitmap cell (29, 15)  00 00 00 00 00 00 00 00
+bitmap cell (30, 15)  00 00 00 00 00 00 00 00
+bitmap cell (31, 15)  00 00 00 00 00 00 00 00
+bitmap cell (32, 15)  00 00 00 00 00 00 00 00
+bitmap cell (33, 15)  00 00 00 00 00 00 00 00
+bitmap cell (34, 15)  00 00 00 00 00 00 00 00
+bitmap cell (35, 15)  00 00 00 00 00 00 00 00
+bitmap cell (36, 15)  00 00 00 00 00 00 00 00
+bitmap cell (37, 15)  00 00 00 00 00 00 00 00
+bitmap cell (38, 15)  00 00 00 00 00 00 00 00
+bitmap cell (39, 15)  00 00 00 00 00 00 00 00
+bitmap cell ( 0, 16)  00 00 00 00 00 00 00 00
+bitmap cell ( 1, 16)  00 00 00 00 00 00 00 00
+bitmap cell ( 2, 16)  00 00 00 00 00 00 00 00
+bitmap cell ( 3, 16)  00 00 00 00 00 00 00 00
+bitmap cell ( 4, 16)  00 00 00 00 00 00 00 00
+bitmap cell ( 5, 16)  00 00 00 00 00 00 00 00
+bitmap cell ( 6, 16)  00 00 00 00 00 00 00 00
+bitmap cell ( 7, 16)  00 00 00 00 00 00 00 00
+bitmap cell ( 8, 16)  00 00 00 00 00 00 00 00
+bitmap cell ( 9, 16)  00 00 00 00 00 00 00 00
+bitmap cell (10, 16)  00 00 00 00 00 00 00 00
+bitmap cell (11, 16)  00 00 00 00 00 00 00 00
+bitmap cell (12, 16)  00 00 00 00 00 00 00 00
+bitmap cell (13, 16)  00 00 00 00 00 00 00 00
+bitmap cell (14, 16)  00 00 00 00 00 03 02 0a
+bitmap cell (15, 16)  08 38 2c 3d e1 a1 a1 bd
+bitmap cell (16, 16)  43 43 43 43 43 03 03 03
+bitmap cell (17, 16)  fc fd f9 fe fe ff fb fd
+bitmap cell (18, 16)  14 05 05 01 81 c1 e0 fa
+bitmap cell (19, 16)  33 00 43 40 50 55 55 15
+bitmap cell (20, 16)  f0 c0 04 01 11 45 55 55
+bitmap cell (21, 16)  01 05 05 15 55 55 55 55
+bitmap cell (22, 16)  54 54 54 50 54 50 54 50
+bitmap cell (23, 16)  15 15 15 15 55 15 55 51
+bitmap cell (24, 16)  00 00 40 40 40 50 40 5c
+bitmap cell (25, 16)  00 00 00 00 00 00 00 00
+bitmap cell (26, 16)  00 00 00 00 00 00 00 00
+bitmap cell (27, 16)  00 00 00 00 00 00 00 00
+bitmap cell (28, 16)  00 00 00 00 00 00 00 00
+bitmap cell (29, 16)  00 00 00 00 00 00 00 00
+bitmap cell (30, 16)  00 00 00 00 00 00 00 00
+bitmap cell (31, 16)  00 00 00 00 00 00 00 00
+bitmap cell (32, 16)  00 00 00 00 00 00 00 00
+bitmap cell (33, 16)  00 00 00 00 00 00 00 00
+bitmap cell (34, 16)  00 00 00 00 00 00 00 00
+bitmap cell (35, 16)  00 00 00 00 00 00 00 00
+bitmap cell (36, 16)  00 00 00 00 00 00 00 00
+bitmap cell (37, 16)  00 00 00 00 00 00 00 00
+bitmap cell (38, 16)  00 00 00 00 00 00 00 00
+bitmap cell (39, 16)  00 00 00 00 00 00 00 00
+bitmap cell ( 0, 17)  00 00 00 00 00 00 00 00
+bitmap cell ( 1, 17)  00 00 00 00 00 00 00 00
+bitmap cell ( 2, 17)  00 00 00 00 00 00 00 00
+bitmap cell ( 3, 17)  00 00 00 00 00 00 00 00
+bitmap cell ( 4, 17)  00 00 00 00 00 00 00 00
+bitmap cell ( 5, 17)  00 00 00 00 00 00 00 00
+bitmap cell ( 6, 17)  00 00 00 00 00 00 00 00
+bitmap cell ( 7, 17)  00 00 00 00 00 00 00 00
+bitmap cell ( 8, 17)  00 00 00 00 00 00 00 00
+bitmap cell ( 9, 17)  00 00 00 00 00 00 00 00
+bitmap cell (10, 17)  00 00 00 00 00 00 00 00
+bitmap cell (11, 17)  00 00 00 00 00 00 00 00
+bitmap cell (12, 17)  00 00 00 00 00 03 02 0a
+bitmap cell (13, 17)  00 00 00 0c e0 b0 f5 f1
+bitmap cell (14, 17)  0f 3b 2f f8 fc bc e0 ac
+bitmap cell (15, 17)  e1 c1 a0 c0 a0 c0 a0 80
+bitmap cell (16, 17)  27 07 27 07 62 40 71 4c
+bitmap cell (17, 17)  fe ff ff ff ff ff ff 7f
+bitmap cell (18, 17)  a6 a9 7a aa e9 ee fa fe
+bitmap cell (19, 17)  05 81 a0 e8 ba e8 e2 ce
+bitmap cell (20, 17)  55 55 55 15 05 01 05 c5
+bitmap cell (21, 17)  55 55 55 55 54 55 54 51
+bitmap cell (22, 17)  54 50 40 51 40 11 45 01
+bitmap cell (23, 17)  55 55 55 55 55 51 55 55
+bitmap cell (24, 17)  40 5c 53 50 40 51 44 50
+bitmap cell (25, 17)  00 00 00 c1 c0 10 01 01
+bitmap cell (26, 17)  00 00 00 00 00 10 50 40
+bitmap cell (27, 17)  00 00 00 00 00 00 00 00
+bitmap cell (28, 17)  00 00 00 00 00 00 00 00
+bitmap cell (29, 17)  00 00 00 00 00 00 00 00
+bitmap cell (30, 17)  00 00 00 00 00 00 00 00
+bitmap cell (31, 17)  00 00 00 00 00 00 00 00
+bitmap cell (32, 17)  00 00 00 00 00 00 00 00
+bitmap cell (33, 17)  00 00 00 00 00 00 00 00
+bitmap cell (34, 17)  00 00 00 00 00 00 00 00
+bitmap cell (35, 17)  00 00 00 00 00 00 00 00
+bitmap cell (36, 17)  00 00 00 00 00 00 00 00
+bitmap cell (37, 17)  00 00 00 00 00 00 00 00
+bitmap cell (38, 17)  00 00 00 00 00 00 00 00
+bitmap cell (39, 17)  00 00 00 00 00 00 00 00
+bitmap cell ( 0, 18)  00 00 00 00 00 00 00 00
+bitmap cell ( 1, 18)  00 00 00 00 00 00 00 00
+bitmap cell ( 2, 18)  00 00 00 00 00 00 00 00
+bitmap cell ( 3, 18)  00 00 00 00 00 00 00 00
+bitmap cell ( 4, 18)  00 00 00 00 00 00 00 00
+bitmap cell ( 5, 18)  00 00 00 00 00 00 00 00
+bitmap cell ( 6, 18)  00 00 00 00 00 00 00 00
+bitmap cell ( 7, 18)  00 00 00 00 00 00 00 00
+bitmap cell ( 8, 18)  00 00 00 00 00 00 00 00
+bitmap cell ( 9, 18)  00 00 00 00 00 00 00 00
+bitmap cell (10, 18)  00 00 00 00 00 03 0e 2b
+bitmap cell (11, 18)  00 00 02 08 af bf ff ff
+bitmap cell (12, 18)  2b 8a 31 00 22 c8 e1 85
+bitmap cell (13, 18)  24 04 c6 16 56 53 53 00
+bitmap cell (14, 18)  e3 2c 2d 68 ee ab f2 6b
+bitmap cell (15, 18)  a0 b0 a0 a4 a0 a4 ac a8
+bitmap cell (16, 18)  48 00 10 12 13 10 16 16
+bitmap cell (17, 18)  7f 2f 0f 9b 02 00 a0 a1
+bitmap cell (18, 18)  ff ff ff ff ff ff bf bf
+bitmap cell (19, 18)  e2 e9 f5 f9 f9 fd f9 f9
+bitmap cell (20, 18)  c5 c5 05 15 55 15 04 c1
+bitmap cell (21, 18)  44 10 40 00 40 01 40 11
+bitmap cell (22, 18)  45 05 55 15 55 55 50 41
+bitmap cell (23, 18)  45 55 45 15 55 55 55 55
+bitmap cell (24, 18)  54 50 50 50 54 50 54 50
+bitmap cell (25, 18)  45 45 44 50 55 51 55 55
+bitmap cell (26, 18)  43 54 51 54 54 55 55 15
+bitmap cell (27, 18)  40 10 44 11 04 01 40 54
+bitmap cell (28, 18)  00 00 00 00 00 00 43 c0
+bitmap cell (29, 18)  00 00 00 00 00 00 00 c0
+bitmap cell (30, 18)  00 00 00 00 00 00 00 00
+bitmap cell (31, 18)  00 00 00 00 00 00 00 00
+bitmap cell (32, 18)  00 00 00 00 00 00 00 00
+bitmap cell (33, 18)  00 00 00 00 00 00 00 00
+bitmap cell (34, 18)  00 00 00 00 00 00 00 00
+bitmap cell (35, 18)  00 00 00 00 00 00 00 00
+bitmap cell (36, 18)  00 00 00 00 00 00 00 00
+bitmap cell (37, 18)  00 00 00 00 00 00 00 00
+bitmap cell (38, 18)  00 00 00 00 00 00 00 00
+bitmap cell (39, 18)  00 00 00 00 00 00 00 00
+bitmap cell ( 0, 19)  00 00 00 00 00 00 00 00
+bitmap cell ( 1, 19)  00 00 00 00 00 00 00 00
+bitmap cell ( 2, 19)  00 00 00 00 00 00 00 00
+bitmap cell ( 3, 19)  00 00 00 00 00 00 00 00
+bitmap cell ( 4, 19)  00 00 00 00 00 00 00 00
+bitmap cell ( 5, 19)  00 00 00 00 00 00 00 00
+bitmap cell ( 6, 19)  00 00 00 00 00 00 00 00
+bitmap cell ( 7, 19)  00 00 00 00 00 00 00 00
+bitmap cell ( 8, 19)  00 00 00 00 00 00 00 00
+bitmap cell ( 9, 19)  00 00 01 06 0d 25 1a 64
+bitmap cell (10, 19)  ef 8f fc e0 b5 55 15 54
+bitmap cell (11, 19)  f0 01 05 55 50 40 00 00
+bitmap cell (12, 19)  54 50 50 4c 30 00 f0 80
+bitmap cell (13, 19)  00 04 04 04 0c 08 08 04
+bitmap cell (14, 19)  e9 ab 2a 38 22 38 0d 4f
+bitmap cell (15, 19)  ec 68 2c 7b 28 27 22 00
+bitmap cell (16, 19)  14 15 05 05 05 05 01 c1
+bitmap cell (17, 19)  f0 08 00 3c 6b 4b 50 42
+bitmap cell (18, 19)  2f 0a 02 80 04 00 08 0a
+bitmap cell (19, 19)  f9 f4 a5 a8 64 44 00 00
+bitmap cell (20, 19)  01 01 04 01 00 00 02 32
+bitmap cell (21, 19)  45 01 04 03 30 a0 c2 0c
+bitmap cell (22, 19)  41 e1 24 81 05 05 45 15
+bitmap cell (23, 19)  54 55 54 50 50 50 40 40
+bitmap cell (24, 19)  54 10 44 14 04 15 04 15
+bitmap cell (25, 19)  55 55 55 55 55 55 55 54
+bitmap cell (26, 19)  55 15 55 55 45 55 45 55
+bitmap cell (27, 19)  55 15 55 55 45 55 45 51
+bitmap cell (28, 19)  3c 50 55 55 55 55 55 51
+bitmap cell (29, 19)  30 0c 3c 43 50 54 54 55
+bitmap cell (30, 19)  00 00 00 00 00 c0 00 00
+bitmap cell (31, 19)  00 00 00 00 00 00 00 00
+bitmap cell (32, 19)  00 00 00 00 00 00 00 00
+bitmap cell (33, 19)  00 00 00 00 00 00 00 00
+bitmap cell (34, 19)  00 00 00 00 00 00 00 00
+bitmap cell (35, 19)  00 00 00 00 00 00 00 00
+bitmap cell (36, 19)  00 00 00 00 00 00 00 00
+bitmap cell (37, 19)  00 00 00 00 00 00 00 00
+bitmap cell (38, 19)  00 00 00 00 00 00 00 00
+bitmap cell (39, 19)  00 00 00 00 00 00 00 00
+bitmap cell ( 0, 20)  00 00 00 00 00 00 00 00
+bitmap cell ( 1, 20)  00 00 00 00 00 00 00 00
+bitmap cell ( 2, 20)  00 00 00 00 00 00 00 00
+bitmap cell ( 3, 20)  00 00 00 00 00 00 00 00
+bitmap cell ( 4, 20)  00 00 00 00 00 00 00 00
+bitmap cell ( 5, 20)  00 00 00 00 00 00 00 00
+bitmap cell ( 6, 20)  00 00 00 00 00 00 00 00
+bitmap cell ( 7, 20)  00 00 00 00 00 00 00 00
+bitmap cell ( 8, 20)  00 02 00 04 26 2d 15 2d
+bitmap cell ( 9, 20)  ad b1 e5 85 c4 10 33 f0
+bitmap cell (10, 20)  43 4c 33 fc ec bc ec fc
+bitmap cell (11, 20)  03 c3 03 00 00 0c 00 00
+bitmap cell (12, 20)  00 80 00 c0 00 00 00 10
+bitmap cell (13, 20)  00 03 03 00 03 00 00 00
+bitmap cell (14, 20)  22 e7 01 00 01 00 01 00
+bitmap cell (15, 20)  20 80 e0 c0 e0 c0 80 81
+bitmap cell (16, 20)  01 0c 00 01 00 84 00 51
+bitmap cell (17, 20)  40 10 54 14 54 15 05 15
+bitmap cell (18, 20)  02 38 00 00 00 00 40 00
+bitmap cell (19, 20)  60 30 30 09 40 01 41 01
+bitmap cell (20, 20)  c0 c0 c0 d1 15 15 55 55
+bitmap cell (21, 20)  d1 11 15 55 55 55 54 11
+bitmap cell (22, 20)  55 55 55 55 54 54 14 50
+bitmap cell (23, 20)  40 00 00 00 00 c0 00 00
+bitmap cell (24, 20)  04 05 00 01 05 01 45 55
+bitmap cell (25, 20)  54 55 55 54 54 50 54 54
+bitmap cell (26, 20)  05 05 05 05 05 01 01 01
+bitmap cell (27, 20)  45 51 54 55 54 51 50 50
+bitmap cell (28, 20)  44 51 44 15 44 15 45 15
+bitmap cell (29, 20)  55 15 45 01 44 11 44 11
+bitmap cell (30, 20)  40 40 50 51 54 15 45 51
+bitmap cell (31, 20)  00 00 00 00 00 00 00 c0
+bitmap cell (32, 20)  00 00 00 00 00 00 00 00
+bitmap cell (33, 20)  00 00 00 00 00 00 00 00
+bitmap cell (34, 20)  00 00 00 00 00 00 00 00
+bitmap cell (35, 20)  00 00 00 00 00 00 00 00
+bitmap cell (36, 20)  00 00 00 00 00 00 00 00
+bitmap cell (37, 20)  00 00 00 00 00 00 00 00
+bitmap cell (38, 20)  00 00 00 00 00 00 00 00
+bitmap cell (39, 20)  00 00 00 00 00 00 00 00
+bitmap cell ( 0, 21)  00 00 00 00 00 00 00 00
+bitmap cell ( 1, 21)  00 00 00 00 00 00 00 00
+bitmap cell ( 2, 21)  00 00 00 00 00 00 00 00
+bitmap cell ( 3, 21)  00 00 00 00 00 00 00 00
+bitmap cell ( 4, 21)  00 00 00 00 00 00 00 00
+bitmap cell ( 5, 21)  00 00 00 00 00 00 00 00
+bitmap cell ( 6, 21)  00 00 00 00 00 00 00 00
+bitmap cell ( 7, 21)  00 00 00 00 00 00 03 03
+bitmap cell ( 8, 21)  ea b8 e1 b6 de b8 f8 c4
+bitmap cell ( 9, 21)  20 0c 00 0c 00 c0 c0 84
+bitmap cell (10, 21)  10 78 2c b8 e8 b8 e8 88
+bitmap cell (11, 21)  00 0c 00 00 00 00 00 00
+bitmap cell (12, 21)  00 10 00 10 00 00 0c 08
+bitmap cell (13, 21)  33 00 30 00 04 30 20 3c
+bitmap cell (14, 21)  02 03 30 20 02 08 28 05
+bitmap cell (15, 21)  25 05 05 15 15 55 57 54
+bitmap cell (16, 21)  41 71 44 c1 00 01 00 01
+bitmap cell (17, 21)  05 01 45 01 41 01 40 01
+bitmap cell (18, 21)  40 50 50 54 50 50 57 54
+bitmap cell (19, 21)  01 01 00 c0 04 81 f0 fc
+bitmap cell (20, 21)  55 01 40 05 05 55 55 00
+bitmap cell (21, 21)  04 05 15 15 55 55 44 01
+bitmap cell (22, 21)  53 50 50 40 40 40 00 00
+bitmap cell (23, 21)  00 c0 00 00 40 00 10 00
+bitmap cell (24, 21)  55 15 15 05 05 01 01 0d
+bitmap cell (25, 21)  45 11 54 50 40 50 54 55
+bitmap cell (26, 21)  01 11 01 01 41 01 00 00
+bitmap cell (27, 21)  50 50 50 50 50 50 54 54
+bitmap cell (28, 21)  54 10 00 10 00 00 00 00
+bitmap cell (29, 21)  44 10 04 01 04 10 04 14
+bitmap cell (30, 21)  44 50 44 44 44 44 40 41
+bitmap cell (31, 21)  04 10 44 54 44 10 14 14
+bitmap cell (32, 21)  00 00 00 00 00 00 00 00
+bitmap cell (33, 21)  00 00 00 00 00 00 00 00
+bitmap cell (34, 21)  00 00 00 00 00 00 00 00
+bitmap cell (35, 21)  00 00 00 00 00 00 00 00
+bitmap cell (36, 21)  00 00 00 00 00 00 00 00
+bitmap cell (37, 21)  00 00 00 00 00 00 00 00
+bitmap cell (38, 21)  00 00 00 00 00 00 00 00
+bitmap cell (39, 21)  00 00 00 00 00 00 00 00
+bitmap cell ( 0, 22)  00 00 00 00 00 00 00 00
+bitmap cell ( 1, 22)  00 00 00 00 00 00 00 00
+bitmap cell ( 2, 22)  00 00 00 00 00 00 00 00
+bitmap cell ( 3, 22)  00 00 00 00 00 00 00 00
+bitmap cell ( 4, 22)  00 00 00 00 00 00 00 00
+bitmap cell ( 5, 22)  00 00 00 00 00 00 00 00
+bitmap cell ( 6, 22)  00 00 00 00 00 00 00 00
+bitmap cell ( 7, 22)  02 03 02 0f 0e 0b 0f 0b
+bitmap cell ( 8, 22)  f1 84 f2 f3 30 00 30 c0
+bitmap cell ( 9, 22)  04 c4 20 a0 20 81 01 c1
+bitmap cell (10, 22)  89 8b 0e 0b 12 47 02 03
+bitmap cell (11, 22)  00 00 00 01 00 01 04 c0
+bitmap cell (12, 22)  40 40 43 4c 40 0c 4c 08
+bitmap cell (13, 22)  30 01 04 00 00 00 00 00
+bitmap cell (14, 22)  55 55 54 50 50 00 00 0c
+bitmap cell (15, 22)  5c 58 00 20 24 30 00 10
+bitmap cell (16, 22)  00 00 00 10 00 00 00 00
+bitmap cell (17, 22)  40 00 40 00 00 10 04 00
+bitmap cell (18, 22)  54 15 15 15 05 15 05 01
+bitmap cell (19, 22)  80 ea 2e 0c 42 40 50 50
+bitmap cell (20, 22)  03 03 00 03 4c 08 02 10
+bitmap cell (21, 22)  00 c4 04 c0 00 d0 00 00
+bitmap cell (22, 22)  00 c0 00 00 03 00 00 00
+bitmap cell (23, 22)  04 00 01 00 00 00 00 00
+bitmap cell (24, 22)  00 00 00 00 00 00 05 05
+bitmap cell (25, 22)  55 55 15 15 55 55 55 55
+bitmap cell (26, 22)  40 51 55 55 45 51 44 51
+bitmap cell (27, 22)  54 54 54 55 55 55 55 55
+bitmap cell (28, 22)  00 00 00 00 00 00 00 00
+bitmap cell (29, 22)  04 15 15 15 15 15 54 15
+bitmap cell (30, 22)  40 40 40 11 40 01 01 01
+bitmap cell (31, 22)  44 11 04 15 14 15 14 15
+bitmap cell (32, 22)  00 00 00 00 00 00 40 00
+bitmap cell (33, 22)  00 00 00 00 00 00 00 00
+bitmap cell (34, 22)  00 00 00 00 00 00 00 00
+bitmap cell (35, 22)  00 00 00 00 00 00 00 00
+bitmap cell (36, 22)  00 00 00 00 00 00 00 00
+bitmap cell (37, 22)  00 00 00 00 00 00 00 00
+bitmap cell (38, 22)  00 00 00 00 00 00 00 00
+bitmap cell (39, 22)  00 00 00 00 00 00 00 00
+bitmap cell ( 0, 23)  00 00 00 00 00 00 00 00
+bitmap cell ( 1, 23)  00 00 00 00 00 00 00 00
+bitmap cell ( 2, 23)  00 00 00 00 00 00 00 00
+bitmap cell ( 3, 23)  00 00 00 00 00 00 00 00
+bitmap cell ( 4, 23)  00 00 00 00 00 00 00 00
+bitmap cell ( 5, 23)  00 00 00 00 00 00 00 00
+bitmap cell ( 6, 23)  00 00 00 00 00 00 00 00
+bitmap cell ( 7, 23)  3f 3b 3f 3f 2f ff 23 f3
+bitmap cell ( 8, 23)  20 80 c0 88 02 08 00 08
+bitmap cell ( 9, 23)  30 01 00 01 00 00 00 00
+bitmap cell (10, 23)  03 03 43 42 42 40 42 50
+bitmap cell (11, 23)  04 81 04 81 05 81 c5 81
+bitmap cell (12, 23)  4c 0c 68 0c 20 08 20 08
+bitmap cell (13, 23)  00 00 00 00 00 00 03 00
+bitmap cell (14, 23)  0f 38 2d 38 ed a8 ad 4b
+bitmap cell (15, 23)  04 01 00 01 01 01 c0 c0
+bitmap cell (16, 23)  00 00 40 00 40 40 40 01
+bitmap cell (17, 23)  04 00 05 00 00 00 00 00
+bitmap cell (18, 23)  05 01 01 01 00 11 04 10
+bitmap cell (19, 23)  50 54 55 55 55 55 55 15
+bitmap cell (20, 23)  40 00 10 00 00 00 40 40
+bitmap cell (21, 23)  00 0c 30 00 00 c0 ec 08
+bitmap cell (22, 23)  00 00 00 00 00 00 00 01
+bitmap cell (23, 23)  00 00 01 05 05 15 55 55
+bitmap cell (24, 23)  15 55 55 55 55 55 55 55
+bitmap cell (25, 23)  55 55 55 55 55 55 45 55
+bitmap cell (26, 23)  54 55 55 55 55 55 55 55
+bitmap cell (27, 23)  54 50 54 50 54 54 54 55
+bitmap cell (28, 23)  00 00 40 00 00 00 00 00
+bitmap cell (29, 23)  14 15 55 55 55 55 55 55
+bitmap cell (30, 23)  00 01 40 40 40 00 04 00
+bitmap cell (31, 23)  45 55 45 55 55 55 55 15
+bitmap cell (32, 23)  40 10 40 10 40 10 40 10
+bitmap cell (33, 23)  00 00 00 00 00 00 00 00
+bitmap cell (34, 23)  00 00 00 00 00 00 00 00
+bitmap cell (35, 23)  00 00 00 00 00 00 00 00
+bitmap cell (36, 23)  00 00 00 00 00 00 00 00
+bitmap cell (37, 23)  00 00 00 00 00 00 00 00
+bitmap cell (38, 23)  00 00 00 00 00 00 00 00
+bitmap cell (39, 23)  00 00 00 00 00 00 00 00
+bitmap cell ( 0, 24)  00 00 00 00 00 00 00 00
+bitmap cell ( 1, 24)  00 00 00 00 00 00 00 00
+bitmap cell ( 2, 24)  00 00 00 00 00 00 00 00
+bitmap cell ( 3, 24)  00 00 00 00 00 00 00 00
+bitmap cell ( 4, 24)  00 00 00 00 00 00 00 00
+bitmap cell ( 5, 24)  00 00 00 00 00 00 00 00
+bitmap cell ( 6, 24)  00 00 00 00 00 00 00 00
+bitmap cell ( 7, 24)  33 fc e3 cc f0 cc c0 c0
+bitmap cell ( 8, 24)  00 00 03 00 00 00 00 00
+bitmap cell ( 9, 24)  00 00 00 00 04 01 00 01
+bitmap cell (10, 24)  53 50 50 10 14 14 14 14
+bitmap cell (11, 24)  c0 81 00 80 04 80 00 80
+bitmap cell (12, 24)  30 00 00 00 00 c0 03 00
+bitmap cell (13, 24)  00 00 00 00 00 00 00 00
+bitmap cell (14, 24)  0e 04 01 00 01 00 00 00
+bitmap cell (15, 24)  00 00 00 00 00 00 00 c0
+bitmap cell (16, 24)  40 50 40 10 00 10 00 10
+bitmap cell (17, 24)  10 14 04 01 21 01 30 08
+bitmap cell (18, 24)  44 05 05 05 45 41 50 10
+bitmap cell (19, 24)  55 15 55 15 45 55 55 55
+bitmap cell (20, 24)  40 40 53 53 52 50 50 48
+bitmap cell (21, 24)  00 c0 00 01 01 04 01 11
+bitmap cell (22, 24)  05 15 55 15 55 55 55 55
+bitmap cell (23, 24)  55 55 55 55 55 55 55 55
+bitmap cell (24, 24)  55 55 55 55 55 55 55 55
+bitmap cell (25, 24)  55 55 55 55 55 54 54 50
+bitmap cell (26, 24)  55 51 45 01 04 00 04 00
+bitmap cell (27, 24)  54 14 14 14 44 54 44 14
+bitmap cell (28, 24)  00 10 00 10 00 11 04 01
+bitmap cell (29, 24)  55 15 55 55 55 55 55 15
+bitmap cell (30, 24)  00 00 04 00 04 14 44 04
+bitmap cell (31, 24)  55 55 55 55 55 15 55 15
+bitmap cell (32, 24)  44 50 44 50 54 10 54 51
+bitmap cell (33, 24)  00 00 00 00 00 00 00 00
+bitmap cell (34, 24)  00 00 00 00 00 00 00 00
+bitmap cell (35, 24)  00 00 00 00 00 00 00 00
+bitmap cell (36, 24)  00 00 00 00 00 00 00 00
+bitmap cell (37, 24)  00 00 00 00 00 00 00 00
+bitmap cell (38, 24)  00 00 00 00 00 00 00 00
+bitmap cell (39, 24)  00 00 00 00 00 00 00 00
+screen row  0  01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row  1  01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 08 08 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row  2  01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 8b 08 08 08 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row  3  01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 8b 28 08 01 0b 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row  4  01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 08 28 28 28 8b 08 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row  5  01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 28 28 28 08 08 08 0b 0b 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row  6  01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 28 28 08 08 08 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row  7  01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 08 08 08 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row  8  01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 08 02 02 02 02 28 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row  9  01 01 01 01 01 01 01 01 01 01 01 01 01 01 28 08 28 78 02 02 27 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row 10  01 01 01 01 01 01 01 01 01 01 01 01 01 01 28 2a 8a 7a 2a 27 78 02 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row 11  01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 2a 28 7a 7a 7a 78 08 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row 12  01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 28 28 08 7a 2a 02 02 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row 13  01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 28 08 8a 28 02 02 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row 14  01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 28 28 28 8a 02 02 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row 15  01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 8b 08 08 02 27 78 02 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row 16  01 01 01 01 01 01 01 01 01 01 01 01 01 01 08 08 01 28 02 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row 17  01 01 01 01 01 01 01 01 01 01 01 01 08 08 08 08 08 28 28 02 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row 18  01 01 01 01 01 01 01 01 01 01 08 08 08 08 28 28 08 08 02 28 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row 19  01 01 01 01 01 01 01 01 01 8b 08 01 02 8a 28 28 01 02 08 28 08 02 02 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row 20  01 01 01 01 01 01 01 01 8b 08 08 01 02 01 28 08 02 01 08 02 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row 21  01 01 01 01 01 01 01 01 28 08 28 01 02 08 02 02 01 01 01 02 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row 22  01 01 01 01 01 01 01 08 28 02 28 01 08 01 01 08 01 01 01 08 08 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row 23  01 01 01 01 01 01 01 08 02 01 02 02 02 01 28 01 01 01 01 01 01 02 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+screen row 24  01 01 01 01 01 01 01 08 01 01 01 02 01 01 28 01 01 02 01 01 02 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+colour row  0  02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row  1  02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 08 0b 0b 0b 02 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row  2  02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 0c 0b 0b 0b 02 02 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row  3  02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 0b 0c 0b 0b 0b 0c 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row  4  02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 0b 0b 0b 0b 0c 0b 0b 02 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row  5  02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 0b 0b 0b 0b 0b 0b 0c 0c 0b 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row  6  02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 0b 0c 0c 0a 0b 0b 02 02 0b 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row  7  02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 0b 0a 0c 0c 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row  8  02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 0b 0a 0a 08 0a 0a 02 02 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row  9  02 02 02 02 02 02 02 02 02 02 02 02 02 02 0a 0a 0a 0a 0a 0a 0a 02 02 02 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row 10  02 02 02 02 02 02 02 02 02 02 02 02 02 02 0a 0f 0f 0f 0f 0a 0a 0b 0b 0b 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row 11  02 02 02 02 02 02 02 02 02 02 02 02 02 02 0a 0f 0a 0f 0f 0f 0a 0a 0b 02 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row 12  02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 0a 0a 0a 0f 0f 0a 08 0b 0b 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row 13  02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 0a 0a 0f 0a 0a 0a 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row 14  02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 0a 0a 0a 0f 0a 0a 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row 15  02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 0c 0a 0a 08 0a 0a 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row 16  02 02 02 02 02 02 02 02 02 02 02 02 02 02 0b 0b 0a 0a 08 02 02 02 02 02 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row 17  02 02 02 02 02 02 02 02 02 02 02 02 0b 0b 0b 0c 0a 0a 0a 08 02 02 02 02 0b 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row 18  02 02 02 02 02 02 02 02 02 02 0b 0b 0b 0b 0b 0b 0a 0a 0a 0a 02 02 02 02 02 02 0b 02 0b 0b 02 02 02 02 02 02 02 02 02 02
+colour row 19  02 02 02 02 02 02 02 02 02 0c 0b 0b 0b 0c 0b 0b 08 08 0a 0a 0b 08 08 02 02 02 02 02 0b 0b 0b 02 02 02 02 02 02 02 02 02
+colour row 20  02 02 02 02 02 02 02 02 0c 0b 0b 0b 0b 0b 0b 0a 0b 02 0b 08 08 0b 02 02 02 02 02 02 02 02 02 0b 02 02 02 02 02 02 02 02
+colour row 21  02 02 02 02 02 02 02 0b 0b 0b 0b 0b 0b 0b 08 0b 0b 02 08 08 02 02 02 02 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row 22  02 02 02 02 02 02 02 0b 0b 08 0b 02 0b 08 02 0b 02 02 02 0b 0b 0b 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row 23  02 02 02 02 02 02 02 0b 0b 02 08 0b 08 08 0b 0b 02 02 02 02 02 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+colour row 24  02 02 02 02 02 02 02 0b 02 02 02 0b 02 02 0b 02 02 08 02 02 0b 0b 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02 02
+background  09
