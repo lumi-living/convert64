@@ -77,6 +77,12 @@ shows the Rust path next to the value) and hand-port them.
   Rust path as code syntax; do not restyle instances ad hoc.
 - Light/Dark are modes, not duplicate components. Preview with
   "Change variable mode" on a frame (the two App Shells are set up this way).
-- Icons: `Icon / Placeholder` stands in for Material Symbols
-  (`egui_material_icons`, see ADR-007). Swap via the `Icon` property; the
-  glyph map in ADR-007 is authoritative.
+- Icons: the `Icon` component set on 🧩 Widgets holds every glyph from the
+  ADR-007 map plus a few chrome glyphs (`close`, `check`, `expand_more`,
+  `chevron_right`, `swap_horiz`, `fit_screen`), imported as SVG from
+  `google/material-design-icons` at Outlined / wght 400 / GRAD 0 / opsz 20 —
+  the cut `egui_material_icons` renders. Variant name = icon id =
+  `ICON_<ID>`. Swap via the `Icon` property on `Button` and `Toolbar Button`;
+  never paste glyphs from the Material Symbols *font* or the M3 Design Kit.
+  To add a glyph, fetch its `<id>_20px.svg`, add a variant with that name,
+  bind the fill to `widgets/inactive/fg_stroke`, and add the id to ADR-007.

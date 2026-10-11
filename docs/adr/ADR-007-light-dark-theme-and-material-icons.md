@@ -31,6 +31,20 @@ Confirmed 2026-10-11 in a side-by-side comparison with Phosphor at 12–32 px; M
 | Contrast / levels | `contrast` | Settings | `settings` |
 | A/B compare | `compare` | Light / dark theme | `light_mode` / `dark_mode` |
 
+## Axis values (binding for code and Figma)
+
+`egui_material_icons` renders one static cut of the variable font. Figma uses the same cut, imported as SVG from `google/material-design-icons` (`symbols/web/<id>/materialsymbolsoutlined/<id>_20px.svg`), so the two never drift:
+
+| Axis | Value |
+|---|---|
+| Style | Outlined |
+| FILL | 0 |
+| wght | 400 |
+| GRAD | 0 |
+| opsz | 20 (rendered at `layout::ICON_SIZE` = 18 px) |
+
+In the Figma library the `Icon` component set has one variant per glyph, named by icon id (`keep`, `open_with`…), which maps to `egui_material_icons::icons::ICON_<ID>`. Google's Material 3 Design Kit library was evaluated and rejected as the source: its icons are vector components too, but it ships only a curated subset without most of the glyphs above. See `docs/figma.md`.
+
 ## Options considered
 
 | Option | Verdict |
