@@ -11,6 +11,8 @@ Reference points: png2c64 (30 methods), ArcPaint64's pattern grid, Ditherista,
 Photoshop/GIMP/Aseprite indexed-colour dialogs, and the classic literature
 (Ulichney, Ostromoukhov, Yliluoma).
 
+Reference renders of all 30 png2c64 methods are in [`dither-previews/`](dither-previews/README.md) (`sheet-card.png`, `sheet-zoom.png`, `sheet-portrait.png`).
+
 Every method below honours per-pixel `strength` (0–100 %, scales the threshold
 offset or the propagated error), `allowed_set` and cell clamping. Ordered
 methods also honour `phase` (`ScreenLocked` keeps the matrix anchored to the
@@ -46,7 +48,7 @@ and the 2:1 forms are the ones that look right on a real display.
 | `crosshatch` | | png2c64 |
 | `spiral5` | 5×5 spiral | png2c64 |
 | `hex5` / `hex8` | hexagonal dot | png2c64 |
-| `radial` | | png2c64 |
+| `radial` | | png2c64; an *effect* rather than a quantiser, like `crosshatch` and `value-noise` — group under Effects |
 | `custom` | user 8×8 (or 16×16) matrix | from a recipe file or a layer mask used as threshold source (ADR-002 "revisit when") |
 
 ## 2. Ordered — noise
