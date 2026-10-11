@@ -25,6 +25,7 @@ convert64-formats = { path = "crates/convert64-formats" }
 rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
 proptest = "1.11.0"
+clap = { version = "4.6.7", features = ["derive"] }
 # glow (OpenGL / WebGL2) renderer instead of the default wgpu: ADR-006 keeps
 # the app wgpu-free. Otherwise eframe's default feature set.
 eframe = { version = "0.36.2", default-features = false, features = [
