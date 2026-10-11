@@ -34,6 +34,8 @@ impl eframe::App for App {
     }
 }
 
+/// Native entry point: opens a desktop window.
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([960.0, 640.0]),
@@ -44,4 +46,48 @@ fn main() -> eframe::Result {
         native_options,
         Box::new(|_cc| Ok(Box::new(App::default()))),
     )
+}
+
+/// Web entry point for `trunk`: mounts the app on the `convert64_canvas`
+/// element of `index.html` and removes the loading text once it runs.
+///
+/// `eframe::WebRunner` installs eframe's panic handler, so a Rust panic is
+/// logged to the browser console. Everything web-specific is reached through
+/// eframe's re-exports, so the app needs no extra wasm dependencies.
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    use eframe::wasm_bindgen::JsCast as _;
+    use eframe::web_sys;
+
+    web_sys::js_sys::futures::spawn_local(async {
+        let document = web_sys::window()
+            .and_then(|window| window.document())
+            .expect("convert64: no browser document");
+
+        let canvas = document
+            .get_element_by_id("convert64_canvas")
+            .expect("convert64: index.html has no #convert64_canvas")
+            .dyn_into::<web_sys::HtmlCanvasElement>()
+            .expect("convert64: #convert64_canvas is not a <canvas>");
+
+        let start_result = eframe::WebRunner::new()
+            .start(
+                canvas,
+                eframe::WebOptions::default(),
+                Box::new(|_cc| Ok(Box::new(App::default()))),
+            )
+            .await;
+
+        if let Some(loading_text) = document.get_element_by_id("loading_text") {
+            match start_result {
+                Ok(()) => loading_text.remove(),
+                Err(err) => {
+                    loading_text.set_inner_html(
+                        "<p>Convert64 failed to start. See the developer console for details.</p>",
+                    );
+                    panic!("convert64: failed to start eframe: {err:?}");
+                }
+            }
+        }
+    });
 }

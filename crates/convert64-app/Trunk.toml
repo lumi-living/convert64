@@ -1,0 +1,9 @@
+# trunk configuration for the web build of convert64-app.
+#   trunk serve              # dev server with live reload on http://127.0.0.1:8080
+#   trunk build --release    # optimised bundle in crates/convert64-app/dist (git-ignored)
+
+[build]
+target = "index.html"
+dist = "dist"
+# Stable file names: easier to diff bundle sizes between builds.
+filehash = false
