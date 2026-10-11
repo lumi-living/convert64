@@ -123,6 +123,16 @@ fn tools() -> Value {
         "inputSchema": object_schema(json!({ "layer": layer_schema(), "path": { "type": "string" } }), &["layer", "path"]),
     }));
     list.push(json!({
+        "name": "solve",
+        "description": "Solve the picture into legal C64 cells. full: background search and refinement; otherwise the interactive fast path re-solves only changed cells.",
+        "inputSchema": object_schema(json!({ "full": { "type": "boolean", "default": true } }), &[]),
+    }));
+    list.push(json!({
+        "name": "clash_report",
+        "description": "The last solve's clash report: summary (clash count, total error, worst cell) and the worst cells' wanted, chosen and dropped colours.",
+        "inputSchema": object_schema(json!({ "worst": { "type": "integer", "minimum": 0, "default": 10 } }), &[]),
+    }));
+    list.push(json!({
         "name": "composite_export",
         "description": "Write the composite on the target grid (sRGB, alpha = coverage) as a PNG.",
         "inputSchema": object_schema(json!({ "path": { "type": "string" } }), &["path"]),
@@ -245,6 +255,26 @@ impl Server {
                 s.write_mask(i, Path::new(&path))
                     .map_err(|e| e.to_string())?;
                 Ok(format!("mask of layer {i} -> {path}"))
+            }
+            "solve" => {
+                let full = args.get("full").and_then(Value::as_bool).unwrap_or(true);
+                let sol = self.session()?.solve(full);
+                let s = sol.report.summary();
+                Ok(serde_json::to_string(&json!({
+                    "background": sol.background,
+                    "error": sol.error,
+                    "clashes": s.clashes,
+                    "worst": s.worst,
+                }))
+                .expect("serialisable"))
+            }
+            "clash_report" => {
+                let worst = args.get("worst").and_then(Value::as_u64).unwrap_or(10);
+                let v = self
+                    .session()?
+                    .clash_report_json(usize::try_from(worst).unwrap_or(usize::MAX))
+                    .ok_or("nothing solved yet; call solve first")?;
+                Ok(serde_json::to_string(&v).expect("serialisable"))
             }
             "composite_export" => {
                 let path = str_arg("path")?;

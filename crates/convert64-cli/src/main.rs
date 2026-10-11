@@ -65,6 +65,12 @@ enum RecipeAction {
         /// Write the attribute map's debug render as a PNG.
         #[arg(long, value_name = "PATH")]
         attributes: Option<PathBuf>,
+        /// Solve the picture and print the clash summary.
+        #[arg(long)]
+        report: bool,
+        /// With --report, print the clash report (summary and the worst cells) as JSON.
+        #[arg(long, requires = "report")]
+        json: bool,
     },
     /// List the commands a recipe can contain.
     Commands,
@@ -114,7 +120,15 @@ fn main() -> ExitCode {
                 masks,
                 composite,
                 attributes,
-            } => match run_recipe(&file, &masks, composite.as_deref(), attributes.as_deref()) {
+                report,
+                json,
+            } => match run_recipe(
+                &file,
+                &masks,
+                composite.as_deref(),
+                attributes.as_deref(),
+                report.then_some(json),
+            ) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("error: {e}");
@@ -136,6 +150,7 @@ fn run_recipe(
     masks: &[String],
     composite: Option<&Path>,
     attributes: Option<&Path>,
+    report: Option<bool>,
 ) -> Result<(), String> {
     use convert64_cli::recipe::{LayerRef, Session};
     let mut session = Session::open(file).map_err(|e| e.to_string())?;
@@ -166,7 +181,35 @@ fn run_recipe(
         session.write_attributes(p).map_err(|e| e.to_string())?;
         println!("attribute map -> {}", p.display());
     }
+    if let Some(as_json) = report {
+        session.solve(true);
+        if as_json {
+            let v = session.clash_report_json(10).expect("solved above");
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?
+            );
+        } else {
+            print_summary(session.solution().expect("solved above"));
+        }
+    }
     Ok(())
+}
+
+/// The clash summary as the status bar would show it.
+fn print_summary(sol: &convert64_core::solve::Solution) {
+    let s = sol.report.summary();
+    println!(
+        "solved: background {}, error {:.4}, {} clash{}{}",
+        sol.background
+            .map_or_else(|| "none".to_owned(), |b| b.to_string()),
+        s.total_error,
+        s.clashes,
+        if s.clashes == 1 { "" } else { "es" },
+        s.worst
+            .map(|c| format!(", worst cell {c}"))
+            .unwrap_or_default()
+    );
 }
 
 fn run_validate(path: &Path, as_json: bool, format: Option<FormatArg>) -> ExitCode {
