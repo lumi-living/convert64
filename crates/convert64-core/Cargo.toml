@@ -24,6 +24,7 @@ proptest = { workspace = true }
 insta = { workspace = true }
 image = { workspace = true }
 convert64-formats = { workspace = true }
+toml = { workspace = true }
 
 [lints]
 workspace = true

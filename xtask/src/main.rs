@@ -3,11 +3,15 @@
 //! - `png2c64-baselines --png2c64 <path>`: regenerate every fixture's png2c64 baseline
 //!   (`baseline.kla` or `baseline.art`, `baseline.png`) and the baseline section of its
 //!   README.
-//! - `regen-goldens [--accept --reason "..."]`: list golden-test changes; accept them
-//!   only with a reason, recorded in `fixtures/CHANGELOG.md`.
+//! - `regen-goldens [--report | --accept --reason "..."]`: list golden-test changes
+//!   (report mode, works on a dirty tree); accept them only with a reason, recorded in
+//!   `fixtures/CHANGELOG.md` (needs a clean tree).
+//! - `vice-check [--x64sc <path>]`: show each png2c64 baseline in VICE and compare the
+//!   capture with it (local only).
 
 mod baselines;
 mod goldens;
+mod vice;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -37,13 +41,33 @@ enum Command {
         #[arg(long)]
         only: Vec<String>,
     },
+    /// Show every png2c64 baseline in VICE and compare the capture with it.
+    ///
+    /// Needs VICE (`x64sc`) and the display PRGs from `png2c64-baselines`. Writes
+    /// `fixtures/<name>/vice.png` and, for fixtures that pass (≥ 99.5 % of pixels agree
+    /// and every cell shows only the baseline's colours), a line in the fixture README.
+    /// Local only: VICE is not on the CI runners.
+    ViceCheck {
+        /// The VICE C64 emulator binary.
+        #[arg(long, default_value = "x64sc")]
+        x64sc: PathBuf,
+        /// Only these fixtures (default: all).
+        #[arg(long)]
+        only: Vec<String>,
+    },
     /// List golden-test changes; accept them only with a reason.
     ///
-    /// Runs the golden harness, compares its candidates with the committed goldens and
-    /// lists what differs (exit 1 if anything does). With `--accept --reason "..."` it
-    /// replaces the goldens and appends one line per fixture to `fixtures/CHANGELOG.md`.
-    /// Refuses to run on a dirty git tree.
+    /// Report mode (`--report`, the default): runs the golden harness, compares its
+    /// candidates with the committed goldens and lists what differs (exit 1 if anything
+    /// does). It changes no committed file and works on a dirty tree.
+    ///
+    /// Accept mode (`--accept --reason "..."`): replaces the goldens and appends one line
+    /// per fixture to `fixtures/CHANGELOG.md`. Refuses a dirty git tree, because the
+    /// changelog records the commit that produced the goldens.
     RegenGoldens {
+        /// Only list what differs (the default); allowed on a dirty tree.
+        #[arg(long, conflicts_with = "accept")]
+        report: bool,
         /// Replace the goldens with the current output.
         #[arg(long, requires = "reason")]
         accept: bool,
@@ -65,7 +89,12 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Png2c64Baselines { png2c64, only } => baselines::run(&png2c64, &only),
-        Command::RegenGoldens { accept, reason } => goldens::run(accept, reason.as_deref()),
+        Command::ViceCheck { x64sc, only } => vice::run(&x64sc, &only),
+        Command::RegenGoldens {
+            report: _,
+            accept,
+            reason,
+        } => goldens::run(accept, reason.as_deref()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

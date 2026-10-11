@@ -1,103 +1,70 @@
-//! A minimal JSON writer for `--json` output.
-//!
-//! Hand-written because `serde_json` is not in the dependency list of `docs/TAD.md` §4;
-//! the output is small and flat. Replace with `serde_json` when E7 needs project files.
+//! `--json` output, serialised with `serde_json`.
 
 use crate::{Finding, Report};
 use convert64_core::Location;
-use convert64_core::mode::BlockKind;
-use std::fmt::Write as _;
+use serde::Serialize;
 
-/// `s` as a JSON string literal.
-fn string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if u32::from(c) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", u32::from(c));
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+#[derive(Serialize)]
+struct JsonReport<'a> {
+    file: &'a str,
+    format: &'static str,
+    mode: Option<&'static str>,
+    legal: bool,
+    violations: Vec<JsonFinding<'a>>,
 }
 
-fn block(kind: BlockKind) -> &'static str {
-    match kind {
-        BlockKind::Bitmap => "bitmap",
-        BlockKind::ScreenRam => "screen-ram",
-        BlockKind::ColourRam => "colour-ram",
-        BlockKind::Background => "background",
-        BlockKind::Charset => "charset",
-        BlockKind::Sprite => "sprite",
-    }
+#[derive(Serialize)]
+struct JsonFinding<'a> {
+    rule: u8,
+    location: JsonLocation,
+    message: &'a str,
 }
 
-fn location(l: Option<Location>) -> String {
-    match l {
-        None => r#"{"kind":"file"}"#.to_owned(),
-        Some(Location::Image) => r#"{"kind":"image"}"#.to_owned(),
-        Some(Location::Cell { cell }) => {
-            format!(r#"{{"kind":"cell","x":{},"y":{}}}"#, cell.x, cell.y)
-        }
-        Some(Location::Char { index }) => format!(r#"{{"kind":"char","index":{index}}}"#),
-        Some(Location::Sprite { index }) => format!(r#"{{"kind":"sprite","index":{index}}}"#),
-        Some(Location::Address { block: b, address }) => format!(
-            r#"{{"kind":"address","block":{},"address":{address}}}"#,
-            string(block(b))
-        ),
-    }
+/// Where a finding is: the file as a whole (`{"kind":"file"}`), or a validator
+/// [`Location`] (`{"kind":"cell","x":…,"y":…}`, `{"kind":"address",…}`, …).
+#[derive(Serialize)]
+#[serde(untagged)]
+enum JsonLocation {
+    File { kind: &'static str },
+    At(Location),
 }
 
-fn finding(f: &Finding) -> String {
-    format!(
-        r#"{{"rule":{},"location":{},"message":{}}}"#,
-        f.rule,
-        location(f.location),
-        string(&f.message)
-    )
-}
-
-/// The whole report as one JSON object.
+/// The whole report as pretty-printed JSON.
 pub(crate) fn report(r: &Report) -> String {
-    let violations: Vec<String> = r.findings.iter().map(finding).collect();
-    format!(
-        r#"{{"file":{},"format":{},"mode":{},"legal":{},"violations":[{}]}}"#,
-        string(&r.file),
-        string(r.format.name()),
-        r.mode.map_or_else(|| "null".to_owned(), string),
-        r.findings.is_empty(),
-        violations.join(",")
-    )
+    let json = JsonReport {
+        file: &r.file,
+        format: r.format.name(),
+        mode: r.mode,
+        legal: r.findings.is_empty(),
+        violations: r
+            .findings
+            .iter()
+            .map(|f: &Finding| JsonFinding {
+                rule: f.rule,
+                location: f
+                    .location
+                    .map_or(JsonLocation::File { kind: "file" }, JsonLocation::At),
+                message: &f.message,
+            })
+            .collect(),
+    };
+    serde_json::to_string_pretty(&json).unwrap_or_else(|e| unreachable!("plain data: {e}"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{location, string};
+    use super::JsonLocation;
     use convert64_core::Location;
     use convert64_core::model::CellPos;
 
     #[test]
-    fn escapes_strings() {
-        assert_eq!(string("a\"b\\c\nd\u{1}"), r#""a\"b\\c\nd\u0001""#);
-        assert_eq!(string("$1000-$1FFF"), r#""$1000-$1FFF""#);
-    }
-
-    #[test]
-    fn locations() {
-        assert_eq!(location(None), r#"{"kind":"file"}"#);
-        assert_eq!(
-            location(Some(Location::Cell {
-                cell: CellPos::new(3, 24)
-            })),
-            r#"{"kind":"cell","x":3,"y":24}"#
-        );
+    fn locations_serialise_flat() {
+        let file = serde_json::to_value(JsonLocation::File { kind: "file" }).expect("json");
+        assert_eq!(file, serde_json::json!({"kind": "file"}));
+        let cell = serde_json::to_value(JsonLocation::At(Location::Cell {
+            cell: CellPos::new(3, 24),
+        }))
+        .expect("json");
+        assert_eq!(cell, serde_json::json!({"kind": "cell", "x": 3, "y": 24}));
     }
 }
