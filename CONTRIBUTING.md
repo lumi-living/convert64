@@ -13,7 +13,7 @@ Thanks for looking. The project is early; the fastest way to help right now is *
 
 1. Open or pick an issue. Epics are labelled `epic`; pick a child issue, not the epic.
 2. Branch from `main`: `feat/<short-name>`, `fix/<short-name>`, `docs/<short-name>`.
-3. `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test` must pass; UI: `pnpm lint && pnpm check`.
+3. `cargo fmt`, `cargo clippy --workspace -- -D warnings`, `cargo test --workspace` must pass, and `convert64-core` + `convert64-app` must still build for `wasm32-unknown-unknown`.
 4. Solver changes must include or update a golden test in `fixtures/` (input PNG + expected `.kla`/`.art`/`.png`). Perceptual improvements are fine — update the golden file and say *why* in the PR.
 5. PR against `main`; fill in the template. One reviewer approval; squash-merge.
 

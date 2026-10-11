@@ -88,27 +88,28 @@ Each target pixel carries `(method, strength, phase, metric, allowed_set, fit_mo
 ## 4. Repository layout
 
 ```
-convert64/                      cargo workspace + pnpm workspace
+convert64/                      cargo workspace only (Rust 2024)
 ├─ crates/
-│  ├─ convert64-core/           pure Rust, no I/O: image model, compositor, attribute map,
-│  │                            solvers per mode, validators. Builds for wasm32 unchanged.
+│  ├─ convert64-core/           pure Rust, no I/O: document model (`Project`), command registry,
+│  │                            compositor, attribute map, solvers per mode, validators.
+│  │                            Builds for wasm32 unchanged.
 │  ├─ convert64-formats/        byte-exact readers/writers: Koala, Art Studio, raw bins, .spd,
 │  │                            CharPad-style bins, PRG stubs, asm/C emitters
 │  ├─ convert64-cli/            `convert64` binary (clap): convert / validate / export / batch
-│  └─ convert64-wasm/           wasm-bindgen facade (typed arrays in/out only)
-├─ app/                         Svelte 5 + TS + Vite UI; Canvas 2D preview; Tauri and browser
-├─ src-tauri/                   Tauri 2 shell (native dialogs, file watching)
+│  ├─ convert64-mcp/            MCP server (rmcp, stdio) over the command registry
+│  └─ convert64-app/            eframe/egui UI; native via `cargo run`, web via `trunk build`
 ├─ fixtures/                    source images + golden outputs for regression
 └─ docs/                        PDD, TAD, adr/, reference/, TOOLING, github/
 ```
 
-Crates: `image` (decode), own OKLab code, `rayon` behind a `parallel` feature, `serde` (project file), `clap`, `insta` (snapshots). No `std::fs` in core.
+Crates: `image` (decode), own OKLab code, `rayon` behind a `parallel` feature, `serde` (project file + command args), `clap`, `rmcp`, `eframe`/`egui`, `rfd` (file dialogs), `insta` + `proptest` (tests). No `std::fs` in core. See [ADR-005](adr/ADR-005-command-engine-with-cli-json-mcp.md) and [ADR-006](adr/ADR-006-egui-single-rust-workspace.md).
 
-## 5. Stack rationale (summary of ADR-001)
-- **Rust core:** first-class WASM, `rayon`, safety, one crate for CLI + desktop + web.
-- **Tauri 2 + Svelte 5:** native file access and small bundles; the fastest UI stack for a canvas-centric tool; the same UI ships as a browser build.
+## 5. Stack rationale (summary of ADR-001, ADR-005, ADR-006)
+- **Rust core:** first-class WASM, `rayon`, safety, one crate graph for app + CLI + MCP.
+- **Command registry (ADR-005):** every action is a named, serialisable command on `Project`; app, CLI and MCP are thin front-ends; undo/redo is command history.
+- **egui/eframe (ADR-006):** immediate mode fits "slider → re-solve → redraw"; one codebase for native and web; no IPC, no state mirroring, no second toolchain. CPU-only compositing.
 - **CLI parity:** the Makefile integration (`convert64 convert title.convert64 --mode koala -o build/title.kla`) is what makes this a pipeline tool.
-- Rejected: native Rust GUIs (immature widgets), Python app (perf/packaging), editor plugins (data model mismatch), Electron (size).
+- Rejected: Tauri + Svelte (polish not needed for a tool UI; dual execution paths), Python app (perf/packaging), editor plugins (data model mismatch), Electron (size).
 
 ## 6. Testing
 - Unit tests per solver stage; property tests that every solver output passes the validator.
@@ -119,4 +120,4 @@ Crates: `image` (decode), own OKLab code, `rayon` behind a `parallel` feature, `
 ## 7. Performance budgets
 - Full re-solve (MC bitmap, 16 bg search): < 100 ms native, < 300 ms WASM.
 - Interactive single pass while dragging: < 16 ms native, < 50 ms WASM.
-- UI renders preview via `putImageData` on a 320×200 canvas scaled with `image-rendering: pixelated`.
+- UI uploads the 320×200 preview as an egui texture with nearest-neighbour filtering and draws it at integer zoom with 2:1 pixel aspect where applicable; overlays (cell grid, pins/locks, clash heatmap) are painter calls over the same rect.

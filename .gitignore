@@ -3,18 +3,8 @@
 **/target
 Cargo.lock.bak
 
-# Node / pnpm
-node_modules
-.pnpm-store
-dist
-.vite
-
-# Tauri
-src-tauri/target
-src-tauri/gen
-
-# WASM build output
-crates/convert64-wasm/pkg
+# trunk web build output
+crates/convert64-app/dist
 
 # OS / editors
 .DS_Store

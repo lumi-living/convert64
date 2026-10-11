@@ -44,15 +44,15 @@ The key design choice: **dithering is a per-pixel attribute carried through comp
 
 ## Architecture
 
-- `crates/convert64-core` — pure Rust, no I/O: image model, compositor, attribute map, solvers, validators. Compiles natively and to WASM unchanged.
+Pure Rust, one cargo workspace:
+
+- `crates/convert64-core` — no I/O: document model, command registry, compositor, attribute map, solvers, validators. Compiles natively and to WASM unchanged.
 - `crates/convert64-formats` — byte-exact readers/writers and assembler emitters.
 - `crates/convert64-cli` — `convert64` binary for Makefiles and batch work (GUI and CLI have feature parity).
-- `crates/convert64-mcp` — MCP server exposing the same commands to AI agents (plan: [ADR-005](docs/adr/ADR-005-command-engine-with-cli-json-mcp.md)).
-- `crates/convert64-wasm` — thin `wasm-bindgen` facade.
-- `app/` — Svelte 5 + TypeScript + Vite UI, Canvas 2D preview.
-- `src-tauri/` — Tauri 2 desktop shell (macOS first); the same UI also runs in the browser.
+- `crates/convert64-mcp` — MCP server exposing the same commands to AI agents.
+- `crates/convert64-app` — egui/eframe UI; the same code builds the native app (macOS, Windows, Linux) and the browser version.
 
-Why this stack: [ADR-001](docs/adr/ADR-001-rust-core-with-tauri-svelte-ui.md). How UI, CLI and MCP share one engine: [ADR-005](docs/adr/ADR-005-command-engine-with-cli-json-mcp.md).
+Why one command engine behind app, CLI and MCP: [ADR-005](docs/adr/ADR-005-command-engine-with-cli-json-mcp.md). Why egui: [ADR-006](docs/adr/ADR-006-egui-single-rust-workspace.md).
 
 ## Roadmap
 
@@ -63,9 +63,9 @@ See [docs/PDD.md §Roadmap](docs/PDD.md#roadmap) and the [epics](docs/github/EPI
 Not yet — the workspace is being scaffolded (M0). Once it exists:
 
 ```sh
+cargo run -p convert64-app                  # desktop app
 cargo build --release -p convert64-cli      # CLI
-pnpm install && pnpm --filter app dev       # UI in the browser
-pnpm tauri dev                              # desktop app
+cd crates/convert64-app && trunk serve      # browser build
 ```
 
 ## Standing on the shoulders of
@@ -75,7 +75,7 @@ pnpm tauri dev                              # desktop app
 - [ArcPaint64](https://www.doussis.com/arcpaint64/) (arch0N) — the *Adaptive* vs *Force* colour-fitting vocabulary.
 - [C64CC](https://www.elder0010.com/projects/c64cc/) (Elder0010) — GUI + CLI parity for build pipelines; char-budget reuse.
 - [ALBERT](https://www.albertpixels.com/) — curves-based adjustment, luminance-weighted distance.
-- [PhotoCraft](https://github.com/storytold/photocraft) (storytold, MIT/Apache-2) — a Rust layered editor whose engine-first design (one command registry behind UI, CLI, JSON and MCP) and standalone `photocraft-psd` crate we borrow from.
+- [PhotoCraft](https://github.com/storytold/photocraft) (storytold, MIT/Apache-2) — a Rust/egui layered editor whose engine-first design (one command registry behind UI, CLI, JSON and MCP), egui widgets and standalone `photocraft-psd` crate we borrow from.
 - Palette values: Pepto (Philip Timmermann) and Colodore (pepto.de/projects/colorvic).
 
 First real user: the C64 tactical game *No Glory*.

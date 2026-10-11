@@ -9,10 +9,10 @@ Tracking board: **[Convert64 project](https://github.com/orgs/lumi-living/projec
 | [3](https://github.com/lumi-living/convert64/milestone/3) | **M2 Charsets & Sprites** | #10 #11 #12 #17 |
 | [4](https://github.com/lumi-living/convert64/milestone/4) | **M3 Scene features** | #13 #14 #15 #16 |
 
-Each epic is a GitHub issue labelled `epic`; child issues are GitHub sub-issues of the epic and say "Part of #N" in their body. Labels: `epic`, `core`, `formats`, `cli`, `ui`, `tauri`, `wasm`, `docs`, `fixtures`, `solver`, `mcp`, `release`, `bug`, `enhancement`, `good first issue`, `needs-vice-check` (exported file must be verified in VICE before merge).
+Each epic is a GitHub issue labelled `epic`; child issues are GitHub sub-issues of the epic and say "Part of #N" in their body. Labels: `epic`, `core`, `formats`, `cli`, `app`, `docs`, `fixtures`, `solver`, `mcp`, `release`, `bug`, `enhancement`, `good first issue`, `needs-vice-check` (exported file must be verified in VICE before merge).
 
 ## M0 — Scaffold
-- **E1 Workspace & CI** ([#1](https://github.com/lumi-living/convert64/issues/1), children #18–#25) — cargo + pnpm workspace, crate skeletons, CI (test on macOS/Linux/Windows, wasm32 build, clippy/fmt), Tauri dev shell boots with an empty window.
+- **E1 Workspace & CI** ([#1](https://github.com/lumi-living/convert64/issues/1), children #18–#25) — cargo workspace, crate skeletons (core, formats, cli, mcp, app), CI (test on macOS/Linux/Windows, wasm32 + `trunk` web build, clippy/fmt), eframe app boots with an empty window natively and in the browser. *Child issues written before ADR-006 may still say Tauri/pnpm — read them as egui/cargo.*
 - **E2 Image model & validator** ([#2](https://github.com/lumi-living/convert64/issues/2), children #26–#33) — palette object (Pepto/Colodore), mode definitions, C64 image model structs, validator for §1.3 rules, property test "any solver output validates".
 - **E3 Fixtures** ([#3](https://github.com/lumi-living/convert64/issues/3), children #34–#41) — 5 rights-clear source images, png2c64 baseline outputs, golden-test harness with `insta`.
 
@@ -21,7 +21,7 @@ Each epic is a GitHub issue labelled `epic`; child issues are GitHub sub-issues 
 - **E5 Bitmap solver** (#5) — MC + hi-res: bg search, per-cell brute force in OKLab, cell-clamped diffusion, ordered dithers with strength/phase, refinement, pins/locks, Force/Adaptive, allow/deny sets.
 - **E6 Formats v1** (#6) — Koala, Art Studio, raw bins, PRG display stub, PNG preview, asm emitters (KickAss/ACME/64tass/ca65), C header.
 - **E7 CLI** (#7) — `convert64 convert|validate|export|batch`, `.convert64` project file, Makefile example for No Glory.
-- **E8 UI v1** (#8) — Tauri/Svelte shell: open image, layer stack, per-layer recipe panel, cell pin/lock tool, clash overlay, palette presets, A/B, export dialog; browser build.
+- **E8 UI v1** (#8) — egui app: open image, layer stack, per-layer recipe panel, cell pin/lock tool, clash overlay, palette presets, A/B, export dialog; same build served as the browser version.
 - **E9 Release 0.1** (#9) — macOS bundle, README with screenshots, CSDb announcement draft.
 
 ## M2 — Charsets & sprites
