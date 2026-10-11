@@ -22,6 +22,7 @@ publish = false
 [workspace.dependencies]
 convert64-core = { path = "crates/convert64-core" }
 convert64-formats = { path = "crates/convert64-formats" }
+rayon = "1.12.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
