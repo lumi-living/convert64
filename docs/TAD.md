@@ -138,8 +138,9 @@ As built in E4 (2026-10-11): the compositor and attribute map ([ADR-002](adr/ADR
 - **Feather blur.** An exact Gaussian below σ = 4 super px, three box blurs (f64 prefix sums) above, and half resolution from σ = 4 target px (#98; it was above 8).
 - **Incremental updates.** `Compositor::update` diffs what each layer contributes. It recomposites the changed footprints aligned to whole cells, and returns the `CellSet` whose output changed, found as the fold writes the frame. `mask_change_cells` maps a layer-space dirty rect to cells before compositing. Since #98 it also keeps the fold of the layers below the lowest changed one, over the whole grid, while they stay unchanged. A nudge or a slider on layer *k* then re-blends only layers *k* and up. The cache is built when an update recomposites at least a quarter of the grid.
 - **Fold.** Colour blends bottom-up with per-blend-mode loops. Attributes are claimed bottom-up in the same loop: each layer whose effective alpha is above zero overwrites, so the top-most governs. Since #98 rasters are stored one plane per channel, and a target row's `n` super rows are blended layer by layer. Per row, a layer touches only the columns where it can contribute, because an all-zero source pixel, or a zero mask, leaves the backdrop unchanged.
-- **Performance (#98).** None of the following changes a bit of the output. The tests compare against the E4 code's fingerprints, in both sequential and parallel builds.
+- **Performance (#98).** None of the following changes the output. A canvas zero may change sign where a layer is skipped or stored onto a clear band, but such zeros compare equal and the frame does not change. This was checked three ways: the incremental-versus-full tests, the golden fixtures, and, during development, fingerprints of every composite against the E4 code in both sequential and parallel builds.
   - Layers are resampled in parallel, and each layer's colour and mask side by side.
+  - On a clear band, the bottom layer is stored straight in, because blending onto transparent gives the source in every mode.
   - Resampling works in chunks of rows, so the horizontal pass stays in cache.
   - The box blur runs on lanes of rows or columns at once.
   - A rebuilt layer reuses the buffers it replaced.
@@ -159,14 +160,34 @@ As built in E4 (2026-10-11): the compositor and attribute map ([ADR-002](adr/ADR
 - **The MCP server** is a small synchronous JSON-RPC implementation on `serde_json` rather than `rmcp`, because `rmcp` needs `tokio`, which is not listed above. Moving to `rmcp` changes the transport only.
 - **Regions live in canvas space**, not on the composite's super grid. They stay put when layers move and survive a mode switch.
 
-**Benchmark (#87)**
+**Benchmark (#87, #98)**
 - **Scene:** 10 full-canvas masked layers, σ = 8 feather, all blend modes, 4×.
 - **Command:**
   ```
   cargo test --release -p convert64-core [--features parallel] --test bench -- --ignored --nocapture
   ```
-  The `bench` workflow runs it on the macOS runner class.
-- **Results:** Warm recomposite with `parallel` on the macOS runner class (Apple M1 Virtual, 3 cores) is 4.37 ms multicolor and 9.50 ms hi-res, within the 10 ms budget. Single-threaded it is 18.5 / 26.2 ms. A cold composite takes 156 / 173 ms, and nudging one full-screen layer 15 / 28 ms; neither is within budget yet. `convert64-cli` and `convert64-mcp` build the core with `parallel`; the app does not, because it also targets wasm.
+  The `bench` workflow runs it on the macOS runner class and puts the table in the run summary.
+- **Rows.** Each row is one case, for multicolor and hi-res:
+  - **cold composite:** a new compositor composites the scene.
+  - **warm recomposite:** everything re-blended, every layer cached.
+  - **nudge one layer:** `update` after moving layer 4 by 0.25 px.
+  - **feather slider:** `update` after changing layer 7's feather.
+
+  A row reports the median of 7 (cold) or 21 runs, after one untimed run, the budget that applies to the build, and the fastest and slowest run. The runner is shared and noisy: a single run can be 2–5× the median.
+- **Before #98.** E4 measured these on the macOS runner class (Apple M1 Virtual, 3 cores), multicolor / hi-res:
+  - With `parallel`: warm recomposite 4.37 / 9.50 ms, cold composite 156 / 173 ms, nudge 15 / 28 ms.
+  - Single-threaded: warm recomposite 18.5 / 26.2 ms.
+- **After #98.** Three runs on the same runner class, 2026-10-12. Each figure is the median of the three run medians, with their range in brackets, multicolor / hi-res.
+
+  | case | `parallel` | single-threaded |
+  |---|---|---|
+  | cold composite | 19.6 [16.4–49.5] / 42.7 [33.4–49.1] ms | 49.0 [40.8–76.7] / 96.1 [77.7–124.8] ms |
+  | warm recomposite | 3.14 [2.87–5.01] / 6.64 [6.49–9.25] ms | 6.83 [6.26–11.08] / 11.8 [11.8–18.8] ms |
+  | nudge one layer | 4.85 [3.55–5.05] / 10.4 [7.53–12.0] ms | 8.22 [7.80–16.0] / 18.0 [15.0–21.7] ms |
+  | feather slider | 4.15 [2.38–6.51] / 7.27 [5.62–7.65] ms | 5.72 [4.69–9.01] / 13.2 [9.23–16.1] ms |
+
+  These meet #98's budgets: nudge ≤ 10 / 12 ms with `parallel`, cold composite ≤ 60 ms with `parallel`, and single-threaded warm ≤ 12 / 16 ms. The single-threaded hi-res warm recomposite went over in one run of three (18.8 ms), on a host where every row was slow.
+- **Builds.** `convert64-cli` and `convert64-mcp` build the core with `parallel`. The app does not, because it also targets wasm.
 
 ### 4.1 Image model (`convert64-core::model`)
 

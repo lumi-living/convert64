@@ -10,10 +10,12 @@
 //! lowest changed one, so a nudge or a slider re-blends only that layer and the layers
 //! above it (#98).
 //!
-//! Performance notes (#98), none of which changes a bit of the output:
+//! Performance notes (#98), none of which changes the output (a canvas zero may change
+//! sign, which compares equal and leaves the frame alone):
 //! - Rasters are stored one plane per channel, and the fold blends a target row's `n`
 //!   super rows layer by layer, with the attribute claim fused into the blend (each
-//!   visible layer overwrites, bottom-up), so the loops vectorise across pixels.
+//!   visible layer overwrites, bottom-up), so the loops vectorise across pixels. On a
+//!   clear band the bottom layer is stored, not blended.
 //! - Per row, a layer only touches the columns where it can contribute: a source pixel
 //!   that is all zero, or under a zero mask, leaves the backdrop unchanged.
 //! - Layers are resampled in parallel, colour beside mask; resampling works in chunks of
