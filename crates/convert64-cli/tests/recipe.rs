@@ -176,3 +176,32 @@ fn a_failing_command_exits_2_and_names_it() {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("command 3"));
 }
+
+#[test]
+fn recipe_apply_reports_clashes_as_json() {
+    let dir = temp("recipe-report");
+    write_source(&dir);
+    std::fs::write(dir.join("recipe.json"), RECIPE).unwrap();
+    let out = Process::new(env!("CARGO_BIN_EXE_convert64"))
+        .args(["recipe", "apply", "recipe.json", "--report", "--json"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    let json_start = text.find('{').expect("JSON after the summary line");
+    let v: serde_json::Value = serde_json::from_str(&text[json_start..]).unwrap();
+    assert!(v["summary"]["clashes"].is_u64());
+    assert!(v["error"].as_f64().unwrap() > 0.0);
+    assert!(v["worst"].as_array().unwrap().len() <= 10);
+    let plain = Process::new(env!("CARGO_BIN_EXE_convert64"))
+        .args(["recipe", "apply", "recipe.json", "--report"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&plain.stdout).contains("solved: background"));
+}

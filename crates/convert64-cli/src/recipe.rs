@@ -30,6 +30,7 @@ use convert64_core::layer::{Adjustments, Blend, Layer, Recipe, SourceImage, Tran
 use convert64_core::mask::{Combine, Gradient, Key, MaskRaster, PaintMode};
 use convert64_core::mode::Mode;
 use convert64_core::palette::linear_to_srgb8;
+use convert64_core::solve::{Solution, SolveMode, SolveOptions, Solver};
 use convert64_core::{Compositor, Editor, Project, SuperGrid};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -261,6 +262,10 @@ pub struct Session {
     editor: Editor,
     compositor: Compositor,
     base: PathBuf,
+    solver: Solver,
+    last: Option<Solution>,
+    /// Cells changed since the last solve (from the compositor's dirty-cell API).
+    dirty: convert64_core::CellSet,
 }
 
 impl Session {
@@ -311,6 +316,9 @@ impl Session {
             }),
             compositor: Compositor::new(grid),
             base: base.to_owned(),
+            solver: Solver::new(&convert64_core::Palette::default()),
+            last: None,
+            dirty: convert64_core::CellSet::all(),
         };
         for (i, cmd) in file.commands.into_iter().enumerate() {
             session
@@ -432,7 +440,59 @@ impl Session {
 
     fn composite(&mut self) {
         let p = self.editor.project();
-        self.compositor.update(&p.layers, &p.regions);
+        let changed = self.compositor.update(&p.layers, &p.regions);
+        self.dirty = self.dirty.union(changed);
+    }
+
+    /// Solves the picture: `full` searches backgrounds and refines; otherwise the
+    /// interactive fast path re-solves only cells changed since the last solve.
+    pub fn solve(&mut self, full: bool) -> &Solution {
+        self.composite();
+        let p = self.editor.project();
+        let mode = if full || self.last.is_none() {
+            SolveMode::Full
+        } else {
+            SolveMode::Interactive { dirty: self.dirty }
+        };
+        let opts = SolveOptions {
+            mode,
+            layer_origins: convert64_core::solve::dither::layer_origins(
+                self.compositor.grid(),
+                &p.layers,
+            ),
+            ..SolveOptions::default()
+        };
+        let sol = self.solver.solve(
+            self.compositor.frame(),
+            &p.steering,
+            self.last.as_ref(),
+            &opts,
+        );
+        self.dirty = convert64_core::CellSet::EMPTY;
+        self.last.insert(sol)
+    }
+
+    /// The last solution, if any.
+    pub fn solution(&self) -> Option<&Solution> {
+        self.last.as_ref()
+    }
+
+    /// The last solve's clash report as JSON: the status-bar summary and the `worst`
+    /// worst cells (wanted, chosen and dropped colours).
+    pub fn clash_report_json(&self, worst: usize) -> Option<serde_json::Value> {
+        let sol = self.last.as_ref()?;
+        let order = sol.report.worst_first();
+        let cells: Vec<_> = order
+            .iter()
+            .take(worst)
+            .filter_map(|c| sol.report.cell(*c))
+            .collect();
+        Some(serde_json::json!({
+            "background": sol.background,
+            "error": sol.error,
+            "summary": sol.report.summary(),
+            "worst": cells,
+        }))
     }
 
     /// Layer `layer`'s evaluated mask (sources and modifiers applied) on the whole super

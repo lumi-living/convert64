@@ -165,8 +165,34 @@ impl fmt::Display for ColourIndex {
 
 /// A set of [`ColourIndex`] values, stored as a 16-bit mask. Used for "which colours
 /// does this cell use" questions without allocating.
+///
+/// Serialised as a list of colour indices (`[0, 1, 6]`); deserialising also accepts the
+/// bit mask as an integer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(into = "Vec<ColourIndex>", from = "ColourSetData")]
 pub struct ColourSet(u16);
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ColourSetData {
+    List(Vec<ColourIndex>),
+    Bits(u16),
+}
+
+impl From<ColourSetData> for ColourSet {
+    fn from(d: ColourSetData) -> Self {
+        match d {
+            ColourSetData::List(v) => v.into_iter().collect(),
+            ColourSetData::Bits(b) => Self(b),
+        }
+    }
+}
+
+impl From<ColourSet> for Vec<ColourIndex> {
+    fn from(s: ColourSet) -> Self {
+        s.iter().collect()
+    }
+}
 
 impl ColourSet {
     /// The empty set.

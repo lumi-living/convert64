@@ -14,6 +14,7 @@
 use super::dither::{Locked, PassResult, pass};
 use super::input::{Input, InputOptions};
 use super::metric::MetricTables;
+use super::report::ClashReport;
 use super::steering::Steering;
 use crate::colour::{ColourIndex, ColourSet};
 use crate::composite::TargetFrame;
@@ -95,6 +96,8 @@ pub struct Solution {
     pub error: f32,
     /// Refinement rounds that changed the result.
     pub refined: u8,
+    /// Wanted vs chosen vs dropped colours per cell.
+    pub report: ClashReport,
 }
 
 /// The solver for one palette. Its metric tables belong to that palette: the preview
@@ -295,6 +298,7 @@ impl Solver {
                     .then(bg_key(ca.bg).cmp(&bg_key(cb.bg)))
             })
             .expect("at least one candidate");
+        let report = ClashReport::build(input, &self.tables, &result.out, winner.bg);
         let indexed = IndexedBitmap::new(input.grid.target(), result.out, winner.bg)
             .expect("the output has the target's size");
         let image = BitmapImage::encode(&indexed).expect("every cell keeps to its set");
@@ -304,6 +308,7 @@ impl Solver {
             sets,
             error: result.error,
             refined,
+            report,
         }
     }
 }
@@ -657,6 +662,50 @@ mod tests {
                 },
             );
             assert_eq!(validate(&alone.image.to_indexed()), Ok(()));
+        }
+    }
+
+    #[test]
+    fn clash_report_sums_match_the_solve() {
+        let s = Solver::new(&Palette::pepto_pal());
+        for mode in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
+            for kind in [DitherKind::FloydSteinberg, DitherKind::Bayer8] {
+                let sol = s.solve(
+                    &frame(mode, kind),
+                    &Steering::new(),
+                    None,
+                    &SolveOptions::default(),
+                );
+                let sum = sol.report.summary();
+                let rel = (sum.total_error - sol.error).abs() / sol.error;
+                assert!(
+                    rel < 1e-4,
+                    "{mode} {kind:?}: {} vs {}",
+                    sum.total_error,
+                    sol.error
+                );
+                assert_eq!(sol.report.cells.len(), 1000);
+                for c in &sol.report.cells {
+                    // Chosen colours are exactly what the cell shows.
+                    assert_eq!(
+                        c.chosen,
+                        sol.image.to_indexed().cell_colours(c.cell).union(
+                            sol.background
+                                .map_or(ColourSet::EMPTY, |b| ColourSet::EMPTY.with(b))
+                        )
+                    );
+                    assert!(
+                        c.dropped
+                            .iter()
+                            .all(|d| !c.chosen.contains(d.colour) && d.cost >= -1e-6)
+                    );
+                }
+                // Worst-first is a permutation, and stepping wraps.
+                let order = sol.report.worst_first();
+                assert_eq!(order.len(), 1000);
+                assert_eq!(sol.report.step(order[999], true), Some(order[0]));
+                assert_eq!(sol.report.step(order[0], false), Some(order[999]));
+            }
         }
     }
 
