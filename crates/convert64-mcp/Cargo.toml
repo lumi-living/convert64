@@ -1,0 +1,20 @@
+[package]
+name = "convert64-mcp"
+description = "MCP server exposing the convert64 command registry over stdio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+convert64-core = { workspace = true }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "convert64-mcp"
+path = "src/main.rs"
