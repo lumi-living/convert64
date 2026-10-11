@@ -18,7 +18,7 @@ pub mod rule;
 pub mod validate;
 
 pub use colour::{ColourIndex, ColourSet, InvalidColourIndex};
-pub use composite::{AttributeMap, Canvas, Compositor};
+pub use composite::{AttributeMap, Canvas, Compositor, TargetFrame};
 pub use geom::{CellSet, PxRect, SuperGrid, Vec2};
 pub use layer::{Blend, Layer, Recipe, SourceImage, Transform};
 pub use mask::{Mask, MaskRaster};

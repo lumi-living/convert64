@@ -10,12 +10,13 @@
 
 mod attr;
 mod blend;
+mod frame;
 mod resample;
 
 pub use attr::{AttrSource, AttributeMap, TargetAttr, debug_colour};
+pub use frame::TargetFrame;
 
 use crate::geom::{CellSet, PxRect, SuperGrid, Vec2};
-use crate::layer::Recipe;
 use crate::layer::{AdjustCache, Adjustments, Blend, Layer, SourceImage, Transform};
 use crate::mask::{HALF_RES_FEATHER, Modifiers, SnapToCells};
 use crate::region::Region;
@@ -145,6 +146,7 @@ struct LayerCache {
 }
 
 /// One layer ready to blend.
+#[derive(Clone)]
 struct Blendable {
     /// Attribute-map code: the layer's index in the stack.
     code: u16,
@@ -156,7 +158,28 @@ struct Blendable {
     mask: Option<Arc<Vec<f32>>>,
 }
 
-/// Composites layers onto a [`SuperGrid`], caching each layer's resampled raster.
+impl Blendable {
+    /// Whether blending `other` instead of `self` gives the same pixels and attributes.
+    fn same(&self, other: &Self) -> bool {
+        self.code == other.code
+            && self.strength == other.strength
+            && self.blend == other.blend
+            && self.opacity == other.opacity
+            && Arc::ptr_eq(&self.raster, &other.raster)
+            && match (&self.mask, &other.mask) {
+                (None, None) => true,
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            }
+    }
+}
+
+/// Composites layers onto a [`SuperGrid`], caching each layer's resampled raster, and
+/// keeps the [`TargetFrame`] the solver reads.
+///
+/// [`Self::composite_with`] recomposites everything; [`Self::update`] recomposites only
+/// the cells an edit can have touched and reports the cells whose output changed, so
+/// the solver can re-solve locally (ADR-002, ADR-008).
 #[derive(Debug)]
 pub struct Compositor {
     grid: SuperGrid,
@@ -164,10 +187,21 @@ pub struct Compositor {
     canvas: Canvas,
     /// The super-grid attribute map of the last composite.
     attrs: Vec<AttrPx>,
-    /// Recipes of the last composite's layers and regions, for the attribute map.
-    recipes: (Vec<Recipe>, Vec<Recipe>),
+    /// The last composite on the target grid.
+    frame: TargetFrame,
+    /// What was blended last time, per layer index (`None`: hidden), and the regions.
+    last: Option<(Vec<Option<Blendable>>, Vec<Region>)>,
     resamples: u64,
     mask_evals: u64,
+}
+
+impl std::fmt::Debug for Blendable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Blendable")
+            .field("code", &self.code)
+            .field("rect", &self.raster.rect)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Compositor {
@@ -178,7 +212,8 @@ impl Compositor {
             caches: Vec::new(),
             canvas: Canvas::new(grid),
             attrs: vec![AttrPx::EMPTY; grid_len(grid)],
-            recipes: (Vec::new(), Vec::new()),
+            frame: TargetFrame::empty(grid),
+            last: None,
             resamples: 0,
             mask_evals: 0,
         }
@@ -193,15 +228,22 @@ impl Compositor {
     /// next composite.
     pub fn set_grid(&mut self, grid: SuperGrid) {
         if grid != self.grid {
-            self.grid = grid;
-            self.canvas = Canvas::new(grid);
-            self.attrs = vec![AttrPx::EMPTY; grid_len(grid)];
+            *self = Self {
+                resamples: self.resamples,
+                mask_evals: self.mask_evals,
+                ..Self::new(grid)
+            };
         }
     }
 
     /// The last composite.
     pub const fn canvas(&self) -> &Canvas {
         &self.canvas
+    }
+
+    /// The last composite on the target grid: colour, coverage and attribute map.
+    pub const fn frame(&self) -> &TargetFrame {
+        &self.frame
     }
 
     /// How many layer rasters have been (re)built; for tests and diagnostics.
@@ -225,12 +267,7 @@ impl Compositor {
 
     /// The attribute map of the last composite, box-filtered to the target grid.
     pub fn attribute_map(&self) -> AttributeMap {
-        AttributeMap::reduce(
-            self.grid,
-            &self.attrs,
-            self.recipes.0.clone(),
-            self.recipes.1.clone(),
-        )
+        self.frame.attributes().clone()
     }
 
     /// Composites `layers` (bottom first) with no regions and returns the canvas.
@@ -239,32 +276,106 @@ impl Compositor {
     }
 
     /// Composites `layers` (bottom first), then applies `regions` (in order) to the
-    /// attribute map, and returns the canvas.
+    /// attribute map, and returns the canvas. Everything is recomposited.
     pub fn composite_with(&mut self, layers: &[Layer], regions: &[Region]) -> &Canvas {
-        let stack = self.prepare(layers);
-        self.recipes = (
-            layers.iter().map(|l| *l.recipe()).collect(),
-            regions.iter().map(|r| *r.recipe()).collect(),
-        );
-        let grid = self.grid;
-        fold(
-            &mut self.canvas,
-            &mut self.attrs,
-            &stack,
-            regions,
-            grid.bounds(),
-        );
+        let state = self.prepare(layers);
+        self.recomposite(layers, regions, state, self.grid.bounds());
         &self.canvas
     }
 
+    /// Brings the composite up to date with `layers` and `regions`, recompositing only
+    /// what changed since the last call, and returns the target cells whose output
+    /// (colour, coverage or attributes) changed. The first call composites everything.
+    pub fn update(&mut self, layers: &[Layer], regions: &[Region]) -> CellSet {
+        let state = self.prepare(layers);
+        let grid = self.grid;
+        let area = match &self.last {
+            None => grid.bounds(),
+            Some((old, old_regions)) => {
+                let mut r = PxRect::EMPTY;
+                for i in 0..old.len().max(state.len()) {
+                    let (a, b) = (
+                        old.get(i).and_then(Option::as_ref),
+                        state.get(i).and_then(Option::as_ref),
+                    );
+                    let same = match (a, b) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) => a.same(b),
+                        _ => false,
+                    };
+                    if !same {
+                        for x in [a, b].into_iter().flatten() {
+                            r = r.union(x.raster.rect);
+                        }
+                    }
+                }
+                if old_regions.as_slice() != regions {
+                    for reg in old_regions.iter().chain(regions) {
+                        r = r.union(region_rect(grid, reg));
+                    }
+                }
+                r
+            }
+        };
+        if area.is_empty() {
+            self.last = Some((state, regions.to_vec()));
+            return CellSet::EMPTY;
+        }
+        // Whole cells, so every target pixel in the area is re-filtered from fresh
+        // super pixels and the diff below sees whole cells.
+        let (cw, ch) = grid.cell_size_super();
+        let area = PxRect::new(
+            area.x0 / cw * cw,
+            area.y0 / ch * ch,
+            area.x1.div_ceil(cw) * cw,
+            area.y1.div_ceil(ch) * ch,
+        )
+        .intersect(grid.bounds());
+        let before = self.frame.clone();
+        self.recomposite(layers, regions, state, area);
+        let n = u32::from(grid.n());
+        let target = PxRect::new(area.x0 / n, area.y0 / n, area.x1 / n, area.y1 / n);
+        self.frame
+            .differing(&before, target)
+            .into_iter()
+            .filter_map(|(x, y)| grid.target_px_to_cell(x, y))
+            .collect()
+    }
+
+    /// Folds `state` into the canvas over `area` and re-filters that part of the frame.
+    fn recomposite(
+        &mut self,
+        layers: &[Layer],
+        regions: &[Region],
+        state: Vec<Option<Blendable>>,
+        area: PxRect,
+    ) {
+        let stack: Vec<Blendable> = state.iter().flatten().cloned().collect();
+        fold(&mut self.canvas, &mut self.attrs, &stack, regions, area);
+        self.frame.attributes_mut().set_recipes(
+            layers.iter().map(|l| *l.recipe()).collect(),
+            regions.iter().map(|r| *r.recipe()).collect(),
+        );
+        let n = u32::from(self.grid.n());
+        let target = PxRect::new(
+            area.x0 / n,
+            area.y0 / n,
+            area.x1.div_ceil(n),
+            area.y1.div_ceil(n),
+        );
+        self.frame.reduce_rect(&self.canvas, &self.attrs, target);
+        self.last = Some((state, regions.to_vec()));
+    }
+
     /// Brings every visible layer's raster and evaluated mask up to date.
-    fn prepare(&mut self, layers: &[Layer]) -> Vec<Blendable> {
+    fn prepare(&mut self, layers: &[Layer]) -> Vec<Option<Blendable>> {
         assert!(layers.len() < 0x8000, "at most 32767 layers");
         self.caches.resize_with(layers.len(), LayerCache::default);
         let grid = self.grid;
         let mut stack = Vec::with_capacity(layers.len());
         for (index, (layer, cache)) in layers.iter().zip(&mut self.caches).enumerate() {
             if !layer.visible() || layer.opacity() <= 0.0 {
+                stack.push(None);
                 continue;
             }
             let fresh = match &cache.raster {
@@ -306,17 +417,52 @@ impl Compositor {
                     None
                 }
             };
-            stack.push(Blendable {
+            stack.push(Some(Blendable {
                 code: u16::try_from(index).expect("checked above"),
                 strength: layer.recipe().strength(),
                 blend: layer.blend(),
                 opacity: layer.opacity(),
                 raster: Arc::clone(raster),
                 mask,
-            });
+            }));
         }
         stack
     }
+}
+
+/// The super pixels a region's mask can affect: the bounding box of its non-zero
+/// values, grown by one canvas pixel for bilinear sampling.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "coordinates are clamped to the super grid"
+)]
+fn region_rect(grid: SuperGrid, region: &Region) -> PxRect {
+    let m = region.mask();
+    let (w, h) = m.size();
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+    for y in 0..h {
+        for x in 0..w {
+            if m.get(x, y) > 0.0 {
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x + 1);
+                y1 = y1.max(y + 1);
+            }
+        }
+    }
+    if x1 <= x0 {
+        return PxRect::EMPTY;
+    }
+    let a = grid.canvas_to_super(Vec2::new(x0 as f32 - 1.0, y0 as f32 - 1.0));
+    let b = grid.canvas_to_super(Vec2::new(x1 as f32 + 1.0, y1 as f32 + 1.0));
+    let (gw, gh) = grid.size();
+    PxRect::new(
+        a.x.max(0.0).floor() as u32,
+        a.y.max(0.0).floor() as u32,
+        (b.x.ceil().max(0.0) as u32).min(gw),
+        (b.y.ceil().max(0.0) as u32).min(gh),
+    )
 }
 
 fn grid_len(grid: SuperGrid) -> usize {
@@ -503,6 +649,7 @@ mod tests {
     use crate::geom::Vec2;
     use crate::mask::{Mask, MaskRaster, Modifiers, SnapToCells};
     use crate::mode::Mode;
+    use crate::region::Region;
     use proptest::prelude::*;
 
     fn solid(w: u32, h: u32, rgba: [f32; 4]) -> Arc<SourceImage> {
@@ -1073,6 +1220,139 @@ mod tests {
             inside,
             debug_colour(crate::layer::DitherKind::FloydSteinberg, 1.0)
         );
+    }
+
+    /// A three-layer scene with a mask, adjustments and a non-Normal blend.
+    fn edit_scene() -> Vec<Layer> {
+        use crate::layer::DitherKind;
+        let mut a = Layer::new("bg", solid(320, 200, [0.1, 0.2, 0.3, 1.0]));
+        a.set_recipe(crate::layer::Recipe::with_method(DitherKind::Bayer8, 0.7).unwrap());
+        let b = at(
+            masked(
+                solid(60, 40, [0.9, 0.5, 0.2, 0.8]),
+                half_mask(60, 40, 30),
+                Modifiers::feathered(1.5).unwrap(),
+            ),
+            40.25,
+            30.5,
+        );
+        let mut c = at(
+            Layer::new("c", solid(50, 50, [0.3, 0.9, 0.4, 1.0])),
+            200.0,
+            100.0,
+        );
+        c.set_blend(Blend::Screen);
+        vec![a, b, c]
+    }
+
+    fn full(g: SuperGrid, layers: &[Layer], regions: &[Region]) -> (Canvas, TargetFrame) {
+        let mut c = Compositor::new(g);
+        let canvas = c.composite_with(layers, regions).clone();
+        (canvas, c.frame().clone())
+    }
+
+    fn sky_region() -> Region {
+        let vals: Vec<f32> = (0..320 * 200)
+            .map(|i| {
+                if (i % 320) < 64 && (i / 320) < 48 {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        Region::new(
+            "sky",
+            MaskRaster::from_values(320, 200, vals).unwrap(),
+            crate::layer::Recipe::with_method(crate::layer::DitherKind::None, 0.3).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn incremental_update_equals_a_full_recomposite() {
+        for mode in [Mode::HiresBitmap, Mode::MulticolorBitmap] {
+            let g = grid(mode, 2);
+            let mut layers = edit_scene();
+            let mut regions: Vec<Region> = Vec::new();
+            let mut c = Compositor::new(g);
+            assert_eq!(
+                c.update(&layers, &regions),
+                CellSet::all(),
+                "{mode}: first update"
+            );
+            type Edit = fn(&mut Vec<Layer>, &mut Vec<Region>);
+            let edits: [(&str, Edit); 9] = [
+                ("nudge", |l, _| {
+                    let t = l[1].transform().nudged(Vec2::new(0.25, -0.5)).unwrap();
+                    l[1].set_transform(t);
+                }),
+                ("opacity", |l, _| l[2].set_opacity(0.4).unwrap()),
+                ("blend", |l, _| l[2].set_blend(Blend::Overlay)),
+                ("feather", |l, _| {
+                    l[1].mask_mut()
+                        .unwrap()
+                        .set_modifiers(Modifiers::feathered(4.0).unwrap());
+                }),
+                ("hide", |l, _| l[2].set_visible(false)),
+                ("recipe", |l, _| {
+                    l[0].set_recipe(
+                        crate::layer::Recipe::with_method(crate::layer::DitherKind::Atkinson, 0.2)
+                            .unwrap(),
+                    );
+                }),
+                ("region", |_, r| r.push(sky_region())),
+                ("show", |l, _| l[2].set_visible(true)),
+                ("remove region", |_, r| r.clear()),
+            ];
+            for (name, edit) in edits {
+                let (_, before) = full(g, &layers, &regions);
+                edit(&mut layers, &mut regions);
+                let reported = c.update(&layers, &regions);
+                let (canvas, frame) = full(g, &layers, &regions);
+                assert!(
+                    c.canvas() == &canvas,
+                    "{mode} {name}: canvas differs from a full recomposite"
+                );
+                assert!(
+                    c.frame() == &frame,
+                    "{mode} {name}: frame differs from a full recomposite"
+                );
+                // Exactly the cells whose output changed.
+                let (tw, th) = g.target_size();
+                let changed: CellSet = before
+                    .differing(&frame, PxRect::of_size(tw, th))
+                    .into_iter()
+                    .filter_map(|(x, y)| g.target_px_to_cell(x, y))
+                    .collect();
+                assert_eq!(reported, changed, "{mode} {name}");
+                assert!(
+                    !reported.is_empty(),
+                    "{mode} {name}: the edit changed nothing?"
+                );
+            }
+            assert!(
+                c.update(&layers, &regions).is_empty(),
+                "{mode}: no edit, no cells"
+            );
+        }
+    }
+
+    #[test]
+    fn a_nudge_stays_inside_the_old_and_new_footprints() {
+        let g = grid(Mode::MulticolorBitmap, 4);
+        let mut layers = edit_scene();
+        let mut c = Compositor::new(g);
+        c.update(&layers, &[]);
+        let old = c.last.as_ref().unwrap().0[1].as_ref().unwrap().raster.rect;
+        let t = layers[1].transform().nudged(Vec2::new(0.25, 0.0)).unwrap();
+        layers[1].set_transform(t);
+        let cells = c.update(&layers, &[]);
+        let new = c.last.as_ref().unwrap().0[1].as_ref().unwrap().raster.rect;
+        let footprint = CellSet::from_super_rect(g, old.union(new));
+        assert!(!cells.is_empty());
+        assert_eq!(cells.intersection(footprint), cells);
+        assert!(cells.len() < footprint.len() + 1);
     }
 
     proptest! {
