@@ -1,0 +1,211 @@
+# Convert64 — UX foundations
+
+**Status:** v0.1 (2026-10-11). Design starting point for E8/E12. Decisions here are conventions to follow until a usability test says otherwise; anything marked *open* is a question for the first build.
+
+Sources: a survey of Photoshop, Affinity Photo 2, PhotoCraft, GIMP 3, Krita 5, Aseprite, Pixelmator Pro and Photopea; of C64/retro converters (retropixels+, png2c64, ArcPaint64, C64CC, ALBERT, Multipaint, Disco Volante, convertron3000, retropic) and dithering tools (Ditherista, Dither Boy, Dither Machine, Photoshop/GIMP/Aseprite indexed-colour dialogs); and egui 0.36 capabilities. Key references are listed at the end.
+
+---
+
+## 1. Who it is for and what they do
+
+| User | Comes with | Wants to leave with | Session shape |
+|---|---|---|---|
+| **Game developer** (first user: *No Glory*) | painted or AI-generated concept art, a Makefile | a legal `.kla`/charset/sprite file that builds into the game, reproducibly | 10–30 min per asset, revisits the same project many times |
+| **Scene graphician** | a reference image and strong opinions about dithering | a conversion good enough to finish by hand in Pixcen/Multipaint/ArcPaint64 | 1–2 h, iterative, keyboard-heavy |
+| **Demo coder** | any picture | bytes in assembler-ready form, fast | 5 min, CLI-first, GUI for checking |
+
+The core loop is the same for all three: **open → see the C64 result immediately → steer (layers, recipes, pins) → check clashes → export → come back later and re-run**. The UI exists to make "steer" precise and "check" instant. It is not a paint program.
+
+## 2. Design principles
+
+1. **The C64 result is the hero.** The preview is the largest thing on screen, at integer zoom, in hardware colours, never themed. Everything else is chrome around it.
+2. **Every change is live; nothing is modal.** No "Convert" button, no apply dialogs. Dragging a slider re-solves (fast path while dragging, full search on release). The one exception is a *pause* toggle for slow modes.
+3. **Legality is visible, quantified and navigable.** Clash count in the status bar at all times; a heatmap overlay on demand; jump-to-worst-cell. Users never discover illegality at export.
+4. **Steering survives re-solving.** Pins, locks and region overrides are part of the project, not edits of the output. Re-run from scratch and they still apply.
+5. **Borrow every convention that has one.** Photoshop-family layout, shortcuts and layer-row anatomy. Invent only where no tool has gone: per-layer recipes, cell steering, clash UX.
+6. **Keyboard-first, mouse-complete.** Everything has a shortcut; nothing *needs* one.
+7. **Same words everywhere.** One glossary (§9) used in UI, CLI flags, MCP tool names and docs.
+
+## 3. Layout
+
+Consensus across the surveyed editors: menu bar → options/tool bar → canvas in the centre → a right dock with properties above layers → status bar. Convert64 follows it, minus the left tool palette (a converter has four tools, which fit in the toolbar).
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│ Menu bar  File  Edit  View  Layer  Export  Help        ◐ theme │ 26 px
+├────────────────────────────────────────────────────────────────┤
+│ Toolbar   [Mode ▾ Multicolor] │ ✥ Nudge  📌 Pin  🔒 Lock  🖌 Region │ ⊞ Grid  ▦ Clashes  ◫ Compare ▾ │ zoom ▾ │ 36 px
+├──────────────────────────────────────────┬─────────────────────┤
+│                                          │ RECIPE / ADJUSTMENTS│
+│                                          │  (selected layer)   │
+│              PREVIEW                     │  collapsible groups │
+│         320×200 at 2×/3×/4×              │                     │ right dock
+│         border, overlays                 ├─────────────────────┤ 320 px
+│                                          │ LAYERS              │ (260–420)
+│                                          │  stack, drag-reorder│
+│                                          │  + ─ ⧉ 🗑 at bottom │
+├──────────────────────────────────────────┴─────────────────────┤
+│ Status  200% │ cell 17,9 │ 3 colours+bg │ 12 clashes (worst 31,4) │ solve 38 ms │ Koala, 10 003 B │ 22 px
+└────────────────────────────────────────────────────────────────┘
+```
+
+- **Right dock, two stacked groups**, Recipe above Layers (Photoshop, PhotoCraft, Photopea, GIMP all put properties above layers). Default 320 px, resizable 260–420. Collapses to an icon rail; `Tab` hides it (Photoshop/GIMP/Krita convention), `Shift+Tab` hides only the dock.
+- **Preview** gets all remaining space; shows a transparency checkerboard behind the C64 border so the frame reads in both themes.
+- **No docking framework in v1.** Fixed `egui::Panel`s with persisted sizes; egui_tiles only if users ask to rearrange.
+- Below ~900 px wide the dock starts collapsed; below ~700 px (browser on a laptop half-screen) the Layers group becomes a tab inside the Recipe group.
+
+## 4. The preview
+
+| Aspect | Decision | Why |
+|---|---|---|
+| Zoom | Integer only: 1×, 2×, 3×, 4×, 6×, 8×; `Cmd/Ctrl +/−`, `Cmd/Ctrl 0` fit, `Cmd/Ctrl 1` 100 %; wheel zooms around the cursor | nearest-neighbour texture; fractional zoom blurs pixels |
+| Aspect | 2:1 pixels in multicolor modes rendered as 2 device px per C64 px at 1×; optional "PAL 0.936" correction toggle, off by default | what the solver optimised, then what a TV would show |
+| Pan | `Space`+drag, middle-drag, scroll | universal |
+| Border | 32 px-equivalent border in the chosen border colour, toggle `View › Border` | judging edge colours against the frame is part of the craft |
+| Overlays (toggle, stack) | **Grid** `Cmd/Ctrl '` (cell grid 8×8 / 4×8), **Clashes** `Shift+C` (heatmap: per-cell error, colour-starved cells outlined), **Pins & locks** (always on when the tool is active, else faint), **Attribute map** (debug: which recipe governs each pixel), **Source ghost** (source at 30 % over the result) | all painter calls over the same rect; overlays use semantic theme colours, never palette colours |
+| Compare | **Hold `\`** shows the source (Photoshop/Pixelmator hold-to-see-original); **Split** draggable divider (Affinity/GIMP); **A/B flicker** at 2 Hz; **Side by side** source \| result with linked cursor | three habits from three editor families; cheap to offer all |
+| Cursor readout | status bar: cursor cell x,y; the cell's colour set; its error; its pin/lock state | the "why is this cell like that" question answered without a dialog |
+
+The preview is **never themed**: hardware palette on a border, overlays in semantic colours chosen per theme for contrast against any of the 16 palette colours (test: readable over Black, White, Yellow and Blue).
+
+## 5. Layers panel
+
+Row anatomy, left to right (editor consensus): **eye** · **thumbnail** (source, 32 px) · **name** + one-line subtitle · **recipe badge** · **lock**.
+
+- Subtitle shows the recipe in short form: `FS 80% · OKLab · Force`. This is the one departure from editors, and it is the point of the product: you see at a glance how each layer will be dithered.
+- Blend mode and opacity controls sit above the list (Photoshop/Krita/Photopea). Mask thumbnail appears beside the layer thumbnail with a chain icon when a mask exists.
+- Bottom icon strip: **New from file**, **Duplicate**, **Add mask**, **Group** (v2), **Delete**. Drag to reorder (`egui_dnd`), drop a file onto the panel or the preview to add a layer, double-click to rename, `Cmd/Ctrl J` duplicate, `Delete`/`Backspace` delete with undo.
+- Selecting a layer selects what the Recipe panel edits and what nudging moves. Multi-select applies recipe changes to all (v2).
+- Empty state (no layers): one sentence and one button — *"Drop an image here or open one. Convert64 shows the C64 result as soon as it loads."* **Open image…**
+
+## 6. Recipe & adjustments panel (the form)
+
+This is the only real form in the app, so it follows form conventions strictly: visible labels, slider + numeric field on one row, per-group **Reset**, no modal apply.
+
+Collapsible groups, in this order, all open by default on a tall window:
+
+1. **Position** — X, Y as `DragValue` with 0.25 px step (sub-pixel), Scale %, Flip H/V toggles. Arrow keys nudge 1 px, `Shift+arrow` 10 px, `Alt+arrow` 0.25 px (the sub-pixel nudge is the feature; it gets the modifier that no editor uses).
+2. **Adjustments** — Brightness, Contrast, Saturation, Hue as sliders −100…100 with numeric entry; Levels (black/gamma/white) and Curves (own widget over a histogram). Reset per widget via double-click on the label (PhotoCraft-style scrubby label) and a group Reset button.
+3. **Mask** — Feather radius (px, slider 0–32), Invert, Paint… (enters region tool).
+4. **Dither recipe** — Method (segmented by family: *None · Ordered · Diffusion · Noise*, then a dropdown within the family), Strength 0–100 % slider, Pattern phase (*Screen-locked / Layer-locked*), Orientation (*Auto / Vertical-biased*). Grouping by family follows Ditherista's lesson: a flat list of 30 methods is unusable.
+5. **Colour fitting** — Metric (*OKLab · CIELAB · Pepto YUV · RGB*), Fitting (*Adaptive / Force*, segmented, with one-line help: "Adaptive lets the solver reassign cell colours for the lowest error. Force keeps this layer's colours even if neighbours pay."), Luma-pair bias toggle, **Allowed colours**: the 16 palette swatches as toggles (all on by default; a disabled swatch is drawn hatched, not hidden).
+
+Controls: `Slider` for bounded values with the value field editable on click; `DragValue` for integers and unbounded numbers; a changed-from-default value shows a small dot before its label (Lightroom/Affinity convention) so the user can see what they touched. Changes commit to undo on drag end, never per frame.
+
+## 7. Cell tools (steering)
+
+Three tools in the toolbar, all operate on the preview, all additive to the project, all undoable:
+
+| Tool | Key | Click | Drag | Feedback |
+|---|---|---|---|---|
+| **Pin** colour set | `P` | pin the cell's current colour set; `Alt`-click to pin one colour only (from the status-bar swatch or the palette strip) | pin a rectangle of cells | pinned cells get a small pin glyph at top-right; status bar: "Pinned 7 cells" |
+| **Lock** cell | `L` | freeze the cell's output exactly as solved | lock a rectangle | lock glyph; locked cells are skipped by re-solve and drawn with a faint hatch when Clashes overlay is on |
+| **Region** override | `R` | — | paint a soft mask that carries its own recipe (dither/metric/allowed colours) | region shows as a tinted outline; its recipe editor opens in the Recipe panel as a pseudo-layer |
+| **Nudge** (move) | `V` | select layer under cursor | move the layer in sub-pixel steps | X/Y readout in status bar; the solver re-runs on drop |
+
+Right-click on any cell: a small menu — *Pin colours · Lock · Clear pin/lock · Jump to worst neighbour · Copy cell colours*. `Cmd/Ctrl Shift ]` jumps to the next-worst cell, `[` to the previous.
+
+## 8. Keyboard shortcuts
+
+`Cmd` on macOS, `Ctrl` elsewhere; `Option`↔`Alt`. Menu items show the accelerator via `ctx.format_shortcut`. Shortcuts are suppressed while a text field has focus.
+
+| Action | Shortcut | Convention source |
+|---|---|---|
+| Open image / project | `Cmd O` | all |
+| Save project / Save as | `Cmd S` / `Shift Cmd S` | all |
+| Export | `Cmd E` | Pixelmator, GIMP (Photoshop uses `Shift Cmd Alt W`; too obscure) |
+| Export again, same settings | `Shift Cmd E` | our own; the Makefile case |
+| Undo / Redo | `Cmd Z` / `Shift Cmd Z` (also `Cmd Y`) | all; `Cmd Y` for GIMP users |
+| Zoom in / out / fit / 100 % | `Cmd =` / `Cmd −` / `Cmd 0` / `Cmd 1` | Photoshop family; bare `1` also = 100 % for Krita/Aseprite users |
+| Pan | `Space` + drag, `H` | all |
+| New layer from file / Duplicate / Delete | `Shift Cmd N` / `Cmd J` / `Delete` | Photoshop family |
+| Toggle layer visibility | `Cmd ,` ; click eye | Photoshop/Pixelmator |
+| Nudge 1 / 10 / 0.25 px | `←↑↓→` / `Shift+` / `Alt+` | editors / ours |
+| Tools: Nudge, Pin, Lock, Region | `V`, `P`, `L`, `R` | single-key tools (Photoshop style) |
+| Grid / Clashes / Border | `Cmd '` / `Shift C` / `Cmd B` | Affinity/Pixelmator for grid; ours |
+| Hold-to-compare source | `\` (hold) | Photoshop |
+| Split / A-B / side-by-side | `,` cycles | Affinity's "split view cycle" |
+| Next / previous worst cell | `Shift Cmd ]` / `[` | ours |
+| Hide dock / hide all chrome | `Shift Tab` / `Tab` | GIMP / Photoshop |
+| Theme | menu only | — |
+| Command palette | `Cmd K` (v2) | PhotoCraft, every modern tool |
+
+Deliberately avoided: `Ctrl+Y` as the only redo (GIMP-only), `1`–`6` zoom levels (Aseprite-only), Pixelmator's Save-As/Duplicate swap.
+
+## 9. Words
+
+One glossary, used identically in the app, `convert64 --help`, MCP tool names and the docs.
+
+| Term | Means | Not |
+|---|---|---|
+| **Layer** | a source image with its own transform, mask, adjustments and recipe | "image", "picture" |
+| **Recipe** | the per-layer dithering + colour-fitting settings | "settings", "profile" |
+| **Solve** / re-solve | run the constraint solver; produces the result | "convert", "render", "process" (CLI keeps `convert` as the verb for files) |
+| **Result** | the solved C64 image shown in the preview | "output", "preview" (preview is the *view* of the result) |
+| **Cell** | a 4×8 or 8×8 colour cell | "block", "tile", "char" (tile and char are reserved for charset mode) |
+| **Clash** | a cell that needed more colours than the mode allows; the solver dropped some | "error", "conflict" |
+| **Pin** | require colours in a cell | "force" (Force is the fitting mode) |
+| **Lock** | freeze a cell's result | "freeze" |
+| **Region** | a painted area with its own recipe | "selection", "mask" (mask is per-layer alpha) |
+| **Adaptive / Force** | fitting modes (ArcPaint64's terms, kept so scene users recognise them) | "soft / hard" |
+| **Mode** | the C64 graphics mode (Multicolor, Hi-res, Charset…) | "format" (format is the export file type) |
+
+Copy rules (ux-writing defaults): sentence case; verb-first buttons (**Open image…**, **Export Koala**, **Reset group**); no "please", no exclamation marks; errors name cause and remedy and keep the user's input; numerals; units on every number (`px`, `%`, `ms`, `B`).
+
+Sample strings:
+
+- Status, healthy: `200 % · cell 17,9 · 3 colours + bg · 0 clashes · solve 38 ms`
+- Status, with clashes: `… · 12 clashes, worst at 31,4 · …` (the "worst at" is a link; click jumps there)
+- Export success (toast, 3 s): `Exported title.kla (10 003 B) and title.asm`
+- Export blocked: `Can't export: 12 cells still exceed 4 colours. Use Clashes to find them, or let the solver resolve them (Layer › Fitting › Adaptive).`
+- Slow solve: `Solving charset budget… 2 of 16 backgrounds` with a **Pause** button, never a spinner alone.
+- Project has unsaved steering: `Unsaved pins and locks` in the title bar, Photoshop's asterisk convention.
+- Empty state: see §5.
+- Tooltip, Force: `Keep this layer's colours even if neighbours pay`
+- Tooltip, Adaptive: `Let the solver reassign cell colours for the lowest error`
+
+## 10. Visual language
+
+- **Theme:** egui `Visuals::light()` / `dark()`, system-following, override in View (ADR-007). Dark is what most users of this category expect (Photoshop, Affinity, Krita, PhotoCraft Pro default dark); light must be equally finished.
+- **Semantic colours** (one `Theme` struct, two instances): `clash` (red family), `pin` (amber), `lock` (blue-grey), `region` (teal), `selection` (accent), `grid` (40 % of fg), each verified for ≥3:1 against the dock surface and visible over the four test palette colours (Black, White, Yellow, Blue).
+- **Type:** egui default proportional at 13 px for panels, 12 px status bar, monospace for numbers in the status bar and any address/size (`tabular_nums` equivalent: monospace). Headings 14 px semibold. No display type.
+- **Density:** 8 px spacing unit; rows 24 px in the layer list; 28 px touch targets minimum on controls (egui default), toolbar buttons 28×28 with icon + optional label.
+- **Icons:** Material Symbols, glyph map in ADR-007, 16 px in rows and toolbar, 20 px for the four tools. Icon + text on every toolbar button except tools (icon + tooltip + key).
+- **Motion:** none beyond egui's 100 ms panel animations; the A/B flicker is the only "animation" and it is a feature.
+
+## 11. States and feedback
+
+| State | Treatment |
+|---|---|
+| No project | empty state in the preview area (§5); dock shows disabled groups, not hidden ones |
+| Loading an image | the preview shows the source immediately, then the first solve (<100 ms) replaces it |
+| Solving (fast path) | nothing visible; results arrive within a frame or two |
+| Solving (full search, >200 ms) | status bar progress text + Pause; preview keeps the last result, slightly desaturated |
+| Clashes present | count in status bar in `clash` colour; Clashes overlay suggested once via a dismissible hint, never auto-enabled |
+| Export | file dialog (native) / download (browser); toast on success; blocked export explains and links to the fix |
+| Undo | every steering action, recipe change and layer edit; slider drags coalesced; `Edit › History` list (v2) |
+| Error in a file | inline in the status bar + a details popover with the byte offset; never a modal unless data would be lost |
+
+## 12. Accessibility
+
+- Every control reachable by `Tab`; custom-painted areas (preview, curves, palette swatches) are focusable and report a `WidgetInfo`.
+- Arrow keys work inside the preview for cell navigation when a tool is active; `Enter` applies the tool to the focused cell.
+- Contrast ≥4.5:1 for text, ≥3:1 for controls and overlays, in both themes.
+- Native AccessKit on desktop; the browser build has no screen-reader support (egui limitation) — stated in the README, not hidden.
+- No information by colour alone: clashes also get an outline and a count; pins/locks have glyphs; disabled swatches are hatched.
+
+## 13. What we deliberately do not build
+
+Brushes, pencil, fill, selection marquees, text, transforms beyond translate/scale/flip (ADR-003). The export step hands off to pixel editors; a later "Open in…" button is the right integration, not an in-app pencil.
+
+## 14. Open questions for the first build (E8)
+
+1. Right dock split ratio Recipe : Layers — start 60 : 40, make the divider draggable, see where users leave it.
+2. Does the sub-pixel nudge need a visible 0.25 px grid, or is the status-bar readout enough?
+3. Clash heatmap: per-cell error magnitude (continuous) or clash/no-clash (binary) by default?
+4. Should "Region" be a pseudo-layer in the Layers list (discoverable) or stay a tool-only object (simpler)?
+5. First usability test: 5 users (2 game devs, 2 graphicians, 1 coder), tasks: convert the `title` fixture with a smooth sky; pin the soldier's face colours; export a Koala that loads in VICE. Measure time-to-first-legal-export and whether anyone finds Clashes without a hint.
+
+## References
+
+Editor conventions: Adobe Photoshop shortcuts (helpx.adobe.com/photoshop/using/keyboard-shortcuts-web.html); Affinity Photo 2 interface and shortcuts (affinity.help/photo2); PhotoCraft README and `docs/ui-parity.md` (github.com/storytold/photocraft); GIMP 3 docs (docs.gimp.org/3.0); Krita 5 docs (docs.krita.org); Aseprite docs (github.com/aseprite/docs); Pixelmator Pro user guide (support.pixelmator.com); Photopea learn pages (photopea.com/learn). Converters: retropixels+ write-up (theoasisbbs.com), png2c64.app, ArcPaint64 (csdb.dk/release/?id=260323), C64CC (elder0010.com/projects/c64cc), ALBERT (albertpixels.com), Disco Volante (generationamiga.com, 2026-07), convertron3000 and retropic (GitHub), Ditherista (github.com/robertkist/ditherista), Dither Boy (digitalproduction.com), Photoshop Indexed Color (learn.adafruit.com), GIMP convert-to-indexed docs. egui: docs.rs/egui 0.36 (Panel, Slider, KeyboardShortcut, TextureOptions, ThemePreference), eframe_template, rfd wasm support table, egui accessibility.md.
