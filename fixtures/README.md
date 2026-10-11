@@ -11,4 +11,6 @@ Source images for golden tests. Each folder holds `source.png` (the input) and a
 | [photo](photo/) | multicolor bitmap | dynamic range, natural texture, metric choice |
 | [lineart](lineart/) | hi-res bitmap | two colours per cell, thin strokes |
 
+Palette test files (`.vpl`) live in [palettes/](palettes/), generated from the reference table.
+
 Rules for new fixtures are in [CONTRIBUTING.md](../CONTRIBUTING.md): rights-clear only, PNG, ≤ 2 MB, 16:10, and a README. Keep `fixtures/_local/` (git-ignored) for anything you cannot redistribute.

@@ -23,6 +23,8 @@ Thanks for looking. The project is early; the fastest way to help right now is *
 
 We need source images whose rights allow redistribution under MIT (your own art, CC0, or explicitly permitted). Put them in `fixtures/<name>/source.png` with a `README.md` stating origin and licence. Useful kinds: portraits, terrain tile sheets, title paintings, gradients, photos, high-contrast line art.
 
+Every file in the repository, test data included, must be MIT-compatible: no GPL or CC-BY-SA material, not even in tests.
+
 ## Format references
 
 Byte layouts live in [`docs/reference/file-formats.md`](docs/reference/file-formats.md). When in doubt, test-load the file in VICE or the original editor and attach a screenshot to the PR.

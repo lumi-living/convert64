@@ -173,38 +173,47 @@ mod tests {
     use super::VplError;
     use crate::palette::Palette;
 
-    const PEPTO_PAL: &[u8] = include_bytes!("../../../../fixtures/palettes/vice/pepto-pal.vpl");
-    const PEPTO_NTSC: &[u8] = include_bytes!("../../../../fixtures/palettes/vice/pepto-ntsc.vpl");
-    const COLODORE: &[u8] = include_bytes!("../../../../fixtures/palettes/vice/colodore.vpl");
+    // MIT-licensed fixtures generated from docs/reference/vic-ii-constraints.md §1 (and,
+    // for b47-s70, from this crate's Colodore port); see fixtures/palettes/README.md.
+    const PEPTO_PAL: &[u8] = include_bytes!("../../../../fixtures/palettes/pepto-pal.vpl");
+    const PEPTO_NTSC: &[u8] = include_bytes!("../../../../fixtures/palettes/pepto-ntsc.vpl");
+    const COLODORE_DEFAULT: &[u8] =
+        include_bytes!("../../../../fixtures/palettes/colodore-default.vpl");
+    const COLODORE_B47_S70: &[u8] =
+        include_bytes!("../../../../fixtures/palettes/colodore-b47-s70.vpl");
 
     fn lines(entries: usize) -> String {
         (0..entries).map(|i| format!("{i:02x} 00 ff\n")).collect()
     }
 
     #[test]
-    fn parses_stock_vice_pepto_pal() {
+    fn parses_pepto_pal_fixture() {
+        // Lowercase two-digit values, a comment and a blank line per entry.
         let p = Palette::from_vpl(PEPTO_PAL).expect("pepto-pal.vpl parses");
         assert_eq!(p.name(), "Pepto (PAL)");
-        assert_eq!(p.rgb_table(), Palette::pepto_pal().rgb_table());
         assert_eq!(p, Palette::pepto_pal());
     }
 
     #[test]
-    fn parses_stock_vice_pepto_ntsc() {
-        // This file writes black as "0  0  0" and brown as "42 38 0".
+    fn parses_pepto_ntsc_fixture() {
+        // Uppercase values without leading zeros ("0  0  0", "42  38  0"), double
+        // spaces, and a dither nybble on some lines.
         let p = Palette::from_vpl(PEPTO_NTSC).expect("pepto-ntsc.vpl parses");
         assert_eq!(p.name(), "Pepto (NTSC)");
-        assert_eq!(p.rgb_table(), Palette::pepto_ntsc().rgb_table());
+        assert_eq!(p, Palette::pepto_ntsc());
     }
 
     #[test]
-    fn parses_stock_vice_colodore() {
-        let p = Palette::from_vpl(COLODORE).expect("colodore.vpl parses");
-        assert_eq!(p.name(), "Colodore (PAL)");
-        assert_eq!(
-            p.rgb_table(),
-            Palette::colodore(47.0, 100.0, 70.0).rgb_table()
-        );
+    fn parses_colodore_default_fixture() {
+        // Compact: comment then entry, no blank lines.
+        let p = Palette::from_vpl(COLODORE_DEFAULT).expect("colodore-default.vpl parses");
+        assert_eq!(p, Palette::colodore(50.0, 100.0, 50.0));
+    }
+
+    #[test]
+    fn generator_reproduces_the_colodore_b47_s70_fixture() {
+        let p = Palette::from_vpl(COLODORE_B47_S70).expect("colodore-b47-s70.vpl parses");
+        assert_eq!(p, Palette::colodore(47.0, 100.0, 70.0));
     }
 
     #[test]

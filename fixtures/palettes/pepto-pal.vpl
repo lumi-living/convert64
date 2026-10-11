@@ -1,19 +1,17 @@
 #
-# VICE Palette file
+# VICE palette file (.vpl) for Convert64 tests.
 #
-# Syntax:
-# Red Green Blue
+# Source: docs/reference/vic-ii-constraints.md section 1, column "Pepto (PAL)".
+# Licence: MIT, see LICENSE in the repository root.
 #
 # TYPE:VICII
 # NAME:Pepto (PAL)
-
-# this palette was calculated for PAL according to http://www.pepto.de/projects/colorvic/
 
 # Black
 00 00 00
 
 # White
-FF FF FF
+ff ff ff
 
 # Red
 68 37 2b
@@ -42,10 +40,10 @@ b8 c7 6f
 # Light Red
 9a 67 59
 
-# Dark Gray
+# Dark Grey
 44 44 44
 
-# Medium Gray
+# Medium Grey
 6c 6c 6c
 
 # Light Green
@@ -54,5 +52,5 @@ b8 c7 6f
 # Light Blue
 6c 5e b5
 
-# Light Gray
+# Light Grey
 95 95 95
