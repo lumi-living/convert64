@@ -5,8 +5,10 @@
 //! [`par`] for the single-source iterator helpers.
 
 pub mod colour;
+pub mod mode;
 pub mod palette;
 pub mod par;
 
 pub use colour::{ColourIndex, InvalidColourIndex};
+pub use mode::{Mode, ModeSpec};
 pub use palette::Palette;

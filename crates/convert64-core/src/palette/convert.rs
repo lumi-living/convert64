@@ -149,8 +149,10 @@ mod tests {
     /// (`conversions.js`, `lin_sRGB` → `lin_sRGB_to_XYZ` → `XYZ_to_OKLab` /
     /// `D65_to_D50` + `XYZ_to_Lab`), printed to 9 decimals.
     /// Columns: sRGB bytes, linear sRGB, OKLab, CIELAB (D50).
-    #[expect(clippy::type_complexity, reason = "test table")]
-    const CSS_ORACLE: [([u8; 3], [f64; 3], [f64; 3], [f64; 3]); 9] = [
+    /// (sRGB bytes, linear sRGB, OKLab, CIELAB D50)
+    type Row = ([u8; 3], [f64; 3], [f64; 3], [f64; 3]);
+
+    const CSS_ORACLE: [Row; 9] = [
         (
             [255, 0, 0],
             [1.0, 0.0, 0.0],
