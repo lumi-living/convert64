@@ -109,6 +109,8 @@ most converters lack.
 | `gamma` | 0.1–8 | perceptual lift before thresholding (png2c64 default 1.5); we dither in linear light so the default here is 1.0 |
 | `error_clamp` | per-channel | diffusion only |
 | `serpentine` | bool | diffusion only |
+| `cell_clamp` | bool, default true | diffusion only: drop error at cell borders (TAD §3.1). `false` = png2c64 behaviour, error flows into neighbours |
+| `max_luma_diff` | 0–8 luma levels | restrict any mix to colour pairs within N levels (`colour-pairs.md`); 0 = same-luma only, the PAL-blend-safe setting; 8 = off |
 | `phase` | Screen / Layer | ordered only |
 | `orientation` | Auto / Vertical-biased | picks the 2:1 or square form of a matrix |
 
