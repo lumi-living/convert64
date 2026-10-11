@@ -172,6 +172,14 @@ impl ColourSet {
     /// The empty set.
     pub const EMPTY: Self = Self(0);
 
+    /// All 16 colours.
+    pub const ALL: Self = Self(0xFFFF);
+
+    /// The set as a bit mask, bit `i` for colour `i`.
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
+
     /// Adds `c`.
     pub const fn insert(&mut self, c: ColourIndex) {
         self.0 |= 1 << c.0;
