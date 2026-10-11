@@ -189,6 +189,64 @@ As built in E4 (2026-10-11): the compositor and attribute map ([ADR-002](adr/ADR
   These meet #98's budgets: nudge ≤ 10 / 12 ms with `parallel`, cold composite ≤ 60 ms with `parallel`, and single-threaded warm ≤ 12 / 16 ms. The single-threaded hi-res warm recomposite went over in one run of three (18.8 ms), on a host where every row was slow.
 - **Builds.** `convert64-cli` and `convert64-mcp` build the core with `parallel`. The app does not, because it also targets wasm.
 
+As built in E5 (2026-10-12): the bitmap solver (§3.1, §3.4–§3.5), in `convert64-core::solve`. #5 tracks the PRs.
+
+**Types**
+- **`metric`.**
+  - `Metric { OkLab, CieLab, PeptoYuv { luma_weight }, Rgb }` measures squared, comparably scaled distances.
+  - `MetricTables` holds the active `Palette`'s 16 colours in every space, so a new palette means new tables and a re-solve (§3.4).
+  - Cube roots and the sRGB transfer use basic IEEE operations only, so coordinates are identical on every platform.
+- **`input::Input`.** Each target pixel's `TargetFrame` colour in its recipe's metric coordinates, with its coverage weight and recipe. Per cell, a 16 × P table of weighted distances, built once per solve and shared by every background.
+- **Search and dither.**
+  - `cell::search` and `Constraints` (candidates, required) are the cell search.
+  - `ordered::{threshold, ordered_pick, blue_noise}` handle ordered and noise patterns.
+  - `dither::{pass, Locked, layer_origins}` is the dithering pass.
+- **Top level.** `Solver { tables }` with `solve(&TargetFrame, &Steering, previous, &SolveOptions) -> Solution { image: BitmapImage, background, sets, error, report: ClashReport }`. Options are `SolveMode { Full, Interactive { dirty } }` and `Background { Auto, Fixed }`.
+- **Steering.** `Steering { pins: Pin { colours, full }, locks, allow, deny }` lives in `Project` and is changed by the `cell_pin`, `cell_lock`, `cell_clear`, `cell_allow` and `cell_deny` commands.
+- **Report.** `ClashReport`, `CellReport` and `Summary`.
+- **Outside `solve`.** `BitmapImage::encode` packs a solved `IndexedBitmap` into bytes with a deterministic slot order. `convert64-formats` gains the Koala and Art Studio writers (`BitmapFormat::write`). `convert64 convert` runs the whole pipeline from the CLI.
+
+**Search cost model**
+- A multicolor cell has 455 sets (background + 3 of 15); a hi-res cell has 120 pairs.
+- Each set costs one min-and-sum over the cell's 32 or 64 pixels, using a running per-pixel minimum through the nested picks.
+- The search is branch-and-bound: a subtree is skipped when Σ min(current, best colour still available) cannot beat the best set. The result is exactly the brute-force minimum, with the same tie order.
+- A full multicolor solve evaluates 16 backgrounds × 1000 cells in that search, then dithers and refines three finalists.
+- **Timings** on the CI macOS runner (`macos-latest`, Apple M1 Virtual, 3 cores), release, `tests/solve_bench.rs`, portrait (multicolor) and lineart (hi-res) fixtures at 4×:
+
+| Case | Full, `parallel` | Full, single-threaded | Interactive after a 0.25 px nudge, `parallel` |
+|---|---|---|---|
+| Multicolor, Floyd–Steinberg | 82.2 ms | 93.8 ms | 9.3 ms |
+| Multicolor, Bayer 4 | 28.4 ms | 54.5 ms | 7.2 ms |
+| Hi-res, Floyd–Steinberg | 23.6 ms | 24.8 ms | 10.2 ms |
+| Hi-res, Bayer 4 | 11.1 ms | 12.2 ms | 9.8–18.0 ms (noisy runner) |
+
+**Quality bar:** OKLab MSE against the source, ours vs png2c64 (`thresholds.toml`):
+
+| Fixture | Ours | png2c64 |
+|---|---|---|
+| portrait | 0.0035 | 0.0106 |
+| terrain | 0.0044 | 0.0180 |
+| title | 0.0044 | 0.0232 |
+| gradient | 0.0137 | 0.0189 |
+| photo | 0.0098 | 0.0285 |
+| lineart | 0.0030 | 0.0167 |
+
+**Deviations from §3.1 and ADR-002**
+- **The background search has two stages.** Every background is scored by the search alone (sum of the cells' best set errors), and only the best three are dithered and refined. §3.1 dithers every background; the search score ranks backgrounds the same way at a fifth of the cost.
+- **The solver works on the target grid** (the `TargetFrame`), with coverage as each pixel's weight, not on the super grid. That is the pipeline order in §2: target resample, then solve.
+- **Error diffusion runs in the pixel's metric coordinates**, not linear RGB.
+  - Error flows only between pixels of the same metric and from diffusion pixels to diffusion pixels.
+  - It is scaled by the sender's strength.
+  - It is dropped when it would enter a cell whose set lacks the colour it pulls towards: the nearest of all 16 to the receiver's target plus the error.
+- **Ordered dithering is positional.** A pixel picks between the two nearest colours of its cell's set by projection onto the segment between them. Strength pulls the threshold towards ½, so strength 0 is exactly nearest-in-set.
+- **Refinement keeps its best round.** It re-picks sets from colour plus received error, at most twice, stops when nothing changes, and keeps the best-scoring round.
+- **Force** counts 8× in the set search, and a colour outside the layer's four most-wanted (its own histogram) costs it a fixed 1.0 more. Dithering and the reported error use true distances.
+- **`allowed_set` is a per-cell filter**: the intersection over the cell's covered pixels. The multicolor background is exempt, being global.
+- **The same-luma pair bias is signed.** Positive values penalise pairs (the brief's flicker concern); negative values reward them (§1.1's "blend cleanly"). The default is 0.
+- **Locks keep the previous background**, because a locked multicolor cell may show it. Interactive mode is implemented as "lock every clean cell".
+- **`Orientation` gains `TwoToOne`** next to `VerticalBiased` (the line variant).
+- **The writers came early.** The Koala and Art Studio writers are E6 scope (#6), pulled forward for `convert64 convert`.
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.
@@ -214,7 +272,7 @@ The public data model every front-end, solver, reader and writer shares. Constru
 ## 6. Testing
 - Unit tests per solver stage; property tests that every solver output passes the validator.
 - Golden fixtures: `fixtures/<name>/source.png` + expected `.kla/.art/.png`; compared bit-exact for formats, perceptually (OKLab MSE threshold) for solver output.
-- Baseline comparison against png2c64 output on the same fixtures.
+- Baseline comparison against png2c64 output on the same fixtures: each solver golden requires our OKLab MSE against the source within png2c64's + 2 % (`png2c64_mse_vs_source` in `thresholds.toml`).
 - Composite scenes (`fixtures/composite/<scene>/scene.toml`): layered scenes rendered by the compositor and compared with `expected_1x.png` (target-grid composite, alpha = coverage) and `expected_attr.png` (attribute-map debug render), within ±2 per channel; regenerated through `cargo xtask regen-goldens` like every golden.
 - Acceptance: exported files load and display in VICE `x64sc`.
 - **VICE check (local, not in CI).** `cargo xtask vice-check` shows every png2c64 baseline in VICE `x64sc`. It builds a display PRG from the committed `baseline.kla`/`.art` with `convert64-formats::prg` ([file-formats.md](reference/file-formats.md#koala--art-studio-display-prg-convert64_formatsprgdisplay_prg)) and checks the PRG carries the baseline byte for byte, so it needs only VICE and a clone. VICE runs PAL, with the Pepto palette at neutral colour settings and no CRT filter. The task crops the 320×200 window from the 384×272 exit screenshot and maps every pixel to its nearest palette index. It requires **≥ 99.5 %** agreement with the decoded baseline and every cell showing only the baseline cell's colours. It writes `fixtures/<name>/vice.png` and a line in the fixture README. Tests in `xtask/src/vice.rs` run the comparison in CI on the committed captures, with negative controls: another fixture's baseline and a capture shifted one pixel right or down must fail. VICE is not installed on the CI runners, so run it locally whenever baselines change: `cargo xtask png2c64-baselines --png2c64 <bin>`, then `cargo xtask vice-check`. Never lower the bar to make a fixture pass.
