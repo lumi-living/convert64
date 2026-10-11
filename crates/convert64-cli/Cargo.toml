@@ -13,6 +13,11 @@ publish.workspace = true
 convert64-core = { workspace = true }
 convert64-formats = { workspace = true }
 clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

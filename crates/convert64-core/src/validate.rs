@@ -27,9 +27,10 @@ use std::fmt;
 pub enum Location {
     /// The image as a whole.
     Image,
-    /// A cell (character position).
+    /// A cell (character position). Serialises flat: `{"kind":"cell","x":…,"y":…}`.
     Cell {
         /// The cell.
+        #[serde(flatten)]
         cell: CellPos,
     },
     /// A char in the character set.

@@ -89,22 +89,38 @@ fn json_output_for_legal_and_illegal_files() {
     let legal = temp_file("json-legal.kla", &koala(0x6000, 6));
     let out = convert64(&["validate", "--json", legal.to_str().expect("utf-8 path")]);
     assert_eq!(out.status.code(), Some(0));
-    let text = stdout(&out);
-    assert!(
-        text.contains(
-            r#""format":"Koala","mode":"multicolor bitmap","legal":true,"violations":[]"#
-        ),
-        "{text}"
-    );
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid JSON");
+    assert_eq!(v["format"], "Koala");
+    assert_eq!(v["mode"], "multicolor bitmap");
+    assert_eq!(v["legal"], true);
+    assert_eq!(v["violations"], serde_json::json!([]));
 
     let bad = temp_file("json-bad.kla", &koala(0x6100, 0));
     let out = convert64(&["validate", "--json", bad.to_str().expect("utf-8 path")]);
     assert_eq!(out.status.code(), Some(1));
-    let text = stdout(&out);
-    assert!(text.contains(r#""legal":false"#), "{text}");
-    assert!(
-        text.contains(r#"{"rule":5,"location":{"kind":"address","block":"bitmap","address":24832},"message":"bitmap must start on a $2000-byte boundary"}"#),
-        "{text}"
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid JSON");
+    assert_eq!(v["legal"], false);
+    assert_eq!(
+        v["violations"][0],
+        serde_json::json!({
+            "rule": 5,
+            "location": {"kind": "address", "block": "bitmap", "address": 24832},
+            "message": "bitmap must start on a $2000-byte boundary"
+        })
+    );
+}
+
+#[test]
+fn json_output_for_an_unreadable_background_names_the_file() {
+    let bad = temp_file("json-bg.kla", &koala(0x6000, 0x1F));
+    let out = convert64(&["validate", "--json", bad.to_str().expect("utf-8 path")]);
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid JSON");
+    assert_eq!(v["mode"], serde_json::Value::Null);
+    assert_eq!(v["violations"][0]["rule"], 2);
+    assert_eq!(
+        v["violations"][0]["location"],
+        serde_json::json!({"kind": "file"})
     );
 }
 

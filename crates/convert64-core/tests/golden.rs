@@ -187,17 +187,55 @@ fn oklab_mse(a: &[Rgb8], b: &[Rgb8]) -> f64 {
     sum / a.len() as f64
 }
 
-/// `mse_vs_golden_max` from `fixtures/<name>/thresholds.toml`. Only `key = number` lines
-/// and `#` comments are supported; the file is small on purpose.
-fn threshold(name: &str) -> f64 {
+/// `fixtures/<name>/thresholds.toml`.
+///
+/// ```toml
+/// # comments are allowed
+/// mse_vs_golden_max = 0.0002          # default for every mode of this fixture
+///
+/// [mode.multicolor-bitmap]            # optional per-mode override
+/// mse_vs_golden_max = 0.0003
+/// ```
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Thresholds {
+    mse_vs_golden_max: f64,
+    #[serde(default)]
+    mode: std::collections::BTreeMap<String, ModeThresholds>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModeThresholds {
+    mse_vs_golden_max: f64,
+}
+
+impl Thresholds {
+    fn parse(text: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(text)
+    }
+
+    /// The threshold for `mode`: its override if there is one, else the default.
+    fn mse_vs_golden_max(&self, mode: &str) -> f64 {
+        self.mode
+            .get(mode)
+            .map_or(self.mse_vs_golden_max, |m| m.mse_vs_golden_max)
+    }
+}
+
+fn threshold(name: &str, mode: &str) -> f64 {
     let path = fixture_dir(name).join("thresholds.toml");
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    text.lines()
-        .map(|l| l.split('#').next().unwrap_or("").trim())
-        .filter_map(|l| l.split_once('='))
-        .find(|(k, _)| k.trim() == "mse_vs_golden_max")
-        .and_then(|(_, v)| v.trim().parse().ok())
-        .unwrap_or_else(|| panic!("{}: no numeric mse_vs_golden_max", path.display()))
+    Thresholds::parse(&text)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        .mse_vs_golden_max(mode)
+}
+
+fn mode_name(format: BitmapFormat) -> &'static str {
+    match format {
+        BitmapFormat::Koala => "multicolor-bitmap",
+        BitmapFormat::ArtStudio => "hires-bitmap",
+    }
 }
 
 struct SolverScores {
@@ -237,15 +275,12 @@ fn score(
     SolverScores {
         mse_vs_golden: oklab_mse(&rendered, &golden),
         mse_vs_png2c64: oklab_mse(&rendered, &baseline),
-        threshold: threshold(name),
+        threshold: threshold(name, mode_name(format)),
     }
 }
 
 fn check_solver(name: &str, format: BitmapFormat) {
-    let mode = match format {
-        BitmapFormat::Koala => "multicolor-bitmap",
-        BitmapFormat::ArtStudio => "hires-bitmap",
-    };
+    let mode = mode_name(format);
     let s = score(name, format, solve, true);
     println!(
         "{name}, {mode}, mse_vs_golden={:.6}, mse_vs_png2c64={:.6}",
@@ -350,4 +385,29 @@ fn hex_dump_names_the_cell_of_a_changed_byte() {
         "{}",
         changed[0].1
     );
+}
+
+#[test]
+fn thresholds_parse_comments_and_nested_mode_tables() {
+    let t = Thresholds::parse(
+        "# Thresholds for a test fixture.\n\
+         mse_vs_golden_max = 0.0002 # default\n\
+         \n\
+         [mode.multicolor-bitmap]\n\
+         # looser for multicolor\n\
+         mse_vs_golden_max = 0.0005\n",
+    )
+    .expect("valid thresholds");
+    assert!((t.mse_vs_golden_max("multicolor-bitmap") - 0.0005).abs() < 1e-12);
+    assert!((t.mse_vs_golden_max("hires-bitmap") - 0.0002).abs() < 1e-12);
+    assert!(Thresholds::parse("mse_vs_golden_max = \"high\"").is_err());
+    assert!(Thresholds::parse("mse_vs_golden_max = 0.1\ntypo = 1").is_err());
+}
+
+#[test]
+fn every_committed_thresholds_file_parses() {
+    for &(name, format) in ALL {
+        let t = threshold(name, mode_name(format));
+        assert!(t > 0.0 && t < 0.01, "{name}: {t}");
+    }
 }
