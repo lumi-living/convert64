@@ -137,7 +137,10 @@ pub fn pass(
         .collect();
     let full_sets: Vec<ColourSet> = full.iter().map(|v| v.iter().copied().collect()).collect();
     let cell_of = |x: usize, y: usize| (y / ch) * cx + x / cw;
-    let is_locked = |cell: usize| locked.is_some_and(|l| l.cells.contains(input.cell_at(cell)));
+    let is_locked = |cell: usize| match locked {
+        None => false,
+        Some(l) => l.cells.contains(input.cell_at(cell)),
+    };
     let mut out = vec![ColourIndex::BLACK; w * h];
     let mut received = vec![[0.0f32; 3]; w * h];
     let mut error = 0.0f32;
@@ -262,9 +265,16 @@ pub fn layer_origins(
 /// Whether a cell with colours `set` has the colour a pixel at `target` wants: the
 /// nearest of all 16.
 fn accepts(metric: Metric, target: [f32; 3], set: ColourSet, tables: &MetricTables) -> bool {
-    let colours = tables.colours(metric.space());
-    let all = ColourIndex::ALL;
-    set.contains(ordered::nearest(metric, target, &all, colours))
+    // The nearest of all 16 (ties to the lower index) is in `set`.
+    let d = tables.distances(metric, target);
+    let bits = set.bits();
+    let mut best = (f32::INFINITY, 16usize);
+    for (i, &v) in d.iter().enumerate() {
+        if v < best.0 {
+            best = (v, i);
+        }
+    }
+    bits & (1 << best.1) != 0
 }
 
 fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
