@@ -17,6 +17,7 @@ parallel = ["dep:rayon"]
 
 [dependencies]
 rayon = { workspace = true, optional = true }
+serde = { workspace = true }
 
 [lints]
 workspace = true
