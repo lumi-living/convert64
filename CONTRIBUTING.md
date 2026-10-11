@@ -5,7 +5,7 @@ Thanks for looking. The project is early; the fastest way to help right now is *
 ## Ground rules
 
 - **Scope:** Convert64 is a converter, not a pixel editor. Features that steer conversion are welcome; freehand painting tools will be declined (see [ADR-003](docs/adr/ADR-003-converter-not-pixel-editor.md)).
-- **Hardware truth wins.** Any output must be legal VIC-II data. If the validator and your eyes disagree, the validator is right until proven otherwise with a VICE screenshot.
+- **Hardware truth wins.** Any output must be legal VIC-II data as defined in [`docs/reference/vic-ii-constraints.md`](docs/reference/vic-ii-constraints.md). If the validator and your eyes disagree, the validator is right until proven otherwise with a VICE screenshot — then fix the reference and the validator together.
 - **Core stays pure.** `convert64-core` has no `std::fs`, no I/O, no platform code; it must compile to WASM unchanged.
 - **Decisions are recorded.** Anything that changes architecture, formats, or scope gets an ADR in `docs/adr/` (copy `ADR-000-template.md`). Small stuff goes in the PR description.
 
@@ -23,7 +23,7 @@ We need source images whose rights allow redistribution under MIT (your own art,
 
 ## Format references
 
-Byte layouts for `.kla`, `.art`, `.spd` and FLI variants follow retropixels' documented formats; charset bins follow CharPad's export layout; sprite data is 64-byte aligned. When in doubt, test-load the file in VICE or the original editor.
+Byte layouts live in [`docs/reference/file-formats.md`](docs/reference/file-formats.md). When in doubt, test-load the file in VICE or the original editor and attach a screenshot to the PR.
 
 ## Licence
 

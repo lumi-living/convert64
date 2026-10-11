@@ -24,6 +24,10 @@ Thumbs.db
 !.vscode/extensions.json
 *.swp
 
+# Maintainer-local agent notes (private tooling, never needed by the project)
+.claude/*.local.md
+.claude/settings.local.json
+
 # Local scratch (never commit test renders you did not mean to)
 /scratch
 /fixtures/_local
