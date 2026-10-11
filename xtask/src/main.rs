@@ -3,8 +3,11 @@
 //! - `png2c64-baselines --png2c64 <path>`: regenerate every fixture's png2c64 baseline
 //!   (`baseline.kla` or `baseline.art`, `baseline.png`) and the baseline section of its
 //!   README.
+//! - `regen-goldens [--accept --reason "..."]`: list golden-test changes; accept them
+//!   only with a reason, recorded in `fixtures/CHANGELOG.md`.
 
 mod baselines;
+mod goldens;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -34,6 +37,20 @@ enum Command {
         #[arg(long)]
         only: Vec<String>,
     },
+    /// List golden-test changes; accept them only with a reason.
+    ///
+    /// Runs the golden harness, compares its candidates with the committed goldens and
+    /// lists what differs (exit 1 if anything does). With `--accept --reason "..."` it
+    /// replaces the goldens and appends one line per fixture to `fixtures/CHANGELOG.md`.
+    /// Refuses to run on a dirty git tree.
+    RegenGoldens {
+        /// Replace the goldens with the current output.
+        #[arg(long, requires = "reason")]
+        accept: bool,
+        /// Why the goldens change; recorded in fixtures/CHANGELOG.md.
+        #[arg(long, requires = "accept")]
+        reason: Option<String>,
+    },
 }
 
 /// The repository root (the parent of this crate's directory).
@@ -48,6 +65,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Png2c64Baselines { png2c64, only } => baselines::run(&png2c64, &only),
+        Command::RegenGoldens { accept, reason } => goldens::run(accept, reason.as_deref()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
