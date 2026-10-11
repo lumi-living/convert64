@@ -24,6 +24,7 @@ Each fixture has a baseline made by [png2c64](https://github.com/tinic/png2c64),
 | `baseline.png` | png2c64's 320×200 preview, rendered with its Pepto palette (equal to `Palette::pepto_pal()`) |
 | `baseline.kla` | multicolor fixtures: Koala file, load address `$6000` |
 | `baseline.art` | `lineart` only: Art Studio file, load address `$2000` |
+| `vice.png` | VICE `x64sc` screenshot of the baseline (384×272 with border), from `cargo xtask vice-check` |
 
 Regenerate all of them with one command:
 
@@ -37,4 +38,4 @@ The settings and the png2c64 version and commit used are recorded in each fixtur
 
 **Build used for the committed baselines.** png2c64 commit `1265329a573b1dfa3c2e0f3473d2aa15ffd7ac3f` (version 1.0.0.76), built with Homebrew GCC 15.3.0 and CMake 4.4.4 on macOS (arm64); its own 30 tests passed. GCC 16.2 does not build that commit, because png2c64 compiles with warnings as errors and GCC 16 reports two ignored return values in its interactive mode.
 
-**Not yet checked in VICE.** The baselines were validated by `convert64 validate` but not loaded in VICE `x64sc`.
+**Checked in VICE.** `cargo xtask vice-check` runs each baseline in VICE `x64sc` and compares the screenshot, `vice.png`, with the baseline. All six agree on 100 % of pixels; each fixture README records the VICE version, command and result. See `docs/TAD.md` §6.

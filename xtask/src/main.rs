@@ -6,9 +6,12 @@
 //! - `regen-goldens [--report | --accept --reason "..."]`: list golden-test changes
 //!   (report mode, works on a dirty tree); accept them only with a reason, recorded in
 //!   `fixtures/CHANGELOG.md` (needs a clean tree).
+//! - `vice-check [--x64sc <path>]`: show each png2c64 baseline in VICE and compare the
+//!   capture with it (local only).
 
 mod baselines;
 mod goldens;
+mod vice;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -34,6 +37,20 @@ enum Command {
         /// The png2c64 binary, built from <https://github.com/tinic/png2c64>.
         #[arg(long)]
         png2c64: PathBuf,
+        /// Only these fixtures (default: all).
+        #[arg(long)]
+        only: Vec<String>,
+    },
+    /// Show every png2c64 baseline in VICE and compare the capture with it.
+    ///
+    /// Needs VICE (`x64sc`) and the display PRGs from `png2c64-baselines`. Writes
+    /// `fixtures/<name>/vice.png` and, for fixtures that pass (≥ 99.5 % of pixels agree
+    /// and every cell shows only the baseline's colours), a line in the fixture README.
+    /// Local only: VICE is not on the CI runners.
+    ViceCheck {
+        /// The VICE C64 emulator binary.
+        #[arg(long, default_value = "x64sc")]
+        x64sc: PathBuf,
         /// Only these fixtures (default: all).
         #[arg(long)]
         only: Vec<String>,
@@ -72,6 +89,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Png2c64Baselines { png2c64, only } => baselines::run(&png2c64, &only),
+        Command::ViceCheck { x64sc, only } => vice::run(&x64sc, &only),
         Command::RegenGoldens {
             report: _,
             accept,
