@@ -37,7 +37,7 @@ What is missing is the step *between* the source art and the pixel editor — wh
 ## Feature list (✅ = M1/M2, ⏩ = later)
 
 ### Layers & editing
-- ✅ Import PNG/JPG/TIFF at 8/16-bit; internal storage f32 linear RGBA.
+- ✅ Import PNG/JPG/TIFF at 8/16-bit; internal storage f32 linear RGBA. ⏩ Layered PSD / OpenRaster import (via `photocraft-psd`), each PSD layer becoming a Convert64 layer.
 - ✅ Unlimited layers; opacity; blend modes (normal, multiply, screen, overlay).
 - ✅ Float-precision transform: translate (sub-pixel), scale, flip; ⏩ rotate.
 - ✅ Raster mask per layer, paintable; ⏩ vector/gradient masks.
@@ -67,6 +67,10 @@ What is missing is the step *between* the source art and the pixel editor — wh
 - ✅ Sprites: raw 64-byte blocks, SpritePad `.spd`, `.asm`.
 - ✅ Project file `.convert64` (JSON + embedded/linked sources) — layers never flattened.
 - ⏩ CharPad `.ctm`, FLI formats, D64 + Ultimate HTTP push.
+
+### Automation
+- ✅ CLI with feature parity (M1).
+- ⏩ **MCP server** (`convert64-mcp`, M2): the same command registry exposed as MCP tools so an AI agent can open a project, adjust recipes, re-solve, read the clash report and export — e.g. from a game repo's Claude Code session. See ADR-005.
 
 ## Non-goals
 - Freehand pixel painting, brushes, fills.
@@ -98,6 +102,7 @@ The risk is scope (resist FLI, resist becoming a pixel editor) and UI effort, no
 | [ArcPaint64](https://www.doussis.com/arcpaint64/) | Browser pixel editor by arch0N (CSDb 2026, 10/10). Hardware mode, **Adaptive vs Force** fitting. | Vocabulary for colour fitting; hand-off target. |
 | [C64CC](https://www.elder0010.com/projects/c64cc/) | Charset converter, GUI + CLI parity, Levenshtein char reuse under a budget, KickAss export. | GUI/CLI parity, char-budget UX. |
 | [ALBERT](https://www.albertpixels.com/) | Native border-extended image editor; curves, luminance-weighted distance. | Curves UI; metric preset. |
+| [PhotoCraft](https://github.com/storytold/photocraft) | Rust clean-room layered editor (egui + wgpu, WASM too), MIT/Apache-2, early alpha, very active. Engine-first: pure-data document, 500+ registered commands behind UI, CLI, JSON channel and MCP server; CoW sparse tiles; `photocraft-psd` crate. | The command-engine pattern (ADR-005); `photocraft-psd` for layered PSD import; CPU-vs-GPU compositor cross-testing idea. |
 
 **The gap:** all convert a single flattened image with one global recipe. None has high-precision layers, masks/feathering, sub-pixel placement, per-region recipes, or pins/locks driving a re-solve with a legal live preview.
 
@@ -107,7 +112,7 @@ The risk is scope (resist FLI, resist becoming a pixel editor) and UI effort, no
 |---|---|---|
 | **M0 Scaffold** | Workspace, CI, fixtures, validator | `cargo test` green on 3 platforms + WASM build; validator rejects illegal data |
 | **M1 Bitmap MVP** | MC + hi-res bitmap solver, formats, CLI, first Tauri/Svelte UI with layers and recipes | A *No Glory* title screen converted from a layered project, loads in VICE, exported via Makefile |
-| **M2 Charsets & sprites** | Charset/tile modes with budget, sprite modes incl. overlay, `.spd`, CharPad bins | *No Glory* terrain tileset and HUD portraits produced through Convert64 |
+| **M2 Charsets & sprites** | Charset/tile modes with budget, sprite modes incl. overlay, `.spd`, CharPad bins, MCP server | *No Glory* terrain tileset and HUD portraits produced through Convert64 |
 | **M3 Scene features** | FLI, PAL shader, interlace modes, `.ctm`, D64/Ultimate, Aseprite bridge | Opportunistic |
 
 Epics per milestone: [github/EPICS.md](github/EPICS.md).

@@ -19,9 +19,10 @@ Milestones: **M0 Scaffold → M1 Bitmap MVP → M2 Charsets & Sprites → M3 Sce
 - **E10 Charset solver** — hi-res/MC/ECM, char budget with greedy + k-means merge, tile sizes, CharPad colour-mode targets, CharPad-layout bins.
 - **E11 Sprite solver** — hi-res/MC/overlay, shared MC1/MC2 across a set, sprite-sheet import, `.spd` + raw + asm.
 - **E12 UI v2** — mode switcher, char-budget counter, sprite sheet view.
+- **E17 MCP server** — `convert64-mcp` exposing the command registry (open/convert/set recipe/pin/lock/solve/clash report/export) as MCP tools; stdio transport; usable from Claude Code in a game repo.
 
 ## M3 — Scene features (opportunistic)
 - **E13 FLI** — FLI solver with FLI-bug columns, `.fli` export, PRG displayer.
 - **E14 PAL preview shader** — chroma/luma blur, scanlines, opt-in.
 - **E15 Interlace modes** — IFLI/MCI/NUFLI with flicker-blend preview.
-- **E16 Integrations** — CharPad `.ctm`, D64 wrapper, C64 Ultimate HTTP push, Aseprite bridge, import C64 files as locked layers.
+- **E16 Integrations** — CharPad `.ctm`, D64 wrapper, C64 Ultimate HTTP push, Aseprite bridge, import C64 files as locked layers, layered PSD/OpenRaster import via `photocraft-psd`.

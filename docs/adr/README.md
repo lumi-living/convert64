@@ -8,3 +8,4 @@ One file per decision, `ADR-NNN-short-title.md`, copied from `ADR-000-template.m
 | [002](ADR-002-dither-as-per-pixel-attribute.md) | Dithering as a per-pixel attribute carried through compositing | Accepted |
 | [003](ADR-003-converter-not-pixel-editor.md) | Converter, not a pixel editor | Accepted |
 | [004](ADR-004-open-source-mit-under-lumi-living.md) | Open source, MIT, under Lumi Living | Accepted |
+| [005](ADR-005-command-engine-with-cli-json-mcp.md) | One command engine behind UI, CLI and MCP | Proposed |
