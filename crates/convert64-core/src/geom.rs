@@ -158,6 +158,134 @@ impl PxRect {
     }
 }
 
+/// A set of cells on the 40 × 25 screen (every compositor target has that cell grid),
+/// as a bit set. The answer to "which cells did this change touch?".
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct CellSet([u64; 16]);
+
+impl CellSet {
+    /// Cells across.
+    pub const COLS: u16 = 40;
+    /// Cells down.
+    pub const ROWS: u16 = 25;
+
+    /// No cells.
+    pub const EMPTY: Self = Self([0; 16]);
+
+    /// Every cell.
+    pub fn all() -> Self {
+        let mut s = Self::EMPTY;
+        s.insert_rect(0, 0, Self::COLS, Self::ROWS);
+        s
+    }
+
+    const fn bit(c: CellPos) -> Option<usize> {
+        if c.x < Self::COLS && c.y < Self::ROWS {
+            Some(c.y as usize * Self::COLS as usize + c.x as usize)
+        } else {
+            None
+        }
+    }
+
+    /// Adds a cell; cells off the screen are ignored.
+    pub fn insert(&mut self, c: CellPos) {
+        if let Some(b) = Self::bit(c) {
+            self.0[b / 64] |= 1 << (b % 64);
+        }
+    }
+
+    /// Adds the cells in columns `x0..x1` and rows `y0..y1` (clipped to the screen).
+    pub fn insert_rect(&mut self, x0: u16, y0: u16, x1: u16, y1: u16) {
+        for y in y0..y1.min(Self::ROWS) {
+            for x in x0..x1.min(Self::COLS) {
+                self.insert(CellPos::new(x, y));
+            }
+        }
+    }
+
+    /// Whether the cell is in the set.
+    pub const fn contains(&self, c: CellPos) -> bool {
+        match Self::bit(c) {
+            Some(b) => self.0[b / 64] & (1 << (b % 64)) != 0,
+            None => false,
+        }
+    }
+
+    /// Number of cells.
+    pub fn len(&self) -> usize {
+        self.0.iter().map(|w| w.count_ones() as usize).sum()
+    }
+
+    /// No cells.
+    pub fn is_empty(&self) -> bool {
+        self.0.iter().all(|&w| w == 0)
+    }
+
+    /// Cells in either set.
+    pub fn union(mut self, o: Self) -> Self {
+        for (a, b) in self.0.iter_mut().zip(o.0) {
+            *a |= b;
+        }
+        self
+    }
+
+    /// Cells in both sets.
+    pub fn intersection(mut self, o: Self) -> Self {
+        for (a, b) in self.0.iter_mut().zip(o.0) {
+            *a &= b;
+        }
+        self
+    }
+
+    /// The cells, row by row.
+    pub fn iter(&self) -> impl Iterator<Item = CellPos> + '_ {
+        (0..Self::ROWS).flat_map(move |y| {
+            (0..Self::COLS)
+                .map(move |x| CellPos::new(x, y))
+                .filter(|c| self.contains(*c))
+        })
+    }
+
+    /// The cells a super-grid rectangle overlaps.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "cell coordinates are below 40 × 25"
+    )]
+    pub fn from_super_rect(grid: SuperGrid, r: PxRect) -> Self {
+        let mut s = Self::EMPTY;
+        let r = r.intersect(grid.bounds());
+        if r.is_empty() {
+            return s;
+        }
+        let (cw, ch) = grid.cell_size_super();
+        s.insert_rect(
+            (r.x0 / cw) as u16,
+            (r.y0 / ch) as u16,
+            r.x1.div_ceil(cw) as u16,
+            r.y1.div_ceil(ch) as u16,
+        );
+        s
+    }
+}
+
+impl fmt::Debug for CellSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_set()
+            .entries(self.iter().map(|c| (c.x, c.y)))
+            .finish()
+    }
+}
+
+impl FromIterator<CellPos> for CellSet {
+    fn from_iter<I: IntoIterator<Item = CellPos>>(it: I) -> Self {
+        let mut s = Self::EMPTY;
+        for c in it {
+            s.insert(c);
+        }
+        s
+    }
+}
+
 /// Why a [`SuperGrid`] could not be built.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GridError {
@@ -506,6 +634,26 @@ mod tests {
             assert_eq!(g.super_px_to_target_px(r.x0, r.y0), (5, 9));
             assert_eq!(g.super_px_to_target_px(r.x1 - 1, r.y1 - 1), (5, 9));
         }
+    }
+
+    #[test]
+    fn cell_sets() {
+        let g = SuperGrid::new(Mode::MulticolorBitmap, 4).unwrap();
+        // Super x 15..17 straddles the cell boundary at 16 (multicolor cells are 16 wide).
+        let s = CellSet::from_super_rect(g, PxRect::new(15, 31, 17, 33));
+        let want: CellSet = [(0, 0), (1, 0), (0, 1), (1, 1)]
+            .into_iter()
+            .map(|(x, y)| CellPos::new(x, y))
+            .collect();
+        assert_eq!(s, want);
+        assert_eq!(s.len(), 4);
+        assert_eq!(CellSet::all().len(), 1000);
+        assert!(CellSet::from_super_rect(g, PxRect::EMPTY).is_empty());
+        assert_eq!(s.intersection(CellSet::EMPTY), CellSet::EMPTY);
+        assert_eq!(s.union(CellSet::all()), CellSet::all());
+        let mut t = CellSet::EMPTY;
+        t.insert(CellPos::new(40, 0));
+        assert!(t.is_empty());
     }
 
     #[test]
