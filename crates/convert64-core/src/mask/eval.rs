@@ -130,7 +130,7 @@ fn half_tap(i: usize, n: usize) -> (usize, usize, f32) {
 }
 
 /// Blur at half resolution: 2 × 2 box down, blur with σ/2, bilinear back up.
-pub(crate) fn blur_half_res(values: &mut [f32], w: usize, h: usize, sigma: f32) {
+fn blur_half_res(values: &mut [f32], w: usize, h: usize, sigma: f32) {
     let (hw, hh) = (w.div_ceil(2), h.div_ceil(2));
     scratch::with(hw * hh, |half| blur_half_res_in(values, w, h, sigma, half));
 }
@@ -377,7 +377,7 @@ const ROW_GROUP: usize = 16;
 /// Columns box-filtered per strip.
 const COL_STRIP: usize = 32;
 
-pub(crate) fn box_rows(values: &mut [f32], w: usize, _h: usize, r: usize) {
+fn box_rows(values: &mut [f32], w: usize, _h: usize, r: usize) {
     if r == 0 {
         return;
     }
@@ -386,22 +386,22 @@ pub(crate) fn box_rows(values: &mut [f32], w: usize, _h: usize, r: usize) {
         let g = rows.len() / w;
         scratch::with(2 * w * g, |t| {
             let (t, out) = t.split_at_mut(w * g);
-            for (j, row) in rows.chunks(w).enumerate() {
-                for (x, &v) in row.iter().enumerate() {
-                    t[x * g + j] = v;
+            for (x, lanes) in t.chunks_exact_mut(g).enumerate() {
+                for (j, v) in lanes.iter_mut().enumerate() {
+                    *v = rows[j * w + x];
                 }
             }
             box_lanes(t, g, g, w, r, out);
-            for (j, row) in rows.chunks_mut(w).enumerate() {
-                for (x, v) in row.iter_mut().enumerate() {
-                    *v = out[x * g + j];
+            for (x, lanes) in out.chunks_exact(g).enumerate() {
+                for (j, &v) in lanes.iter().enumerate() {
+                    rows[j * w + x] = v;
                 }
             }
         });
     });
 }
 
-pub(crate) fn box_cols(values: &mut [f32], w: usize, h: usize, r: usize) {
+fn box_cols(values: &mut [f32], w: usize, h: usize, r: usize) {
     if r == 0 {
         return;
     }

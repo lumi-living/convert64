@@ -134,16 +134,25 @@ As built in E4 (2026-10-11): the compositor and attribute map ([ADR-002](adr/ADR
   - its resampled raster, keyed by the source `Arc`, adjustments, transform, mask generation and grid;
   - its evaluated mask, keyed by the modifiers and that raster's identity.
 
-  The mask generation changes with any raster or source edit. A modifier slider therefore re-evaluates one mask and never resamples.
-- **Feather blur.** An exact Gaussian below σ = 4 super px, three box blurs (f64 prefix sums) above, and half resolution above σ = 8 target px.
-- **Incremental updates.** `Compositor::update` diffs what each layer contributes. It recomposites the changed footprints aligned to whole cells, and returns the `CellSet` whose output changed. `mask_change_cells` maps a layer-space dirty rect to cells before compositing.
-- **Fold.** Colour blends bottom-up with per-blend-mode loops. Attributes are claimed top-down, one write per pixel.
+  The mask generation changes with any raster or source edit. A modifier slider therefore re-evaluates one mask and never resamples the layer's colour. Since #98 it resamples the mask again from its cached layer-space values (raster ⊕ sources) rather than keeping a pre-modifier copy on the super grid, which saves 4 MB per full-screen hi-res layer at 4×.
+- **Feather blur.** An exact Gaussian below σ = 4 super px, three box blurs (f64 prefix sums) above, and half resolution from σ = 4 target px (#98; it was above 8).
+- **Incremental updates.** `Compositor::update` diffs what each layer contributes. It recomposites the changed footprints aligned to whole cells, and returns the `CellSet` whose output changed, found as the fold writes the frame. `mask_change_cells` maps a layer-space dirty rect to cells before compositing. Since #98 it also keeps the fold of the layers below the lowest changed one, over the whole grid, while they stay unchanged. A nudge or a slider on layer *k* then re-blends only layers *k* and up. The cache is built when an update recomposites at least a quarter of the grid.
+- **Fold.** Colour blends bottom-up with per-blend-mode loops. Attributes are claimed bottom-up in the same loop: each layer whose effective alpha is above zero overwrites, so the top-most governs. Since #98 rasters are stored one plane per channel, and a target row's `n` super rows are blended layer by layer. Per row, a layer touches only the columns where it can contribute, because an all-zero source pixel, or a zero mask, leaves the backdrop unchanged.
+- **Performance (#98).** None of the following changes a bit of the output. The tests compare against the E4 code's fingerprints, in both sequential and parallel builds.
+  - Layers are resampled in parallel, and each layer's colour and mask side by side.
+  - Resampling works in chunks of rows, so the horizontal pass stays in cache.
+  - The box blur runs on lanes of rows or columns at once.
+  - A rebuilt layer reuses the buffers it replaced.
+  - Parallel tasks take scratch buffers from per-thread pools (`convert64-core::scratch`), so a drag pages in no fresh memory. On the 3-core CI runner, fresh pages and allocator churn had made the parallel nudge slower than the sequential one.
+  - A pure translation still resamples and re-feathers the mask. Reusing the shifted mask would not be bit-identical: f32 rounding of the translated taps differs, and the blur clamps at the clipped edge.
 - **Front-ends.** `convert64-cli` is also a library, holding the recipe-file JSON and `Session`. `convert64 recipe apply` and `convert64-mcp` run the same `Session`.
 
 **Deviations from ADR-002, ADR-008 and this document**
 - **Effective alpha.** The top-most layer whose PNG alpha × mask is above zero governs a pixel. Its strength is multiplied by PNG alpha × mask × opacity (#99, which amends ADR-008; E4 first shipped it without opacity). On the target grid, the source covering most super pixels wins, and its strength is summed over its super pixels and divided by n².
 - **Feather is approximated.** Above σ = 4 super px the Gaussian is approximated by three box blurs (measured σ within ~4 %).
-- **Half-resolution feather.** ADR-008 asks for a half-resolution feather in general. It is used only above 8 target px; below that, full resolution is cheap enough. Each mask command re-blurs once, which matches ADR-008's "on stroke end".
+- **Half-resolution feather.** ADR-008 asks for a half-resolution feather in general. Since #98 it is used from σ = 4 target px; below that, full resolution is cheap enough. Each mask command re-blurs once, which matches ADR-008's "on stroke end". Measured against the full-resolution blur (`mask::eval` and `golden.rs` tests):
+  - **Hard edges and a small square.** The error is at most 1.4 % (0.0143) at σ = 4 on a 1× grid, where the half-resolution blur is an exact Gaussian of σ = 2 against three box blurs. It stays below one 8-bit step at 4× and 8× (0.0037 at most).
+  - **The composite fixtures.** The mask error is 0.0015 and the composite error 1/255 at most. In the attribute map, 28 target pixels of `portrait-over-title` change source, and strength changes by up to 0.15, all where the full-resolution mask is 0. A layer claims every super pixel its mask is above zero on, and the half-resolution blur spreads that support by a pixel or two.
 - **The command registry arrived with E4** (ADR-005 planned it for E7/E8), because the mask commands needed it. `Project` is only layers and regions so far.
 - **`MaskClear { value }`** sets the raster to one value (ADR-008's "reset").
 - **`LayerViaMask` with `cut`** inverts the selection on the original through its modifiers, because modifiers are super-grid operations.

@@ -6,7 +6,20 @@
 //!
 //! Each layer's resampled raster is cached and rebuilt only when its source,
 //! adjustments, transform, mask or the grid change; a recomposite with unchanged layers
-//! only re-blends.
+//! only re-blends. [`Compositor::update`] also keeps the fold of the layers below the
+//! lowest changed one, so a nudge or a slider re-blends only that layer and the layers
+//! above it (#98).
+//!
+//! Performance notes (#98), none of which changes a bit of the output:
+//! - Rasters are stored one plane per channel, and the fold blends a target row's `n`
+//!   super rows layer by layer, with the attribute claim fused into the blend (each
+//!   visible layer overwrites, bottom-up), so the loops vectorise across pixels.
+//! - Per row, a layer only touches the columns where it can contribute: a source pixel
+//!   that is all zero, or under a zero mask, leaves the backdrop unchanged.
+//! - Layers are resampled in parallel, colour beside mask; resampling works in chunks of
+//!   rows whose horizontal pass stays in cache. A rebuilt layer reuses the buffers it
+//!   replaced, and parallel tasks take their scratch from per-thread pools
+//!   (`crate::scratch`), so a drag does not page in fresh memory.
 
 mod attr;
 mod blend;
