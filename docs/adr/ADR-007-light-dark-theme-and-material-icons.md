@@ -13,6 +13,24 @@ The egui app (ADR-006) needs to work in light and dark mode, and needs one icon 
 1. **Both themes, system-following by default.** The app uses egui's built-in `Visuals::light()` / `Visuals::dark()`, follows the OS preference via eframe, and offers View → Theme: System / Light / Dark, persisted in app settings. Convert64's own semantic colours (clash heatmap, pin/lock markers, attribute-map overlay, cell grid, selection) are defined once per theme in a small `Theme` struct so they stay legible on both. **The C64 preview is never themed** — it shows hardware palette colours inside a border; only the chrome around it (frame, transparency checkerboard) changes with the theme.
 2. **Material Symbols via the `egui_material_icons` crate** (Apache-2.0, MIT-compatible). Font-glyph icons inherit theme colour automatically. Crate checked 2026-10-11: v0.8.0, ~100k downloads, actively maintained.
 
+## Glyph map (verified against Material Symbols 0.33, outlined 400)
+
+Confirmed 2026-10-11 in a side-by-side comparison with Phosphor at 12–32 px; Material chosen for legibility at 12–14 px and complete coverage.
+
+| UI need | Glyph | UI need | Glyph |
+|---|---|---|---|
+| Layers panel | `layers` | Flip layer | `flip` |
+| Layer visible / hidden | `visibility` / `visibility_off` | Undo / Redo | `undo` / `redo` |
+| Lock / unlock cell | `lock` / `lock_open` | Export | `download` |
+| Pin colour set | `keep` | Open / Save | `folder_open` / `save` |
+| Nudge / move | `open_with` | Add / Delete layer | `add` / `delete` |
+| Dither recipe | `tune` | Drag handle | `drag_indicator` |
+| Cell grid | `grid_on` | Zoom in / out | `zoom_in` / `zoom_out` |
+| Palette preset | `palette` | Paint mask | `brush` |
+| Feather mask | `gradient` | Clash warning | `warning` |
+| Contrast / levels | `contrast` | Settings | `settings` |
+| A/B compare | `compare` | Light / dark theme | `light_mode` / `dark_mode` |
+
 ## Options considered
 
 | Option | Verdict |
