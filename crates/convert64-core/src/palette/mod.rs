@@ -230,6 +230,15 @@ impl Palette {
     }
 }
 
+/// OKLab of any sRGB colour, with the same maths the palette caches use. For comparing
+/// arbitrary images (golden PNGs, sources) in the quantiser's colour space.
+pub fn oklab_of(c: Rgb8) -> Oklab {
+    let srgb = [c.r, c.g, c.b].map(|v| f64::from(v) / 255.0);
+    let xyz = convert::linear_srgb_to_xyz(srgb.map(convert::srgb_to_linear));
+    let [l, a, b] = f32x3(convert::xyz_to_oklab(xyz));
+    Oklab { l, a, b }
+}
+
 impl Default for Palette {
     /// Pepto (PAL), the default preset (`docs/PDD.md`).
     fn default() -> Self {
@@ -293,6 +302,14 @@ mod tests {
         );
         let blue = p.linear(ColourIndex::BLUE);
         assert!((blue.b - 0.327_778_1).abs() < 1e-6, "{blue:?}");
+    }
+
+    #[test]
+    fn oklab_of_matches_the_palette_cache() {
+        let p = Palette::colodore(50.0, 100.0, 50.0);
+        for c in ColourIndex::ALL {
+            assert_eq!(super::oklab_of(p.rgb(c)), p.oklab(c), "{c}");
+        }
     }
 
     #[test]
