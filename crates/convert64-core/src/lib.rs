@@ -13,11 +13,12 @@ pub mod mode;
 pub mod model;
 pub mod palette;
 pub mod par;
+pub mod region;
 pub mod rule;
 pub mod validate;
 
 pub use colour::{ColourIndex, ColourSet, InvalidColourIndex};
-pub use composite::{Canvas, Compositor};
+pub use composite::{AttributeMap, Canvas, Compositor};
 pub use geom::{CellSet, PxRect, SuperGrid, Vec2};
 pub use layer::{Blend, Layer, Recipe, SourceImage, Transform};
 pub use mask::{Mask, MaskRaster};
@@ -27,6 +28,7 @@ pub use model::{
     Sprite, SpriteSet,
 };
 pub use palette::Palette;
+pub use region::Region;
 pub use rule::Rule;
 pub use validate::{
     C64Image, Location, Placement, Violation, validate, validate_export, validate_placement,
