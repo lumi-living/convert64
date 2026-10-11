@@ -4,6 +4,7 @@
 //! Pure and wasm-safe: no I/O, `rayon` only behind the `parallel` feature.
 
 pub mod cell;
+pub mod dither;
 pub mod input;
 pub mod metric;
 pub mod ordered;
