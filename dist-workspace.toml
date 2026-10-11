@@ -1,0 +1,19 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist' (cargo-dist). Edit this file, then run `dist generate`
+# to refresh .github/workflows/release.yml; never edit release.yml by hand.
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.33.0"
+# CI backends to support
+ci = "github"
+# No installers yet: releases are plain unsigned archives until E9 (#9).
+installers = []
+# macOS first (#24). Unsigned, not notarised: Gatekeeper workaround goes in
+# the README with E9. Planned additions for E9, disabled for now:
+#   "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+# Release CI runs on version tags only. Manual test builds use the separate
+# dist-build workflow (workflow_dispatch).
+pr-run-mode = "skip"
