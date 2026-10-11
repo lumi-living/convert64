@@ -1,11 +1,29 @@
 //! The composite on the target grid: what the solver consumes.
 
-use super::Canvas;
-use super::attr::{AttrPx, AttributeMap, TargetAttr};
+use super::attr::{AttributeMap, TargetAttr};
 use crate::geom::{PxRect, SuperGrid};
 
-/// A colour row and its coverage row, with the row index.
-type FrameRow<'a> = (usize, &'a mut [[f32; 3]], &'a mut [f32]);
+/// Box-filters target pixel `tx` from `band`, the `n` premultiplied super rows (each `w`
+/// wide) of its target row: straight colour and coverage.
+pub(crate) fn reduce_px(band: &[[f32; 4]], w: usize, n: u32, tx: usize) -> ([f32; 3], f32) {
+    let n = n as usize;
+    let mut acc = [0.0f32; 4];
+    for sy in 0..n {
+        let base = sy * w + tx * n;
+        for p in &band[base..base + n] {
+            for i in 0..4 {
+                acc[i] += p[i];
+            }
+        }
+    }
+    let a = acc[3] * (1.0 / (n * n) as f32);
+    let colour = if acc[3] > 0.0 {
+        [acc[0] / acc[3], acc[1] / acc[3], acc[2] / acc[3]]
+    } else {
+        [0.0; 3]
+    };
+    (colour, a.clamp(0.0, 1.0))
+}
 
 /// The supersampled composite box-filtered to the target grid (320 × 200 or 160 × 200):
 /// per target pixel the straight (unpremultiplied) linear RGB, the coverage (mean
@@ -76,43 +94,14 @@ impl TargetFrame {
         out
     }
 
-    /// Box-filters `canvas` and `attrs` into the target pixels of `area`.
-    pub(crate) fn reduce_rect(&mut self, canvas: &Canvas, attrs: &[AttrPx], area: PxRect) {
-        let grid = self.grid;
-        let (tw, _) = grid.target_size();
-        let (w, _) = grid.size();
-        let n = u32::from(grid.n());
-        let inv = 1.0 / (n * n) as f32;
-        let px = canvas.pixels();
-        let mut rows: Vec<FrameRow<'_>> = self
-            .colour
-            .chunks_mut(tw as usize)
-            .zip(self.coverage.chunks_mut(tw as usize))
-            .enumerate()
-            .filter(|(y, _)| (area.y0 as usize..area.y1 as usize).contains(y))
-            .map(|(y, (c, a))| (y, c, a))
-            .collect();
-        crate::par::for_each(&mut rows, |(ty, colour, coverage)| {
-            for tx in area.x0 as usize..area.x1 as usize {
-                let mut acc = [0.0f32; 4];
-                for sy in 0..n {
-                    let base = (*ty as u32 * n + sy) as usize * w as usize + tx * n as usize;
-                    for p in &px[base..base + n as usize] {
-                        for i in 0..4 {
-                            acc[i] += p[i];
-                        }
-                    }
-                }
-                let a = acc[3] * inv;
-                coverage[tx] = a.clamp(0.0, 1.0);
-                colour[tx] = if acc[3] > 0.0 {
-                    [acc[0] / acc[3], acc[1] / acc[3], acc[2] / acc[3]]
-                } else {
-                    [0.0; 3]
-                };
-            }
-        });
-        self.attributes.reduce_rect(attrs, area);
+    /// The colour, coverage and attribute pixels, for the compositor's fused
+    /// fold-and-filter.
+    pub(crate) fn parts_mut(&mut self) -> (&mut [[f32; 3]], &mut [f32], &mut [TargetAttr]) {
+        (
+            &mut self.colour,
+            &mut self.coverage,
+            self.attributes.pixels_mut(),
+        )
     }
 
     /// The attribute of target pixel `(x, y)`.

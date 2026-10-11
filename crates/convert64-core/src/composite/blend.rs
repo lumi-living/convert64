@@ -62,11 +62,10 @@ fn overlay(dst: &mut [f32; 4], src: [f32; 4]) {
         let (cs, cb) = (src[i], dst[i]);
         // B = HardLight(Cs, Cb) with the backdrop deciding: multiply when
         // Cb ≤ ½ (cb ≤ ½ αb), screen otherwise.
-        let mixed = if 2.0 * cb <= da {
-            2.0 * cs * cb
-        } else {
-            sa * da - 2.0 * (da - cb) * (sa - cs)
-        };
+        // Both arms computed, then selected: branch-free, so the loop vectorises.
+        let multiply = 2.0 * cs * cb;
+        let screen = sa * da - 2.0 * (da - cb) * (sa - cs);
+        let mixed = if 2.0 * cb <= da { multiply } else { screen };
         dst[i] = cs * inv_da + cb * inv_sa + mixed;
     }
     dst[3] = sa + da * inv_sa;

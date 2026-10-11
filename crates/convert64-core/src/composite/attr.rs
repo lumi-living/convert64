@@ -6,7 +6,7 @@
 //! the alpha, so dither fades across a feather. Regions then override with the same rule.
 //! [`AttributeMap`] is that map box-filtered to the target grid.
 
-use crate::geom::{PxRect, SuperGrid};
+use crate::geom::SuperGrid;
 use crate::layer::{DitherKind, Recipe};
 use crate::palette::{LinearRgb, Oklch, linear_to_srgb8};
 
@@ -100,54 +100,9 @@ impl AttributeMap {
         self.regions = regions;
     }
 
-    /// Box-filters the super-grid map `sup` into the target pixels of `area` (target
-    /// coordinates). Per target pixel the source covering the most super pixels wins
-    /// (ties go to the higher layer, regions above layers); its strength is summed over
-    /// its super pixels and divided by `n²`.
-    pub(crate) fn reduce_rect(&mut self, sup: &[AttrPx], area: PxRect) {
-        let grid = self.grid;
-        let (tw, _) = grid.target_size();
-        let (w, _) = grid.size();
-        let n = u32::from(grid.n());
-        let inv = 1.0 / (n * n) as f32;
-        let mut rows: Vec<(usize, &mut [TargetAttr])> = self
-            .px
-            .chunks_mut(tw as usize)
-            .enumerate()
-            .filter(|(y, _)| (area.y0 as usize..area.y1 as usize).contains(y))
-            .collect();
-        crate::par::for_each(&mut rows, |(ty, row)| {
-            // Up to n² distinct codes per pixel; a small linear table beats a hash map.
-            let mut seen: Vec<(u16, u32, f32)> = Vec::with_capacity(4);
-            for tx in area.x0 as usize..area.x1 as usize {
-                seen.clear();
-                for sy in 0..n {
-                    let base = (*ty as u32 * n + sy) as usize * w as usize + tx * n as usize;
-                    for a in &sup[base..base + n as usize] {
-                        if a.code == NONE {
-                            continue;
-                        }
-                        match seen.iter_mut().find(|e| e.0 == a.code) {
-                            Some(e) => {
-                                e.1 += 1;
-                                e.2 += a.strength;
-                            }
-                            None => seen.push((a.code, 1, a.strength)),
-                        }
-                    }
-                }
-                row[tx] = match seen.iter().max_by_key(|e| (e.1, e.0)) {
-                    Some(&(code, _, sum)) => TargetAttr {
-                        source: AttrSource::from_code(code),
-                        strength: (sum * inv).clamp(0.0, 1.0),
-                    },
-                    None => TargetAttr {
-                        source: AttrSource::None,
-                        strength: 0.0,
-                    },
-                };
-            }
-        });
+    /// Mutable target pixels, for the compositor's fused fold-and-filter.
+    pub(crate) fn pixels_mut(&mut self) -> &mut [TargetAttr] {
+        &mut self.px
     }
 
     /// The grid this map belongs to.
@@ -193,6 +148,46 @@ impl AttributeMap {
                 Some(r) => debug_colour(r.method().kind, a.strength),
             })
             .collect()
+    }
+}
+
+/// Box-filters target pixel `tx` from `band`, the `n` super rows (each `w` wide) of its
+/// target row. The source covering the most super pixels wins (ties go to the higher
+/// layer, regions above layers); its strength is summed and divided by `n²`. `seen` is
+/// scratch space, reused between calls.
+pub(crate) fn reduce_px(
+    band: &[AttrPx],
+    w: usize,
+    n: u32,
+    tx: usize,
+    seen: &mut Vec<(u16, u32, f32)>,
+) -> TargetAttr {
+    seen.clear();
+    let n = n as usize;
+    for sy in 0..n {
+        let base = sy * w + tx * n;
+        for a in &band[base..base + n] {
+            if a.code == NONE {
+                continue;
+            }
+            match seen.iter_mut().find(|e| e.0 == a.code) {
+                Some(e) => {
+                    e.1 += 1;
+                    e.2 += a.strength;
+                }
+                None => seen.push((a.code, 1, a.strength)),
+            }
+        }
+    }
+    match seen.iter().max_by_key(|e| (e.1, e.0)) {
+        Some(&(code, _, sum)) => TargetAttr {
+            source: AttrSource::from_code(code),
+            strength: (sum * (1.0 / (n * n) as f32)).clamp(0.0, 1.0),
+        },
+        None => TargetAttr {
+            source: AttrSource::None,
+            strength: 0.0,
+        },
     }
 }
 
