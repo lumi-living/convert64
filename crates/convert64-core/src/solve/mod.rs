@@ -3,6 +3,10 @@
 //!
 //! Pure and wasm-safe: no I/O, `rayon` only behind the `parallel` feature.
 
+pub mod cell;
+pub mod input;
 pub mod metric;
 
+pub use cell::{CellChoice, Constraints};
+pub use input::{Input, InputOptions};
 pub use metric::{Metric, MetricTables, Space};
