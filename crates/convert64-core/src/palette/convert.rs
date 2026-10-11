@@ -27,64 +27,161 @@ fn mul(m: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+/// `a × b` for 3×3 matrices, at compile time.
+const fn mat_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut out = [[0.0; 3]; 3];
+    let mut r = 0;
+    while r < 3 {
+        let mut c = 0;
+        while c < 3 {
+            out[r][c] = a[r][0] * b[0][c] + a[r][1] * b[1][c] + a[r][2] * b[2][c];
+            c += 1;
+        }
+        r += 1;
+    }
+    out
+}
+
+/// The inverse of a 3×3 matrix (adjugate over determinant), at compile time.
+const fn mat_inv(m: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let c00 = m[1][1] * m[2][2] - m[1][2] * m[2][1];
+    let c01 = m[1][2] * m[2][0] - m[1][0] * m[2][2];
+    let c02 = m[1][0] * m[2][1] - m[1][1] * m[2][0];
+    let det = m[0][0] * c00 + m[0][1] * c01 + m[0][2] * c02;
+    [
+        [
+            c00 / det,
+            (m[0][2] * m[2][1] - m[0][1] * m[2][2]) / det,
+            (m[0][1] * m[1][2] - m[0][2] * m[1][1]) / det,
+        ],
+        [
+            c01 / det,
+            (m[0][0] * m[2][2] - m[0][2] * m[2][0]) / det,
+            (m[0][2] * m[1][0] - m[0][0] * m[1][2]) / det,
+        ],
+        [
+            c02 / det,
+            (m[0][1] * m[2][0] - m[0][0] * m[2][1]) / det,
+            (m[0][0] * m[1][1] - m[0][1] * m[1][0]) / det,
+        ],
+    ]
+}
+
+/// CSS `lin_sRGB_to_XYZ` (D65).
+const LIN_SRGB_TO_XYZ: [[f64; 3]; 3] = [
+    [
+        506_752.0 / 1_228_815.0,
+        87_881.0 / 245_763.0,
+        12_673.0 / 70_218.0,
+    ],
+    [
+        87_098.0 / 409_605.0,
+        175_762.0 / 245_763.0,
+        12_673.0 / 175_545.0,
+    ],
+    [
+        7_918.0 / 409_605.0,
+        87_881.0 / 737_289.0,
+        1_001_167.0 / 1_053_270.0,
+    ],
+];
+
+/// CSS `XYZ_to_OKLab`, first matrix (XYZ D65 to cone response).
+const XYZ_TO_LMS: [[f64; 3]; 3] = [
+    [
+        0.819_022_437_996_703,
+        0.361_906_260_052_890_4,
+        -0.128_873_781_520_987_9,
+    ],
+    [
+        0.032_983_653_932_388_5,
+        0.929_286_861_586_343_4,
+        0.036_144_666_350_642_4,
+    ],
+    [
+        0.048_177_189_359_624_2,
+        0.264_239_531_752_730_8,
+        0.633_547_828_469_430_9,
+    ],
+];
+
+/// CSS `XYZ_to_OKLab`, second matrix (non-linear cone response to OKLab).
+const LMS_TO_OKLAB: [[f64; 3]; 3] = [
+    [
+        0.210_454_268_309_314,
+        0.793_617_774_702_305_4,
+        -0.004_072_043_011_619_3,
+    ],
+    [
+        1.977_998_532_431_168_4,
+        -2.428_592_242_048_58,
+        0.450_593_709_617_411,
+    ],
+    [
+        0.025_904_042_465_547_8,
+        0.782_771_712_457_529_6,
+        -0.808_675_754_923_077_4,
+    ],
+];
+
+/// Linear sRGB to OKLab's cone response in one step: the CSS matrices multiplied out
+/// at compile time, so per-pixel OKLab agrees with the palette caches.
+const LIN_SRGB_TO_LMS: [[f64; 3]; 3] = mat_mul(&XYZ_TO_LMS, &LIN_SRGB_TO_XYZ);
+const LMS_TO_LIN_SRGB: [[f64; 3]; 3] = mat_inv(&LIN_SRGB_TO_LMS);
+const OKLAB_TO_LMS: [[f64; 3]; 3] = mat_inv(&LMS_TO_OKLAB);
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the per-pixel path is f32 by design"
+)]
+const fn to_f32(m: &[[f64; 3]; 3]) -> [[f32; 3]; 3] {
+    let mut out = [[0.0; 3]; 3];
+    let mut r = 0;
+    while r < 3 {
+        let mut c = 0;
+        while c < 3 {
+            out[r][c] = m[r][c] as f32;
+            c += 1;
+        }
+        r += 1;
+    }
+    out
+}
+
+const LIN_SRGB_TO_LMS_F32: [[f32; 3]; 3] = to_f32(&LIN_SRGB_TO_LMS);
+const LMS_TO_LIN_SRGB_F32: [[f32; 3]; 3] = to_f32(&LMS_TO_LIN_SRGB);
+const LMS_TO_OKLAB_F32: [[f32; 3]; 3] = to_f32(&LMS_TO_OKLAB);
+const OKLAB_TO_LMS_F32: [[f32; 3]; 3] = to_f32(&OKLAB_TO_LMS);
+
+fn mul_f32(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+}
+
+/// Linear sRGB to OKLab in `f32`, for per-pixel work (the same matrices as
+/// [`xyz_to_oklab`] composed with [`linear_srgb_to_xyz`]).
+pub(crate) fn linear_to_oklab_f32(rgb: [f32; 3]) -> [f32; 3] {
+    let lms = mul_f32(&LIN_SRGB_TO_LMS_F32, rgb);
+    mul_f32(&LMS_TO_OKLAB_F32, lms.map(f32::cbrt))
+}
+
+/// OKLab to linear sRGB in `f32`, the inverse of [`linear_to_oklab_f32`]. Out-of-gamut
+/// results are not clipped.
+pub(crate) fn oklab_to_linear_f32(lab: [f32; 3]) -> [f32; 3] {
+    let lms = mul_f32(&OKLAB_TO_LMS_F32, lab).map(|v| v * v * v);
+    mul_f32(&LMS_TO_LIN_SRGB_F32, lms)
+}
+
 /// Linear sRGB to CIE XYZ relative to D65 (CSS `lin_sRGB_to_XYZ`).
 pub(crate) fn linear_srgb_to_xyz(rgb: [f64; 3]) -> [f64; 3] {
-    const M: [[f64; 3]; 3] = [
-        [
-            506_752.0 / 1_228_815.0,
-            87_881.0 / 245_763.0,
-            12_673.0 / 70_218.0,
-        ],
-        [
-            87_098.0 / 409_605.0,
-            175_762.0 / 245_763.0,
-            12_673.0 / 175_545.0,
-        ],
-        [
-            7_918.0 / 409_605.0,
-            87_881.0 / 737_289.0,
-            1_001_167.0 / 1_053_270.0,
-        ],
-    ];
-    mul(&M, rgb)
+    mul(&LIN_SRGB_TO_XYZ, rgb)
 }
 
 /// CIE XYZ (D65) to OKLab (CSS `XYZ_to_OKLab`). `L` is `0..=1`.
 pub(crate) fn xyz_to_oklab(xyz: [f64; 3]) -> [f64; 3] {
-    const XYZ_TO_LMS: [[f64; 3]; 3] = [
-        [
-            0.819_022_437_996_703,
-            0.361_906_260_052_890_4,
-            -0.128_873_781_520_987_9,
-        ],
-        [
-            0.032_983_653_932_388_5,
-            0.929_286_861_586_343_4,
-            0.036_144_666_350_642_4,
-        ],
-        [
-            0.048_177_189_359_624_2,
-            0.264_239_531_752_730_8,
-            0.633_547_828_469_430_9,
-        ],
-    ];
-    const LMS_TO_OKLAB: [[f64; 3]; 3] = [
-        [
-            0.210_454_268_309_314,
-            0.793_617_774_702_305_4,
-            -0.004_072_043_011_619_3,
-        ],
-        [
-            1.977_998_532_431_168_4,
-            -2.428_592_242_048_58,
-            0.450_593_709_617_411,
-        ],
-        [
-            0.025_904_042_465_547_8,
-            0.782_771_712_457_529_6,
-            -0.808_675_754_923_077_4,
-        ],
-    ];
     let lms = mul(&XYZ_TO_LMS, xyz);
     mul(&LMS_TO_OKLAB, [lms[0].cbrt(), lms[1].cbrt(), lms[2].cbrt()])
 }

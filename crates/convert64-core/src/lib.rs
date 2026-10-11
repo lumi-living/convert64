@@ -5,6 +5,9 @@
 //! [`par`] for the single-source iterator helpers.
 
 pub mod colour;
+pub mod geom;
+pub mod layer;
+pub mod mask;
 pub mod mode;
 pub mod model;
 pub mod palette;
@@ -13,6 +16,9 @@ pub mod rule;
 pub mod validate;
 
 pub use colour::{ColourIndex, ColourSet, InvalidColourIndex};
+pub use geom::{PxRect, SuperGrid, Vec2};
+pub use layer::{Blend, Layer, Recipe, SourceImage, Transform};
+pub use mask::{Mask, MaskRaster};
 pub use mode::{Mode, ModeSpec};
 pub use model::{
     BitmapImage, CellPos, CharColour, CharsetGlobals, CharsetImage, IndexedBitmap, ModelError,

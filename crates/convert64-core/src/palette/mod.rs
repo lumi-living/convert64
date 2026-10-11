@@ -239,6 +239,106 @@ pub fn oklab_of(c: Rgb8) -> Oklab {
     Oklab { l, a, b }
 }
 
+/// OKLab in polar form: lightness, chroma and hue angle (CSS `oklch()`).
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct Oklch {
+    /// Lightness, `0..=1`, the same as [`Oklab::l`].
+    pub l: f32,
+    /// Chroma, `√(a² + b²)`, `0` for greys.
+    pub c: f32,
+    /// Hue angle in radians, `-π..=π`, measured from the `+a` axis towards `+b`.
+    pub h: f32,
+}
+
+impl Oklab {
+    /// The same colour in polar form.
+    pub fn to_oklch(self) -> Oklch {
+        Oklch {
+            l: self.l,
+            c: self.a.hypot(self.b),
+            h: self.b.atan2(self.a),
+        }
+    }
+}
+
+impl Oklch {
+    /// The same colour in rectangular form.
+    pub fn to_oklab(self) -> Oklab {
+        let (sin, cos) = self.h.sin_cos();
+        Oklab {
+            l: self.l,
+            a: self.c * cos,
+            b: self.c * sin,
+        }
+    }
+}
+
+impl LinearRgb {
+    /// OKLab of this linear-light colour, computed in `f32` with the same CSS Color 4
+    /// matrices as the palette caches. Per-pixel work (adjustments) uses this.
+    pub fn to_oklab(self) -> Oklab {
+        let [l, a, b] = convert::linear_to_oklab_f32([self.r, self.g, self.b]);
+        Oklab { l, a, b }
+    }
+
+    /// The linear-light colour of an OKLab value; the inverse of [`Self::to_oklab`].
+    /// Out-of-gamut values are returned unclipped.
+    pub fn from_oklab(lab: Oklab) -> Self {
+        let [r, g, b] = convert::oklab_to_linear_f32([lab.l, lab.a, lab.b]);
+        Self { r, g, b }
+    }
+}
+
+/// Lookup tables for 8-bit sRGB: the linear value of every byte, and the linear
+/// thresholds halfway (in gamma-encoded space) between neighbouring bytes.
+struct SrgbTables {
+    to_linear: [f32; 256],
+    thresholds: [f32; 255],
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the tables are f32 by design; computed in f64 once"
+)]
+fn srgb_tables() -> &'static SrgbTables {
+    static TABLES: std::sync::OnceLock<SrgbTables> = std::sync::OnceLock::new();
+    TABLES.get_or_init(|| {
+        let mut to_linear = [0.0; 256];
+        for (i, v) in to_linear.iter_mut().enumerate() {
+            *v = convert::srgb_to_linear(i as f64 / 255.0) as f32;
+        }
+        let mut thresholds = [0.0; 255];
+        for (i, t) in thresholds.iter_mut().enumerate() {
+            *t = convert::srgb_to_linear((i as f64 + 0.5) / 255.0) as f32;
+        }
+        SrgbTables {
+            to_linear,
+            thresholds,
+        }
+    })
+}
+
+/// An 8-bit gamma-encoded sRGB channel as linear light `0..=1` (a table lookup).
+pub fn srgb8_to_linear(v: u8) -> f32 {
+    srgb_tables().to_linear[usize::from(v)]
+}
+
+/// Linear light to the nearest 8-bit sRGB value, rounding in gamma-encoded space.
+///
+/// Exact inverse of [`srgb8_to_linear`] for all 256 values; out-of-range and NaN inputs
+/// clamp (NaN to 0). Uses a binary search over precomputed thresholds, so the result
+/// does not depend on the platform's `powf`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the partition point of 255 thresholds is at most 255"
+)]
+pub fn linear_to_srgb8(v: f32) -> u8 {
+    if v.is_nan() {
+        return 0;
+    }
+    srgb_tables().thresholds.partition_point(|&t| t <= v) as u8
+}
+
 impl Default for Palette {
     /// Pepto (PAL), the default preset (`docs/PDD.md`).
     fn default() -> Self {
@@ -248,7 +348,7 @@ impl Default for Palette {
 
 #[cfg(test)]
 mod tests {
-    use super::{ColourIndex, Palette, Rgb8};
+    use super::{ColourIndex, LinearRgb, Oklab, Palette, Rgb8};
 
     fn hex(p: &Palette) -> Vec<String> {
         p.rgb_table().iter().map(ToString::to_string).collect()
@@ -302,6 +402,61 @@ mod tests {
         );
         let blue = p.linear(ColourIndex::BLUE);
         assert!((blue.b - 0.327_778_1).abs() < 1e-6, "{blue:?}");
+    }
+
+    #[test]
+    fn srgb8_round_trips_all_256_values() {
+        for v in 0..=255u8 {
+            assert_eq!(super::linear_to_srgb8(super::srgb8_to_linear(v)), v, "{v}");
+        }
+        assert_eq!(super::linear_to_srgb8(-1.0), 0);
+        assert_eq!(super::linear_to_srgb8(2.0), 255);
+        assert_eq!(super::linear_to_srgb8(f32::NAN), 0);
+        assert_eq!(super::srgb8_to_linear(255), 1.0);
+    }
+
+    #[test]
+    fn f32_oklab_agrees_with_the_palette_cache() {
+        let p = Palette::pepto_pal();
+        for c in ColourIndex::ALL {
+            let lin = p.linear(c);
+            let got = lin.to_oklab();
+            let want = p.oklab(c);
+            for (g, w) in [(got.l, want.l), (got.a, want.a), (got.b, want.b)] {
+                assert!((g - w).abs() < 2e-5, "{c}: {got:?} vs {want:?}");
+            }
+            let back = LinearRgb::from_oklab(got);
+            for (g, w) in [(back.r, lin.r), (back.g, lin.g), (back.b, lin.b)] {
+                assert!((g - w).abs() < 2e-5, "{c}: {back:?} vs {lin:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn oklch_round_trips() {
+        for lab in [
+            Oklab {
+                l: 0.5,
+                a: 0.1,
+                b: -0.05,
+            },
+            Oklab {
+                l: 0.9,
+                a: -0.2,
+                b: 0.15,
+            },
+            Oklab {
+                l: 0.3,
+                a: 0.0,
+                b: 0.0,
+            },
+        ] {
+            let lch = lab.to_oklch();
+            assert!(lch.c >= 0.0);
+            let back = lch.to_oklab();
+            assert!((back.a - lab.a).abs() < 1e-6 && (back.b - lab.b).abs() < 1e-6);
+            assert_eq!(back.l, lab.l);
+        }
     }
 
     #[test]
