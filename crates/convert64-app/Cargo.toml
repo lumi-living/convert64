@@ -11,6 +11,8 @@ publish.workspace = true
 
 [dependencies]
 convert64-core = { workspace = true }
+eframe = { workspace = true }
+egui = { workspace = true }
 
 [lints]
 workspace = true
