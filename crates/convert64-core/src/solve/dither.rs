@@ -99,15 +99,26 @@ pub struct PassResult {
     pub error: f32,
 }
 
+/// Cells whose output is copied from a previous solution (locks).
+#[derive(Clone, Copy, Debug)]
+pub struct Locked<'a> {
+    /// The locked cells.
+    pub cells: crate::geom::CellSet,
+    /// The previous solution's row-major pixels.
+    pub previous: &'a [ColourIndex],
+}
+
 /// One dithering pass over `input` with these cell sets (each cell's own colours; `bg`
 /// is added to every cell in multicolor). `layer_origins[i]` anchors layer `i`'s
-/// layer-locked patterns (whole target pixels).
+/// layer-locked patterns (whole target pixels). Locked cells keep their previous pixels
+/// and neither send nor receive error.
 pub fn pass(
     input: &Input,
     tables: &MetricTables,
     sets: &[ColourSet],
     bg: Option<ColourIndex>,
     layer_origins: &[(i64, i64)],
+    locked: Option<Locked<'_>>,
 ) -> PassResult {
     let (w, h) = input.size;
     let (cw, ch) = input.cell;
@@ -126,6 +137,7 @@ pub fn pass(
         .collect();
     let full_sets: Vec<ColourSet> = full.iter().map(|v| v.iter().copied().collect()).collect();
     let cell_of = |x: usize, y: usize| (y / ch) * cx + x / cw;
+    let is_locked = |cell: usize| locked.is_some_and(|l| l.cells.contains(input.cell_at(cell)));
     let mut out = vec![ColourIndex::BLACK; w * h];
     let mut received = vec![[0.0f32; 3]; w * h];
     let mut error = 0.0f32;
@@ -144,6 +156,12 @@ pub fn pass(
             } else {
                 q.coords
             };
+            if is_locked(cell) {
+                let prev = locked.expect("checked").previous[idx];
+                out[idx] = prev;
+                error += q.weight * q.metric.distance(q.coords, colours[prev.as_usize()]);
+                continue;
+            }
             let choice = if q.weight <= 0.0 {
                 // Uncovered: the background where there is one, else the nearest.
                 bg.filter(|b| set.contains(b))
@@ -197,6 +215,9 @@ pub fn pass(
                 }
                 let part = e.map(|v| v * scale * f32::from(wt));
                 let ncell = cell_of(nx, ny);
+                if is_locked(ncell) {
+                    continue;
+                }
                 if ncell != cell
                     && !accepts(
                         r.metric,
@@ -328,7 +349,7 @@ mod tests {
             let (input, t) = gradient_input(mode, KERNELS[k], 1.0, seed);
             let s = sets(&input, salt);
             let bg = mc.then_some(ColourIndex::BLACK);
-            let r = pass(&input, &t, &s, bg, &[]);
+            let r = pass(&input, &t, &s, bg, &[], None);
             let (cw, ch) = input.cell;
             for (i, c) in r.out.iter().enumerate() {
                 let (x, y) = (i % input.size.0, i / input.size.0);
@@ -357,7 +378,7 @@ mod tests {
             let bw: ColourSet = [ColourIndex::BLACK, ColourIndex::WHITE]
                 .into_iter()
                 .collect();
-            let r = pass(&input, &t, &vec![bw; 1000], None, &[]);
+            let r = pass(&input, &t, &vec![bw; 1000], None, &[], None);
             let whites = r.out.iter().filter(|&&c| c == ColourIndex::WHITE).count() as f32;
             let frac = whites / r.out.len() as f32;
             // OKLab L of linear 0.18 is ~0.565: roughly half the pixels white.
@@ -369,7 +390,7 @@ mod tests {
     fn strength_zero_diffuses_nothing() {
         let (input, t) = gradient_input(Mode::MulticolorBitmap, DitherKind::FloydSteinberg, 0.0, 3);
         let s = sets(&input, 2);
-        let r = pass(&input, &t, &s, Some(ColourIndex::BLACK), &[]);
+        let r = pass(&input, &t, &s, Some(ColourIndex::BLACK), &[], None);
         assert!(r.received.iter().all(|e| *e == [0.0; 3]));
     }
 
@@ -421,9 +442,9 @@ mod tests {
             let s = sets(&mixed, 3);
             let bg = (mode == Mode::MulticolorBitmap).then_some(ColourIndex::BLACK);
             let origins = layer_origins(mixed.grid(), &layers);
-            let m = pass(&mixed, &t, &s, bg, &origins);
-            let l = pass(&left_only, &t, &s, bg, &origins);
-            let r = pass(&right_only, &t, &s, bg, &origins);
+            let m = pass(&mixed, &t, &s, bg, &origins, None);
+            let l = pass(&left_only, &t, &s, bg, &origins, None);
+            let r = pass(&right_only, &t, &s, bg, &origins, None);
             let w = mixed.size.0;
             for (i, c) in m.out.iter().enumerate() {
                 let want = if i % w < w / 2 { l.out[i] } else { r.out[i] };
@@ -443,8 +464,8 @@ mod tests {
         let (input, t) = gradient_input(Mode::HiresBitmap, DitherKind::Sierra, 0.8, 1);
         let s = sets(&input, 4);
         assert_eq!(
-            pass(&input, &t, &s, None, &[]),
-            pass(&input, &t, &s, None, &[])
+            pass(&input, &t, &s, None, &[], None),
+            pass(&input, &t, &s, None, &[], None)
         );
     }
 }

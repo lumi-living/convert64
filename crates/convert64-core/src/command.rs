@@ -10,6 +10,7 @@
 //! [`TILE`](crate::mask::TILE)-sized raster tiles the command touched (taken before it
 //! ran), so undo is O(touched tiles); for modifier and source edits, the previous mask.
 
+use crate::colour::ColourIndex;
 use crate::geom::{PxRect, Vec2};
 use crate::layer::{Layer, Levels};
 use crate::mask::paint::{self, PaintMode};
@@ -17,18 +18,22 @@ use crate::mask::{
     Combine, Gradient, Key, Mask, MaskError, MaskRaster, MaskSource, Modifiers, SnapToCells,
     SourceEntry, Tile,
 };
+use crate::model::CellPos;
 use crate::region::Region;
+use crate::solve::steering::{Pin, Steering, colour_set};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// The document commands act on. E7 extends it (target mode, palette, pins, locks); for
-/// now it is the layer stack (bottom first) and the regions.
+/// The document commands act on. E7 extends it (target mode, palette); for now it is
+/// the layer stack (bottom first), the regions and the cell steering.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Project {
     /// Layers, bottom first.
     pub layers: Vec<Layer>,
     /// Region overrides, applied in order.
     pub regions: Vec<Region>,
+    /// Cell pins, locks and allow/deny lists (UX §7).
+    pub steering: Steering,
 }
 
 /// Why a command could not run.
@@ -222,6 +227,58 @@ pub struct LayerViaMask {
     pub cut: bool,
 }
 
+/// Pins colours on cells (UX §7): `full` fixes each cell's set to exactly `colours`;
+/// otherwise the set must contain them and the solver picks the rest.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CellPin {
+    /// The cells.
+    pub cells: Vec<CellPos>,
+    /// 1–4 colours.
+    pub colours: Vec<ColourIndex>,
+    /// Pin the whole set rather than these colours only.
+    #[serde(default)]
+    pub full: bool,
+}
+
+/// Locks cells: the next solve copies them from the previous result untouched.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CellLock {
+    /// The cells.
+    pub cells: Vec<CellPos>,
+    /// `false` unlocks.
+    #[serde(default = "yes")]
+    pub locked: bool,
+}
+
+const fn yes() -> bool {
+    true
+}
+
+/// Removes every pin, lock, allow and deny on cells.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CellClear {
+    /// The cells.
+    pub cells: Vec<CellPos>,
+}
+
+/// Restricts cells to these colours (a filter on top of the recipes' allowed colours).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CellAllow {
+    /// The cells.
+    pub cells: Vec<CellPos>,
+    /// The colours they may use.
+    pub colours: Vec<ColourIndex>,
+}
+
+/// Forbids colours in cells.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CellDeny {
+    /// The cells.
+    pub cells: Vec<CellPos>,
+    /// The colours they must not use.
+    pub colours: Vec<ColourIndex>,
+}
+
 /// A command (ADR-005). See [`REGISTRY`] for the names.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
@@ -243,6 +300,16 @@ pub enum Command {
     MaskFromAlpha(MaskFromAlpha),
     /// `layer_via_mask`.
     LayerViaMask(LayerViaMask),
+    /// `cell_pin`.
+    CellPin(CellPin),
+    /// `cell_lock`.
+    CellLock(CellLock),
+    /// `cell_clear`.
+    CellClear(CellClear),
+    /// `cell_allow`.
+    CellAllow(CellAllow),
+    /// `cell_deny`.
+    CellDeny(CellDeny),
 }
 
 /// A command's name and a one-line description, for front-ends (CLI help, MCP tool list).
@@ -293,6 +360,26 @@ pub const REGISTRY: &[CommandInfo] = &[
         summary: "New layer sharing the source pixels, with a selection as its mask; cut \
                   removes the selection from the original.",
     },
+    CommandInfo {
+        name: "cell_pin",
+        summary: "Pin colours on cells: the whole set (full) or colours the set must contain.",
+    },
+    CommandInfo {
+        name: "cell_lock",
+        summary: "Lock cells so a solve copies them from the previous result (locked: false unlocks).",
+    },
+    CommandInfo {
+        name: "cell_clear",
+        summary: "Remove every pin, lock, allow and deny on cells.",
+    },
+    CommandInfo {
+        name: "cell_allow",
+        summary: "Restrict cells to a list of colours.",
+    },
+    CommandInfo {
+        name: "cell_deny",
+        summary: "Forbid colours in cells.",
+    },
 ];
 
 /// What a command changed, for the compositor and solver: `LayerRect` maps to target
@@ -311,6 +398,8 @@ pub enum Dirty {
     Layer(usize),
     /// The stack itself (a layer added or removed).
     Stack,
+    /// Steering on these cells changed: re-solve them (the composite is unchanged).
+    Cells(crate::geom::CellSet),
 }
 
 /// What undo needs.
@@ -330,6 +419,8 @@ enum Memento {
         original: usize,
         original_mask: Option<Option<Mask>>,
     },
+    /// Steering before a cell command, and the cells it touched.
+    Steering(Box<Steering>, crate::geom::CellSet),
 }
 
 /// The layer's mask, creating a fully opaque one if it has none. Returns whether it was
@@ -362,6 +453,11 @@ impl Command {
             Self::MaskClear(_) => "mask_clear",
             Self::MaskFromAlpha(_) => "mask_from_alpha",
             Self::LayerViaMask(_) => "layer_via_mask",
+            Self::CellPin(_) => "cell_pin",
+            Self::CellLock(_) => "cell_lock",
+            Self::CellClear(_) => "cell_clear",
+            Self::CellAllow(_) => "cell_allow",
+            Self::CellDeny(_) => "cell_deny",
         }
     }
 
@@ -395,6 +491,17 @@ impl Command {
                 }
                 Ok(())
             }
+            Self::CellPin(c) => {
+                check_cells(&c.cells)?;
+                if c.colours.is_empty() || colour_set(&c.colours).len() > 4 {
+                    return Err(param("colours", "pin 1–4 different colours"));
+                }
+                Ok(())
+            }
+            Self::CellLock(CellLock { cells, .. })
+            | Self::CellClear(CellClear { cells })
+            | Self::CellAllow(CellAllow { cells, .. })
+            | Self::CellDeny(CellDeny { cells, .. }) => check_cells(cells),
             Self::MaskGradient(_)
             | Self::MaskKey(_)
             | Self::MaskLoad(_)
@@ -499,8 +606,52 @@ impl Command {
                 Ok(MaskRaster::from_values(w, h, alpha)?)
             }),
             Self::LayerViaMask(c) => layer_via_mask(p, c),
+            Self::CellPin(c) => steer(p, &c.cells, |s, cell| {
+                s.set_pin(
+                    cell,
+                    Pin {
+                        colours: colour_set(&c.colours),
+                        full: c.full,
+                    },
+                );
+            }),
+            Self::CellLock(c) => steer(p, &c.cells, |s, cell| s.set_lock(cell, c.locked)),
+            Self::CellClear(c) => steer(p, &c.cells, Steering::clear),
+            Self::CellAllow(c) => steer(p, &c.cells, |s, cell| {
+                s.set_allow(cell, colour_set(&c.colours))
+            }),
+            Self::CellDeny(c) => steer(p, &c.cells, |s, cell| {
+                s.set_deny(cell, colour_set(&c.colours))
+            }),
         }
     }
+}
+
+fn check_cells(cells: &[CellPos]) -> Result<(), CommandError> {
+    if cells.is_empty() {
+        return Err(param("cells", "name at least one cell"));
+    }
+    if let Some(c) = cells.iter().find(|c| c.x >= 40 || c.y >= 25) {
+        return Err(param("cells", format!("{c} is off the 40 × 25 screen")));
+    }
+    Ok(())
+}
+
+fn steer(
+    p: &mut Project,
+    cells: &[CellPos],
+    mut f: impl FnMut(&mut Steering, CellPos),
+) -> Result<(Memento, Dirty), CommandError> {
+    let before = p.steering.clone();
+    let mut touched = crate::geom::CellSet::EMPTY;
+    for &cell in cells {
+        f(&mut p.steering, cell);
+        touched.insert(cell);
+    }
+    Ok((
+        Memento::Steering(Box::new(before), touched),
+        Dirty::Cells(touched),
+    ))
 }
 
 fn push_source(
@@ -633,6 +784,10 @@ impl Memento {
                 }
                 Dirty::Stack
             }
+            Self::Steering(before, touched) => {
+                p.steering = *before;
+                Dirty::Cells(touched)
+            }
         }
     }
 }
@@ -731,6 +886,7 @@ mod tests {
         Project {
             layers: vec![Layer::new("photo", src)],
             regions: Vec::new(),
+            steering: Default::default(),
         }
     }
 
@@ -796,6 +952,7 @@ mod tests {
         let mut e = Editor::new(Project {
             layers: vec![Layer::new("a", src), Layer::new("b", src2)],
             regions: Vec::new(),
+            steering: Default::default(),
         });
         e.execute(Command::MaskFromAlpha(MaskFromAlpha { layer: 1 }))
             .unwrap();
@@ -945,6 +1102,55 @@ mod tests {
     }
 
     #[test]
+    fn steering_commands_apply_and_undo() {
+        let mut e = Editor::new(project());
+        let cells = vec![CellPos::new(1, 1), CellPos::new(2, 1)];
+        e.execute(Command::CellPin(CellPin {
+            cells: cells.clone(),
+            colours: vec![ColourIndex::RED, ColourIndex::WHITE],
+            full: false,
+        }))
+        .unwrap();
+        e.execute(Command::CellLock(CellLock {
+            cells: vec![CellPos::new(5, 5)],
+            locked: true,
+        }))
+        .unwrap();
+        e.execute(Command::CellDeny(CellDeny {
+            cells: cells.clone(),
+            colours: vec![ColourIndex::BLUE],
+        }))
+        .unwrap();
+        let s = &e.project().steering;
+        assert!(s.pin(CellPos::new(2, 1)).is_some());
+        assert!(s.locks().contains(CellPos::new(5, 5)));
+        assert!(s.deny(CellPos::new(1, 1)).contains(ColourIndex::BLUE));
+        let dirty = e.execute(Command::CellClear(CellClear { cells })).unwrap();
+        assert!(matches!(dirty, Dirty::Cells(c) if c.len() == 2));
+        assert!(e.project().steering.pin(CellPos::new(1, 1)).is_none());
+        for _ in 0..4 {
+            e.undo();
+        }
+        assert!(e.project().steering.is_empty());
+        assert!(
+            e.execute(Command::CellPin(CellPin {
+                cells: vec![CellPos::new(40, 0)],
+                colours: vec![ColourIndex::RED],
+                full: true
+            }))
+            .is_err()
+        );
+        assert!(
+            e.execute(Command::CellPin(CellPin {
+                cells: vec![CellPos::new(0, 0)],
+                colours: vec![],
+                full: true
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn registry_names_match_commands() {
         let names: Vec<&str> = REGISTRY.iter().map(|c| c.name).collect();
         for c in [
@@ -957,6 +1163,6 @@ mod tests {
         ] {
             assert!(names.contains(&c.name()));
         }
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 14);
     }
 }
