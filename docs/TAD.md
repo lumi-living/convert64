@@ -108,6 +108,57 @@ As built in E1 (2026-10-11): `eframe` runs on the **`glow`** (OpenGL / WebGL2) r
 
 As built in E3 (2026-10-11): `serde_json` and `toml` replaced the hand-written JSON writer (`convert64 validate --json`) and `thresholds.toml` reader that E3 shipped before they were listed here. `rmcp` already depends on `serde_json`, `thresholds.toml` needs comments and nested tables, and [figma.md](figma.md) plans a `tokens.json` import. Neither crate is a dependency of `convert64-core`'s library; the golden-test harness uses `toml` as a dev-dependency only.
 
+As built in E4 (2026-10-11): the compositor and attribute map ([ADR-002](adr/ADR-002-dither-as-per-pixel-attribute.md), [ADR-008](adr/ADR-008-layer-masks-raster-plus-parametric.md)), in `convert64-core`. #4 tracks the PRs.
+
+**Types**
+- **`geom`.** `Vec2`, `PxRect`, `CellSet` (the 40 × 25 cells), and `SuperGrid { n, target }`. `SuperGrid` is the only type that knows the multicolor 2:1 aspect.
+- **Canvas space.** Layers are placed in a 320 × 200 square-pixel canvas. Target space is 320 × 200 or 160 × 200, and super space is n × target.
+- **`layer`.**
+  - `SourceImage` holds f32 linear straight-alpha RGBA, decoded once through an sRGB LUT and shared by `Arc`.
+  - `Transform { translate, scale, flip_h, flip_v }` is axis-aligned with scale > 0.
+  - `Layer { name, source, transform, opacity, blend: Blend, visible, mask, adjustments, recipe }`.
+  - `Recipe { method: Method { kind, orientation }, strength, phase, metric, allowed, fit_mode }`.
+  - `Adjustments { levels, brightness_contrast, hsl, curves }` with exact per-byte tables, HSL in OKLCh, and Fritsch–Carlson curves.
+- **`mask`.** `Mask { raster: MaskRaster, sources: Vec<SourceEntry>, modifiers: Modifiers }`:
+  - `MaskRaster` is f32 in memory and u16 on disk.
+  - `SourceEntry` is a `Gradient` or `Key` plus a `Combine`.
+  - `Modifiers` holds invert, `Levels`, `SnapToCells` and feather.
+- **`region::Region`.** A canvas-space mask plus a `Recipe`.
+- **`composite`.** `Compositor`, `Canvas`, `TargetFrame` (straight linear RGB, coverage, `AttributeMap`), `AttrSource` and `debug_colour`.
+- **`command`.** `Project { layers, regions }`, `Command`, `Editor`, `REGISTRY` and `Dirty`.
+
+**Behaviour**
+- **Supersampling.** The default factor is 4× (1–8).
+- **Resampling** is separable per axis because transforms are axis-aligned. It is bilinear where a source pixel covers at least one super pixel, and Lanczos-3 stretched to the footprint below that. A layer's edge is its exact box coverage, so a sub-pixel nudge moves target pixels continuously.
+- **Feather cache.** Each layer keeps two caches:
+  - its resampled raster, keyed by the source `Arc`, adjustments, transform, mask generation and grid;
+  - its evaluated mask, keyed by the modifiers and that raster's identity.
+
+  The mask generation changes with any raster or source edit. A modifier slider therefore re-evaluates one mask and never resamples.
+- **Feather blur.** An exact Gaussian below σ = 4 super px, three box blurs (f64 prefix sums) above, and half resolution above σ = 8 target px.
+- **Incremental updates.** `Compositor::update` diffs what each layer contributes. It recomposites the changed footprints aligned to whole cells, and returns the `CellSet` whose output changed. `mask_change_cells` maps a layer-space dirty rect to cells before compositing.
+- **Fold.** Colour blends bottom-up with per-blend-mode loops. Attributes are claimed top-down, one write per pixel.
+- **Front-ends.** `convert64-cli` is also a library, holding the recipe-file JSON and `Session`. `convert64 recipe apply` and `convert64-mcp` run the same `Session`.
+
+**Deviations from ADR-002, ADR-008 and this document**
+- **Effective alpha.** In the attribute map it is PNG alpha × mask, as ADR-008 defines it, so opacity does not scale dither strength. On the target grid, the source covering most super pixels wins, and its strength is summed over its super pixels and divided by n².
+- **Feather is approximated.** Above σ = 4 super px the Gaussian is approximated by three box blurs (measured σ within ~4 %).
+- **Half-resolution feather.** ADR-008 asks for a half-resolution feather in general. It is used only above 8 target px; below that, full resolution is cheap enough. Each mask command re-blurs once, which matches ADR-008's "on stroke end".
+- **The command registry arrived with E4** (ADR-005 planned it for E7/E8), because the mask commands needed it. `Project` is only layers and regions so far.
+- **`MaskClear { value }`** sets the raster to one value (ADR-008's "reset").
+- **`LayerViaMask` with `cut`** inverts the selection on the original through its modifiers, because modifiers are super-grid operations.
+- **The MCP server** is a small synchronous JSON-RPC implementation on `serde_json` rather than `rmcp`, because `rmcp` needs `tokio`, which is not listed above. Moving to `rmcp` changes the transport only.
+- **Regions live in canvas space**, not on the composite's super grid. They stay put when layers move and survive a mode switch.
+
+**Benchmark (#87)**
+- **Scene:** 10 full-canvas masked layers, σ = 8 feather, all blend modes, 4×.
+- **Command:**
+  ```
+  cargo test --release -p convert64-core [--features parallel] --test bench -- --ignored --nocapture
+  ```
+  The `bench` workflow runs it on the macOS runner class.
+- **Results:** Warm recomposite with `parallel` on the macOS runner class (Apple M1 Virtual, 3 cores) is 4.37 ms multicolor and 9.50 ms hi-res, within the 10 ms budget. Single-threaded it is 18.5 / 26.2 ms. A cold composite takes 156 / 173 ms, and nudging one full-screen layer 15 / 28 ms; neither is within budget yet. `convert64-cli` and `convert64-mcp` build the core with `parallel`; the app does not, because it also targets wasm.
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.
@@ -134,6 +185,7 @@ The public data model every front-end, solver, reader and writer shares. Constru
 - Unit tests per solver stage; property tests that every solver output passes the validator.
 - Golden fixtures: `fixtures/<name>/source.png` + expected `.kla/.art/.png`; compared bit-exact for formats, perceptually (OKLab MSE threshold) for solver output.
 - Baseline comparison against png2c64 output on the same fixtures.
+- Composite scenes (`fixtures/composite/<scene>/scene.toml`): layered scenes rendered by the compositor and compared with `expected_1x.png` (target-grid composite, alpha = coverage) and `expected_attr.png` (attribute-map debug render), within ±2 per channel; regenerated through `cargo xtask regen-goldens` like every golden.
 - Acceptance: exported files load and display in VICE `x64sc`.
 - **VICE check (local, not in CI).** `cargo xtask vice-check` shows every png2c64 baseline in VICE `x64sc`. It builds a display PRG from the committed `baseline.kla`/`.art` with `convert64-formats::prg` ([file-formats.md](reference/file-formats.md#koala--art-studio-display-prg-convert64_formatsprgdisplay_prg)) and checks the PRG carries the baseline byte for byte, so it needs only VICE and a clone. VICE runs PAL, with the Pepto palette at neutral colour settings and no CRT filter. The task crops the 320×200 window from the 384×272 exit screenshot and maps every pixel to its nearest palette index. It requires **≥ 99.5 %** agreement with the decoded baseline and every cell showing only the baseline cell's colours. It writes `fixtures/<name>/vice.png` and a line in the fixture README. Tests in `xtask/src/vice.rs` run the comparison in CI on the committed captures, with negative controls: another fixture's baseline and a capture shifted one pixel right or down must fail. VICE is not installed on the CI runners, so run it locally whenever baselines change: `cargo xtask png2c64-baselines --png2c64 <bin>`, then `cargo xtask vice-check`. Never lower the bar to make a fixture pass.
 
