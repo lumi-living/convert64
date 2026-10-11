@@ -618,6 +618,7 @@ name = "convert64-core"
 version = "0.0.0"
 dependencies = [
  "rayon",
+ "serde",
 ]
 
 [[package]]
