@@ -21,8 +21,9 @@
 //! ```
 
 use convert64_core::command::{
-    Command, Dirty, LayerViaMask, MaskClear, MaskFill, MaskFromAlpha, MaskGradient, MaskKey,
-    MaskLoad, MaskSetModifier, MaskStroke, ModifierChange, Selection,
+    CellAllow, CellClear, CellDeny, CellLock, CellPin, Command, Dirty, LayerViaMask, MaskClear,
+    MaskFill, MaskFromAlpha, MaskGradient, MaskKey, MaskLoad, MaskSetModifier, MaskStroke,
+    ModifierChange, Selection,
 };
 use convert64_core::geom::Vec2;
 use convert64_core::layer::{Adjustments, Blend, Layer, Recipe, SourceImage, Transform};
@@ -182,6 +183,16 @@ pub enum JsonCommand {
         /// Layer.
         layer: LayerRef,
     },
+    /// Pin colours on cells (`{"x": 3, "y": 4}` positions, colours 0–15).
+    CellPin(CellPin),
+    /// Lock cells (`"locked": false` unlocks).
+    CellLock(CellLock),
+    /// Clear all steering on cells.
+    CellClear(CellClear),
+    /// Restrict cells to colours.
+    CellAllow(CellAllow),
+    /// Forbid colours in cells.
+    CellDeny(CellDeny),
     /// New layer sharing the source pixels with a selection as its mask.
     LayerViaMask {
         /// The layer to split.
@@ -296,6 +307,7 @@ impl Session {
             editor: Editor::new(Project {
                 layers,
                 regions: Vec::new(),
+                steering: Default::default(),
             }),
             compositor: Compositor::new(grid),
             base: base.to_owned(),
@@ -395,6 +407,11 @@ impl Session {
             JsonCommand::MaskFromAlpha { layer } => Command::MaskFromAlpha(MaskFromAlpha {
                 layer: self.resolve(&layer)?,
             }),
+            JsonCommand::CellPin(c) => Command::CellPin(c),
+            JsonCommand::CellLock(c) => Command::CellLock(c),
+            JsonCommand::CellClear(c) => Command::CellClear(c),
+            JsonCommand::CellAllow(c) => Command::CellAllow(c),
+            JsonCommand::CellDeny(c) => Command::CellDeny(c),
             JsonCommand::LayerViaMask {
                 source_layer,
                 selection,
@@ -498,10 +515,12 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use convert64_core::ColourIndex;
     use convert64_core::layer::Levels;
     use convert64_core::mask::{
         GradientKind, KeyChannel, MaskSource, Modifiers, SnapToCells, SourceEntry,
     };
+    use convert64_core::model::CellPos;
 
     fn every_command() -> Vec<JsonCommand> {
         let l = LayerRef::Name("photo".into());
@@ -561,6 +580,26 @@ mod tests {
                 value: 1.0,
             },
             JsonCommand::MaskFromAlpha { layer: l.clone() },
+            JsonCommand::CellPin(CellPin {
+                cells: vec![CellPos::new(3, 4)],
+                colours: vec![ColourIndex::RED, ColourIndex::WHITE],
+                full: true,
+            }),
+            JsonCommand::CellLock(CellLock {
+                cells: vec![CellPos::new(0, 0), CellPos::new(39, 24)],
+                locked: false,
+            }),
+            JsonCommand::CellClear(CellClear {
+                cells: vec![CellPos::new(1, 1)],
+            }),
+            JsonCommand::CellAllow(CellAllow {
+                cells: vec![CellPos::new(2, 2)],
+                colours: vec![ColourIndex::BLACK],
+            }),
+            JsonCommand::CellDeny(CellDeny {
+                cells: vec![CellPos::new(2, 2)],
+                colours: vec![ColourIndex::YELLOW],
+            }),
             JsonCommand::LayerViaMask {
                 source_layer: l,
                 selection: Selection {
@@ -610,6 +649,11 @@ mod tests {
         assert!(serde_json::from_str::<JsonCommand>(bad).is_ok());
         let bad_gradient = r#"{"command":"mask_gradient","layer":0,"gradient":{"kind":"linear","from":{"x":1,"y":1},"to":{"x":1,"y":1}}}"#;
         assert!(serde_json::from_str::<JsonCommand>(bad_gradient).is_err());
+        let pin = r#"{"command":"cell_pin","cells":[{"x":3,"y":4}],"colours":[2,1],"full":true}"#;
+        assert!(matches!(
+            serde_json::from_str::<JsonCommand>(pin),
+            Ok(JsonCommand::CellPin(_))
+        ));
         let unknown = r#"{"command":"mask_paint_colour","layer":0}"#;
         assert!(serde_json::from_str::<JsonCommand>(unknown).is_err());
     }

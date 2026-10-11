@@ -66,7 +66,22 @@ pub struct Input {
     /// Per cell, the colours every covered pixel's recipe allows (a filter, never a
     /// request: a recipe can only exclude colours from a cell).
     pub(crate) allowed: Vec<ColourSet>,
+    /// For each layer or region with Force pixels, its intended colours: the top
+    /// [`FORCE_TOP_K`] of its own nearest-colour histogram.
+    pub(crate) intended: Vec<(AttrSource, ColourSet)>,
 }
+
+/// How much more a Force pixel counts than an Adaptive one in the cell-set search
+/// (TAD §3.1: Force weights a region's intended colours heavily; neighbours pay).
+pub const FORCE_WEIGHT: f32 = 8.0;
+
+/// How many of a Force layer's most frequent colours count as its intended colours.
+pub const FORCE_TOP_K: usize = 4;
+
+/// What a Force pixel pays, on top of the real distance, for a colour outside its
+/// layer's intended colours: about the largest squared distance in any metric, so a set
+/// that drops an intended colour its Force pixels need loses to one that keeps it.
+pub const FORCE_PENALTY: f32 = 1.0;
 
 impl Input {
     /// Prepares `frame` for solving with the palette in `tables`.
@@ -104,7 +119,8 @@ impl Input {
                 }
             })
             .collect();
-        let dist = build_dist(&px, tables, w, (cw, ch), (cx, cy));
+        let intended = intended_colours(&px, tables);
+        let dist = build_dist(&px, tables, w, (cw, ch), (cx, cy), &intended);
         let mut allowed = vec![ColourSet::ALL; cx * cy];
         for (ci, set) in allowed.iter_mut().enumerate() {
             let (gx, gy) = (ci % cx, ci / cx);
@@ -125,6 +141,7 @@ impl Input {
             px,
             dist,
             allowed,
+            intended,
         }
     }
 
@@ -140,7 +157,14 @@ impl Input {
                 ..*q
             })
             .collect();
-        let dist = build_dist(&px, tables, self.size.0, self.cell, self.cells);
+        let dist = build_dist(
+            &px,
+            tables,
+            self.size.0,
+            self.cell,
+            self.cells,
+            &self.intended,
+        );
         Self {
             px,
             dist,
@@ -253,13 +277,55 @@ impl Input {
     }
 }
 
-/// Per cell, the `16 × P` table of weighted distances.
+/// Each Force source's intended colours: the [`FORCE_TOP_K`] colours its pixels are
+/// most often nearest to, weighted by coverage (ties by index).
+fn intended_colours(px: &[Px], tables: &MetricTables) -> Vec<(AttrSource, ColourSet)> {
+    let mut hist: Vec<(AttrSource, [f32; 16])> = Vec::new();
+    for q in px
+        .iter()
+        .filter(|q| q.fit == FitMode::Force && q.weight > 0.0)
+    {
+        let colours = tables.colours(q.metric.space());
+        let near = (0..16)
+            .min_by(|&a, &b| {
+                q.metric
+                    .distance(q.coords, colours[a])
+                    .total_cmp(&q.metric.distance(q.coords, colours[b]))
+            })
+            .expect("16 colours");
+        let i = match hist.iter().position(|(s, _)| *s == q.source) {
+            Some(i) => i,
+            None => {
+                hist.push((q.source, [0.0; 16]));
+                hist.len() - 1
+            }
+        };
+        hist[i].1[near] += q.weight;
+    }
+    hist.into_iter()
+        .map(|(source, h)| {
+            let mut order: Vec<usize> = (0..16).filter(|&c| h[c] > 0.0).collect();
+            order.sort_by(|&a, &b| h[b].total_cmp(&h[a]).then(a.cmp(&b)));
+            let set = order
+                .into_iter()
+                .take(FORCE_TOP_K)
+                .map(|c| ColourIndex::ALL[c])
+                .collect();
+            (source, set)
+        })
+        .collect()
+}
+
+/// Per cell, the `16 × P` table of weighted distances. A Force pixel counts
+/// [`FORCE_WEIGHT`] times, and a colour outside its layer's intended colours costs it
+/// [`FORCE_PENALTY`] more, so sets keeping the intended colours win and neighbours pay.
 fn build_dist(
     px: &[Px],
     tables: &MetricTables,
     w: usize,
     (cw, ch): (usize, usize),
     (cx, cy): (usize, usize),
+    intended: &[(AttrSource, ColourSet)],
 ) -> Vec<f32> {
     let p = cw * ch;
     let mut dist = vec![0.0f32; cx * cy * 16 * p];
@@ -269,8 +335,31 @@ fn build_dist(
         for (k, (x, y)) in cell_pixels(gx, gy, cw, ch).enumerate() {
             let q = &px[y * w + x];
             let colours = tables.colours(q.metric.space());
-            for (c, coord) in colours.iter().enumerate() {
-                table[c * p + k] = q.weight * q.metric.distance(q.coords, *coord);
+            let force = (q.fit == FitMode::Force)
+                .then(|| {
+                    intended
+                        .iter()
+                        .find(|(s, _)| *s == q.source)
+                        .map(|(_, set)| *set)
+                })
+                .flatten();
+            match force {
+                None => {
+                    for (c, coord) in colours.iter().enumerate() {
+                        table[c * p + k] = q.weight * q.metric.distance(q.coords, *coord);
+                    }
+                }
+                Some(want) => {
+                    for (c, coord) in colours.iter().enumerate() {
+                        let d = q.metric.distance(q.coords, *coord);
+                        let extra = if want.contains(ColourIndex::ALL[c]) {
+                            0.0
+                        } else {
+                            FORCE_PENALTY
+                        };
+                        table[c * p + k] = FORCE_WEIGHT * q.weight * (d + extra);
+                    }
+                }
             }
         }
     });
