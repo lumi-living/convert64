@@ -23,7 +23,7 @@ Every existing converter treats conversion as **one global operation on one flat
 
 ## 2. Hardware constraints
 
-See TAD §1 (palette, modes table, validator rules). Source: c64-designer and c64-coder skill references.
+See TAD §1 (palette, modes table, validator rules). Now maintained in docs/reference/.
 
 ## 3. Product scope
 
@@ -49,8 +49,8 @@ M0 Scaffold → M1 Bitmap MVP → M2 Charsets & Sprites → M3 Scene features. E
 
 ## 8. Open items at the time of writing
 
-- Domain: register `convert64.com/.app/.dev` only if the browser build goes public; confirm availability with domains-mcp first.
+- Domain: register `convert64.com/.app/.dev` only if the browser build goes public; confirm availability first.
 
 ---
 
-*Sources used for constraints: c64-designer skill (palette, graphics-modes, dithering, data-formats references), c64-coder skill (memory alignment, VIC bank rules, assembler import syntax). Reference-tool facts checked on 2026-10-11.*
+*Constraint sources are now maintained in docs/reference/. Reference-tool facts checked on 2026-10-11.*

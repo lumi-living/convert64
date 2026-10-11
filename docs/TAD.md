@@ -4,7 +4,7 @@
 
 ## 1. Hardware constraints (the type system of the output)
 
-Source: the `c64-designer` and `c64-coder` skills' references (palette, graphics-modes, dithering, data-formats, memory map).
+Summary only — the full, authoritative version is [reference/vic-ii-constraints.md](reference/vic-ii-constraints.md); byte layouts are in [reference/file-formats.md](reference/file-formats.md).
 
 ### 1.1 Palette
 Fixed 16 colours. Reference values Pepto / Colodore. Nine luminance levels (0, 8, 10, 12, 15, 16, 20, 24, 31). Same-luma pairs — Blue+Brown, Red+DkGrey, Purple+Orange, MedGrey+LtBlue, Green+LtRed, Cyan+LtGrey, Yellow+LtGreen — blend cleanly on PAL; the quantiser can reward them.
@@ -99,7 +99,7 @@ convert64/                      cargo workspace + pnpm workspace
 ├─ app/                         Svelte 5 + TS + Vite UI; Canvas 2D preview; Tauri and browser
 ├─ src-tauri/                   Tauri 2 shell (native dialogs, file watching)
 ├─ fixtures/                    source images + golden outputs for regression
-└─ docs/                        PDD, TAD, adr/, TOOLING, github/
+└─ docs/                        PDD, TAD, adr/, reference/, TOOLING, github/
 ```
 
 Crates: `image` (decode), own OKLab code, `rayon` behind a `parallel` feature, `serde` (project file), `clap`, `insta` (snapshots). No `std::fs` in core.
