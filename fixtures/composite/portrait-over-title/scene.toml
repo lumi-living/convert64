@@ -1,0 +1,30 @@
+# Two layers on a multicolor target at 4×: the title backdrop with ordered dither and a
+# downscaled portrait on top, cut out by a radial gradient mask with a 4 px feather and a
+# fractional (sub-pixel) position. Exercises Lanczos downscaling, mask sources, feather and
+# strength fading in the attribute map.
+target = "multicolor-bitmap"
+n = 4
+
+[[layers]]
+name = "title"
+source = "title"
+transform = { scale = { x = 0.3125, y = 0.3125 } }
+recipe = { strength = 0.6, method = { kind = "bayer4" } }
+
+[[layers]]
+name = "portrait"
+source = "portrait"
+transform = { translate = { x = 150.25, y = 52.5 }, scale = { x = 0.15, y = 0.15 } }
+recipe = { strength = 1.0, method = { kind = "floyd-steinberg" } }
+
+[layers.adjustments.brightness_contrast]
+brightness = 0.1
+contrast = 0.2
+
+[layers.mask]
+fill = 0.0
+modifiers = { feather = 4.0 }
+
+[[layers.mask.sources]]
+combine = "max"
+source = { type = "gradient", kind = "radial", from = { x = 512.0, y = 318.5 }, to = { x = 512.0, y = 0.0 }, softness = 0.6 }

@@ -380,6 +380,242 @@ golden_cases! {
 }
 
 // ---------------------------------------------------------------------------------------
+// Composite scenes (E4): layered scenes in `fixtures/composite/<scene>/scene.toml`,
+// composited and compared with `expected_1x.png` (the composite box-filtered to the
+// target grid; straight sRGB, alpha = coverage) and `expected_attr.png` (the attribute
+// map's debug render). Comparison allows ±2 per channel so that last-bit differences in
+// the platform's `sin`/`exp` cannot fail CI; `regen-goldens` compares exactly.
+
+mod composite_scene {
+    use convert64_core::geom::PxRect;
+    use convert64_core::layer::{Adjustments, Blend, Layer, Recipe, SourceImage, Transform};
+    use convert64_core::mask::{Mask, MaskRaster, Modifiers, SourceEntry};
+    use convert64_core::mode::Mode;
+    use convert64_core::palette::linear_to_srgb8;
+    use convert64_core::region::Region;
+    use convert64_core::{Compositor, SuperGrid};
+    use serde::Deserialize;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    const fn one() -> f32 {
+        1.0
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Scene {
+        target: Mode,
+        n: u8,
+        layers: Vec<SceneLayer>,
+        #[serde(default)]
+        regions: Vec<SceneRegion>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct SceneLayer {
+        name: String,
+        /// A fixture name: its `source.png` is the layer's pixels.
+        source: String,
+        #[serde(default)]
+        transform: Transform,
+        #[serde(default = "one")]
+        opacity: f32,
+        #[serde(default)]
+        blend: Blend,
+        #[serde(default)]
+        recipe: Recipe,
+        #[serde(default)]
+        adjustments: Adjustments,
+        mask: Option<SceneMask>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct SceneMask {
+        /// The raster's uniform value before sources.
+        #[serde(default)]
+        fill: f32,
+        #[serde(default)]
+        sources: Vec<SourceEntry>,
+        #[serde(default)]
+        modifiers: Modifiers,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct SceneRegion {
+        name: String,
+        /// Canvas rectangle `[x0, y0, x1, y1]` where the region's mask is 1.
+        rect: [u32; 4],
+        recipe: Recipe,
+    }
+
+    fn fixtures() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures")
+    }
+
+    fn load_source(fixture: &str) -> Arc<SourceImage> {
+        let path = fixtures().join(fixture).join("source.png");
+        let img = image::open(&path)
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+            .to_rgba8();
+        let (w, h) = img.dimensions();
+        Arc::new(SourceImage::from_srgba8(w, h, img.as_raw()).expect("decoded PNG"))
+    }
+
+    /// Composites a scene: `(target width, height, composite RGBA8, attribute map RGBA8)`.
+    pub(super) fn render(scene_dir: &Path) -> (u32, u32, Vec<u8>, Vec<u8>) {
+        let text = std::fs::read_to_string(scene_dir.join("scene.toml")).expect("scene.toml");
+        let scene: Scene = toml::from_str(&text).expect("valid scene.toml");
+        let grid = SuperGrid::new(scene.target, scene.n).expect("valid grid");
+        let mut sources = std::collections::HashMap::new();
+        let layers: Vec<Layer> = scene
+            .layers
+            .into_iter()
+            .map(|l| {
+                let src = Arc::clone(
+                    sources
+                        .entry(l.source.clone())
+                        .or_insert_with(|| load_source(&l.source)),
+                );
+                let (w, h) = src.size();
+                let mut layer = Layer::new(l.name, src);
+                layer.set_transform(l.transform);
+                layer.set_opacity(l.opacity).expect("opacity");
+                layer.set_blend(l.blend);
+                layer.set_recipe(l.recipe);
+                layer.set_adjustments(l.adjustments);
+                if let Some(m) = l.mask {
+                    let mut mask = Mask::new(MaskRaster::filled(w, h, m.fill).expect("mask"));
+                    mask.set_sources(m.sources);
+                    mask.set_modifiers(m.modifiers);
+                    layer.set_mask(Some(mask)).expect("mask size");
+                }
+                layer
+            })
+            .collect();
+        let regions: Vec<Region> = scene
+            .regions
+            .into_iter()
+            .map(|r| {
+                let rect = PxRect::new(r.rect[0], r.rect[1], r.rect[2], r.rect[3]);
+                let vals = (0..320 * 200)
+                    .map(|i| {
+                        if rect.contains(i % 320, i / 320) {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    })
+                    .collect();
+                Region::new(
+                    r.name,
+                    MaskRaster::from_values(320, 200, vals).unwrap(),
+                    r.recipe,
+                )
+                .expect("region")
+            })
+            .collect();
+        let mut c = Compositor::new(grid);
+        let colour: Vec<u8> = c
+            .composite_with(&layers, &regions)
+            .downsample()
+            .iter()
+            .flat_map(|p| {
+                let a = p[3];
+                let rgb = if a > 0.0 {
+                    [p[0] / a, p[1] / a, p[2] / a].map(linear_to_srgb8)
+                } else {
+                    [0; 3]
+                };
+                [
+                    rgb[0],
+                    rgb[1],
+                    rgb[2],
+                    (a.clamp(0.0, 1.0) * 255.0).round() as u8,
+                ]
+            })
+            .collect();
+        let attr: Vec<u8> = c
+            .attribute_map()
+            .debug_rgba()
+            .into_iter()
+            .flatten()
+            .collect();
+        let (w, h) = grid.target_size();
+        (w, h, colour, attr)
+    }
+
+    fn save(path: &Path, w: u32, h: u32, rgba: &[u8]) {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).expect("candidate dir");
+        }
+        image::RgbaImage::from_raw(w, h, rgba.to_vec())
+            .expect("RGBA size")
+            .save(path)
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    }
+
+    fn compare(name: &str, file: &str, w: u32, h: u32, got: &[u8]) {
+        let path = fixtures().join("composite").join(name).join(file);
+        let want = image::open(&path)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "{}: {e}; run `cargo xtask regen-goldens --accept --reason \"...\"`",
+                    path.display()
+                )
+            })
+            .to_rgba8();
+        assert_eq!(want.dimensions(), (w, h), "{}", path.display());
+        let worst = want
+            .as_raw()
+            .iter()
+            .zip(got)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        let differing = want
+            .as_raw()
+            .chunks(4)
+            .zip(got.chunks(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        println!("composite/{name}/{file}: {differing} pixels differ, worst channel {worst}");
+        assert!(
+            worst <= 2,
+            "composite/{name}/{file}: a channel differs by {worst} (> 2); if intended, run \
+             `cargo xtask regen-goldens --accept --reason \"...\"`"
+        );
+    }
+
+    pub(super) fn check(name: &str) {
+        let dir = fixtures().join("composite").join(name);
+        let (w, h, colour, attr) = render(&dir);
+        if let Some(out) = std::env::var_os("CONVERT64_GOLDEN_OUT") {
+            let out = PathBuf::from(out).join("composite").join(name);
+            save(&out.join("expected_1x.png"), w, h, &colour);
+            save(&out.join("expected_attr.png"), w, h, &attr);
+        }
+        compare(name, "expected_1x.png", w, h, &colour);
+        compare(name, "expected_attr.png", w, h, &attr);
+    }
+}
+
+mod composite {
+    #[test]
+    fn portrait_over_title() {
+        super::composite_scene::check("portrait-over-title");
+    }
+
+    #[test]
+    fn title_multiply_hires() {
+        super::composite_scene::check("title-multiply-hires");
+    }
+}
+
+// ---------------------------------------------------------------------------------------
 // Harness self-tests.
 
 /// A deliberately different solver must fail every fixture's threshold.

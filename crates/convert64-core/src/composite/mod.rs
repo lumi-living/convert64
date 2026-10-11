@@ -8,12 +8,18 @@
 //! adjustments, transform, mask or the grid change; a recomposite with unchanged layers
 //! only re-blends.
 
+mod attr;
 mod blend;
 mod resample;
 
+pub use attr::{AttrSource, AttributeMap, TargetAttr, debug_colour};
+
 use crate::geom::{CellSet, PxRect, SuperGrid, Vec2};
+use crate::layer::Recipe;
 use crate::layer::{AdjustCache, Adjustments, Blend, Layer, SourceImage, Transform};
 use crate::mask::{HALF_RES_FEATHER, Modifiers, SnapToCells};
+use crate::region::Region;
+use attr::AttrPx;
 use resample::{AxisMap, resample};
 use std::sync::Arc;
 
@@ -140,6 +146,10 @@ struct LayerCache {
 
 /// One layer ready to blend.
 struct Blendable {
+    /// Attribute-map code: the layer's index in the stack.
+    code: u16,
+    /// The recipe's dither strength.
+    strength: f32,
     blend: Blend,
     opacity: f32,
     raster: Arc<LayerRaster>,
@@ -152,6 +162,10 @@ pub struct Compositor {
     grid: SuperGrid,
     caches: Vec<LayerCache>,
     canvas: Canvas,
+    /// The super-grid attribute map of the last composite.
+    attrs: Vec<AttrPx>,
+    /// Recipes of the last composite's layers and regions, for the attribute map.
+    recipes: (Vec<Recipe>, Vec<Recipe>),
     resamples: u64,
     mask_evals: u64,
 }
@@ -163,6 +177,8 @@ impl Compositor {
             grid,
             caches: Vec::new(),
             canvas: Canvas::new(grid),
+            attrs: vec![AttrPx::EMPTY; grid_len(grid)],
+            recipes: (Vec::new(), Vec::new()),
             resamples: 0,
             mask_evals: 0,
         }
@@ -179,6 +195,7 @@ impl Compositor {
         if grid != self.grid {
             self.grid = grid;
             self.canvas = Canvas::new(grid);
+            self.attrs = vec![AttrPx::EMPTY; grid_len(grid)];
         }
     }
 
@@ -206,12 +223,47 @@ impl Compositor {
         Some((m.from.rect, m.values.as_slice()))
     }
 
-    /// Composites `layers` (bottom first) and returns the canvas.
+    /// The attribute map of the last composite, box-filtered to the target grid.
+    pub fn attribute_map(&self) -> AttributeMap {
+        AttributeMap::reduce(
+            self.grid,
+            &self.attrs,
+            self.recipes.0.clone(),
+            self.recipes.1.clone(),
+        )
+    }
+
+    /// Composites `layers` (bottom first) with no regions and returns the canvas.
     pub fn composite(&mut self, layers: &[Layer]) -> &Canvas {
+        self.composite_with(layers, &[])
+    }
+
+    /// Composites `layers` (bottom first), then applies `regions` (in order) to the
+    /// attribute map, and returns the canvas.
+    pub fn composite_with(&mut self, layers: &[Layer], regions: &[Region]) -> &Canvas {
+        let stack = self.prepare(layers);
+        self.recipes = (
+            layers.iter().map(|l| *l.recipe()).collect(),
+            regions.iter().map(|r| *r.recipe()).collect(),
+        );
+        let grid = self.grid;
+        fold(
+            &mut self.canvas,
+            &mut self.attrs,
+            &stack,
+            regions,
+            grid.bounds(),
+        );
+        &self.canvas
+    }
+
+    /// Brings every visible layer's raster and evaluated mask up to date.
+    fn prepare(&mut self, layers: &[Layer]) -> Vec<Blendable> {
+        assert!(layers.len() < 0x8000, "at most 32767 layers");
         self.caches.resize_with(layers.len(), LayerCache::default);
         let grid = self.grid;
         let mut stack = Vec::with_capacity(layers.len());
-        for (layer, cache) in layers.iter().zip(&mut self.caches) {
+        for (index, (layer, cache)) in layers.iter().zip(&mut self.caches).enumerate() {
             if !layer.visible() || layer.opacity() <= 0.0 {
                 continue;
             }
@@ -255,15 +307,21 @@ impl Compositor {
                 }
             };
             stack.push(Blendable {
+                code: u16::try_from(index).expect("checked above"),
+                strength: layer.recipe().strength(),
                 blend: layer.blend(),
                 opacity: layer.opacity(),
                 raster: Arc::clone(raster),
                 mask,
             });
         }
-        fold(&mut self.canvas, &stack, grid.bounds());
-        &self.canvas
+        stack
     }
+}
+
+fn grid_len(grid: SuperGrid) -> usize {
+    let (w, h) = grid.size();
+    w as usize * h as usize
 }
 
 /// Resamples one layer (adjusted, premultiplied) onto the grid.
@@ -313,22 +371,36 @@ fn build_raster(layer: &Layer, adjust: &mut AdjustCache, grid: SuperGrid) -> Lay
     LayerRaster { rect, rgba, mask }
 }
 
-/// Blends `stack` (bottom first) into `canvas` over `area`, clearing it first.
-fn fold(canvas: &mut Canvas, stack: &[Blendable], area: PxRect) {
-    let (w, _) = canvas.grid.size();
+/// A canvas row and its attribute row, with the row index.
+type FoldRow<'a> = (usize, &'a mut [[f32; 4]], &'a mut [AttrPx]);
+
+/// Blends `stack` (bottom first) into `canvas` over `area`, clearing it first, and
+/// rebuilds the attribute map there: the top-most layer with effective alpha (PNG alpha ×
+/// mask) above zero wins, strength × that alpha; then each region in order wins where
+/// its mask is above zero, strength × mask.
+fn fold(
+    canvas: &mut Canvas,
+    attrs: &mut [AttrPx],
+    stack: &[Blendable],
+    regions: &[Region],
+    area: PxRect,
+) {
+    let grid = canvas.grid;
+    let (w, _) = grid.size();
     let w = w as usize;
-    let mut rows: Vec<(usize, &mut [[f32; 4]])> = canvas
+    let mut rows: Vec<FoldRow<'_>> = canvas
         .px
         .chunks_mut(w)
+        .zip(attrs.chunks_mut(w))
         .enumerate()
         .filter(|(y, _)| (area.y0 as usize..area.y1 as usize).contains(y))
+        .map(|(y, (p, a))| (y, p, a))
         .collect();
-    crate::par::for_each(&mut rows, |(y, row)| {
+    crate::par::for_each(&mut rows, |(y, row, attr)| {
         let y = *y as u32;
         let (x0, x1) = (area.x0 as usize, area.x1 as usize);
-        for p in &mut row[x0..x1] {
-            *p = [0.0; 4];
-        }
+        row[x0..x1].fill([0.0; 4]);
+        attr[x0..x1].fill(AttrPx::EMPTY);
         for b in stack {
             let r = &b.raster;
             let span = r.rect.intersect(PxRect::new(area.x0, y, area.x1, y + 1));
@@ -339,9 +411,30 @@ fn fold(canvas: &mut Canvas, stack: &[Blendable], area: PxRect) {
             let base = (y - r.rect.y0) as usize * rw;
             for x in span.x0..span.x1 {
                 let i = base + (x - r.rect.x0) as usize;
-                let k = b.opacity * b.mask.as_ref().map_or(1.0, |m| m[i]);
+                let m = b.mask.as_ref().map_or(1.0, |m| m[i]);
                 let s = r.rgba[i];
+                let k = b.opacity * m;
                 blend::blend(b.blend, &mut row[x as usize], s.map(|v| v * k));
+                let alpha = s[3] * m;
+                if alpha > 0.0 {
+                    attr[x as usize] = AttrPx {
+                        code: b.code,
+                        strength: b.strength * alpha,
+                    };
+                }
+            }
+        }
+        for (j, region) in regions.iter().enumerate() {
+            let code = attr::AttrSource::Region(u16::try_from(j).expect("few regions")).code();
+            let strength = region.recipe().strength();
+            for x in area.x0..area.x1 {
+                let m = region.sample(grid.super_px_centre_in_canvas(x, y));
+                if m > 0.0 {
+                    attr[x as usize] = AttrPx {
+                        code,
+                        strength: strength * m,
+                    };
+                }
             }
         }
     });
@@ -852,6 +945,134 @@ mod tests {
         l.set_transform(Transform::translated(Vec2::new(0.5, 0.0)).unwrap());
         c.composite(&[l]);
         assert_eq!((c.resamples(), c.mask_evals()), (2, 3));
+    }
+
+    /// Bottom: full-screen Bayer 4×4 at 100 %. Top: full-screen Floyd–Steinberg at 80 %
+    /// masked to the left of the hi-res cell boundary at x = 40, feathered σ = 3.
+    fn two_layer_scene() -> Vec<Layer> {
+        use crate::layer::DitherKind;
+        let mut bottom = Layer::new("bottom", solid(320, 200, [0.2, 0.3, 0.4, 1.0]));
+        bottom.set_recipe(crate::layer::Recipe::with_method(DitherKind::Bayer4, 1.0).unwrap());
+        let mut top = masked(
+            solid(320, 200, [0.9, 0.7, 0.1, 1.0]),
+            half_mask(320, 200, 40),
+            Modifiers::feathered(3.0).unwrap(),
+        );
+        top.set_recipe(crate::layer::Recipe::with_method(DitherKind::FloydSteinberg, 0.8).unwrap());
+        vec![bottom, top]
+    }
+
+    /// The attribute map of the two-layer scene across cells 3–6 of target rows 99–100:
+    /// per pixel the source (0 = bottom, 1 = top) and the strength quantised to 8 bits.
+    #[test]
+    fn attribute_map_across_a_feathered_cell_boundary_snapshot() {
+        let g = grid(Mode::HiresBitmap, 4);
+        let mut c = Compositor::new(g);
+        c.composite(&two_layer_scene());
+        let map = c.attribute_map();
+        let mut bytes = Vec::new();
+        for y in [99, 100] {
+            for x in 24..56 {
+                let a = map.get(x, y);
+                let code = match a.source {
+                    AttrSource::Layer(i) => i as u8,
+                    AttrSource::Region(i) => 0x80 | i as u8,
+                    AttrSource::None => 0xff,
+                };
+                bytes.extend([code, (a.strength * 255.0).round() as u8]);
+            }
+        }
+        insta::assert_snapshot!(hex(&bytes));
+    }
+
+    #[test]
+    fn strength_fades_across_the_feather_then_the_layer_below_takes_over() {
+        let g = grid(Mode::MulticolorBitmap, 4);
+        let mut c = Compositor::new(g);
+        c.composite(&two_layer_scene());
+        let map = c.attribute_map();
+        // Edge at canvas x 40 = multicolor target x 20; σ 3 target px.
+        assert_eq!(map.get(5, 50).source, AttrSource::Layer(1));
+        assert!((map.get(5, 50).strength - 0.8).abs() < 1e-3);
+        let mut prev = f32::INFINITY;
+        let mut x = 10;
+        while map.get(x, 50).source == AttrSource::Layer(1) {
+            let s = map.get(x, 50).strength;
+            assert!(
+                s <= prev + 1e-6,
+                "strength must fall across the feather at x {x}"
+            );
+            prev = s;
+            x += 1;
+        }
+        assert!(
+            prev < 0.05,
+            "the fade reaches ~0 before the bottom layer wins: {prev}"
+        );
+        assert!((20..40).contains(&x), "switch at {x}");
+        assert_eq!(map.get(x, 50).source, AttrSource::Layer(0));
+        assert!((map.get(150, 50).strength - 1.0).abs() < 1e-6);
+        assert_eq!(
+            map.recipe_at(150, 50).unwrap().0.method().kind,
+            crate::layer::DitherKind::Bayer4
+        );
+    }
+
+    #[test]
+    fn regions_override_only_under_their_mask() {
+        use crate::layer::DitherKind;
+        let g = grid(Mode::HiresBitmap, 2);
+        let vals: Vec<f32> = (0..320 * 200)
+            .map(|i| {
+                let (x, y) = (i % 320, i / 320);
+                if (100..140).contains(&x) && (50..90).contains(&y) {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let region = Region::new(
+            "sky",
+            MaskRaster::from_values(320, 200, vals).unwrap(),
+            crate::layer::Recipe::with_method(DitherKind::None, 0.5).unwrap(),
+        )
+        .unwrap();
+        let mut c = Compositor::new(g);
+        let layers = two_layer_scene();
+        let before = c.composite(&layers).clone();
+        let after = c
+            .composite_with(&layers, std::slice::from_ref(&region))
+            .clone();
+        assert_eq!(before, after, "regions change no colour");
+        let map = c.attribute_map();
+        assert_eq!(map.get(120, 70).source, AttrSource::Region(0));
+        assert!((map.get(120, 70).strength - 0.5).abs() < 1e-6);
+        assert_eq!(
+            map.recipe_at(120, 70).unwrap().0.method().kind,
+            DitherKind::None
+        );
+        for (x, y) in [(98, 70), (142, 70), (120, 48), (120, 92), (10, 10)] {
+            assert!(
+                matches!(map.get(x, y).source, AttrSource::Layer(_)),
+                "({x}, {y})"
+            );
+        }
+    }
+
+    #[test]
+    fn debug_render_marks_uncovered_pixels_black() {
+        let g = grid(Mode::MulticolorBitmap, 2);
+        let mut c = Compositor::new(g);
+        c.composite(&[at(Layer::new("a", solid(40, 40, [1.0; 4])), 100.0, 100.0)]);
+        let rgba = c.attribute_map().debug_rgba();
+        assert_eq!(rgba.len(), 160 * 200);
+        assert_eq!(rgba[0], [0, 0, 0, 255]);
+        let inside = rgba[(120 * 160 + 60) as usize];
+        assert_eq!(
+            inside,
+            debug_colour(crate::layer::DitherKind::FloydSteinberg, 1.0)
+        );
     }
 
     proptest! {

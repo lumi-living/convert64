@@ -5,7 +5,9 @@
 //! candidates instead of failing: `insta` writes `*.snap.new` next to each changed format
 //! snapshot (`INSTA_UPDATE=new`, `INSTA_FORCE_PASS=1`), and every solver case writes its
 //! rendering to `target/golden-candidates/<fixture>/expected.png`
-//! (`CONVERT64_GOLDEN_OUT`). It then compares candidates with the committed goldens.
+//! (`CONVERT64_GOLDEN_OUT`); composite scenes (`fixtures/composite/<scene>/`) write
+//! `expected_1x.png` and `expected_attr.png` there. It then compares candidates with the
+//! committed goldens.
 //!
 //! - Report mode (`--report`, or no flag): prints what would change, removes the
 //!   `*.snap.new` files it created and exits 1 if anything differs. It changes no
@@ -149,14 +151,23 @@ fn check_tree(root: &Path, mode: Mode) -> Result<bool, String> {
     }
 }
 
+/// Fixture directories with goldens: `fixtures/<name>/` with a `thresholds.toml`, and
+/// layered composite scenes `fixtures/composite/<scene>/` with a `scene.toml`.
 fn fixture_dirs(root: &Path) -> Result<Vec<PathBuf>, String> {
     let fixtures = root.join("fixtures");
-    let mut dirs: Vec<PathBuf> = fs::read_dir(&fixtures)
-        .map_err(|e| format!("{}: {e}", fixtures.display()))?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.join("thresholds.toml").exists())
-        .collect();
+    let list = |dir: &Path, marker: &str| -> Result<Vec<PathBuf>, String> {
+        Ok(fs::read_dir(dir)
+            .map_err(|e| format!("{}: {e}", dir.display()))?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.join(marker).exists())
+            .collect())
+    };
+    let mut dirs = list(&fixtures, "thresholds.toml")?;
+    let composite = fixtures.join("composite");
+    if composite.is_dir() {
+        dirs.extend(list(&composite, "scene.toml")?);
+    }
     dirs.sort();
     Ok(dirs)
 }
@@ -218,22 +229,25 @@ fn run_harness(root: &Path, candidates: &Path, verify: bool) -> Result<(), Strin
     Ok(())
 }
 
-fn pixels(path: &Path) -> Result<Vec<Rgb8>, String> {
+/// RGBA pixels; alpha matters for composite goldens, whose alpha is coverage.
+fn pixels(path: &Path) -> Result<Vec<(Rgb8, u8)>, String> {
     let img = image::open(path)
         .map_err(|e| format!("{}: {e}", path.display()))?
-        .to_rgb8();
+        .to_rgba8();
     Ok(img
         .pixels()
-        .map(|p| Rgb8::new(p.0[0], p.0[1], p.0[2]))
+        .map(|p| (Rgb8::new(p.0[0], p.0[1], p.0[2]), p.0[3]))
         .collect())
 }
 
 fn collect_changes(root: &Path, candidates: &Path) -> Result<Vec<Change>, String> {
+    let fixtures = root.join("fixtures");
     let mut changes = Vec::new();
     for dir in fixture_dirs(root)? {
+        // `portrait`, or `composite/<scene>` for layered scenes.
         let fixture = dir
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
+            .strip_prefix(&fixtures)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default();
         // Format snapshots: insta wrote a .snap.new for every mismatch.
         let mut news: Vec<PathBuf> = fs::read_dir(&dir)
@@ -256,36 +270,53 @@ fn collect_changes(root: &Path, candidates: &Path) -> Result<Vec<Change>, String
                 apply: Apply::Snapshot(new),
             });
         }
-        // Solver goldens: compare pixels of the candidate and the committed PNG.
-        let candidate = candidates.join(&fixture).join("expected.png");
-        let golden = dir.join("expected.png");
-        if !candidate.exists() {
+        // Image goldens: every PNG the harness wrote for this fixture (`expected.png` for
+        // solver cases; `expected_1x.png` and `expected_attr.png` for composite scenes),
+        // compared pixel by pixel with the committed file.
+        let cand_dir = candidates.join(&fixture);
+        let Ok(entries) = fs::read_dir(&cand_dir) else {
             continue;
-        }
-        let new = pixels(&candidate)?;
-        let detail = if golden.exists() {
-            let old = pixels(&golden)?;
-            let differing = old.iter().zip(&new).filter(|(a, b)| a != b).count();
-            if differing == 0 && old.len() == new.len() {
-                continue;
-            }
-            format!(
-                "{differing} of {} pixels differ, OKLab MSE {:.6}",
-                new.len(),
-                mse(&old, &new)
-            )
-        } else {
-            "new golden".to_owned()
         };
-        changes.push(Change {
-            fixture,
-            file: "expected.png".to_owned(),
-            detail,
-            apply: Apply::Png {
-                from: candidate,
-                to: golden,
-            },
-        });
+        let mut pngs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "png"))
+            .collect();
+        pngs.sort();
+        for candidate in pngs {
+            let file = candidate
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let golden = dir.join(&file);
+            let new = pixels(&candidate)?;
+            let detail = if golden.exists() {
+                let old = pixels(&golden)?;
+                let differing = old.iter().zip(&new).filter(|(a, b)| a != b).count();
+                if differing == 0 && old.len() == new.len() {
+                    continue;
+                }
+                format!(
+                    "{differing} of {} pixels differ, OKLab MSE {:.6}",
+                    new.len(),
+                    mse(
+                        &old.iter().map(|p| p.0).collect::<Vec<_>>(),
+                        &new.iter().map(|p| p.0).collect::<Vec<_>>()
+                    )
+                )
+            } else {
+                "new golden".to_owned()
+            };
+            changes.push(Change {
+                fixture: fixture.clone(),
+                file,
+                detail,
+                apply: Apply::Png {
+                    from: candidate,
+                    to: golden,
+                },
+            });
+        }
     }
     Ok(changes)
 }
