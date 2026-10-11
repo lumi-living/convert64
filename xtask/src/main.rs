@@ -43,7 +43,8 @@ enum Command {
     },
     /// Show every png2c64 baseline in VICE and compare the capture with it.
     ///
-    /// Needs VICE (`x64sc`) and the display PRGs from `png2c64-baselines`. Writes
+    /// Needs only VICE (`x64sc`): the display PRGs are built from the committed baselines
+    /// with `convert64_formats::prg`. Writes
     /// `fixtures/<name>/vice.png` and, for fixtures that pass (≥ 99.5 % of pixels agree
     /// and every cell shows only the baseline's colours), a line in the fixture README.
     /// Local only: VICE is not on the CI runners.
