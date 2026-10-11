@@ -9,7 +9,14 @@ repository.workspace = true
 authors.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+# Opt-in data parallelism via rayon. Off by default so the crate builds for
+# wasm32-unknown-unknown unchanged (CLAUDE.md non-negotiable 2).
+parallel = ["dep:rayon"]
+
 [dependencies]
+rayon = { workspace = true, optional = true }
 
 [lints]
 workspace = true
