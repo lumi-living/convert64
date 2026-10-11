@@ -21,3 +21,6 @@ Thumbs.db
 # Local scratch (never commit test renders you did not mean to)
 /scratch
 /fixtures/_local
+
+# Agent worktrees created by Claude Code sessions
+.claude/worktrees/
