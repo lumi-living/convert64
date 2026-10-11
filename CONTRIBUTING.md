@@ -40,14 +40,14 @@ Every file in the repository, test data included, must be MIT-compatible: no GPL
 
 Until the solver exists (E5), the solver under test is an identity stub fed the png2c64 baseline, so every score is 0.
 
-**Updating goldens** is allowed when a change is intended, and the PR must say why. Nothing in `fixtures/` is ever edited by hand:
+**Updating goldens** is allowed when a change is intended, and it must say why. Nothing in `fixtures/` is ever edited by hand. Commit your code change first: the tool refuses a dirty tree, because it records the commit that produced the goldens.
 
 ```sh
-# snapshots: rewrite expected_*.snap
-INSTA_UPDATE=always cargo test -p convert64-core --test golden format
-# rendered goldens: write candidates, then copy them over expected.png
-CONVERT64_GOLDEN_OUT=target/golden-candidates cargo test -p convert64-core --test golden solver
+cargo xtask regen-goldens                                  # list what would change; exit 1 if anything does
+cargo xtask regen-goldens --accept --reason "why"          # replace the goldens and log the reason
 ```
+
+`--accept` writes the new `expected_*.snap` and `expected.png` files. It appends one line per changed fixture to [`fixtures/CHANGELOG.md`](fixtures/CHANGELOG.md), with the date, commit, files and reason, and re-runs the harness. Commit the result together with your PR, and quote the `mse_vs_png2c64` lines in its description.
 
 ## Format references
 
