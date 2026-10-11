@@ -14,3 +14,5 @@ Every change to a golden file (`fixtures/<name>/expected_*.snap`, `fixtures/<nam
 - 2026-10-11 `0fcd8cf48298` **portrait** (expected_prg.snap): new display-PRG snapshots from #81: convert64-formats::prg on the png2c64 baseline
 - 2026-10-11 `0fcd8cf48298` **terrain** (expected_prg.snap): new display-PRG snapshots from #81: convert64-formats::prg on the png2c64 baseline
 - 2026-10-11 `0fcd8cf48298` **title** (expected_prg.snap): new display-PRG snapshots from #81: convert64-formats::prg on the png2c64 baseline
+- 2026-10-11 `9ce9d72e12e6` **composite/portrait-over-title** (expected_1x.png, expected_attr.png): E4 #85: first composite scenes (portrait-over-title, title-multiply-hires): 1× composite and attribute-map debug render
+- 2026-10-11 `9ce9d72e12e6` **composite/title-multiply-hires** (expected_1x.png, expected_attr.png): E4 #85: first composite scenes (portrait-over-title, title-multiply-hires): 1× composite and attribute-map debug render
