@@ -106,6 +106,20 @@ Row anatomy, left to right (editor consensus): **eye** · **thumbnail** (source,
 - Selecting a layer selects what the Recipe panel edits and what nudging moves. Multi-select applies recipe changes to all (v2).
 - Empty state (no layers): one sentence and one button — *"Drop an image here or open one. Convert64 shows the C64 result as soon as it loads."* **Open image…**
 
+### 5a. Splitting an image into layers
+
+Users split an image because one area needs different treatment. Which tool depends on *what* differs:
+
+| What differs for the area | Use | Why |
+|---|---|---|
+| Only the recipe — dither, metric, allowed colours, Force/Adaptive | **Region** (`R`, §7) | no new layer; a region is a mask plus a recipe painted over the composite |
+| Also adjustments, transform/nudge, blend mode or opacity | **Layer via mask** | the area needs its own layer state |
+| A different source image | **New from file** + mask | — |
+
+**Layer via mask** is the counterpart of Photoshop's *Layer via copy / via cut* that fits ADR-003: no pixels are copied. The new layer references the same source pixels as the original and gets the current selection as its mask; with the *cut* variant the original receives the inverted mask. A selection is made with the mask tools (§7a: lasso `W`, key `K`, gradient `G`, snap to cells) while no mask is being edited — the same tools, the same red overlay. `Cmd J` with a selection active = layer via mask; `Shift Cmd J` = via cut; without a selection `Cmd J` is plain Duplicate. The new layer is named "<original> (mask)" and selected, with its mask thumbnail showing the selection. Because the compositor blends feathered alpha and the attribute map takes the top-most layer, overlapping feathered edges between the two layers behave as one would expect, and a Region can still be painted on top for a recipe-only tweak inside the new layer.
+
+Bottom icon strip gains **Layer via mask** between Duplicate and Add mask; it is disabled until a selection exists, with a tooltip saying so.
+
 ## 6. Recipe & adjustments panel (the form)
 
 This is the only real form in the app, so it follows form conventions strictly: visible labels, slider + numeric field on one row, per-group **Reset**, no modal apply.
@@ -114,7 +128,7 @@ Collapsible groups, in this order, all open by default on a tall window:
 
 1. **Position** — X, Y as `DragValue` with 0.25 px step (sub-pixel), Scale %, Flip H/V toggles. Arrow keys nudge 1 px, `Shift+arrow` 10 px, `Alt+arrow` 0.25 px (the sub-pixel nudge is the feature; it gets the modifier that no editor uses).
 2. **Adjustments** — Brightness, Contrast, Saturation, Hue as sliders −100…100 with numeric entry; Levels (black/gamma/white) and Curves (own widget over a histogram). Reset per widget via double-click on the label (PhotoCraft-style scrubby label) and a group Reset button.
-3. **Mask** — Feather radius (px, slider 0–32), Invert, Paint… (enters region tool).
+3. **Mask** — see §7a. Feather radius (target px, slider 0–32), Invert, Levels (black/white/gamma), Snap to cells (*Off / Expand / Contract / Nearest*), a **Sources** list (painted strokes, gradients, keys — each with its combine mode and a delete), and **Edit mask** (enters the mask tools, §7a). A layer without a mask shows one button: **Add mask** (from PNG alpha if the layer has any, otherwise full white).
 4. **Dither recipe** — Method (segmented by family: *None · Ordered · Diffusion · Noise*, then a dropdown within the family), Strength 0–100 % slider, Pattern phase (*Screen-locked / Layer-locked*), Orientation (*Auto / Vertical-biased*). Grouping by family follows Ditherista's lesson: a flat list of 30 methods is unusable.
 5. **Colour fitting** — Metric (*OKLab · CIELAB · Pepto YUV · RGB*), Fitting (*Adaptive / Force*, segmented, with one-line help: "Adaptive lets the solver reassign cell colours for the lowest error. Force keeps this layer's colours even if neighbours pay."), Luma-pair bias toggle, **Allowed colours**: the 16 palette swatches as toggles (all on by default; a disabled swatch is drawn hatched, not hidden).
 
@@ -133,6 +147,26 @@ Three tools in the toolbar, all operate on the preview, all additive to the proj
 
 Right-click on any cell: a small menu — *Pin colours · Lock · Clear pin/lock · Jump to worst neighbour · Copy cell colours*. `Cmd/Ctrl Shift ]` jumps to the next-worst cell, `[` to the previous.
 
+## 7a. Mask tools (ADR-008)
+
+Masks are edited inside Convert64 because the edge is tuned against the cell grid: move it, change the feather, watch the clash overlay. A mask is one raster in layer space plus non-destructive modifiers; every tool below is a command with undo. The brush is the only freehand tool in the app and it paints weight, never colour (ADR-003).
+
+Entering mask mode (`M`, or **Edit mask** in the Recipe panel, or clicking the mask thumbnail) switches the toolbar to the mask tools and shows the mask as a **red quick-mask overlay** on the working view (Photoshop convention; red is distinct from every overlay colour in §10 and from the C64 palette's two reds at 50 % opacity). `Alt`-click the mask thumbnail shows the mask alone as greyscale. `Esc` or `M` leaves mask mode.
+
+| Tool | Key | Click | Drag | Options bar |
+|---|---|---|---|---|
+| **Brush** | `B` | dab | paint `Add`; hold `Alt` for `Subtract` | Size (`[` / `]`), Hardness, Flow; `X` swaps Add/Subtract |
+| **Lasso / polygon** | `W` | add a vertex; double-click or `Enter` to close | freehand lasso | `Add` / `Subtract`, Fill value |
+| **Gradient** | `G` | — | drag from→to; `Shift` constrains to 45° | Linear / Radial, Softness, combine `Max · Min · Multiply` |
+| **Key** | `K` | sample the layer pixel under the cursor | drag to widen the range | Luma / Chroma / Colour, Range, Softness, combine |
+| **Snap to cells** | toolbar toggle | — | — | Off / Expand / Contract / Nearest; previews the snapped edge in the overlay |
+| **Feather** | slider in options bar | — | — | 0–32 target px; applies after snap |
+| **Invert / Clear / Fill / Load PNG / From alpha** | options-bar buttons | — | — | — |
+
+Feedback: while a brush stroke is in progress only the quick-mask overlay updates; the solver re-runs on mouse-up for the cells under the stroke's bounding box and the status bar says "Re-solved 14 cells". A clash that sits under a feathered edge gets a one-line hint in the Clashes panel: *"Edge straddles cell 12,7 — try Snap to cells or a smaller feather."*
+
+Mask thumbnails in the Layers panel (§5) show the raster with modifiers applied; the chain icon between layer and mask thumbnails is informational in v1 (masks always move with the layer; unlinking is v2).
+
 ## 8. Keyboard shortcuts
 
 `Cmd` on macOS, `Ctrl` elsewhere; `Option`↔`Alt`. Menu items show the accelerator via `ctx.format_shortcut`. Shortcuts are suppressed while a text field has focus.
@@ -149,9 +183,13 @@ Right-click on any cell: a small menu — *Pin colours · Lock · Clear pin/lock
 | Jump to result at cursor | click the result panel | Photoshop Navigator |
 | Pan | `Space` + drag, `H` | all |
 | New layer from file / Duplicate / Delete | `Shift Cmd N` / `Cmd J` / `Delete` | Photoshop family |
+| Layer via mask / via cut (with a selection) | `Cmd J` / `Shift Cmd J` | Photoshop *Layer via copy / cut* |
 | Toggle layer visibility | `Cmd ,` ; click eye | Photoshop/Pixelmator |
 | Nudge 1 / 10 / 0.25 px | `←↑↓→` / `Shift+` / `Alt+` | editors / ours |
 | Tools: Nudge, Pin, Lock, Region | `V`, `P`, `L`, `R` | single-key tools (Photoshop style) |
+| Mask mode on/off; mask tools Brush, Lasso, Gradient, Key | `M`; `B`, `W`, `G`, `K` | Photoshop (`B`, `G`), ours (`M`, `W`, `K`) |
+| Brush size down / up; swap Add/Subtract | `[` / `]`; `X` | Photoshop |
+| Show mask alone | `Alt`-click mask thumbnail | Photoshop |
 | Grid / Clashes / Border | `Cmd '` / `Shift C` / `Cmd B` | Affinity/Pixelmator for grid; ours |
 | Hold-to-compare (flips to the other image) | `\` (hold) | Photoshop |
 | Split / A-B / side-by-side | `,` cycles | Affinity's "split view cycle" |
@@ -169,6 +207,7 @@ One glossary, used identically in the app, `convert64 --help`, MCP tool names an
 | Term | Means | Not |
 |---|---|---|
 | **Layer** | a source image with its own transform, mask, adjustments and recipe | "image", "picture" |
+| **Selection** | a temporary mask made with the mask tools, used to create a region or a layer via mask | "marquee" |
 | **Recipe** | the per-layer dithering + colour-fitting settings | "settings", "profile" |
 | **Solve** / re-solve | run the constraint solver; produces the result | "convert", "render", "process" (CLI keeps `convert` as the verb for files) |
 | **Result** | the solved C64 image shown in the preview | "output", "preview" (preview is the *view* of the result) |
@@ -177,6 +216,9 @@ One glossary, used identically in the app, `convert64 --help`, MCP tool names an
 | **Pin** | require colours in a cell | "force" (Force is the fitting mode) |
 | **Lock** | freeze a cell's result | "freeze" |
 | **Region** | a painted area with its own recipe | "selection", "mask" (mask is per-layer alpha) |
+| **Mask** | a per-layer weight that hides part of the layer and fades its dither; one raster plus feather/snap/levels modifiers | "alpha", "transparency" (the PNG's own alpha is separate) |
+| **Feather** | Gaussian softening of a mask edge, measured in target pixels | "blur", "soft edge" |
+| **Snap to cells** | quantising a mask edge to whole C64 cells | "align to grid" |
 | **Adaptive / Force** | fitting modes (ArcPaint64's terms, kept so scene users recognise them) | "soft / hard" |
 | **Mode** | the C64 graphics mode (Multicolor, Hi-res, Charset…) | "format" (format is the export file type) |
 

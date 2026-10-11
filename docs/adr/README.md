@@ -11,3 +11,4 @@ One file per decision, `ADR-NNN-short-title.md`, copied from `ADR-000-template.m
 | [005](ADR-005-command-engine-with-cli-json-mcp.md) | One command engine behind UI, CLI and MCP | Accepted |
 | [006](ADR-006-egui-single-rust-workspace.md) | egui/eframe UI in a single Rust workspace (supersedes 001's UI choice) | Accepted |
 | [007](ADR-007-light-dark-theme-and-material-icons.md) | Light and dark themes; Material Symbols icon font | Accepted |
+| [008](ADR-008-layer-masks-raster-plus-parametric.md) | Layer masks: one raster plus parametric modifiers, edited in-app | Accepted |

@@ -40,7 +40,7 @@ What is missing is the step *between* the source art and the pixel editor — wh
 - ✅ Import PNG/JPG/TIFF at 8/16-bit; internal storage f32 linear RGBA. ⏩ Layered PSD / OpenRaster import (via `photocraft-psd`), each PSD layer becoming a Convert64 layer.
 - ✅ Unlimited layers; opacity; blend modes (normal, multiply, screen, overlay).
 - ✅ Float-precision transform: translate (sub-pixel), scale, flip; ⏩ rotate.
-- ✅ Raster mask per layer, paintable; ⏩ vector/gradient masks.
+- ✅ Raster mask per layer, painted in-app (brush, lasso, gradient, luma/chroma key) with non-destructive feather / levels / snap-to-cells ([ADR-008](adr/ADR-008-layer-masks-raster-plus-parametric.md)); ⏩ vector (bezier) masks.
 - ✅ Feather / blur of mask edge (Gaussian, radius in target pixels).
 - ✅ Per-layer adjustments: levels, brightness/contrast, hue/saturation/lightness, curves; ⏩ selective colour.
 - ✅ Per-layer dither recipe: method (none / Bayer 2×2, 4×4, 8×8 / Floyd–Steinberg / Atkinson / Jarvis–Judice–Ninke / Sierra / blue-noise / line- and 2:1-biased variants), strength 0–100 %, pattern phase (screen-locked or layer-locked), orientation preference.
