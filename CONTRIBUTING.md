@@ -25,6 +25,30 @@ We need source images whose rights allow redistribution under MIT (your own art,
 
 Every file in the repository, test data included, must be MIT-compatible: no GPL or CC-BY-SA material, not even in tests.
 
+## Golden tests
+
+`cargo test -p convert64-core --test golden` runs two cases per fixture in `fixtures/`:
+
+- **`format::<fixture>`, bit-exact.** The fixture's png2c64 baseline is read and serialised again. The bytes are compared with `fixtures/<fixture>/expected_kla.snap` (or `expected_art.snap`). That file is an `insta` snapshot holding an annotated hex dump: one line per bitmap cell, one per Screen or Colour RAM row. A failure prints a diff naming the cell or row that changed.
+- **`solver::<fixture>`, perceptual.** The solver's output is rendered through Pepto PAL and compared with `fixtures/<fixture>/expected.png` by mean squared OKLab distance. The test fails above `mse_vs_golden_max` in `fixtures/<fixture>/thresholds.toml`. Each case prints a line you can paste into your PR:
+
+  ```
+  portrait, multicolor-bitmap, mse_vs_golden=0.000000, mse_vs_png2c64=0.000000
+  ```
+
+  `mse_vs_png2c64` is the distance to png2c64's baseline, the delta `CLAUDE.md` asks solver PRs to report. Run with `-- --nocapture` to see the lines.
+
+Until the solver exists (E5), the solver under test is an identity stub fed the png2c64 baseline, so every score is 0.
+
+**Updating goldens** is allowed when a change is intended, and the PR must say why. Nothing in `fixtures/` is ever edited by hand:
+
+```sh
+# snapshots: rewrite expected_*.snap
+INSTA_UPDATE=always cargo test -p convert64-core --test golden format
+# rendered goldens: write candidates, then copy them over expected.png
+CONVERT64_GOLDEN_OUT=target/golden-candidates cargo test -p convert64-core --test golden solver
+```
+
 ## Format references
 
 Byte layouts live in [`docs/reference/file-formats.md`](docs/reference/file-formats.md). When in doubt, test-load the file in VICE or the original editor and attach a screenshot to the PR.
