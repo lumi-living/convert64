@@ -17,6 +17,8 @@ Thanks for looking. The project is early; the fastest way to help right now is *
 4. Solver changes must include or update a golden test in `fixtures/` (input PNG + expected `.kla`/`.art`/`.png`). Perceptual improvements are fine — update the golden file and say *why* in the PR.
 5. PR against `main`; fill in the template. One reviewer approval; squash-merge.
 
+`main` is protected: merging needs a PR whose branch is up to date with `main` and green on the required CI checks `rust (ubuntu-latest)`, `rust (macos-latest)`, `rust (windows-latest)` and `wasm` (jobs in `.github/workflows/ci.yml`). Renaming those jobs breaks merging until branch protection is updated to match.
+
 ## Fixture images
 
 We need source images whose rights allow redistribution under MIT (your own art, CC0, or explicitly permitted). Put them in `fixtures/<name>/source.png` with a `README.md` stating origin and licence. Useful kinds: portraits, terrain tile sheets, title paintings, gradients, photos, high-contrast line art.
