@@ -106,6 +106,20 @@ Row anatomy, left to right (editor consensus): **eye** · **thumbnail** (source,
 - Selecting a layer selects what the Recipe panel edits and what nudging moves. Multi-select applies recipe changes to all (v2).
 - Empty state (no layers): one sentence and one button — *"Drop an image here or open one. Convert64 shows the C64 result as soon as it loads."* **Open image…**
 
+### 5a. Splitting an image into layers
+
+Users split an image because one area needs different treatment. Which tool depends on *what* differs:
+
+| What differs for the area | Use | Why |
+|---|---|---|
+| Only the recipe — dither, metric, allowed colours, Force/Adaptive | **Region** (`R`, §7) | no new layer; a region is a mask plus a recipe painted over the composite |
+| Also adjustments, transform/nudge, blend mode or opacity | **Layer via mask** | the area needs its own layer state |
+| A different source image | **New from file** + mask | — |
+
+**Layer via mask** is the counterpart of Photoshop's *Layer via copy / via cut* that fits ADR-003: no pixels are copied. The new layer references the same source pixels as the original and gets the current selection as its mask; with the *cut* variant the original receives the inverted mask. A selection is made with the mask tools (§7a: lasso `W`, key `K`, gradient `G`, snap to cells) while no mask is being edited — the same tools, the same red overlay. `Cmd J` with a selection active = layer via mask; `Shift Cmd J` = via cut; without a selection `Cmd J` is plain Duplicate. The new layer is named "<original> (mask)" and selected, with its mask thumbnail showing the selection. Because the compositor blends feathered alpha and the attribute map takes the top-most layer, overlapping feathered edges between the two layers behave as one would expect, and a Region can still be painted on top for a recipe-only tweak inside the new layer.
+
+Bottom icon strip gains **Layer via mask** between Duplicate and Add mask; it is disabled until a selection exists, with a tooltip saying so.
+
 ## 6. Recipe & adjustments panel (the form)
 
 This is the only real form in the app, so it follows form conventions strictly: visible labels, slider + numeric field on one row, per-group **Reset**, no modal apply.
@@ -169,6 +183,7 @@ Mask thumbnails in the Layers panel (§5) show the raster with modifiers applied
 | Jump to result at cursor | click the result panel | Photoshop Navigator |
 | Pan | `Space` + drag, `H` | all |
 | New layer from file / Duplicate / Delete | `Shift Cmd N` / `Cmd J` / `Delete` | Photoshop family |
+| Layer via mask / via cut (with a selection) | `Cmd J` / `Shift Cmd J` | Photoshop *Layer via copy / cut* |
 | Toggle layer visibility | `Cmd ,` ; click eye | Photoshop/Pixelmator |
 | Nudge 1 / 10 / 0.25 px | `←↑↓→` / `Shift+` / `Alt+` | editors / ours |
 | Tools: Nudge, Pin, Lock, Region | `V`, `P`, `L`, `R` | single-key tools (Photoshop style) |
@@ -192,6 +207,7 @@ One glossary, used identically in the app, `convert64 --help`, MCP tool names an
 | Term | Means | Not |
 |---|---|---|
 | **Layer** | a source image with its own transform, mask, adjustments and recipe | "image", "picture" |
+| **Selection** | a temporary mask made with the mask tools, used to create a region or a layer via mask | "marquee" |
 | **Recipe** | the per-layer dithering + colour-fitting settings | "settings", "profile" |
 | **Solve** / re-solve | run the constraint solver; produces the result | "convert", "render", "process" (CLI keeps `convert` as the verb for files) |
 | **Result** | the solved C64 image shown in the preview | "output", "preview" (preview is the *view* of the result) |

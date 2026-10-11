@@ -59,6 +59,7 @@ Tools, each a command with a dirty-rect memento for undo:
 | `MaskKey` | layer, channel, centre, range, softness, combine | adds a procedural source |
 | `MaskSetModifier` | layer, `Invert | Levels | SnapToCells | Feather`, params | the sliders |
 | `MaskLoad` / `MaskClear` / `MaskFromAlpha` | layer, path | import a greyscale PNG; reset; copy PNG alpha into the mask |
+| `LayerViaMask` | source layer, selection, `cut: bool` | new layer sharing the source pixels with the selection as mask; `cut` inverts it on the original. How an image is split into layers without copying pixels (UX §5a) |
 
 Because every tool is a command, masks are scriptable: the CLI and MCP server
 can key out a backdrop or feather a logo from a recipe file without the UI.
