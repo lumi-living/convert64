@@ -52,7 +52,7 @@ Pure Rust, one cargo workspace:
 - `crates/convert64-mcp` — MCP server exposing the same commands to AI agents.
 - `crates/convert64-app` — egui/eframe UI; the same code builds the native app (macOS, Windows, Linux) and the browser version.
 
-UX conventions, layout, shortcuts and vocabulary: [docs/UX.md](docs/UX.md). Why one command engine behind app, CLI and MCP: [ADR-005](docs/adr/ADR-005-command-engine-with-cli-json-mcp.md). Why egui: [ADR-006](docs/adr/ADR-006-egui-single-rust-workspace.md).
+UX conventions, layout, shortcuts and vocabulary: [docs/UX.md](docs/UX.md). Figma library and how it maps to `egui::Style`: [docs/figma.md](docs/figma.md). Why one command engine behind app, CLI and MCP: [ADR-005](docs/adr/ADR-005-command-engine-with-cli-json-mcp.md). Why egui: [ADR-006](docs/adr/ADR-006-egui-single-rust-workspace.md).
 
 ## Roadmap
 
