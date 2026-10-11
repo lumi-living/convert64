@@ -344,7 +344,7 @@ fn check_solver(name: &str, format: BitmapFormat) {
         s.mse_vs_golden <= s.threshold,
         "{name}, {mode}: mse_vs_golden {:.6} exceeds {} from fixtures/{name}/thresholds.toml \
          (mse_vs_png2c64 {:.6}). If the change is intended, run \
-         `cargo xtask regen-goldens --accept --reason \"...\"`.",
+         `cargo xtask regen-goldens --accept --reason \"...\" --pr N`.",
         s.mse_vs_golden,
         s.threshold,
         s.mse_vs_png2c64
@@ -563,7 +563,7 @@ mod composite_scene {
         let want = image::open(&path)
             .unwrap_or_else(|e| {
                 panic!(
-                    "{}: {e}; run `cargo xtask regen-goldens --accept --reason \"...\"`",
+                    "{}: {e}; run `cargo xtask regen-goldens --accept --reason \"...\" --pr N`",
                     path.display()
                 )
             })
@@ -586,7 +586,7 @@ mod composite_scene {
         assert!(
             worst <= 2,
             "composite/{name}/{file}: a channel differs by {worst} (> 2); if intended, run \
-             `cargo xtask regen-goldens --accept --reason \"...\"`"
+             `cargo xtask regen-goldens --accept --reason \"...\" --pr N`"
         );
     }
 

@@ -141,7 +141,7 @@ As built in E4 (2026-10-11): the compositor and attribute map ([ADR-002](adr/ADR
 - **Front-ends.** `convert64-cli` is also a library, holding the recipe-file JSON and `Session`. `convert64 recipe apply` and `convert64-mcp` run the same `Session`.
 
 **Deviations from ADR-002, ADR-008 and this document**
-- **Effective alpha.** In the attribute map it is PNG alpha × mask, as ADR-008 defines it, so opacity does not scale dither strength. On the target grid, the source covering most super pixels wins, and its strength is summed over its super pixels and divided by n².
+- **Effective alpha.** The top-most layer whose PNG alpha × mask is above zero governs a pixel. Its strength is multiplied by PNG alpha × mask × opacity (#99, which amends ADR-008; E4 first shipped it without opacity). On the target grid, the source covering most super pixels wins, and its strength is summed over its super pixels and divided by n².
 - **Feather is approximated.** Above σ = 4 super px the Gaussian is approximated by three box blurs (measured σ within ~4 %).
 - **Half-resolution feather.** ADR-008 asks for a half-resolution feather in general. It is used only above 8 target px; below that, full resolution is cheap enough. Each mask command re-blurs once, which matches ADR-008's "on stroke end".
 - **The command registry arrived with E4** (ADR-005 planned it for E7/E8), because the mask commands needed it. `Project` is only layers and regions so far.

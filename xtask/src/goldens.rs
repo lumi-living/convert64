@@ -15,9 +15,11 @@
 //!   solver work. It stops if `*.snap.new` files already exist, because the harness
 //!   would overwrite them.
 //! - Accept mode (`--accept --reason "..."`): replaces the goldens, appends one line per
-//!   changed fixture to `fixtures/CHANGELOG.md` (date, commit, files, reason) and
+//!   changed fixture to `fixtures/CHANGELOG.md` (date, pull request, files, reason) and
 //!   re-runs the harness, which must now pass. It refuses a dirty tree, because the
-//!   changelog records the commit whose code produced the goldens.
+//!   goldens must come from committed code. The changelog cites the pull request number
+//!   (`--pr`), not a commit hash: PRs are squash-merged, so branch hashes are not
+//!   reachable from main.
 
 use convert64_core::palette::{Rgb8, oklab_of};
 use std::collections::BTreeMap;
@@ -52,13 +54,21 @@ pub(crate) enum Mode {
     Accept,
 }
 
-pub(crate) fn run(accept: bool, reason: Option<&str>) -> Result<(), String> {
+pub(crate) fn run(accept: bool, reason: Option<&str>, pr: Option<u32>) -> Result<(), String> {
     let reason = match (accept, reason.map(str::trim)) {
         (true, None | Some("")) => {
             return Err("--accept needs --reason \"why the goldens change\"".to_owned());
         }
         (true, Some(r)) => Some(r.to_owned()),
         (false, _) => None,
+    };
+    let pr = match (accept, pr) {
+        (true, None) => {
+            return Err(
+                "--accept needs --pr <number> of the pull request the goldens go into".to_owned(),
+            );
+        }
+        (_, pr) => pr,
     };
     let mode = if accept { Mode::Accept } else { Mode::Report };
     let root = repo_root();
@@ -111,7 +121,7 @@ pub(crate) fn run(accept: bool, reason: Option<&str>) -> Result<(), String> {
             }
         }
     }
-    append_changelog(&root, &changes, &commit, &reason)?;
+    append_changelog(&root, &changes, pr.expect("checked above"), &reason)?;
     run_harness(&root, &candidates, true)?;
     println!(
         "Accepted {} change(s); fixtures/CHANGELOG.md updated. Review and commit the result.",
@@ -145,8 +155,8 @@ fn check_tree(root: &Path, mode: Mode) -> Result<bool, String> {
         (_, true) => Ok(false),
         (Mode::Report, false) => Ok(true),
         (Mode::Accept, false) => Err(format!(
-            "the git tree is dirty; commit or stash first, because fixtures/CHANGELOG.md records \
-             the commit that produced the goldens (report mode works on a dirty tree):\n{status}"
+            "the git tree is dirty; commit or stash first, so the goldens come from committed \
+             code (report mode works on a dirty tree):\n{status}"
         )),
     }
 }
@@ -338,7 +348,7 @@ fn mse(a: &[Rgb8], b: &[Rgb8]) -> f64 {
 }
 
 /// One changelog line per fixture, listing every file that changed in it.
-fn changelog_lines(changes: &[Change], date: &str, commit: &str, reason: &str) -> Vec<String> {
+fn changelog_lines(changes: &[Change], date: &str, pr: u32, reason: &str) -> Vec<String> {
     let mut by_fixture: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for c in changes {
         by_fixture.entry(&c.fixture).or_default().push(&c.file);
@@ -347,25 +357,20 @@ fn changelog_lines(changes: &[Change], date: &str, commit: &str, reason: &str) -
         .into_iter()
         .map(|(fixture, files)| {
             format!(
-                "- {date} `{commit}` **{fixture}** ({}): {reason}",
+                "- {date} #{pr} **{fixture}** ({}): {reason}",
                 files.join(", ")
             )
         })
         .collect()
 }
 
-fn append_changelog(
-    root: &Path,
-    changes: &[Change],
-    commit: &str,
-    reason: &str,
-) -> Result<(), String> {
+fn append_changelog(root: &Path, changes: &[Change], pr: u32, reason: &str) -> Result<(), String> {
     let path = root.join("fixtures").join("CHANGELOG.md");
     let mut text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     if !text.ends_with('\n') {
         text.push('\n');
     }
-    for line in changelog_lines(changes, &today(), commit, reason) {
+    for line in changelog_lines(changes, &today(), pr, reason) {
         text.push_str(&line);
         text.push('\n');
     }
@@ -456,10 +461,12 @@ mod tests {
 
     #[test]
     fn accept_without_reason_is_rejected_before_anything_runs() {
-        let err = run(true, None).expect_err("needs a reason");
+        let err = run(true, None, Some(1)).expect_err("needs a reason");
         assert!(err.contains("--reason"), "{err}");
-        let err = run(true, Some("   ")).expect_err("blank reason");
+        let err = run(true, Some("   "), Some(1)).expect_err("blank reason");
         assert!(err.contains("--reason"), "{err}");
+        let err = run(true, Some("why"), None).expect_err("needs a PR number");
+        assert!(err.contains("--pr"), "{err}");
     }
 
     #[test]
@@ -477,14 +484,14 @@ mod tests {
                 change("portrait", "expected.png"),
             ],
             "2026-10-11",
-            "abc123",
+            123,
             "new dither",
         );
         assert_eq!(
             lines,
             [
-                "- 2026-10-11 `abc123` **portrait** (expected_kla.snap, expected.png): new dither",
-                "- 2026-10-11 `abc123` **title** (expected.png): new dither",
+                "- 2026-10-11 #123 **portrait** (expected_kla.snap, expected.png): new dither",
+                "- 2026-10-11 #123 **title** (expected.png): new dither",
             ]
         );
     }
