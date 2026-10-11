@@ -127,8 +127,10 @@ fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
 
-/// Times `f` `runs` times after `setup`.
+/// Times `f` `runs` times after `setup`, after one untimed run: the process (thread
+/// pool, allocator) is warm, so "cold" means a new compositor, not a new process.
 fn time<S>(runs: usize, mut setup: impl FnMut() -> S, mut f: impl FnMut(&mut S)) -> Stat {
+    f(&mut setup());
     let runs = (0..runs)
         .map(|_| {
             let mut s = setup();
@@ -165,7 +167,7 @@ fn composite_10_masked_layers_at_4x() {
         let grid = SuperGrid::new(mode, 4).unwrap();
 
         rows[0][m] = time(
-            5,
+            7,
             || Compositor::new(grid),
             |c| {
                 c.composite(&layers);
@@ -175,7 +177,7 @@ fn composite_10_masked_layers_at_4x() {
         let mut warm_c = Compositor::new(grid);
         warm_c.composite(&layers);
         rows[1][m] = time(
-            15,
+            21,
             || (),
             |()| {
                 warm_c.composite(&layers);
@@ -189,7 +191,7 @@ fn composite_10_masked_layers_at_4x() {
         let mut moved = layers.clone();
         let mut k = 0.0f32;
         rows[2][m] = time(
-            15,
+            21,
             || (),
             |()| {
                 k += 0.25;
@@ -204,7 +206,7 @@ fn composite_10_masked_layers_at_4x() {
         slide_c.update(&slide, &[]);
         let mut sigma = 8.0f32;
         rows[3][m] = time(
-            15,
+            21,
             || (),
             |()| {
                 sigma = if sigma == 8.0 { 7.5 } else { 8.0 };

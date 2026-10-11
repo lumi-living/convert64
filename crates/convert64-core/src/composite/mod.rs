@@ -858,12 +858,19 @@ fn row_slices(b: &Blendable, area: PxRect, y: u32) -> Option<RowSlices<'_>> {
 
 /// Blends `stack` (bottom first) into `rows` super rows from `y0`, over `area`'s
 /// columns: row `i` of `dst`, `code` and `strength` is `i × width .. (i + 1) × width`
-/// (`width` = the area's) and already holds what lies below. Layer by layer, so each
-/// layer's rows are read in one run.
+/// (`width` = the area's). Layer by layer, so each layer's rows are read in one run.
+///
+/// The rows already hold what lies below, or, with `clear`, nothing: then whatever they
+/// hold is overwritten, the first layer stored straight in (blending onto a transparent
+/// backdrop gives the source itself in every mode) and the rest cleared.
 ///
 /// Colour blends bottom-up. Attributes are overwritten bottom-up too, so the top-most
 /// layer whose effective alpha (PNG alpha × mask) is above zero governs, with strength ×
 /// opacity × that alpha.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one band's planes and where it lies"
+)]
 fn compose_band(
     mut dst: RgbaRow<'_>,
     code: &mut [u16],
@@ -872,13 +879,51 @@ fn compose_band(
     area: PxRect,
     y0: u32,
     rows: u32,
+    clear: bool,
 ) {
     let (x0, width) = (area.x0 as usize, area.width() as usize);
+    let claim = |b: &Blendable| blend::Claim {
+        code: b.code,
+        scale: b.strength * b.opacity,
+    };
+    let mut stack = stack;
+    if clear {
+        let first = stack.first();
+        for i in 0..rows {
+            let o = i as usize * width;
+            let cols = match first.and_then(|b| row_slices(b, area, y0 + i)) {
+                Some((xs, src, mask)) => {
+                    let b = first.expect("has a row");
+                    let cols = o + xs.start - x0..o + xs.end - x0;
+                    let attr = blend::AttrRow {
+                        code: &mut code[cols.clone()],
+                        strength: &mut strength[cols.clone()],
+                    };
+                    blend::store(
+                        dst.slice(cols.clone()),
+                        attr,
+                        src,
+                        mask,
+                        b.opacity,
+                        claim(b),
+                    );
+                    cols
+                }
+                None => o..o,
+            };
+            for gap in [o..cols.start, cols.end..o + width] {
+                let d = dst.slice(gap.clone());
+                for p in [&mut *d.r, &mut *d.g, &mut *d.b, &mut *d.a] {
+                    p.fill(0.0);
+                }
+                code[gap.clone()].fill(attr::UNCLAIMED);
+                strength[gap].fill(0.0);
+            }
+        }
+        stack = stack.get(1..).unwrap_or_default();
+    }
     for b in stack {
-        let claim = blend::Claim {
-            code: b.code,
-            scale: b.strength * b.opacity,
-        };
+        let claim = claim(b);
         for i in 0..rows {
             if let Some((xs, src, mask)) = row_slices(b, area, y0 + i) {
                 let o = i as usize * width;
@@ -912,13 +957,7 @@ fn fold_below(below: &mut Below, grid: SuperGrid, stack: &[Blendable]) {
         let rows = u32::try_from(code.len() / w).expect("super rows fit u32");
         let len = code.len();
         let dst = dst.slice(0..len);
-        dst.r.fill(0.0);
-        dst.g.fill(0.0);
-        dst.b.fill(0.0);
-        dst.a.fill(0.0);
-        code.fill(attr::UNCLAIMED);
-        strength.fill(0.0);
-        compose_band(dst, code, strength, stack, bounds, y0, rows);
+        compose_band(dst, code, strength, stack, bounds, y0, rows, true);
     });
 }
 
@@ -976,14 +1015,9 @@ fn fold(
                 let mut seen = Vec::with_capacity(4);
                 for (ty, px, colour, coverage, target_attr, changed) in group.iter_mut() {
                     let y0 = *ty as u32 * n;
+                    // With no base, the band starts clear (`compose_band` overwrites it).
                     match base {
-                        None => {
-                            for p in [&mut *rgba.r, &mut *rgba.g, &mut *rgba.b, &mut *rgba.a] {
-                                p.fill(0.0);
-                            }
-                            code.fill(attr::UNCLAIMED);
-                            strength.fill(0.0);
-                        }
+                        None => {}
                         Some(b) => {
                             for sy in 0..n as usize {
                                 let o = (y0 as usize + sy) * w;
@@ -997,7 +1031,16 @@ fn fold(
                             }
                         }
                     }
-                    compose_band(rgba.slice(0..len), code, strength, stack, area, y0, n);
+                    compose_band(
+                        rgba.slice(0..len),
+                        code,
+                        strength,
+                        stack,
+                        area,
+                        y0,
+                        n,
+                        base.is_none(),
+                    );
                     for (j, region) in regions.iter().enumerate() {
                         let rc =
                             attr::AttrSource::Region(u16::try_from(j).expect("few regions")).code();

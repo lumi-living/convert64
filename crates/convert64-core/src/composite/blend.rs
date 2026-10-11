@@ -191,6 +191,52 @@ pub(crate) fn span(
     }
 }
 
+/// [`span`] onto a transparent, unclaimed backdrop, whatever `dst` and `attr` hold:
+/// every mode then gives the scaled source itself (each term with the backdrop's colour
+/// or alpha vanishes, and the backdrop is non-negative), and the attribute is the claim
+/// or nothing.
+pub(crate) fn store(
+    dst: RgbaRow<'_>,
+    attr: AttrRow<'_>,
+    src: [&[f32]; 4],
+    mask: Option<&[f32]>,
+    opacity: f32,
+    claim: Claim,
+) {
+    let n = src[3].len();
+    let px = dst.r[..n]
+        .iter_mut()
+        .zip(&mut dst.g[..n])
+        .zip(dst.b[..n].iter_mut().zip(&mut dst.a[..n]))
+        .zip(attr.code[..n].iter_mut().zip(&mut attr.strength[..n]))
+        .zip(src[0][..n].iter().zip(&src[1][..n]))
+        .zip(src[2][..n].iter().zip(&src[3][..n]));
+    let Claim { code: c, scale } = claim;
+    let none = super::attr::UNCLAIMED;
+    match mask {
+        Some(mask) => {
+            for ((((((r, g), (b, a)), (cd, st)), (s0, s1)), (s2, s3)), &m) in px.zip(&mask[..n]) {
+                let k = opacity * m;
+                [*r, *g, *b, *a] = [s0 * k, s1 * k, s2 * k, s3 * k];
+                let alpha = s3 * m;
+                let on = alpha > 0.0;
+                *cd = pick(on, c, none);
+                *st = if on { scale * alpha } else { 0.0 };
+            }
+        }
+        None => {
+            for (((((r, g), (b, a)), (cd, st)), (s0, s1)), (s2, s3)) in px {
+                let k = opacity;
+                [*r, *g, *b, *a] = [s0 * k, s1 * k, s2 * k, s3 * k];
+                let alpha = *s3;
+                let on = alpha > 0.0;
+                *cd = pick(on, c, none);
+                *st = if on { scale * alpha } else { 0.0 };
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +301,54 @@ mod tests {
         let mut d = bd;
         blend(Blend::Overlay, &mut d, src);
         assert!(close(d, [0.42, 0.42, 0.42, 0.75]), "{d:?}");
+    }
+
+    /// `store` gives exactly what `span` gives onto a transparent, unclaimed backdrop.
+    #[test]
+    fn store_equals_a_span_onto_nothing() {
+        let n = 37;
+        let planes: Vec<Vec<f32>> = (0..4)
+            .map(|c| {
+                (0..n)
+                    .map(|i| ((i * 7 + c * 3) % 11) as f32 / 10.0 * if c == 3 { 1.0 } else { 0.7 })
+                    .collect()
+            })
+            .collect();
+        let src = [&planes[0][..], &planes[1], &planes[2], &planes[3]];
+        let mask: Vec<f32> = (0..n).map(|i| (i % 4) as f32 / 3.0).collect();
+        let claim = Claim {
+            code: 5,
+            scale: 0.35,
+        };
+        for mode in [
+            Blend::Normal,
+            Blend::Multiply,
+            Blend::Screen,
+            Blend::Overlay,
+        ] {
+            for m in [Some(&mask[..]), None] {
+                let run = |stored: bool| {
+                    let fill = if stored { 9.0 } else { 0.0 };
+                    let mut p: [Vec<f32>; 4] = std::array::from_fn(|_| vec![fill; n]);
+                    let unclaimed = super::super::attr::UNCLAIMED;
+                    let mut code = vec![if stored { 7 } else { unclaimed }; n];
+                    let mut strength = vec![fill; n];
+                    let [r, g, b, a] = p.each_mut().map(Vec::as_mut_slice);
+                    let dst = RgbaRow { r, g, b, a };
+                    let attr = AttrRow {
+                        code: &mut code,
+                        strength: &mut strength,
+                    };
+                    if stored {
+                        store(dst, attr, src, m, 0.8, claim);
+                    } else {
+                        span(mode, dst, attr, src, m, 0.8, claim);
+                    }
+                    (p, code, strength)
+                };
+                assert_eq!(run(true), run(false), "{mode:?}");
+            }
+        }
     }
 
     #[test]
