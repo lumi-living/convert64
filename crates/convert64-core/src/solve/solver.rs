@@ -151,7 +151,12 @@ impl Solver {
         previous: Option<&Solution>,
         opts: &SolveOptions,
     ) -> Solution {
-        let input = Input::new(frame, &self.tables, opts.input);
+        // The fast path needs tables only for the cells it re-solves.
+        let only = match (opts.mode, previous) {
+            (SolveMode::Interactive { dirty }, Some(_)) => Some(dirty),
+            _ => None,
+        };
+        let input = Input::new_for(frame, &self.tables, opts.input, only);
         self.solve_input(&input, steering, previous, opts)
     }
 
@@ -298,7 +303,11 @@ impl Solver {
                     .then(bg_key(ca.bg).cmp(&bg_key(cb.bg)))
             })
             .expect("at least one candidate");
-        let report = ClashReport::build(input, &self.tables, &result.out, winner.bg);
+        let reuse = match (interactive, previous) {
+            (Some(dirty), Some(p)) if p.background == winner.bg => Some((dirty, &p.report)),
+            _ => None,
+        };
+        let report = ClashReport::build(input, &self.tables, &result.out, winner.bg, reuse);
         let indexed = IndexedBitmap::new(input.grid.target(), result.out, winner.bg)
             .expect("the output has the target's size");
         let image = BitmapImage::encode(&indexed).expect("every cell keeps to its set");

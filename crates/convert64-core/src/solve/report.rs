@@ -74,17 +74,26 @@ pub struct ClashReport {
 
 impl ClashReport {
     /// Builds the report from a solve's input and output (row-major target pixels).
+    /// `reuse`: cells outside the set keep their entry from the previous report (the
+    /// interactive fast path, where only those cells were re-solved).
     pub(crate) fn build(
         input: &Input,
         tables: &MetricTables,
         out: &[ColourIndex],
         background: Option<ColourIndex>,
+        reuse: Option<(crate::geom::CellSet, &Self)>,
     ) -> Self {
         let (w, _) = input.size;
         let n = input.cells.0 * input.cells.1;
         let cells = (0..n)
             .map(|i| {
                 let cell = input.cell_at(i);
+                if let Some((fresh, prev)) = reuse
+                    && !fresh.contains(cell)
+                    && let Some(old) = prev.cells.get(i)
+                {
+                    return old.clone();
+                }
                 let mut wanted = [0.0f32; 16];
                 let mut cost = [0.0f32; 16];
                 let mut chosen = background.map_or(ColourSet::EMPTY, |b| ColourSet::EMPTY.with(b));
@@ -93,21 +102,20 @@ impl ClashReport {
                     let q = &input.px[y * w + x];
                     let got = out[y * w + x];
                     chosen.insert(got);
-                    let colours = tables.colours(q.metric.space());
-                    let d_got = q.metric.distance(q.coords, colours[got.as_usize()]);
+                    let d = tables.distances(q.metric, q.coords);
+                    let d_got = d[got.as_usize()];
                     error += q.weight * d_got;
                     if q.weight <= 0.0 {
                         continue;
                     }
-                    let near = (0..16)
-                        .min_by(|&a, &b| {
-                            q.metric
-                                .distance(q.coords, colours[a])
-                                .total_cmp(&q.metric.distance(q.coords, colours[b]))
-                        })
-                        .expect("16 colours");
+                    let mut near = 0;
+                    for c in 1..16 {
+                        if d[c] < d[near] {
+                            near = c;
+                        }
+                    }
                     wanted[near] += q.weight;
-                    cost[near] += q.weight * (d_got - q.metric.distance(q.coords, colours[near]));
+                    cost[near] += q.weight * (d_got - d[near]);
                 }
                 let mut want: Vec<(ColourIndex, f32)> = ColourIndex::ALL
                     .into_iter()

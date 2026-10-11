@@ -86,6 +86,18 @@ pub const FORCE_PENALTY: f32 = 1.0;
 impl Input {
     /// Prepares `frame` for solving with the palette in `tables`.
     pub fn new(frame: &TargetFrame, tables: &MetricTables, opts: InputOptions) -> Self {
+        Self::new_for(frame, tables, opts, None)
+    }
+
+    /// Like [`Self::new`], but builds distance tables only for `only`'s cells (the
+    /// interactive fast path re-solves just those; the others keep zero tables and are
+    /// copied from the previous solution).
+    pub(crate) fn new_for(
+        frame: &TargetFrame,
+        tables: &MetricTables,
+        opts: InputOptions,
+        only: Option<crate::geom::CellSet>,
+    ) -> Self {
         let grid = frame.grid();
         let (w, h) = grid.target_size();
         let (cw, ch) = grid.cell_size();
@@ -120,7 +132,7 @@ impl Input {
             })
             .collect();
         let intended = intended_colours(&px, tables);
-        let dist = build_dist(&px, tables, w, (cw, ch), (cx, cy), &intended);
+        let dist = build_dist(&px, tables, w, (cw, ch), (cx, cy), &intended, only);
         let mut allowed = vec![ColourSet::ALL; cx * cy];
         for (ci, set) in allowed.iter_mut().enumerate() {
             let (gx, gy) = (ci % cx, ci / cx);
@@ -157,18 +169,27 @@ impl Input {
                 ..*q
             })
             .collect();
-        let dist = build_dist(
-            &px,
-            tables,
-            self.size.0,
-            self.cell,
-            self.cells,
-            &self.intended,
-        );
+        // Only cells that received error need new distances.
+        let (w, p) = (self.size.0, self.per_cell());
+        let mut dist = self.dist.clone();
+        let (cw, ch) = self.cell;
+        let mut cells: Vec<(usize, &mut [f32])> = dist.chunks_mut(16 * p).enumerate().collect();
+        crate::par::for_each(&mut cells, |(ci, table)| {
+            let (gx, gy) = (*ci % self.cells.0, *ci / self.cells.0);
+            let touched = cell_pixels(gx, gy, cw, ch).any(|(x, y)| received[y * w + x] != [0.0; 3]);
+            if touched {
+                fill_cell(table, &px, tables, w, (gx, gy), (cw, ch), &self.intended);
+            }
+        });
         Self {
+            grid: self.grid,
+            size: self.size,
+            cells: self.cells,
+            cell: self.cell,
             px,
             dist,
-            ..self.clone()
+            allowed: self.allowed.clone(),
+            intended: self.intended.clone(),
         }
     }
 
@@ -332,44 +353,73 @@ fn build_dist(
     (cw, ch): (usize, usize),
     (cx, cy): (usize, usize),
     intended: &[(AttrSource, ColourSet)],
+    only: Option<crate::geom::CellSet>,
 ) -> Vec<f32> {
     let p = cw * ch;
     let mut dist = vec![0.0f32; cx * cy * 16 * p];
-    let mut cells: Vec<(usize, &mut [f32])> = dist.chunks_mut(16 * p).enumerate().collect();
+    #[expect(clippy::cast_possible_truncation, reason = "cells are below 40 × 25")]
+    let wanted = |ci: usize| {
+        only.is_none_or(|s| s.contains(CellPos::new((ci % cx) as u16, (ci / cx) as u16)))
+    };
+    let mut cells: Vec<(usize, &mut [f32])> = dist
+        .chunks_mut(16 * p)
+        .enumerate()
+        .filter(|(ci, _)| wanted(*ci))
+        .collect();
     crate::par::for_each(&mut cells, |(ci, table)| {
-        let (gx, gy) = (*ci % cx, *ci / cx);
-        for (k, (x, y)) in cell_pixels(gx, gy, cw, ch).enumerate() {
-            let q = &px[y * w + x];
-            let colours = tables.colours(q.metric.space());
-            let force = (q.fit == FitMode::Force)
-                .then(|| {
-                    intended
-                        .iter()
-                        .find(|(s, _)| *s == q.source)
-                        .map(|(_, set)| *set)
-                })
-                .flatten();
-            match force {
-                None => {
-                    for (c, coord) in colours.iter().enumerate() {
-                        table[c * p + k] = q.weight * q.metric.distance(q.coords, *coord);
-                    }
+        fill_cell(
+            table,
+            px,
+            tables,
+            w,
+            (*ci % cx, *ci / cx),
+            (cw, ch),
+            intended,
+        );
+    });
+    dist
+}
+
+/// One cell's `16 × P` table (see [`build_dist`]).
+fn fill_cell(
+    table: &mut [f32],
+    px: &[Px],
+    tables: &MetricTables,
+    w: usize,
+    (gx, gy): (usize, usize),
+    (cw, ch): (usize, usize),
+    intended: &[(AttrSource, ColourSet)],
+) {
+    let p = cw * ch;
+    for (k, (x, y)) in cell_pixels(gx, gy, cw, ch).enumerate() {
+        let q = &px[y * w + x];
+        let d = tables.distances(q.metric, q.coords);
+        let force = (q.fit == FitMode::Force)
+            .then(|| {
+                intended
+                    .iter()
+                    .find(|(s, _)| *s == q.source)
+                    .map(|(_, set)| *set)
+            })
+            .flatten();
+        match force {
+            None => {
+                for (c, dc) in d.iter().enumerate() {
+                    table[c * p + k] = q.weight * dc;
                 }
-                Some(want) => {
-                    for (c, coord) in colours.iter().enumerate() {
-                        let d = q.metric.distance(q.coords, *coord);
-                        let extra = if want.contains(ColourIndex::ALL[c]) {
-                            0.0
-                        } else {
-                            FORCE_PENALTY
-                        };
-                        table[c * p + k] = FORCE_WEIGHT * q.weight * (d + extra);
-                    }
+            }
+            Some(want) => {
+                for (c, dc) in d.iter().enumerate() {
+                    let extra = if want.contains(ColourIndex::ALL[c]) {
+                        0.0
+                    } else {
+                        FORCE_PENALTY
+                    };
+                    table[c * p + k] = FORCE_WEIGHT * q.weight * (dc + extra);
                 }
             }
         }
-    });
-    dist
+    }
 }
 
 fn cell_pixels(gx: usize, gy: usize, cw: usize, ch: usize) -> impl Iterator<Item = (usize, usize)> {

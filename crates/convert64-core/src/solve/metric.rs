@@ -197,6 +197,9 @@ pub fn encode_srgb(x: f32) -> f32 {
 pub struct MetricTables {
     palette: Palette,
     coords: [[[f32; 3]; 16]; 4],
+    /// The same coordinates axis by axis (`[space][axis][colour]`), so distances to all
+    /// 16 colours vectorise.
+    soa: [[[f32; 16]; 3]; 4],
 }
 
 impl MetricTables {
@@ -209,10 +212,34 @@ impl MetricTables {
                 coords[space.index()][c.as_usize()] = space.coords([lin.r, lin.g, lin.b]);
             }
         }
+        let mut soa = [[[0.0; 16]; 3]; 4];
+        for (sp, table) in coords.iter().enumerate() {
+            for (c, xyz) in table.iter().enumerate() {
+                for axis in 0..3 {
+                    soa[sp][axis][c] = xyz[axis];
+                }
+            }
+        }
         Self {
             palette: palette.clone(),
             coords,
+            soa,
         }
+    }
+
+    /// Weighted squared distances from `x` to all 16 colours in `metric`'s space.
+    #[inline]
+    pub fn distances(&self, metric: Metric, x: [f32; 3]) -> [f32; 16] {
+        let t = &self.soa[metric.space().index()];
+        let w = metric.weights();
+        let mut d = [0.0f32; 16];
+        for (i, v) in d.iter_mut().enumerate() {
+            let a = x[0] - t[0][i];
+            let b = x[1] - t[1][i];
+            let c = x[2] - t[2][i];
+            *v = w[0] * a * a + w[1] * b * b + w[2] * c * c;
+        }
+        d
     }
 
     /// The palette these tables describe (the preview's palette too).
