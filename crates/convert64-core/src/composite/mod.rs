@@ -18,7 +18,7 @@ pub use frame::TargetFrame;
 
 use crate::geom::{CellSet, PxRect, SuperGrid, Vec2};
 use crate::layer::{AdjustCache, Adjustments, Blend, Layer, SourceImage, Transform};
-use crate::mask::{Modifiers, SnapToCells};
+use crate::mask::{Mask, Modifiers, SnapToCells};
 use crate::region::Region;
 use attr::AttrPlanes;
 use blend::RgbaRow;
@@ -94,9 +94,6 @@ struct LayerRaster {
     rect: PxRect,
     /// Premultiplied colour and PNG alpha, coverage applied; `rect`-sized.
     rgba: Planes,
-    /// The resampled layer-space mask (raster ⊕ sources, before modifiers), `rect`-sized,
-    /// or `None` for an unmasked layer.
-    mask: Option<Vec<f32>>,
     /// Where `rgba` is not all zero.
     extent: Extents,
 }
@@ -176,7 +173,6 @@ struct LayerValues {
 #[derive(Debug, Default)]
 struct Spare {
     rgba: Planes,
-    mask: Vec<f32>,
     values: Vec<f32>,
 }
 
@@ -201,41 +197,59 @@ struct LayerCache {
 
 impl LayerCache {
     /// Brings the raster and the evaluated mask up to date with `layer`; returns whether
-    /// it resampled and whether it re-evaluated the mask.
+    /// it resampled the layer and whether it evaluated the mask.
     fn refresh(&mut self, layer: &Layer, grid: SuperGrid, full_res: bool) -> (bool, bool) {
         let fresh = match &self.raster {
             Some((key, _)) => !key.matches(layer, grid),
             None => true,
         };
-        let mut evaluated = None;
         if fresh {
             let (raster, values) = self.build_raster(layer, grid, full_res);
             let raster = Arc::new(raster);
-            if let Some((_, old)) = self.raster.replace((RasterKey::of(layer, grid), raster)) {
+            let key = RasterKey::of(layer, grid);
+            if let Some((_, old)) = self.raster.replace((key, Arc::clone(&raster))) {
                 self.retired.0 = Some(old);
             }
-            evaluated = values;
+            return match (layer.mask(), values) {
+                (Some(m), Some(values)) => {
+                    self.set_mask(m.modifiers(), raster, values);
+                    (true, true)
+                }
+                _ => {
+                    self.mask = None;
+                    (true, false)
+                }
+            };
         }
-        let (_, raster) = self.raster.as_ref().expect("filled above");
-        let Some(m) = layer.mask().filter(|_| raster.mask.is_some()) else {
+        let (_, raster) = self.raster.as_ref().expect("not fresh");
+        let raster = Arc::clone(raster);
+        let Some(m) = layer.mask().filter(|_| !raster.rect.is_empty()) else {
             self.mask = None;
-            return (fresh, false);
+            return (false, false);
         };
         let modifiers = m.modifiers();
-        if evaluated.is_none() {
-            let stale = self
-                .mask
-                .as_ref()
-                .is_none_or(|e| e.modifiers != modifiers || !Arc::ptr_eq(&e.from, raster));
-            if !stale {
-                return (fresh, false);
-            }
-            let raw = raster.mask.as_ref().expect("checked above");
-            let mut values = std::mem::take(&mut self.spare.values);
-            evaluate(raw, &mut values, raster.rect, grid, &modifiers, full_res);
-            evaluated = Some(values);
+        let stale = self
+            .mask
+            .as_ref()
+            .is_none_or(|e| e.modifiers != modifiers || !Arc::ptr_eq(&e.from, &raster));
+        if !stale {
+            return (false, false);
         }
-        let values = evaluated.expect("evaluated above");
+        // A modifier changed: resample the mask again (the raster's colour stays) and
+        // evaluate it.
+        let (mx, my, _) = axis_maps(layer, grid);
+        let mut values = std::mem::take(&mut self.spare.values);
+        self.update_mask_source(m, layer.source());
+        let src = self.mask_source(m);
+        resample_mask(src, layer.source().size().0, &mx, &my, &mut values);
+        let rect = raster.rect;
+        crate::mask::eval::apply_modifiers_with(&mut values, rect, grid, &modifiers, full_res);
+        self.set_mask(modifiers, raster, values);
+        (false, true)
+    }
+
+    /// Caches `values` as the evaluated mask of `raster`, with where it is above zero.
+    fn set_mask(&mut self, modifiers: Modifiers, raster: Arc<LayerRaster>, values: Vec<f32>) {
         let w = raster.rect.width() as usize;
         let rows: Vec<(&[f32], (u32, u32))> = values
             .chunks(w.max(1))
@@ -247,14 +261,13 @@ impl LayerCache {
         });
         let new = EvaluatedMask {
             modifiers,
-            from: Arc::clone(raster),
+            from: raster,
             values: Arc::new(values),
             extent: Arc::new(extent),
         };
         if let Some(old) = self.mask.replace(new) {
             self.retired.1 = Some(old.values);
         }
-        (fresh, true)
     }
 
     /// Moves what the last refresh replaced into the spare buffers, if nothing else
@@ -264,7 +277,6 @@ impl LayerCache {
             && let Ok(old) = Arc::try_unwrap(old)
         {
             self.spare.rgba = old.rgba;
-            self.spare.mask = old.mask.unwrap_or_default();
         }
         if let Some(old) = self.retired.1.take()
             && let Ok(old) = Arc::try_unwrap(old)
@@ -273,8 +285,32 @@ impl LayerCache {
         }
     }
 
+    /// Brings the cache of `m`'s layer-space values (its raster combined with its
+    /// sources) up to date; it changes only with the mask or the source.
+    fn update_mask_source(&mut self, m: &Mask, src: &Arc<SourceImage>) {
+        let stale = !m.sources().is_empty()
+            && !matches!(&self.values, Some(v)
+                if v.generation == m.generation() && Arc::ptr_eq(&v.source, src));
+        if stale {
+            self.values = Some(LayerValues {
+                generation: m.generation(),
+                source: Arc::clone(src),
+                values: m.layer_values(src).into_owned(),
+            });
+        }
+    }
+
+    /// The layer-space values `m` resamples, after [`Self::update_mask_source`].
+    fn mask_source<'a>(&'a self, m: &'a Mask) -> &'a [f32] {
+        if m.sources().is_empty() {
+            m.raster().values()
+        } else {
+            &self.values.as_ref().expect("updated by the caller").values
+        }
+    }
+
     /// Resamples the layer (adjusted, premultiplied) onto the grid and, alongside, its
-    /// mask, which it also evaluates (modifiers applied) when it has one.
+    /// mask, which it evaluates (modifiers applied) when the layer has one.
     fn build_raster(
         &mut self,
         layer: &Layer,
@@ -283,17 +319,11 @@ impl LayerCache {
     ) -> (LayerRaster, Option<Vec<f32>>) {
         let src = layer.source();
         let (sw, sh) = src.size();
-        let t = layer.transform();
-        let step = grid.super_px_in_canvas();
-        let (gw, gh) = grid.size();
-        let mx = AxisMap::new(sw, t.translate().x, t.scale().x, t.flip_h(), step.x, gw);
-        let my = AxisMap::new(sh, t.translate().y, t.scale().y, t.flip_v(), step.y, gh);
-        let rect = PxRect::new(mx.out0, my.out0, mx.out0 + mx.len(), my.out0 + my.len());
+        let (mx, my, rect) = axis_maps(layer, grid);
         if rect.is_empty() {
             let raster = LayerRaster {
                 rect: PxRect::EMPTY,
                 rgba: Planes::default(),
-                mask: None,
                 extent: Arc::default(),
             };
             return (raster, None);
@@ -306,31 +336,17 @@ impl LayerCache {
                 .collect();
             self.premul = Some((Arc::clone(&adjusted), premul));
         }
-        let mask = layer.mask().map(|m| {
-            if !m.sources().is_empty() {
-                let stale = !matches!(&self.values, Some(v)
-                    if v.generation == m.generation() && Arc::ptr_eq(&v.source, src));
-                if stale {
-                    self.values = Some(LayerValues {
-                        generation: m.generation(),
-                        source: Arc::clone(src),
-                        values: m.layer_values(src).into_owned(),
-                    });
-                }
-            }
-            m
-        });
+        let mut rgba = std::mem::take(&mut self.spare.rgba);
+        let mut values = std::mem::take(&mut self.spare.values);
+        let mask = layer.mask();
+        if let Some(m) = mask {
+            self.update_mask_source(m, src);
+        }
+        let mask_src = mask.map(|m| self.mask_source(m));
         let (_, premul) = self.premul.as_ref().expect("filled above");
         debug_assert_eq!(sh as usize * sw as usize, premul.len());
-        let layer_values = &self.values;
-        let spare = &mut self.spare;
-        let (mut rgba, mut raw, mut values) = (
-            std::mem::take(&mut spare.rgba),
-            std::mem::take(&mut spare.mask),
-            std::mem::take(&mut spare.values),
-        );
         // The colour and the mask are independent: resample them side by side.
-        let ((rgba, extent), mask) = crate::par::join(
+        let (extent, values) = crate::par::join(
             || {
                 let mut extent = Vec::new();
                 resample_planes(premul, sw, &mx, &my, &mut rgba, &mut extent, |y, row| {
@@ -346,47 +362,50 @@ impl LayerCache {
                     }
                     extent_of(row, |p| *p != [0.0; 4])
                 });
-                (rgba, extent)
+                extent
             },
             || {
-                let m = mask?;
-                let values_in: &[f32] = if m.sources().is_empty() {
-                    m.raster().values()
-                } else {
-                    &layer_values.as_ref().expect("filled above").values
-                };
-                resample_into(values_in, sw, &mx, &my, &mut raw, |_, row| {
-                    for x in row {
-                        *x = x.clamp(0.0, 1.0);
-                    }
-                });
-                evaluate(&raw, &mut values, rect, grid, &m.modifiers(), full_res);
-                Some((raw, values))
+                let (m, mask_src) = mask.zip(mask_src)?;
+                resample_mask(mask_src, sw, &mx, &my, &mut values);
+                let modifiers = m.modifiers();
+                crate::mask::eval::apply_modifiers_with(
+                    &mut values,
+                    rect,
+                    grid,
+                    &modifiers,
+                    full_res,
+                );
+                Some(values)
             },
         );
-        let (mask, values) = mask.unzip();
         let raster = LayerRaster {
             rect,
             rgba,
-            mask,
             extent: Arc::new(extent),
         };
         (raster, values)
     }
 }
 
-/// Evaluates a resampled mask: `raw` with its modifiers applied, into `values`.
-fn evaluate(
-    raw: &[f32],
-    values: &mut Vec<f32>,
-    rect: PxRect,
-    grid: SuperGrid,
-    modifiers: &Modifiers,
-    full_res: bool,
-) {
-    values.clear();
-    values.extend_from_slice(raw);
-    crate::mask::eval::apply_modifiers_with(values, rect, grid, modifiers, full_res);
+/// A layer's per-axis resampling maps onto `grid` and the super rectangle it touches.
+fn axis_maps(layer: &Layer, grid: SuperGrid) -> (AxisMap, AxisMap, PxRect) {
+    let (sw, sh) = layer.source().size();
+    let t = layer.transform();
+    let step = grid.super_px_in_canvas();
+    let (gw, gh) = grid.size();
+    let mx = AxisMap::new(sw, t.translate().x, t.scale().x, t.flip_h(), step.x, gw);
+    let my = AxisMap::new(sh, t.translate().y, t.scale().y, t.flip_v(), step.y, gh);
+    let rect = PxRect::new(mx.out0, my.out0, mx.out0 + mx.len(), my.out0 + my.len());
+    (mx, my, rect)
+}
+
+/// Resamples a mask's layer-space values (`sw` wide) into `out`, clamped to `0..=1`.
+fn resample_mask(values: &[f32], sw: u32, mx: &AxisMap, my: &AxisMap, out: &mut Vec<f32>) {
+    resample_into(values, sw, mx, my, out, |_, row| {
+        for x in row {
+            *x = x.clamp(0.0, 1.0);
+        }
+    });
 }
 
 /// One layer ready to blend.
