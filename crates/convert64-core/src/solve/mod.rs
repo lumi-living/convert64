@@ -14,5 +14,5 @@ pub mod steering;
 pub use cell::{CellChoice, Constraints};
 pub use input::{Input, InputOptions};
 pub use metric::{Metric, MetricTables, Space};
-pub use solver::{Background, Solution, SolveOptions, Solver};
+pub use solver::{Background, Solution, SolveMode, SolveOptions, Solver};
 pub use steering::{Pin, Steering};
