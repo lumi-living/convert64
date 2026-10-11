@@ -1,0 +1,29 @@
+# Rust
+/target
+**/target
+Cargo.lock.bak
+
+# Node / pnpm
+node_modules
+.pnpm-store
+dist
+.vite
+
+# Tauri
+src-tauri/target
+src-tauri/gen
+
+# WASM build output
+crates/convert64-wasm/pkg
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# Local scratch (never commit test renders you did not mean to)
+/scratch
+/fixtures/_local
