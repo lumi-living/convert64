@@ -127,6 +127,16 @@ pub enum ModelError {
     },
     /// A charset map must be at least one cell in each direction.
     EmptyMap,
+    /// A cell of an indexed picture uses more colours than its mode can encode
+    /// (validator rule 1).
+    CellColours {
+        /// The cell.
+        cell: CellPos,
+        /// Colours it uses, the background included.
+        found: u32,
+        /// Colours the mode allows per cell.
+        max: u32,
+    },
 }
 
 impl ModelError {
@@ -135,6 +145,7 @@ impl ModelError {
         match self {
             Self::Colour { .. } => Some(Rule::ColourRange),
             Self::SpriteSize { .. } => Some(Rule::Sprites),
+            Self::CellColours { .. } => Some(Rule::ColoursPerCell),
             _ => None,
         }
     }
@@ -179,6 +190,9 @@ impl fmt::Display for ModelError {
             ),
             Self::TileSize { reason } => f.write_str(reason),
             Self::EmptyMap => f.write_str("a charset map needs at least one cell"),
+            Self::CellColours { cell, found, max } => {
+                write!(f, "cell {cell} uses {found} colours; at most {max} fit")
+            }
         }
     }
 }
