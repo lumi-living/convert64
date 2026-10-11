@@ -5,3 +5,8 @@
 # OKLab difference (~0.03) squared, averaged over every pixel: tiny drifts pass,
 # visible changes fail. Raise it only with a reason in the PR.
 mse_vs_golden_max = 0.0002
+
+# png2c64_mse_vs_source: the png2c64 baseline's mean squared OKLab distance from the
+# source (box-filtered to the target grid), measured by the golden harness with the same
+# code as ours. The quality bar (#111): our solve must be within this value + 2 %.
+png2c64_mse_vs_source = 0.017988
