@@ -61,8 +61,9 @@ fn pools(
     (free, required, picks)
 }
 
-/// Calls `visit` for every set the search considers, in search order, with the per-pixel
-/// minimum over the set (and the background). `dist` is the cell's `16 × p` table.
+/// Calls `visit` for every set a brute-force search considers, in search order, with the
+/// per-pixel minimum over the set (and the background). `dist` is the cell's `16 × p`
+/// table. [`search`] visits these sets in the same order but skips hopeless subtrees.
 fn walk(
     dist: &[f32],
     p: usize,
@@ -117,6 +118,11 @@ fn rec(
 /// pixels of the weighted distance to the nearest colour in the set, plus `bias` per
 /// same-luma pair in the set. Ties go to the first set in search order (lowest colour
 /// indices), so the result is deterministic.
+///
+/// Branch and bound: a partial set's error can only fall to `Σ min(current, best colour
+/// still available)`, so a subtree whose bound is no better than the best set so far is
+/// skipped. The result is exactly the brute-force minimum. (The same-luma bias is added
+/// at the leaves; with a negative bias the bound is loosened by the largest reward.)
 pub fn search(
     dist: &[f32],
     p: usize,
@@ -126,22 +132,95 @@ pub fn search(
     bias: f32,
 ) -> CellChoice {
     debug_assert_eq!(dist.len(), 16 * p);
+    let (free, required, picks) = pools(bg, k, constraints);
+    let mut base = [f32::INFINITY; MAX_PIXELS];
+    let mut base_set = ColourSet::EMPTY;
+    for col in bg.into_iter().chain(required.iter().copied()) {
+        let row = &dist[col.as_usize() * p..][..p];
+        for (m, d) in base[..p].iter_mut().zip(row) {
+            *m = m.min(*d);
+        }
+        if Some(col) != bg {
+            base_set.insert(col);
+        }
+    }
+    // suffix[i][px]: the best distance any free colour from index i on offers.
+    let mut suffix = vec![[f32::INFINITY; MAX_PIXELS]; free.len() + 1];
+    for i in (0..free.len()).rev() {
+        let row = &dist[free[i].as_usize() * p..][..p];
+        let (head, tail) = suffix.split_at_mut(i + 1);
+        for ((s, n), d) in head[i][..p].iter_mut().zip(&tail[0][..p]).zip(row) {
+            *s = n.min(*d);
+        }
+    }
+    // The most a bias can lower a score (negative biases reward pairs).
+    let slack = if bias < 0.0 { -bias * 6.0 } else { 0.0 };
     let mut best = CellChoice {
         set: ColourSet::EMPTY,
         score: f32::INFINITY,
     };
-    walk(dist, p, bg, k, constraints, &mut |set, mins| {
-        let full = bg.map_or(set, |b| set.with(b));
-        let score = mins.iter().sum::<f32>() + luma_pair_bias(full, bias);
-        if score < best.score {
-            best = CellChoice { set, score };
-        }
-    });
+    let mut st = Bnb {
+        dist,
+        p,
+        free: &free,
+        suffix: &suffix,
+        bg,
+        bias,
+        slack,
+        best: &mut best,
+    };
+    st.rec(0, picks, base_set, &base);
     if best.score.is_infinite() {
         // No colour available at all (everything denied): keep the background only.
         best.score = 0.0;
     }
     best
+}
+
+struct Bnb<'a> {
+    dist: &'a [f32],
+    p: usize,
+    free: &'a [ColourIndex],
+    suffix: &'a [[f32; MAX_PIXELS]],
+    bg: Option<ColourIndex>,
+    bias: f32,
+    slack: f32,
+    best: &'a mut CellChoice,
+}
+
+impl Bnb<'_> {
+    fn rec(&mut self, from: usize, left: usize, set: ColourSet, mins: &[f32; MAX_PIXELS]) {
+        let p = self.p;
+        if left == 0 {
+            let full = self.bg.map_or(set, |b| set.with(b));
+            let score = mins[..p].iter().sum::<f32>() + luma_pair_bias(full, self.bias);
+            if score < self.best.score {
+                *self.best = CellChoice { set, score };
+            }
+            return;
+        }
+        let last = self.free.len() - left;
+        for i in from..=last {
+            // Bound: whatever completes this subtree uses colours from index i on.
+            let bound: f32 = mins[..p]
+                .iter()
+                .zip(&self.suffix[i][..p])
+                .map(|(m, s)| m.min(*s))
+                .sum::<f32>()
+                - self.slack;
+            if bound >= self.best.score {
+                // Later subtrees only lose colours, so their bounds are no lower.
+                break;
+            }
+            let col = self.free[i];
+            let row = &self.dist[col.as_usize() * p..][..p];
+            let mut next = [0.0f32; MAX_PIXELS];
+            for ((n, m), d) in next[..p].iter_mut().zip(&mins[..p]).zip(row) {
+                *n = m.min(*d);
+            }
+            self.rec(i + 1, left - 1, set.with(col), &next);
+        }
+    }
 }
 
 /// How many sets [`search`] evaluates under these constraints.

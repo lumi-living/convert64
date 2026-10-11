@@ -32,9 +32,27 @@ pub enum Background {
     Fixed(ColourIndex),
 }
 
+/// How much work a solve does (UX §7).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SolveMode {
+    /// Background search, dithering of the finalists and refinement: on release.
+    #[default]
+    Full,
+    /// The fast path during a drag: the previous solution's background, one dithering
+    /// pass, no refinement, and only `dirty` cells re-solved (every other cell is copied
+    /// from the previous solution as if locked). Without a previous solution it is a
+    /// single-pass solve of the whole picture with one background.
+    Interactive {
+        /// The cells to re-solve (from `Compositor::update` or a steering command).
+        dirty: crate::geom::CellSet,
+    },
+}
+
 /// Options of a solve.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SolveOptions {
+    /// Full search or the interactive fast path.
+    pub mode: SolveMode,
     /// Background choice.
     pub background: Background,
     /// Same-luma pair bias per pair in a cell's set (positive penalises, negative
@@ -53,6 +71,7 @@ pub struct SolveOptions {
 impl Default for SolveOptions {
     fn default() -> Self {
         Self {
+            mode: SolveMode::Full,
             background: Background::Auto,
             luma_pair_bias: 0.0,
             refinements: 2,
@@ -208,6 +227,42 @@ impl Solver {
         previous: Option<&Solution>,
         opts: &SolveOptions,
     ) -> Solution {
+        let interactive = match opts.mode {
+            SolveMode::Interactive { dirty } => Some(dirty),
+            SolveMode::Full => None,
+        };
+        // Interactive: everything but the dirty cells is copied from the previous result.
+        let frozen;
+        let steering = match (interactive, previous) {
+            (Some(dirty), Some(_)) => {
+                let mut s = steering.clone();
+                for cell in crate::geom::CellSet::all().iter() {
+                    if !dirty.contains(cell) {
+                        s.set_lock(cell, true);
+                    }
+                }
+                frozen = s;
+                &frozen
+            }
+            _ => steering,
+        };
+        let opts = &SolveOptions {
+            refinements: if interactive.is_some() {
+                0
+            } else {
+                opts.refinements
+            },
+            finalists: if interactive.is_some() {
+                1
+            } else {
+                opts.finalists
+            },
+            background: match (interactive, previous.and_then(|p| p.background)) {
+                (Some(_), Some(b)) => Background::Fixed(b),
+                _ => opts.background,
+            },
+            ..opts.clone()
+        };
         let ctx = Context::new(steering, previous);
         let keep_bg = ctx.locked().and(previous.and_then(|p| p.background));
         let candidates: Vec<Option<ColourIndex>> = if !input.has_background() {
@@ -551,6 +606,58 @@ mod tests {
         );
         assert!(cell(&force).contains(ColourIndex::RED), "{}", cell(&force));
         assert!(force.error > adaptive.error, "neighbours pay");
+    }
+
+    #[test]
+    fn interactive_resolves_only_dirty_cells() {
+        use crate::geom::CellSet;
+        use crate::model::CellPos;
+        let s = Solver::new(&Palette::pepto_pal());
+        for mode in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
+            let full = s.solve(
+                &frame(mode, DitherKind::FloydSteinberg),
+                &Steering::new(),
+                None,
+                &SolveOptions::default(),
+            );
+            let changed = frame(mode, DitherKind::Bayer4);
+            let mut dirty = CellSet::EMPTY;
+            dirty.insert_rect(10, 5, 14, 9);
+            let fast = s.solve(
+                &changed,
+                &Steering::new(),
+                Some(&full),
+                &SolveOptions {
+                    mode: SolveMode::Interactive { dirty },
+                    ..SolveOptions::default()
+                },
+            );
+            assert_eq!(fast.background, full.background);
+            for y in 0..25 {
+                for x in 0..40 {
+                    let c = CellPos::new(x, y);
+                    if !dirty.contains(c) {
+                        assert_eq!(
+                            cell_bytes(&fast.image, c),
+                            cell_bytes(&full.image, c),
+                            "{mode} {c}"
+                        );
+                    }
+                }
+            }
+            assert_eq!(validate(&fast.image.to_indexed()), Ok(()));
+            // Without a previous solution it still solves the whole picture.
+            let alone = s.solve(
+                &changed,
+                &Steering::new(),
+                None,
+                &SolveOptions {
+                    mode: SolveMode::Interactive { dirty },
+                    ..SolveOptions::default()
+                },
+            );
+            assert_eq!(validate(&alone.image.to_indexed()), Ok(()));
+        }
     }
 
     #[test]

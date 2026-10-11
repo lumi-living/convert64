@@ -33,3 +33,8 @@ jobs:
         run: |
           cargo test --release -p convert64-core --features parallel --test bench -- --ignored --nocapture | tee par.txt
           { echo '```'; grep 'bench:' par.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Solver (sequential and parallel)
+        run: |
+          cargo test --release -p convert64-core --test solve_bench -- --ignored --nocapture | tee solve-seq.txt
+          cargo test --release -p convert64-core --features parallel --test solve_bench -- --ignored --nocapture | tee solve-par.txt
+          { echo '```'; grep -h 'solve:' solve-seq.txt solve-par.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

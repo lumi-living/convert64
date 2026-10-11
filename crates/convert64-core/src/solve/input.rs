@@ -237,6 +237,12 @@ impl Input {
         CellPos::new((i % self.cells.0) as u16, (i / self.cells.0) as u16)
     }
 
+    /// Cell `cell`'s weighted distances to the 16 colours (`16 × P`, colour-major): the
+    /// statistics its set is chosen from.
+    pub fn cell_distances(&self, cell: CellPos) -> &[f32] {
+        self.dist(self.index(cell))
+    }
+
     /// Cell index of `cell`.
     pub(crate) const fn index(&self, cell: CellPos) -> usize {
         cell.y as usize * self.cells.0 + cell.x as usize
