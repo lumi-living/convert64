@@ -1,7 +1,8 @@
 //! The `convert64` binary: convert, validate, export and batch from the command line (`docs/TAD.md §4`).
 //!
-//! So far only `convert64 validate`, which checks a Koala or Art Studio picture against
-//! the rules in `docs/reference/vic-ii-constraints.md` §6. The full CLI design is E7.
+//! So far `convert64 validate`, which checks a Koala or Art Studio picture against the
+//! rules in `docs/reference/vic-ii-constraints.md` §6, and `convert64 recipe apply`,
+//! which runs a recipe file's commands headless (ADR-005). The full CLI design is E7.
 
 mod json;
 
@@ -39,6 +40,34 @@ enum Command {
         #[arg(long, value_enum)]
         format: Option<FormatArg>,
     },
+    /// Work with recipe files: layers plus commands, in JSON.
+    Recipe {
+        #[command(subcommand)]
+        action: RecipeAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum RecipeAction {
+    /// Load a recipe's layers, run its commands and write the results.
+    ///
+    /// Exits 0 on success, 2 when the recipe cannot be read or a command fails.
+    Apply {
+        /// The recipe file (JSON).
+        file: PathBuf,
+        /// Write a layer's evaluated mask as a 16-bit greyscale PNG on the super grid:
+        /// `LAYER=PATH`, where LAYER is an index or a name. Repeatable.
+        #[arg(long = "mask", value_name = "LAYER=PATH")]
+        masks: Vec<String>,
+        /// Write the composite on the target grid (sRGB, alpha = coverage) as a PNG.
+        #[arg(long, value_name = "PATH")]
+        composite: Option<PathBuf>,
+        /// Write the attribute map's debug render as a PNG.
+        #[arg(long, value_name = "PATH")]
+        attributes: Option<PathBuf>,
+    },
+    /// List the commands a recipe can contain.
+    Commands,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -79,7 +108,65 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Validate { file, json, format } => run_validate(&file, json, format),
+        Command::Recipe { action } => match action {
+            RecipeAction::Apply {
+                file,
+                masks,
+                composite,
+                attributes,
+            } => match run_recipe(&file, &masks, composite.as_deref(), attributes.as_deref()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::from(2)
+                }
+            },
+            RecipeAction::Commands => {
+                for c in convert64_core::command::REGISTRY {
+                    println!("{:<18} {}", c.name, c.summary);
+                }
+                ExitCode::SUCCESS
+            }
+        },
     }
+}
+
+fn run_recipe(
+    file: &Path,
+    masks: &[String],
+    composite: Option<&Path>,
+    attributes: Option<&Path>,
+) -> Result<(), String> {
+    use convert64_cli::recipe::{LayerRef, Session};
+    let mut session = Session::open(file).map_err(|e| e.to_string())?;
+    println!(
+        "{}: {} layer(s), {} command(s) applied",
+        file.display(),
+        session.project().layers.len(),
+        session.editor_mut().undo_len()
+    );
+    for m in masks {
+        let (layer, path) = m
+            .split_once('=')
+            .ok_or_else(|| format!("--mask {m}: expected LAYER=PATH"))?;
+        let r = layer
+            .parse()
+            .map_or_else(|_| LayerRef::Name(layer.to_owned()), LayerRef::Index);
+        let i = session.resolve(&r).map_err(|e| e.to_string())?;
+        session
+            .write_mask(i, Path::new(path))
+            .map_err(|e| e.to_string())?;
+        println!("mask of layer {i} -> {path}");
+    }
+    if let Some(p) = composite {
+        session.write_composite(p).map_err(|e| e.to_string())?;
+        println!("composite -> {}", p.display());
+    }
+    if let Some(p) = attributes {
+        session.write_attributes(p).map_err(|e| e.to_string())?;
+        println!("attribute map -> {}", p.display());
+    }
+    Ok(())
 }
 
 fn run_validate(path: &Path, as_json: bool, format: Option<FormatArg>) -> ExitCode {

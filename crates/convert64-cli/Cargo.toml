@@ -13,14 +13,20 @@ publish.workspace = true
 convert64-core = { workspace = true }
 convert64-formats = { workspace = true }
 clap = { workspace = true }
+image = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+image = { workspace = true }
 
 [lints]
 workspace = true
+
+[lib]
+name = "convert64_cli"
+path = "src/lib.rs"
 
 [[bin]]
 name = "convert64"

@@ -5,6 +5,7 @@
 //! [`par`] for the single-source iterator helpers.
 
 pub mod colour;
+pub mod command;
 pub mod composite;
 pub mod geom;
 pub mod layer;
@@ -18,6 +19,7 @@ pub mod rule;
 pub mod validate;
 
 pub use colour::{ColourIndex, ColourSet, InvalidColourIndex};
+pub use command::{Command, Editor, Project};
 pub use composite::{AttributeMap, Canvas, Compositor, TargetFrame};
 pub use geom::{CellSet, PxRect, SuperGrid, Vec2};
 pub use layer::{Blend, Layer, Recipe, SourceImage, Transform};
