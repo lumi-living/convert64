@@ -17,7 +17,7 @@ Each epic is a GitHub issue labelled `epic`; child issues are GitHub sub-issues 
 - **E3 Fixtures** ([#3](https://github.com/lumi-living/convert64/issues/3), children #34–#41) — 5 rights-clear source images, png2c64 baseline outputs, golden-test harness with `insta`.
 
 ## M1 — Bitmap MVP
-- **E4 Compositor & attribute map** — f32 layers, float transforms with supersampling, masks, feather, levels/HSL/curves, blend modes, attribute-map compositing.
+- **E4 Compositor & attribute map** (#4) — f32 layers, float transforms with supersampling, masks, feather, levels/HSL/curves, blend modes, attribute-map compositing.
 - **E5 Bitmap solver** (#5) — MC + hi-res: bg search, per-cell brute force in OKLab, cell-clamped diffusion, ordered dithers with strength/phase, refinement, pins/locks, Force/Adaptive, allow/deny sets.
 - **E6 Formats v1** (#6) — Koala, Art Studio, raw bins, PRG display stub, PNG preview, asm emitters (KickAss/ACME/64tass/ca65), C header.
 - **E7 CLI** (#7) — `convert64 convert|validate|export|batch`, `.convert64` project file, Makefile example for No Glory.
