@@ -1,5 +1,5 @@
-//! Compositor benchmark (#87): 10 full-canvas layers, each with a mask (raster plus a
-//! gradient source) feathered at σ = 8 target px, in all four blend modes, at 4× on a
+//! Compositor benchmark (#87, #98): 10 full-canvas layers, each with a mask (raster plus
+//! a gradient source) feathered at σ = 8 target px, in all four blend modes, at 4× on a
 //! multicolor and a hi-res target. `criterion` is not an approved dependency, so this is
 //! an ignored test timed with `std::time::Instant`. Run it in release, with and without
 //! the `parallel` feature:
@@ -9,10 +9,23 @@
 //! cargo test --release -p convert64-core --features parallel --test bench -- --ignored --nocapture
 //! ```
 //!
-//! It prints the median of several runs for each case and checks the E4 budget (#4:
-//! "10 layers at 4× under 10 ms native") on the **warm recomposite**: all ten layers
-//! resampled and their masks feathered already, every pixel re-blended and re-filtered,
-//! which is what a slider drag on a blend or opacity control costs.
+//! It prints one row per case with the median of several runs for each target mode, and
+//! the budget that applies to it in this build (sequential or parallel):
+//!
+//! - **cold composite**: a new compositor composites the scene: every layer resampled,
+//!   every mask evaluated and feathered, everything blended. #98: ≤ 60 ms (parallel).
+//! - **warm recomposite**: everything re-blended and re-filtered with every layer cached,
+//!   what a blend or opacity slider on the bottom layer costs. E4 (#4): ≤ 10 ms
+//!   (parallel); #98: ≤ 12 ms multicolor / ≤ 16 ms hi-res single-threaded (the wasm and
+//!   app path).
+//! - **nudge one layer**: `update` after moving layer 4 by 0.25 px: one resample, one
+//!   feather, and the layers from 4 up re-blended. #98: ≤ 10 ms multicolor / ≤ 12 ms
+//!   hi-res (parallel).
+//! - **feather slider**: `update` after changing layer 7's feather: one mask
+//!   re-evaluated, no resample.
+//!
+//! The budgets are for the CI macOS runner class (the `bench` workflow); the check is
+//! printed, not asserted, because shared runners are noisy.
 
 use convert64_core::geom::Vec2;
 use convert64_core::layer::{Blend, Layer, SourceImage, Transform};
@@ -24,9 +37,18 @@ use convert64_core::{Compositor, SuperGrid};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// The E4 budget for compositing 10 masked layers at 4×.
-const BUDGET: Duration = Duration::from_millis(10);
+const PARALLEL: bool = cfg!(feature = "parallel");
 
+/// The budget for a case in this build, `[multicolor, hi-res]` in ms, and its source.
+fn budget(case: &str) -> Option<([f64; 2], &'static str)> {
+    match (case, PARALLEL) {
+        ("cold composite", true) => Some(([60.0, 60.0], "#98")),
+        ("warm recomposite", true) => Some(([10.0, 10.0], "E4")),
+        ("warm recomposite", false) => Some(([12.0, 16.0], "#98")),
+        ("nudge one layer", true) => Some(([10.0, 12.0], "#98")),
+        _ => None,
+    }
+}
 fn scene() -> Vec<Layer> {
     let blends = [
         Blend::Normal,
@@ -89,8 +111,8 @@ fn median(mut v: Vec<Duration>) -> Duration {
     v[v.len() / 2]
 }
 
-fn ms(d: Duration) -> String {
-    format!("{:.2} ms", d.as_secs_f64() * 1000.0)
+fn ms(d: Duration) -> f64 {
+    d.as_secs_f64() * 1000.0
 }
 
 /// Times `f` `runs` times after `setup`, returning the median.
@@ -110,21 +132,28 @@ fn time<S>(runs: usize, mut setup: impl FnMut() -> S, mut f: impl FnMut(&mut S))
 #[ignore = "benchmark: run in release with --ignored --nocapture"]
 fn composite_10_masked_layers_at_4x() {
     let layers = scene();
-    let parallel = if cfg!(feature = "parallel") {
-        "parallel"
+    let threads = if PARALLEL {
+        let n = std::thread::available_parallelism().map_or(1, usize::from);
+        format!("parallel, {n} threads")
     } else {
-        "sequential"
+        "sequential".to_owned()
     };
     println!(
-        "bench: 10 layers 320x200, masks (raster + gradient, feather 8), 4 blend modes, 4x, {parallel}"
+        "bench: 10 layers 320x200, masks (raster + gradient, feather 8), 4 blend modes, 4x, {threads}"
     );
-    let mut warm_worst = Duration::ZERO;
-    for mode in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
+    let cases = [
+        "cold composite",
+        "warm recomposite",
+        "nudge one layer",
+        "feather slider",
+    ];
+    let mut rows = [[Duration::ZERO; 2]; 4];
+    let modes = [Mode::MulticolorBitmap, Mode::HiresBitmap];
+    for (m, mode) in modes.into_iter().enumerate() {
         let grid = SuperGrid::new(mode, 4).unwrap();
-        let (w, h) = grid.size();
 
-        let cold = time(
-            3,
+        rows[0][m] = time(
+            5,
             || Compositor::new(grid),
             |c| {
                 c.composite(&layers);
@@ -133,8 +162,8 @@ fn composite_10_masked_layers_at_4x() {
 
         let mut warm_c = Compositor::new(grid);
         warm_c.composite(&layers);
-        let warm = time(
-            9,
+        rows[1][m] = time(
+            15,
             || (),
             |()| {
                 warm_c.composite(&layers);
@@ -147,8 +176,8 @@ fn composite_10_masked_layers_at_4x() {
         nudge_c.update(&layers, &[]);
         let mut moved = layers.clone();
         let mut k = 0.0f32;
-        let nudge = time(
-            9,
+        rows[2][m] = time(
+            15,
             || (),
             |()| {
                 k += 0.25;
@@ -162,8 +191,8 @@ fn composite_10_masked_layers_at_4x() {
         let mut slide_c = Compositor::new(grid);
         slide_c.update(&slide, &[]);
         let mut sigma = 8.0f32;
-        let feather = time(
-            9,
+        rows[3][m] = time(
+            15,
             || (),
             |()| {
                 sigma = if sigma == 8.0 { 7.5 } else { 8.0 };
@@ -174,24 +203,31 @@ fn composite_10_masked_layers_at_4x() {
                 slide_c.update(&slide, &[]);
             },
         );
-
-        println!(
-            "bench: {mode} {w}x{h}: cold {}, warm recomposite {}, nudge one layer {}, feather slider {}",
-            ms(cold),
-            ms(warm),
-            ms(nudge),
-            ms(feather)
-        );
-        warm_worst = warm_worst.max(warm);
     }
+    let size = |mode: Mode| {
+        let (w, h) = SuperGrid::new(mode, 4).unwrap().size();
+        format!("{w}x{h}")
+    };
     println!(
-        "bench: warm recomposite worst {} vs budget {}: {}",
-        ms(warm_worst),
-        ms(BUDGET),
-        if warm_worst <= BUDGET {
-            "within"
-        } else {
-            "OVER"
-        }
+        "bench: {:<18} {:>12} {:>12}   budget",
+        "",
+        format!("mc {}", size(modes[0])),
+        format!("hires {}", size(modes[1])),
     );
+    for (case, row) in cases.iter().zip(rows) {
+        let check = budget(case).map_or_else(String::new, |(b, source)| {
+            let within = row.iter().zip(b).all(|(d, b)| ms(*d) <= b);
+            format!(
+                "   {source} ≤ {} / {} ms: {}",
+                b[0],
+                b[1],
+                if within { "within" } else { "OVER" }
+            )
+        });
+        println!(
+            "bench: {case:<18} {:>9.2} ms {:>9.2} ms{check}",
+            ms(row[0]),
+            ms(row[1])
+        );
+    }
 }

@@ -44,18 +44,25 @@ impl AttrSource {
     }
 }
 
-/// One super pixel of the map.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct AttrPx {
-    pub code: u16,
-    pub strength: f32,
+/// The code of a super pixel nothing covers.
+pub(crate) const UNCLAIMED: u16 = NONE;
+
+/// The attribute map on the super grid, one plane per field so the fold's loops
+/// vectorise: per super pixel the source code and its strength.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AttrPlanes {
+    pub code: Vec<u16>,
+    pub strength: Vec<f32>,
 }
 
-impl AttrPx {
-    pub const EMPTY: Self = Self {
-        code: NONE,
-        strength: 0.0,
-    };
+impl AttrPlanes {
+    /// `len` unclaimed super pixels.
+    pub fn new(len: usize) -> Self {
+        Self {
+            code: vec![UNCLAIMED; len],
+            strength: vec![0.0; len],
+        }
+    }
 }
 
 /// One target pixel of the map.
@@ -151,31 +158,51 @@ impl AttributeMap {
     }
 }
 
-/// Box-filters target pixel `tx` from `band`, the `n` super rows (each `w` wide) of its
-/// target row. The source covering the most super pixels wins (ties go to the higher
-/// layer, regions above layers); its strength is summed and divided by `n²`. `seen` is
-/// scratch space, reused between calls.
+/// Box-filters target pixel `tx` from `codes` and `strengths`, the `n` super rows (each
+/// `w` wide) of its target row. The source covering the most super pixels wins (ties go
+/// to the higher layer, regions above layers); its strength is summed in scan order and
+/// divided by `n²`. `seen` is scratch space, reused between calls.
 pub(crate) fn reduce_px(
-    band: &[AttrPx],
+    codes: &[u16],
+    strengths: &[f32],
     w: usize,
     n: u32,
     tx: usize,
     seen: &mut Vec<(u16, u32, f32)>,
 ) -> TargetAttr {
-    seen.clear();
     let n = n as usize;
-    for sy in 0..n {
-        let base = sy * w + tx * n;
-        for a in &band[base..base + n] {
-            if a.code == NONE {
+    let rows = || (0..n).map(|sy| sy * w + tx * n..sy * w + tx * n + n);
+    // Usually one source covers the whole pixel.
+    let first = codes[tx * n];
+    if rows().all(|r| codes[r].iter().all(|&c| c == first)) {
+        if first == NONE {
+            return TargetAttr {
+                source: AttrSource::None,
+                strength: 0.0,
+            };
+        }
+        let mut all = rows().flat_map(|r| &strengths[r]);
+        let mut sum = *all.next().expect("n ≥ 1");
+        for s in all {
+            sum += s;
+        }
+        return TargetAttr {
+            source: AttrSource::from_code(first),
+            strength: (sum * (1.0 / (n * n) as f32)).clamp(0.0, 1.0),
+        };
+    }
+    seen.clear();
+    for r in rows() {
+        for (&code, &strength) in codes[r.clone()].iter().zip(&strengths[r]) {
+            if code == NONE {
                 continue;
             }
-            match seen.iter_mut().find(|e| e.0 == a.code) {
+            match seen.iter_mut().find(|e| e.0 == code) {
                 Some(e) => {
                     e.1 += 1;
-                    e.2 += a.strength;
+                    e.2 += strength;
                 }
-                None => seen.push((a.code, 1, a.strength)),
+                None => seen.push((code, 1, strength)),
             }
         }
     }
@@ -188,6 +215,66 @@ pub(crate) fn reduce_px(
             source: AttrSource::None,
             strength: 0.0,
         },
+    }
+}
+
+/// Target pixels this many at a time in [`reduce_row`]: their sums are independent, so
+/// they overlap instead of waiting on one long chain of additions.
+const LANES: usize = 4;
+
+/// [`reduce_px`] for the target pixels `txs` of one target row, passing each result to
+/// `out`. Pixels one source covers entirely (the common case) are summed `LANES` at a
+/// time, each in the same order as in [`reduce_px`]; the rest go through it.
+pub(crate) fn reduce_row(
+    codes: &[u16],
+    strengths: &[f32],
+    w: usize,
+    n: u32,
+    txs: std::ops::Range<usize>,
+    seen: &mut Vec<(u16, u32, f32)>,
+    mut out: impl FnMut(usize, TargetAttr),
+) {
+    let nn = n as usize;
+    let uniform = |tx: usize| {
+        let first = codes[tx * nn];
+        (0..nn).all(|sy| codes[sy * w + tx * nn..][..nn].iter().all(|&c| c == first))
+            && first != NONE
+    };
+    let mut tx = txs.start;
+    while tx + LANES <= txs.end {
+        if !(0..LANES).all(|l| uniform(tx + l)) {
+            for t in tx..tx + LANES {
+                out(t, reduce_px(codes, strengths, w, n, t, seen));
+            }
+            tx += LANES;
+            continue;
+        }
+        // Each lane's sum starts from its first super pixel, as in `reduce_px`.
+        let mut acc = [0.0f32; LANES];
+        for (l, a) in acc.iter_mut().enumerate() {
+            *a = strengths[(tx + l) * nn];
+        }
+        for sy in 0..nn {
+            let row = &strengths[sy * w + tx * nn..][..LANES * nn];
+            for sx in usize::from(sy == 0)..nn {
+                for (l, a) in acc.iter_mut().enumerate() {
+                    *a += row[l * nn + sx];
+                }
+            }
+        }
+        for (l, sum) in acc.into_iter().enumerate() {
+            out(
+                tx + l,
+                TargetAttr {
+                    source: AttrSource::from_code(codes[(tx + l) * nn]),
+                    strength: (sum * (1.0 / (nn * nn) as f32)).clamp(0.0, 1.0),
+                },
+            );
+        }
+        tx += LANES;
+    }
+    for t in tx..txs.end {
+        out(t, reduce_px(codes, strengths, w, n, t, seen));
     }
 }
 
