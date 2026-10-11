@@ -17,7 +17,20 @@ pub(crate) fn half_res(feather: f32) -> bool {
 const EXACT_SIGMA: f32 = 4.0;
 
 /// Applies `m` in place to `values`, a mask covering super rectangle `rect` of `grid`.
+#[cfg(test)]
 pub(crate) fn apply_modifiers(values: &mut [f32], rect: PxRect, grid: SuperGrid, m: &Modifiers) {
+    apply_modifiers_with(values, rect, grid, m, false);
+}
+
+/// [`apply_modifiers`]; with `full_res`, every feather is blurred at full resolution
+/// (the reference the half-resolution blur is measured against).
+pub(crate) fn apply_modifiers_with(
+    values: &mut [f32],
+    rect: PxRect,
+    grid: SuperGrid,
+    m: &Modifiers,
+    full_res: bool,
+) {
     let levels = m.levels();
     let identity_levels = levels == crate::layer::Levels::IDENTITY;
     if m.invert() || !identity_levels {
@@ -36,7 +49,7 @@ pub(crate) fn apply_modifiers(values: &mut [f32], rect: PxRect, grid: SuperGrid,
     if m.feather() > 0.0 {
         let sigma = m.feather() * f32::from(grid.n());
         let (w, h) = (rect.width() as usize, rect.height() as usize);
-        if half_res(m.feather()) {
+        if half_res(m.feather()) && !full_res {
             blur_half_res(values, w, h, sigma);
         } else {
             blur(values, w, h, sigma);
@@ -116,7 +129,7 @@ fn half_tap(i: usize, n: usize) -> (usize, usize, f32) {
 }
 
 /// Blur at half resolution: 2 × 2 box down, blur with σ/2, bilinear back up.
-fn blur_half_res(values: &mut [f32], w: usize, h: usize, sigma: f32) {
+pub(crate) fn blur_half_res(values: &mut [f32], w: usize, h: usize, sigma: f32) {
     let (hw, hh) = (w.div_ceil(2), h.div_ceil(2));
     let mut half = vec![0.0f32; hw * hh];
     {
@@ -293,39 +306,43 @@ fn convolve_cols(values: &mut [f32], w: usize, h: usize, k: &[f32]) {
 /// sum would leave rounding residue that spreads along the whole line): `prefix[k]` is
 /// the sum of the clamped line at indices `-r .. k - r - 1`, accumulated in order, and
 /// output `i` is `(prefix[i + 2r + 1] − prefix[i]) / (2r + 1)`. The lanes are
-/// independent, so the inner loops vectorise across them, and only the last `2r + 2`
+/// independent, so the inner loops vectorise across them, and only the last `2r + 1`
 /// prefix rows are kept.
 fn box_lanes(src: &[f32], stride: usize, lanes: usize, n: usize, r: usize, out: &mut [f32]) {
     let inv = 1.0 / (2 * r + 1) as f64;
     let span = 2 * r + 1;
-    let ring_len = span + 1;
-    // Slot `p % ring_len` holds prefix[p]; prefix[0] is zero.
-    let mut ring = vec![0.0f64; ring_len * lanes];
+    // Slot `p mod span` holds prefix[p] until step p + span reads it as prefix[i] and
+    // overwrites it; prefix[0] is the zero slot 0 starts with.
+    let mut ring = vec![0.0f64; span * lanes];
     let mut acc = vec![0.0f64; lanes];
+    let mut slot = 0;
     for k in 0..n + 2 * r {
         let line = &src[clamp_idx(k as isize - r as isize, n) * stride..][..lanes];
-        for (a, &v) in acc.iter_mut().zip(line) {
-            *a += f64::from(v);
-        }
         let p = k + 1;
-        ring[(p % ring_len) * lanes..][..lanes].copy_from_slice(&acc);
+        slot = if slot + 1 == span { 0 } else { slot + 1 };
+        let prefix = &mut ring[slot * lanes..][..lanes];
         if p >= span {
-            let i = p - span;
-            let hi = &ring[(p % ring_len) * lanes..][..lanes];
-            let lo = &ring[(i % ring_len) * lanes..][..lanes];
-            for ((o, a), b) in out[i * lanes..][..lanes].iter_mut().zip(hi).zip(lo) {
-                *o = ((a - b) * inv) as f32;
+            let out = &mut out[(p - span) * lanes..][..lanes];
+            for (((a, old), &v), o) in acc.iter_mut().zip(prefix).zip(line).zip(out) {
+                *a += f64::from(v);
+                *o = ((*a - *old) * inv) as f32;
+                *old = *a;
+            }
+        } else {
+            for ((a, old), &v) in acc.iter_mut().zip(prefix).zip(line) {
+                *a += f64::from(v);
+                *old = *a;
             }
         }
     }
 }
 
 /// Rows box-filtered per group of this many, transposed so the lines are lanes.
-const ROW_GROUP: usize = 8;
+const ROW_GROUP: usize = 16;
 /// Columns box-filtered per strip.
 const COL_STRIP: usize = 32;
 
-fn box_rows(values: &mut [f32], w: usize, _h: usize, r: usize) {
+pub(crate) fn box_rows(values: &mut [f32], w: usize, _h: usize, r: usize) {
     if r == 0 {
         return;
     }
@@ -348,7 +365,7 @@ fn box_rows(values: &mut [f32], w: usize, _h: usize, r: usize) {
     });
 }
 
-fn box_cols(values: &mut [f32], w: usize, h: usize, r: usize) {
+pub(crate) fn box_cols(values: &mut [f32], w: usize, h: usize, r: usize) {
     if r == 0 {
         return;
     }
@@ -535,5 +552,59 @@ mod tests {
         let mut v = vec![0.7; 33 * 21];
         blur_half_res(&mut v, 33, 21, 40.0);
         assert!(v.iter().all(|x| (x - 0.7).abs() < 1e-5));
+    }
+
+    /// Largest difference between the half- and full-resolution blur of `mask`.
+    fn half_res_error(mask: &[f32], w: usize, h: usize, sigma: f32) -> f32 {
+        let mut full = mask.to_vec();
+        blur(&mut full, w, h, sigma);
+        let mut half = mask.to_vec();
+        blur_half_res(&mut half, w, h, sigma);
+        full.iter()
+            .zip(&half)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max)
+    }
+
+    /// #98: the half-resolution blur, used from σ = 4 target px, against the
+    /// full-resolution blur on hard edges (on and off the 2 × 2 grid) and a small square,
+    /// at every supersample factor and up to the largest feather. The error is in mask
+    /// units (0–1); it is largest at σ = 4 target px on a 1× grid (1.4 %, where the
+    /// half-resolution blur is an exact Gaussian of σ = 2 against three box blurs), and
+    /// below one 8-bit step (0.37 % at most) at 4× and 8×.
+    #[test]
+    fn half_res_blur_error_on_hard_edges() {
+        let mut worst = 0.0f32;
+        for n in [1u8, 2, 4, 8] {
+            for feather in [HALF_RES_FEATHER, 6.0, 8.0, 16.0, 32.0] {
+                let sigma = feather * f32::from(n);
+                let (w, h) = (8 * sigma as usize + 64, 8 * sigma as usize + 64);
+                let mut err = 0.0f32;
+                for offset in [0, 1] {
+                    let edge: Vec<f32> = (0..w * h)
+                        .map(|i| f32::from(u8::from(i % w < w / 2 + offset)))
+                        .collect();
+                    err = err.max(half_res_error(&edge, w, h, sigma));
+                }
+                let side = f32::from(n) * 3.0;
+                let square: Vec<f32> = (0..w * h)
+                    .map(|i| {
+                        let (x, y) = ((i % w) as f32, (i / w) as f32);
+                        let inside =
+                            (x - w as f32 / 2.0).abs() < side && (y - h as f32 / 2.0).abs() < side;
+                        f32::from(u8::from(inside))
+                    })
+                    .collect();
+                err = err.max(half_res_error(&square, w, h, sigma));
+                println!("half-res feather error: {n}x, σ {feather} target px: {err:.5}");
+                // Below one 8-bit step at the default 4× and above.
+                if n >= 4 {
+                    assert!(err < 1.0 / 255.0, "{n}x σ {feather}: {err}");
+                }
+                worst = worst.max(err);
+            }
+        }
+        println!("half-res feather error: worst {worst:.5}");
+        assert!(worst < 0.015, "half-res feather error {worst}");
     }
 }

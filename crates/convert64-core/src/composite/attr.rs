@@ -224,8 +224,28 @@ const LANES: usize = 4;
 
 /// [`reduce_px`] for the target pixels `txs` of one target row, passing each result to
 /// `out`. Pixels one source covers entirely (the common case) are summed `LANES` at a
-/// time, each in the same order as in [`reduce_px`]; the rest go through it.
+/// time, each in the same order as in [`reduce_px`] (or, nothing covering them, given
+/// no source); the rest go through it.
 pub(crate) fn reduce_row(
+    codes: &[u16],
+    strengths: &[f32],
+    w: usize,
+    n: u32,
+    txs: std::ops::Range<usize>,
+    seen: &mut Vec<(u16, u32, f32)>,
+    out: impl FnMut(usize, TargetAttr),
+) {
+    // Specialised for the common factors, so the inner loops have constant bounds.
+    match n {
+        2 => reduce_row_n(codes, strengths, w, 2, txs, seen, out),
+        4 => reduce_row_n(codes, strengths, w, 4, txs, seen, out),
+        8 => reduce_row_n(codes, strengths, w, 8, txs, seen, out),
+        n => reduce_row_n(codes, strengths, w, n, txs, seen, out),
+    }
+}
+
+#[inline(always)]
+fn reduce_row_n(
     codes: &[u16],
     strengths: &[f32],
     w: usize,
@@ -237,8 +257,12 @@ pub(crate) fn reduce_row(
     let nn = n as usize;
     let uniform = |tx: usize| {
         let first = codes[tx * nn];
-        (0..nn).all(|sy| codes[sy * w + tx * nn..][..nn].iter().all(|&c| c == first))
-            && first != NONE
+        let same = (0..nn).fold(true, |all, sy| {
+            codes[sy * w + tx * nn..][..nn]
+                .iter()
+                .fold(all, |all, &c| all & (c == first))
+        });
+        same
     };
     let mut tx = txs.start;
     while tx + LANES <= txs.end {
@@ -263,13 +287,19 @@ pub(crate) fn reduce_row(
             }
         }
         for (l, sum) in acc.into_iter().enumerate() {
-            out(
-                tx + l,
+            let code = codes[(tx + l) * nn];
+            let attr = if code == NONE {
                 TargetAttr {
-                    source: AttrSource::from_code(codes[(tx + l) * nn]),
+                    source: AttrSource::None,
+                    strength: 0.0,
+                }
+            } else {
+                TargetAttr {
+                    source: AttrSource::from_code(code),
                     strength: (sum * (1.0 / (nn * nn) as f32)).clamp(0.0, 1.0),
-                },
-            );
+                }
+            };
+            out(tx + l, attr);
         }
         tx += LANES;
     }

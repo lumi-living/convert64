@@ -106,17 +106,29 @@ fn scene() -> Vec<Layer> {
         .collect()
 }
 
-fn median(mut v: Vec<Duration>) -> Duration {
+/// The median, fastest and slowest of a case's runs.
+#[derive(Clone, Copy, Default)]
+struct Stat {
+    median: Duration,
+    min: Duration,
+    max: Duration,
+}
+
+fn stat(mut v: Vec<Duration>) -> Stat {
     v.sort();
-    v[v.len() / 2]
+    Stat {
+        median: v[v.len() / 2],
+        min: v[0],
+        max: v[v.len() - 1],
+    }
 }
 
 fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
 
-/// Times `f` `runs` times after `setup`, returning the median.
-fn time<S>(runs: usize, mut setup: impl FnMut() -> S, mut f: impl FnMut(&mut S)) -> Duration {
+/// Times `f` `runs` times after `setup`.
+fn time<S>(runs: usize, mut setup: impl FnMut() -> S, mut f: impl FnMut(&mut S)) -> Stat {
     let runs = (0..runs)
         .map(|_| {
             let mut s = setup();
@@ -125,7 +137,7 @@ fn time<S>(runs: usize, mut setup: impl FnMut() -> S, mut f: impl FnMut(&mut S))
             t.elapsed()
         })
         .collect();
-    median(runs)
+    stat(runs)
 }
 
 #[test]
@@ -147,7 +159,7 @@ fn composite_10_masked_layers_at_4x() {
         "nudge one layer",
         "feather slider",
     ];
-    let mut rows = [[Duration::ZERO; 2]; 4];
+    let mut rows = [[Stat::default(); 2]; 4];
     let modes = [Mode::MulticolorBitmap, Mode::HiresBitmap];
     for (m, mode) in modes.into_iter().enumerate() {
         let grid = SuperGrid::new(mode, 4).unwrap();
@@ -216,7 +228,7 @@ fn composite_10_masked_layers_at_4x() {
     );
     for (case, row) in cases.iter().zip(rows) {
         let check = budget(case).map_or_else(String::new, |(b, source)| {
-            let within = row.iter().zip(b).all(|(d, b)| ms(*d) <= b);
+            let within = row.iter().zip(b).all(|(d, b)| ms(d.median) <= b);
             format!(
                 "   {source} ≤ {} / {} ms: {}",
                 b[0],
@@ -226,8 +238,17 @@ fn composite_10_masked_layers_at_4x() {
         });
         println!(
             "bench: {case:<18} {:>9.2} ms {:>9.2} ms{check}",
-            ms(row[0]),
-            ms(row[1])
+            ms(row[0].median),
+            ms(row[1].median)
+        );
+    }
+    println!("bench: (medians; fastest and slowest run:)");
+    for (case, row) in cases.iter().zip(rows) {
+        let range = |s: Stat| format!("{:.1}–{:.1}", ms(s.min), ms(s.max));
+        println!(
+            "bench: {case:<18} {:>12} {:>12}",
+            range(row[0]),
+            range(row[1])
         );
     }
 }

@@ -202,55 +202,59 @@ struct LayerCache {
 impl LayerCache {
     /// Brings the raster and the evaluated mask up to date with `layer`; returns whether
     /// it resampled and whether it re-evaluated the mask.
-    fn refresh(&mut self, layer: &Layer, grid: SuperGrid) -> (bool, bool) {
+    fn refresh(&mut self, layer: &Layer, grid: SuperGrid, full_res: bool) -> (bool, bool) {
         let fresh = match &self.raster {
             Some((key, _)) => !key.matches(layer, grid),
             None => true,
         };
+        let mut evaluated = None;
         if fresh {
-            let raster = Arc::new(self.build_raster(layer, grid));
+            let (raster, values) = self.build_raster(layer, grid, full_res);
+            let raster = Arc::new(raster);
             if let Some((_, old)) = self.raster.replace((RasterKey::of(layer, grid), raster)) {
                 self.retired.0 = Some(old);
             }
+            evaluated = values;
         }
         let (_, raster) = self.raster.as_ref().expect("filled above");
-        let mut evaluated = false;
-        match (layer.mask(), &raster.mask) {
-            (Some(m), Some(raw)) => {
-                let modifiers = m.modifiers();
-                let stale = self
-                    .mask
-                    .as_ref()
-                    .is_none_or(|e| e.modifiers != modifiers || !Arc::ptr_eq(&e.from, raster));
-                if stale {
-                    let mut values = std::mem::take(&mut self.spare.values);
-                    values.clear();
-                    values.extend_from_slice(raw);
-                    crate::mask::eval::apply_modifiers(&mut values, raster.rect, grid, &modifiers);
-                    let w = raster.rect.width() as usize;
-                    let rows: Vec<(&[f32], (u32, u32))> = values
-                        .chunks(w.max(1))
-                        .zip(raster.extent.iter().copied())
-                        .collect();
-                    let extent = crate::par::map(&rows, |&(row, (a, b))| {
-                        let (i, j) = extent_of(&row[a as usize..b as usize], |&m| m > 0.0);
-                        if i == j { (0, 0) } else { (a + i, a + j) }
-                    });
-                    let new = EvaluatedMask {
-                        modifiers,
-                        from: Arc::clone(raster),
-                        values: Arc::new(values),
-                        extent: Arc::new(extent),
-                    };
-                    if let Some(old) = self.mask.replace(new) {
-                        self.retired.1 = Some(old.values);
-                    }
-                    evaluated = true;
-                }
+        let Some(m) = layer.mask().filter(|_| raster.mask.is_some()) else {
+            self.mask = None;
+            return (fresh, false);
+        };
+        let modifiers = m.modifiers();
+        if evaluated.is_none() {
+            let stale = self
+                .mask
+                .as_ref()
+                .is_none_or(|e| e.modifiers != modifiers || !Arc::ptr_eq(&e.from, raster));
+            if !stale {
+                return (fresh, false);
             }
-            _ => self.mask = None,
+            let raw = raster.mask.as_ref().expect("checked above");
+            let mut values = std::mem::take(&mut self.spare.values);
+            evaluate(raw, &mut values, raster.rect, grid, &modifiers, full_res);
+            evaluated = Some(values);
         }
-        (fresh, evaluated)
+        let values = evaluated.expect("evaluated above");
+        let w = raster.rect.width() as usize;
+        let rows: Vec<(&[f32], (u32, u32))> = values
+            .chunks(w.max(1))
+            .zip(raster.extent.iter().copied())
+            .collect();
+        let extent = crate::par::map(&rows, |&(row, (a, b))| {
+            let (i, j) = extent_of(&row[a as usize..b as usize], |&m| m > 0.0);
+            if i == j { (0, 0) } else { (a + i, a + j) }
+        });
+        let new = EvaluatedMask {
+            modifiers,
+            from: Arc::clone(raster),
+            values: Arc::new(values),
+            extent: Arc::new(extent),
+        };
+        if let Some(old) = self.mask.replace(new) {
+            self.retired.1 = Some(old.values);
+        }
+        (fresh, true)
     }
 
     /// Moves what the last refresh replaced into the spare buffers, if nothing else
@@ -269,8 +273,14 @@ impl LayerCache {
         }
     }
 
-    /// Resamples the layer (adjusted, premultiplied) onto the grid.
-    fn build_raster(&mut self, layer: &Layer, grid: SuperGrid) -> LayerRaster {
+    /// Resamples the layer (adjusted, premultiplied) onto the grid and, alongside, its
+    /// mask, which it also evaluates (modifiers applied) when it has one.
+    fn build_raster(
+        &mut self,
+        layer: &Layer,
+        grid: SuperGrid,
+        full_res: bool,
+    ) -> (LayerRaster, Option<Vec<f32>>) {
         let src = layer.source();
         let (sw, sh) = src.size();
         let t = layer.transform();
@@ -280,12 +290,13 @@ impl LayerCache {
         let my = AxisMap::new(sh, t.translate().y, t.scale().y, t.flip_v(), step.y, gh);
         let rect = PxRect::new(mx.out0, my.out0, mx.out0 + mx.len(), my.out0 + my.len());
         if rect.is_empty() {
-            return LayerRaster {
+            let raster = LayerRaster {
                 rect: PxRect::EMPTY,
                 rgba: Planes::default(),
                 mask: None,
                 extent: Arc::default(),
             };
+            return (raster, None);
         }
         let adjusted = self.adjust.get(src, layer.adjustments());
         if !matches!(&self.premul, Some((a, _)) if Arc::ptr_eq(a, &adjusted)) {
@@ -295,26 +306,8 @@ impl LayerCache {
                 .collect();
             self.premul = Some((Arc::clone(&adjusted), premul));
         }
-        let (_, premul) = self.premul.as_ref().expect("filled above");
-        debug_assert_eq!(sh as usize * sw as usize, premul.len());
-        let mut rgba = std::mem::take(&mut self.spare.rgba);
-        let mut extent = Vec::new();
-        resample_planes(premul, sw, &mx, &my, &mut rgba, &mut extent, |y, row| {
-            let cy = my.cov[y];
-            for (p, cx) in row.iter_mut().zip(&mx.cov) {
-                let k = cx * cy;
-                // Lanczos can ring slightly negative; alpha stays in 0..=1 and colour ≥ 0.
-                p[3] = (p[3] * k).clamp(0.0, 1.0);
-                for c in &mut p[..3] {
-                    *c = (*c * k).max(0.0);
-                }
-            }
-            extent_of(row, |p| *p != [0.0; 4])
-        });
         let mask = layer.mask().map(|m| {
-            let values: &[f32] = if m.sources().is_empty() {
-                m.raster().values()
-            } else {
+            if !m.sources().is_empty() {
                 let stale = !matches!(&self.values, Some(v)
                     if v.generation == m.generation() && Arc::ptr_eq(&v.source, src));
                 if stale {
@@ -324,23 +317,76 @@ impl LayerCache {
                         values: m.layer_values(src).into_owned(),
                     });
                 }
-                &self.values.as_ref().expect("filled above").values
-            };
-            let mut v = std::mem::take(&mut self.spare.mask);
-            resample_into(values, sw, &mx, &my, &mut v, |_, row| {
-                for x in row {
-                    *x = x.clamp(0.0, 1.0);
-                }
-            });
-            v
+            }
+            m
         });
-        LayerRaster {
+        let (_, premul) = self.premul.as_ref().expect("filled above");
+        debug_assert_eq!(sh as usize * sw as usize, premul.len());
+        let layer_values = &self.values;
+        let spare = &mut self.spare;
+        let (mut rgba, mut raw, mut values) = (
+            std::mem::take(&mut spare.rgba),
+            std::mem::take(&mut spare.mask),
+            std::mem::take(&mut spare.values),
+        );
+        // The colour and the mask are independent: resample them side by side.
+        let ((rgba, extent), mask) = crate::par::join(
+            || {
+                let mut extent = Vec::new();
+                resample_planes(premul, sw, &mx, &my, &mut rgba, &mut extent, |y, row| {
+                    let cy = my.cov[y];
+                    for (p, cx) in row.iter_mut().zip(&mx.cov) {
+                        let k = cx * cy;
+                        // Lanczos can ring slightly negative; alpha stays in 0..=1 and
+                        // colour ≥ 0.
+                        p[3] = (p[3] * k).clamp(0.0, 1.0);
+                        for c in &mut p[..3] {
+                            *c = (*c * k).max(0.0);
+                        }
+                    }
+                    extent_of(row, |p| *p != [0.0; 4])
+                });
+                (rgba, extent)
+            },
+            || {
+                let m = mask?;
+                let values_in: &[f32] = if m.sources().is_empty() {
+                    m.raster().values()
+                } else {
+                    &layer_values.as_ref().expect("filled above").values
+                };
+                resample_into(values_in, sw, &mx, &my, &mut raw, |_, row| {
+                    for x in row {
+                        *x = x.clamp(0.0, 1.0);
+                    }
+                });
+                evaluate(&raw, &mut values, rect, grid, &m.modifiers(), full_res);
+                Some((raw, values))
+            },
+        );
+        let (mask, values) = mask.unzip();
+        let raster = LayerRaster {
             rect,
             rgba,
             mask,
             extent: Arc::new(extent),
-        }
+        };
+        (raster, values)
     }
+}
+
+/// Evaluates a resampled mask: `raw` with its modifiers applied, into `values`.
+fn evaluate(
+    raw: &[f32],
+    values: &mut Vec<f32>,
+    rect: PxRect,
+    grid: SuperGrid,
+    modifiers: &Modifiers,
+    full_res: bool,
+) {
+    values.clear();
+    values.extend_from_slice(raw);
+    crate::mask::eval::apply_modifiers_with(values, rect, grid, modifiers, full_res);
 }
 
 /// One layer ready to blend.
@@ -406,14 +452,14 @@ pub struct Compositor {
     grid: SuperGrid,
     caches: Vec<LayerCache>,
     canvas: Canvas,
-    /// The super-grid attribute map of the last composite.
-    attrs: AttrPlanes,
     /// The last composite on the target grid.
     frame: TargetFrame,
     /// What was blended last time, per layer index (`None`: hidden), and the regions.
     last: Option<(Vec<Option<Blendable>>, Vec<Region>)>,
     /// The fold of the layers below the last edited one, for [`Self::update`].
     below: Option<Below>,
+    /// Blur every feather at full resolution ([`Self::set_full_res_feather`]).
+    full_res_feather: bool,
     resamples: u64,
     mask_evals: u64,
 }
@@ -434,10 +480,10 @@ impl Compositor {
             grid,
             caches: Vec::new(),
             canvas: Canvas::new(grid),
-            attrs: AttrPlanes::new(grid_len(grid)),
             frame: TargetFrame::empty(grid),
             last: None,
             below: None,
+            full_res_feather: false,
             resamples: 0,
             mask_evals: 0,
         }
@@ -455,8 +501,23 @@ impl Compositor {
             *self = Self {
                 resamples: self.resamples,
                 mask_evals: self.mask_evals,
+                full_res_feather: self.full_res_feather,
                 ..Self::new(grid)
             };
+        }
+    }
+
+    /// Blurs every feather at full resolution instead of at half resolution from
+    /// σ = [`HALF_RES_FEATHER`](crate::mask::HALF_RES_FEATHER) target px: the reference
+    /// the half-resolution blur is measured against (#98). Masks are re-evaluated on the
+    /// next composite.
+    #[doc(hidden)]
+    pub fn set_full_res_feather(&mut self, on: bool) {
+        if on != self.full_res_feather {
+            self.full_res_feather = on;
+            for c in &mut self.caches {
+                c.mask = None;
+            }
         }
     }
 
@@ -625,7 +686,6 @@ impl Compositor {
         let base = if from > 0 { self.below.as_ref() } else { None };
         let changed = fold(
             &mut self.canvas,
-            &mut self.attrs,
             &mut self.frame,
             base,
             &stack,
@@ -650,7 +710,7 @@ impl Compositor {
     fn prepare(&mut self, layers: &[Layer]) -> Vec<Option<Blendable>> {
         assert!(layers.len() < 0x8000, "at most 32767 layers");
         self.caches.resize_with(layers.len(), LayerCache::default);
-        let grid = self.grid;
+        let (grid, full_res) = (self.grid, self.full_res_feather);
         let shown = |l: &Layer| l.visible() && l.opacity() > 0.0;
         let mut work: Vec<(&Layer, &mut LayerCache, (bool, bool))> = layers
             .iter()
@@ -659,7 +719,7 @@ impl Compositor {
             .map(|(l, c)| (l, c, (false, false)))
             .collect();
         crate::par::for_each(&mut work, |(layer, cache, done)| {
-            *done = cache.refresh(layer, grid);
+            *done = cache.refresh(layer, grid, full_res);
         });
         for (_, _, (resampled, evaluated)) in work {
             self.resamples += u64::from(resampled);
@@ -763,69 +823,80 @@ fn row_slices(b: &Blendable, area: PxRect, y: u32) -> Option<RowSlices<'_>> {
     ))
 }
 
-/// Blends `stack` (bottom first) into super row `y` over `area`'s columns: `dst` and
-/// `code` and `strength` cover exactly those columns and already hold what lies below.
+/// Blends `stack` (bottom first) into `rows` super rows from `y0`, over `area`'s
+/// columns: row `i` of `dst`, `code` and `strength` is `i × width .. (i + 1) × width`
+/// (`width` = the area's) and already holds what lies below. Layer by layer, so each
+/// layer's rows are read in one run.
 ///
 /// Colour blends bottom-up. Attributes are overwritten bottom-up too, so the top-most
 /// layer whose effective alpha (PNG alpha × mask) is above zero governs, with strength ×
 /// opacity × that alpha.
-fn compose_row(
+fn compose_band(
     mut dst: RgbaRow<'_>,
     code: &mut [u16],
     strength: &mut [f32],
     stack: &[Blendable],
     area: PxRect,
-    y: u32,
+    y0: u32,
+    rows: u32,
 ) {
-    let x0 = area.x0 as usize;
+    let (x0, width) = (area.x0 as usize, area.width() as usize);
     for b in stack {
-        if let Some((xs, src, mask)) = row_slices(b, area, y) {
-            let cols = xs.start - x0..xs.end - x0;
-            let attr = blend::AttrRow {
-                code: &mut code[cols.clone()],
-                strength: &mut strength[cols.clone()],
-            };
-            let claim = blend::Claim {
-                code: b.code,
-                scale: b.strength * b.opacity,
-            };
-            blend::span(b.blend, dst.slice(cols), attr, src, mask, b.opacity, claim);
+        let claim = blend::Claim {
+            code: b.code,
+            scale: b.strength * b.opacity,
+        };
+        for i in 0..rows {
+            if let Some((xs, src, mask)) = row_slices(b, area, y0 + i) {
+                let o = i as usize * width;
+                let cols = o + xs.start - x0..o + xs.end - x0;
+                let attr = blend::AttrRow {
+                    code: &mut code[cols.clone()],
+                    strength: &mut strength[cols.clone()],
+                };
+                blend::span(b.blend, dst.slice(cols), attr, src, mask, b.opacity, claim);
+            }
         }
     }
 }
+
+/// Super rows per task in [`fold_below`].
+const BELOW_ROWS: usize = 4;
 
 /// Folds `stack` over the whole grid into `below`'s planes.
 fn fold_below(below: &mut Below, grid: SuperGrid, stack: &[Blendable]) {
     let w = grid.size().0 as usize;
     let bounds = grid.bounds();
     let Below { rgba, attrs, .. } = below;
-    let mut rows: Vec<_> = rgba
-        .rows_mut(w)
-        .zip(attrs.code.chunks_mut(w).zip(attrs.strength.chunks_mut(w)))
+    let n = w * BELOW_ROWS;
+    let mut bands: Vec<_> = rgba
+        .rows_mut(n)
+        .zip(attrs.code.chunks_mut(n).zip(attrs.strength.chunks_mut(n)))
         .enumerate()
         .collect();
-    crate::par::for_each(&mut rows, |(y, (dst, (code, strength)))| {
-        let y = u32::try_from(*y).expect("super rows fit u32");
-        let dst = dst.slice(0..w);
+    crate::par::for_each(&mut bands, |(i, (dst, (code, strength)))| {
+        let y0 = u32::try_from(*i * BELOW_ROWS).expect("super rows fit u32");
+        let rows = u32::try_from(code.len() / w).expect("super rows fit u32");
+        let len = code.len();
+        let dst = dst.slice(0..len);
         dst.r.fill(0.0);
         dst.g.fill(0.0);
         dst.b.fill(0.0);
         dst.a.fill(0.0);
         code.fill(attr::UNCLAIMED);
         strength.fill(0.0);
-        compose_row(dst, code, strength, stack, bounds, y);
+        compose_band(dst, code, strength, stack, bounds, y0, rows);
     });
 }
 
 /// Blends `stack` (bottom first) into `canvas` over `area` (aligned to whole target
 /// pixels), starting from `base` or a cleared canvas, rebuilds the attribute map there
-/// ([`compose_row`]; then each region in order governs where its mask is above zero,
-/// strength × mask), and box-filters the result into `frame`. Works one target row at a
-/// time, so the `n` super rows it filters are still in cache. Returns, per target row,
-/// the cell columns (one bit each) where the frame's output changed.
+/// ([`compose_band`]; then each region in order governs where its mask is above zero,
+/// strength × mask), and box-filters the result into `frame`. Works one target row (`n`
+/// super rows) at a time, so the rows it filters are still in cache. Returns, per target
+/// row, the cell columns (one bit each) where the frame's output changed.
 fn fold(
     canvas: &mut Canvas,
-    attrs: &mut AttrPlanes,
     frame: &mut TargetFrame,
     base: Option<&Below>,
     stack: &[Blendable],
@@ -849,71 +920,101 @@ fn fold(
     let mut bands: Vec<FoldBand<'_>> = canvas
         .px
         .chunks_mut(band)
-        .zip(attrs.code.chunks_mut(band))
-        .zip(attrs.strength.chunks_mut(band))
         .zip(colour.chunks_mut(tw).zip(coverage.chunks_mut(tw)))
         .zip(target_attrs.chunks_mut(tw).zip(&mut changed))
         .enumerate()
         .filter(|(ty, _)| ((area.y0 / n) as usize..(area.y1 / n) as usize).contains(ty))
-        .map(|(ty, ((((px, code), st), (c, cov)), (ta, ch)))| (ty, px, code, st, c, cov, ta, ch))
+        .map(|(ty, ((px, (c, cov)), (ta, ch)))| (ty, px, c, cov, ta, ch))
         .collect();
     let (x0, x1) = (area.x0 as usize, area.x1 as usize);
-    crate::par::for_each(&mut bands, |band| {
-        let (ty, px, code, strength, colour, coverage, target_attr, changed) = band;
-        // The row being composed, as planes.
-        let mut row = Planes::new(x1 - x0);
-        for sy in 0..n as usize {
-            let y = (*ty * n as usize + sy) as u32;
-            let cols = sy * w + x0..sy * w + x1;
-            let (code, strength) = (&mut code[cols.clone()], &mut strength[cols.clone()]);
-            match base {
-                Some(b) => {
-                    let o = y as usize * w;
-                    row.copy_from(&b.rgba, o + x0..o + x1);
-                    code.copy_from_slice(&b.attrs.code[o + x0..o + x1]);
-                    strength.copy_from_slice(&b.attrs.strength[o + x0..o + x1]);
-                }
-                None => {
-                    row.clear();
-                    code.fill(attr::UNCLAIMED);
-                    strength.fill(0.0);
+    let width = x1 - x0;
+    let len = n as usize * width;
+    let mut groups: Vec<&mut [FoldBand<'_>]> = bands.chunks_mut(BANDS_PER_TASK).collect();
+    crate::par::for_each(&mut groups, |group| {
+        // The band being composed: its `n` super rows over the area, as planes.
+        let mut rgba = Planes::new(len);
+        let mut code = vec![attr::UNCLAIMED; len];
+        let mut strength = vec![0.0f32; len];
+        let mut seen = Vec::with_capacity(4);
+        for (ty, px, colour, coverage, target_attr, changed) in group.iter_mut() {
+            let y0 = *ty as u32 * n;
+            if base.is_none() {
+                rgba.clear();
+                code.fill(attr::UNCLAIMED);
+                strength.fill(0.0);
+            }
+            if let Some(b) = base {
+                for sy in 0..n as usize {
+                    let o = (y0 as usize + sy) * w;
+                    let (from, to) = (o + x0..o + x1, sy * width..(sy + 1) * width);
+                    rgba.copy_rows(&b.rgba, from.clone(), to.clone());
+                    code[to.clone()].copy_from_slice(&b.attrs.code[from.clone()]);
+                    strength[to].copy_from_slice(&b.attrs.strength[from]);
                 }
             }
-            compose_row(row.slice(0..x1 - x0), code, strength, stack, area, y);
+            compose_band(
+                rgba.slice(0..len),
+                &mut code,
+                &mut strength,
+                stack,
+                area,
+                y0,
+                n,
+            );
             for (j, region) in regions.iter().enumerate() {
                 let rc = attr::AttrSource::Region(u16::try_from(j).expect("few regions")).code();
                 let s = region.recipe().strength();
-                for (x, (c, st)) in (area.x0..area.x1).zip(code.iter_mut().zip(strength.iter_mut()))
-                {
-                    let m = region.sample(grid.super_px_centre_in_canvas(x, y));
-                    if m > 0.0 {
-                        *c = rc;
-                        *st = s * m;
+                for sy in 0..n {
+                    let row = sy as usize * width..(sy as usize + 1) * width;
+                    let attrs = code[row.clone()].iter_mut().zip(&mut strength[row]);
+                    for (x, (c, st)) in (area.x0..area.x1).zip(attrs) {
+                        let m = region.sample(grid.super_px_centre_in_canvas(x, y0 + sy));
+                        if m > 0.0 {
+                            *c = rc;
+                            *st = s * m;
+                        }
                     }
                 }
             }
-            row.write_to(&mut px[cols]);
+            for sy in 0..n as usize {
+                rgba.write_rows(
+                    sy * width..(sy + 1) * width,
+                    &mut px[sy * w + x0..sy * w + x1],
+                );
+            }
+            // Box-filter into the frame, noting the cell columns whose output changed.
+            let txs = x0 / n as usize..x1 / n as usize;
+            let mut bits = 0u64;
+            frame::reduce_row(px, w, n, txs.clone(), |tx, c, v| {
+                if colour[tx] != c || coverage[tx] != v {
+                    bits |= 1 << (tx / cell_w);
+                }
+                (colour[tx], coverage[tx]) = (c, v);
+            });
+            let t0 = txs.start;
+            attr::reduce_row(
+                &code,
+                &strength,
+                width,
+                n,
+                0..txs.len(),
+                &mut seen,
+                |t, a| {
+                    let tx = t0 + t;
+                    if target_attr[tx] != a {
+                        bits |= 1 << (tx / cell_w);
+                    }
+                    target_attr[tx] = a;
+                },
+            );
+            **changed = bits;
         }
-        // Box-filter into the frame, noting the cell columns whose output changed.
-        let txs = x0 / n as usize..x1 / n as usize;
-        let mut bits = 0u64;
-        frame::reduce_row(px, w, n, txs.clone(), |tx, c, v| {
-            if colour[tx] != c || coverage[tx] != v {
-                bits |= 1 << (tx / cell_w);
-            }
-            (colour[tx], coverage[tx]) = (c, v);
-        });
-        let mut seen = Vec::with_capacity(4);
-        attr::reduce_row(code, strength, w, n, txs, &mut seen, |tx, a| {
-            if target_attr[tx] != a {
-                bits |= 1 << (tx / cell_w);
-            }
-            target_attr[tx] = a;
-        });
-        **changed = bits;
     });
     changed
 }
+
+/// Target rows per task in [`fold`], which share their scratch buffers.
+const BANDS_PER_TASK: usize = 4;
 
 impl Planes {
     fn clear(&mut self) {
@@ -932,42 +1033,47 @@ impl Planes {
         }
     }
 
-    /// Rows of `w` pixels.
-    fn rows_mut(&mut self, w: usize) -> impl Iterator<Item = RgbaRow<'_>> {
+    /// Chunks of `n` pixels.
+    fn rows_mut(&mut self, n: usize) -> impl Iterator<Item = RgbaRow<'_>> {
         self.r
-            .chunks_mut(w)
-            .zip(self.g.chunks_mut(w))
-            .zip(self.b.chunks_mut(w).zip(self.a.chunks_mut(w)))
+            .chunks_mut(n)
+            .zip(self.g.chunks_mut(n))
+            .zip(self.b.chunks_mut(n).zip(self.a.chunks_mut(n)))
             .map(|((r, g), (b, a))| RgbaRow { r, g, b, a })
     }
 
-    /// Copies `other`'s pixels `cols` to the start of these planes.
-    fn copy_from(&mut self, other: &Self, cols: std::ops::Range<usize>) {
-        let n = cols.len();
-        self.r[..n].copy_from_slice(&other.r[cols.clone()]);
-        self.g[..n].copy_from_slice(&other.g[cols.clone()]);
-        self.b[..n].copy_from_slice(&other.b[cols.clone()]);
-        self.a[..n].copy_from_slice(&other.a[cols]);
+    /// Copies `other`'s pixels `from` to pixels `to`.
+    fn copy_rows(
+        &mut self,
+        other: &Self,
+        from: std::ops::Range<usize>,
+        to: std::ops::Range<usize>,
+    ) {
+        self.r[to.clone()].copy_from_slice(&other.r[from.clone()]);
+        self.g[to.clone()].copy_from_slice(&other.g[from.clone()]);
+        self.b[to.clone()].copy_from_slice(&other.b[from.clone()]);
+        self.a[to].copy_from_slice(&other.a[from]);
     }
 
-    /// Writes the first `out.len()` pixels interleaved into `out`.
-    fn write_to(&self, out: &mut [[f32; 4]]) {
-        let n = out.len();
-        let (r, g, b, a) = (&self.r[..n], &self.g[..n], &self.b[..n], &self.a[..n]);
+    /// Writes pixels `from` interleaved into `out`.
+    fn write_rows(&self, from: std::ops::Range<usize>, out: &mut [[f32; 4]]) {
+        let (r, g, b, a) = (
+            &self.r[from.clone()],
+            &self.g[from.clone()],
+            &self.b[from.clone()],
+            &self.a[from],
+        );
         for (i, o) in out.iter_mut().enumerate() {
             *o = [r[i], g[i], b[i], a[i]];
         }
     }
 }
 
-/// One target row's work: its index, its `n` canvas and attribute super rows, its
-/// colour, coverage and attribute target rows, and the cell columns whose output changed
-/// (one bit each).
+/// One target row's work: its index, its `n` canvas super rows, its colour, coverage
+/// and attribute target rows, and the cell columns whose output changed (one bit each).
 type FoldBand<'a> = (
     usize,
     &'a mut [[f32; 4]],
-    &'a mut [u16],
-    &'a mut [f32],
     &'a mut [[f32; 3]],
     &'a mut [f32],
     &'a mut [TargetAttr],

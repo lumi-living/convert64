@@ -60,6 +60,32 @@ where
     items.iter().map(f).collect()
 }
 
+/// Runs `a` and `b`, in parallel when the `parallel` feature is enabled, and returns
+/// both results.
+#[cfg(feature = "parallel")]
+pub fn join<A, B, RA, RB>(a: A, b: B) -> (RA, RB)
+where
+    A: FnOnce() -> RA + Send,
+    B: FnOnce() -> RB + Send,
+    RA: Send,
+    RB: Send,
+{
+    rayon::join(a, b)
+}
+
+/// Runs `a` and `b`, in parallel when the `parallel` feature is enabled, and returns
+/// both results.
+#[cfg(not(feature = "parallel"))]
+pub fn join<A, B, RA, RB>(a: A, b: B) -> (RA, RB)
+where
+    A: FnOnce() -> RA + Send,
+    B: FnOnce() -> RB + Send,
+    RA: Send,
+    RB: Send,
+{
+    (a(), b())
+}
+
 /// `true` when this build was compiled with the `parallel` feature.
 #[must_use]
 pub const fn is_parallel() -> bool {
@@ -68,7 +94,7 @@ pub const fn is_parallel() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{for_each, is_parallel, map};
+    use super::{for_each, is_parallel, join, map};
 
     #[test]
     fn for_each_touches_every_element() {
@@ -81,6 +107,11 @@ mod tests {
     fn map_preserves_order() {
         let v = [3_u8, 1, 2];
         assert_eq!(map(&v, |x| u32::from(*x) + 1), [4, 2, 3]);
+    }
+
+    #[test]
+    fn join_returns_both() {
+        assert_eq!(join(|| 1 + 1, || "b"), (2, "b"));
     }
 
     #[test]

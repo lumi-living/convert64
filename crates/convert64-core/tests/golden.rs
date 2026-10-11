@@ -465,8 +465,8 @@ mod composite_scene {
         Arc::new(SourceImage::from_srgba8(w, h, img.as_raw()).expect("decoded PNG"))
     }
 
-    /// Composites a scene: `(target width, height, composite RGBA8, attribute map RGBA8)`.
-    pub(super) fn render(scene_dir: &Path) -> (u32, u32, Vec<u8>, Vec<u8>) {
+    /// A scene's grid, layers (bottom first) and regions.
+    pub(super) fn load(scene_dir: &Path) -> (SuperGrid, Vec<Layer>, Vec<Region>) {
         let text = std::fs::read_to_string(scene_dir.join("scene.toml")).expect("scene.toml");
         let scene: Scene = toml::from_str(&text).expect("valid scene.toml");
         let grid = SuperGrid::new(scene.target, scene.n).expect("valid grid");
@@ -518,9 +518,13 @@ mod composite_scene {
                 .expect("region")
             })
             .collect();
-        let mut c = Compositor::new(grid);
-        let colour: Vec<u8> = c
-            .composite_with(&layers, &regions)
+        (grid, layers, regions)
+    }
+
+    /// The composite box-filtered to the target grid as RGBA8: straight sRGB, alpha =
+    /// coverage.
+    pub(super) fn colour_rgba8(c: &Compositor) -> Vec<u8> {
+        c.canvas()
             .downsample()
             .iter()
             .flat_map(|p| {
@@ -537,7 +541,15 @@ mod composite_scene {
                     (a.clamp(0.0, 1.0) * 255.0).round() as u8,
                 ]
             })
-            .collect();
+            .collect()
+    }
+
+    /// Composites a scene: `(target width, height, composite RGBA8, attribute map RGBA8)`.
+    pub(super) fn render(scene_dir: &Path) -> (u32, u32, Vec<u8>, Vec<u8>) {
+        let (grid, layers, regions) = load(scene_dir);
+        let mut c = Compositor::new(grid);
+        c.composite_with(&layers, &regions);
+        let colour = colour_rgba8(&c);
         let attr: Vec<u8> = c
             .attribute_map()
             .debug_rgba()
@@ -590,8 +602,12 @@ mod composite_scene {
         );
     }
 
+    pub(super) fn scene_dir(name: &str) -> PathBuf {
+        fixtures().join("composite").join(name)
+    }
+
     pub(super) fn check(name: &str) {
-        let dir = fixtures().join("composite").join(name);
+        let dir = scene_dir(name);
         let (w, h, colour, attr) = render(&dir);
         if let Some(out) = std::env::var_os("CONVERT64_GOLDEN_OUT") {
             let out = PathBuf::from(out).join("composite").join(name);
@@ -612,6 +628,93 @@ mod composite {
     #[test]
     fn title_multiply_hires() {
         super::composite_scene::check("title-multiply-hires");
+    }
+
+    /// #98: feathers from σ = 4 target px are blurred at half resolution. Each scene is
+    /// composited with that and with every feather at full resolution, and the error of
+    /// the half-resolution blur is printed and bounded: below one 8-bit step in the
+    /// evaluated masks (0–1) and at most one in the composite (sRGB and coverage). The
+    /// attribute map can change more, but only on a feather's far tail: a layer claims
+    /// every super pixel its mask is above zero on, and the half-resolution blur spreads
+    /// that support by a pixel or two, so a few target pixels there change source or
+    /// strength.
+    #[test]
+    fn half_res_feather_error() {
+        use super::composite_scene::{colour_rgba8, load, scene_dir};
+        use convert64_core::Compositor;
+        for name in ["portrait-over-title", "title-multiply-hires"] {
+            let (grid, layers, regions) = load(&scene_dir(name));
+            let mut half = Compositor::new(grid);
+            half.composite_with(&layers, &regions);
+            let mut full = Compositor::new(grid);
+            full.set_full_res_feather(true);
+            full.composite_with(&layers, &regions);
+            let mut mask = 0.0f32;
+            for i in 0..layers.len() {
+                if let (Some((ra, a)), Some((rb, b))) =
+                    (half.evaluated_mask(i), full.evaluated_mask(i))
+                {
+                    assert_eq!(ra, rb);
+                    for (x, y) in a.iter().zip(b) {
+                        mask = mask.max((x - y).abs());
+                    }
+                }
+            }
+            let colour = colour_rgba8(&half)
+                .iter()
+                .zip(colour_rgba8(&full))
+                .map(|(a, b)| a.abs_diff(b))
+                .max()
+                .unwrap_or(0);
+            // The least full-resolution mask value over target pixel (tx, ty)'s super
+            // pixels, over every masked layer.
+            let n = u32::from(grid.n());
+            let tail = |tx: u32, ty: u32| {
+                let mut least = f32::INFINITY;
+                for i in 0..layers.len() {
+                    let Some((r, v)) = full.evaluated_mask(i) else {
+                        continue;
+                    };
+                    for y in ty * n..(ty + 1) * n {
+                        for x in tx * n..(tx + 1) * n {
+                            if r.contains(x, y) {
+                                least = least.min(v[((y - r.y0) * r.width() + x - r.x0) as usize]);
+                            }
+                        }
+                    }
+                }
+                least
+            };
+            let (ha, fa) = (half.frame().attributes(), full.frame().attributes());
+            let tw = grid.target_size().0;
+            let (mut strength, mut small, mut sources, mut tail_max) = (0.0f32, 0.0f32, 0, 0.0f32);
+            for (i, (a, b)) in ha.pixels().iter().zip(fa.pixels()).enumerate() {
+                let d = (a.strength - b.strength).abs();
+                if a.source != b.source {
+                    sources += 1;
+                } else if d >= 1.0 / 255.0 {
+                    strength = strength.max(d);
+                } else {
+                    // Elsewhere strength follows the mask, within one 8-bit step.
+                    small = small.max(d);
+                    continue;
+                }
+                let (tx, ty) = (i as u32 % tw, i as u32 / tw);
+                tail_max = tail_max.max(tail(tx, ty));
+            }
+            println!(
+                "half-res feather error, composite/{name}: mask {mask:.5}, composite {colour} \
+                 / 255; attribute strength {small:.5}, except {sources} target pixels that \
+                 change source and strength by up to {strength:.3}, all where a mask is at \
+                 most {tail_max:.4}"
+            );
+            assert!(mask < 1.0 / 255.0, "{name}: mask error {mask}");
+            assert!(colour <= 1, "{name}: composite error {colour}");
+            assert!(
+                tail_max < 0.01,
+                "{name}: attributes change inside a feather"
+            );
+        }
     }
 }
 

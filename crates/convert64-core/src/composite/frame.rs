@@ -42,9 +42,25 @@ pub(crate) fn reduce_row(
     w: usize,
     n: u32,
     txs: std::ops::Range<usize>,
+    out: impl FnMut(usize, [f32; 3], f32),
+) {
+    // Specialised for the common factors, so the inner loops have constant bounds.
+    match n {
+        2 => reduce_row_n(band, w, 2, txs, out),
+        4 => reduce_row_n(band, w, 4, txs, out),
+        8 => reduce_row_n(band, w, 8, txs, out),
+        n => reduce_row_n(band, w, n as usize, txs, out),
+    }
+}
+
+#[inline(always)]
+fn reduce_row_n(
+    band: &[[f32; 4]],
+    w: usize,
+    n: usize,
+    txs: std::ops::Range<usize>,
     mut out: impl FnMut(usize, [f32; 3], f32),
 ) {
-    let n = n as usize;
     let mut tx = txs.start;
     while tx + LANES <= txs.end {
         let mut acc = [[0.0f32; 4]; LANES];

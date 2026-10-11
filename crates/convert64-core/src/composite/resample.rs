@@ -241,11 +241,33 @@ fn horizontal<T: Px>(src: &[T], sw: usize, mx: &AxisMap, r0: u32, r1: u32) -> Ve
 /// starts at source row `r0`.
 fn vertical<T: Px>(tmp: &[T], r0: u32, my: &AxisMap, k: usize, row: &mut [T]) {
     let ow = row.len();
-    row.fill(T::ZERO);
-    for (j, w) in my.taps(k) {
-        let line = &tmp[(j - r0) as usize * ow..][..ow];
-        for (o, v) in row.iter_mut().zip(line) {
-            o.madd(w, *v);
+    let line = |j: u32| &tmp[(j - r0) as usize * ow..][..ow];
+    let mut taps = my.taps(k);
+    match (taps.next(), taps.next(), taps.next()) {
+        // One or two taps (every bilinear output) in one pass; the sums are the same as
+        // the general case's, `0 + w0·v0 (+ w1·v1)`.
+        (Some((j0, w0)), None, _) => {
+            for (o, v) in row.iter_mut().zip(line(j0)) {
+                let mut acc = T::ZERO;
+                acc.madd(w0, *v);
+                *o = acc;
+            }
+        }
+        (Some((j0, w0)), Some((j1, w1)), None) => {
+            for ((o, a), b) in row.iter_mut().zip(line(j0)).zip(line(j1)) {
+                let mut acc = T::ZERO;
+                acc.madd(w0, *a);
+                acc.madd(w1, *b);
+                *o = acc;
+            }
+        }
+        _ => {
+            row.fill(T::ZERO);
+            for (j, w) in my.taps(k) {
+                for (o, v) in row.iter_mut().zip(line(j)) {
+                    o.madd(w, *v);
+                }
+            }
         }
     }
 }
