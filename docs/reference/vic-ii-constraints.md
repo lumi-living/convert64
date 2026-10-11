@@ -105,11 +105,18 @@ Conventional load addresses: Koala bitmap `$6000`; Art Studio bitmap `$2000`; Do
 
 ## 6. Validator rules (what `convert64 validate` checks)
 
+Rules 1–5 are implemented in `convert64-core` (`validate` module and the image-model constructors). Each is covered by hand-built tests in `crates/convert64-core/tests/rules.rs`, listed under the rule. Never weaken one of these tests to make a change pass.
+
 1. Colours per cell never exceeded, counting global colours: 2 (hi-res modes) or 4 (multicolor modes).
+   Tests: `rule1_mc_bitmap_rejects_five_colours_in_a_cell`, `rule1_mc_bitmap_rejects_four_own_colours_without_background_pixels`, `rule1_hires_bitmap_rejects_three_colours_in_a_cell`, `rule1_encoded_bitmaps_accept_any_bytes`.
 2. All colour values are palette indices 0–15; multicolor-charset per-char colour is 0–7.
+   Tests: `rule2_mc_charset_rejects_char_colour_9`, `rule2_mc_charset_rejects_hires_char_colour_above_7`, `rule2_mc_bitmap_rejects_background_16`, `rule2_mc_sprite_rejects_multicolor_register_16`, `rule2_any_mode_rejects_colour_index_16`.
 3. Charset outputs respect the unique-character budget (256, or 64 for ECM) and reference only existing chars.
+   Tests: `rule3_hires_charset_rejects_257_chars`, `rule3_mc_charset_rejects_257_chars`, `rule3_ecm_charset_rejects_65_chars`, `rule3_hires_charset_rejects_a_missing_char`, `rule3_mc_charset_rejects_a_missing_char`, `rule3_ecm_charset_rejects_a_missing_char`, `rule3_ecm_charset_accepts_any_background_bits`.
 4. Sprite data is exactly 64 bytes per sprite; MC1/MC2 are single values for the whole set; overlay pairs share coordinates.
+   Tests: `rule4_hires_sprite_rejects_63_byte_block`, `rule4_mc_sprite_rejects_partial_second_block`, `rule4_overlay_sprite_rejects_different_coordinates`, `rule4_overlay_sprite_rejects_hires_base`, `rule4_overlay_sprite_rejects_a_missing_sprite`.
 5. Exported addresses satisfy the alignment table and avoid the char-ROM shadow ranges.
+   Tests: `rule5_sprite_rejects_misaligned_block`, `rule5_charset_rejects_char_rom_shadow`, `rule5_charset_rejects_misaligned_address`, `rule5_bitmap_rejects_char_rom_shadow_in_bank_2`, `rule5_bitmap_rejects_misaligned_address`, `rule5_screen_rejects_misaligned_address`, `rule5_colour_ram_rejects_relocation`, `rule5_bank3_accepts_the_shadow_free_range`.
 6. File sizes match the layouts in [file-formats.md](file-formats.md) byte for byte.
 
 ## 7. Timing facts the preview may use
