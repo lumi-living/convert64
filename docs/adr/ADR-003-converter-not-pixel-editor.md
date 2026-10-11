@@ -15,4 +15,5 @@ Convert64 contains **no freehand pixel painting**. In scope is everything that s
 ## Consequences
 - Easier: a sharp product; a solver-centric codebase; fewer widgets.
 - Harder: users will ask for a pencil tool. Answer: export, open in ArcPaint64/Pixcen, and (later) a round-trip import of edited bitmaps as a locked layer.
+- Clarified by [ADR-008](ADR-008-layer-masks-raster-plus-parametric.md): the mask brush is the one freehand tool and paints weight only, never colour.
 - Revisit when: a round-trip "import C64 file as locked layer" feature exists and users still need single-pixel fixes inside Convert64.
