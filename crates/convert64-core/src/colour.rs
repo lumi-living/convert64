@@ -180,6 +180,16 @@ impl ColourSet {
         self.0
     }
 
+    /// The set with bit mask `bits` (bit `i` for colour `i`).
+    pub const fn from_bits(bits: u16) -> Self {
+        Self(bits)
+    }
+
+    /// Colours in both sets.
+    pub const fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
     /// Adds `c`.
     pub const fn insert(&mut self, c: ColourIndex) {
         self.0 |= 1 << c.0;
