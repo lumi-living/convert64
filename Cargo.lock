@@ -734,6 +734,7 @@ dependencies = [
  "clap",
  "convert64-core",
  "convert64-formats",
+ "image",
  "serde",
  "serde_json",
 ]
@@ -762,7 +763,10 @@ dependencies = [
 name = "convert64-mcp"
 version = "0.0.0"
 dependencies = [
+ "convert64-cli",
  "convert64-core",
+ "image",
+ "serde_json",
 ]
 
 [[package]]

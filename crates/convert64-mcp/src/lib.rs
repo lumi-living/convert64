@@ -1,0 +1,358 @@
+//! The convert64 MCP server: the core command registry as MCP tools (ADR-005).
+//!
+//! A minimal, synchronous implementation of the MCP stdio transport (newline-delimited
+//! JSON-RPC 2.0) covering `initialize`, `ping`, `tools/list` and `tools/call`. It runs
+//! recipes through the same [`Session`] as `convert64 recipe apply`, so an agent gets
+//! exactly what the CLI and the app get. It is written against `serde_json` alone because
+//! `rmcp` needs the `tokio` runtime, which is not yet an approved dependency; moving to
+//! `rmcp` later changes the transport, not the tools.
+//!
+//! Tools: `recipe_open`, one tool per registry command (`mask_key`, `mask_gradient`,
+//! `mask_stroke`, … with the recipe file's JSON arguments), `undo`, `redo`,
+//! `mask_export`, `composite_export` and `attributes_export`.
+
+use convert64_cli::recipe::{JsonCommand, LayerRef, Session};
+use convert64_core::command::REGISTRY;
+use serde_json::{Value, json};
+use std::path::Path;
+
+/// The MCP protocol revision this server implements.
+pub const PROTOCOL_VERSION: &str = "2025-06-18";
+
+/// One MCP session: at most one open recipe.
+#[derive(Default)]
+pub struct Server {
+    session: Option<Session>,
+}
+
+fn object_schema(properties: Value, required: &[&str]) -> Value {
+    json!({ "type": "object", "properties": properties, "required": required })
+}
+
+fn layer_schema() -> Value {
+    json!({
+        "description": "Layer index (0 = bottom) or name",
+        "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "string" }]
+    })
+}
+
+fn point_schema() -> Value {
+    json!({ "type": "object", "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+            "required": ["x", "y"] })
+}
+
+fn combine_schema() -> Value {
+    json!({ "type": "string", "enum": ["max", "min", "multiply"], "default": "max" })
+}
+
+/// The input schema of a registry command's tool.
+fn command_schema(name: &str) -> Value {
+    match name {
+        "mask_key" => object_schema(
+            json!({
+                "layer": layer_schema(),
+                "key": object_schema(json!({
+                    "channel": { "type": "string", "enum": ["luma", "chroma", "colour"] },
+                    "centre": { "type": "array", "items": { "type": "number", "minimum": 0, "maximum": 1 },
+                                "minItems": 3, "maxItems": 3,
+                                "description": "Keyed colour, linear sRGB 0–1" },
+                    "range": { "type": "number", "minimum": 0, "maximum": 2,
+                               "description": "Full-strength OKLab distance" },
+                    "softness": { "type": "number", "minimum": 0, "maximum": 2,
+                                  "description": "Fall-off beyond the range" }
+                }), &["channel", "centre", "range"]),
+                "combine": combine_schema()
+            }),
+            &["layer", "key"],
+        ),
+        "mask_gradient" => object_schema(
+            json!({
+                "layer": layer_schema(),
+                "gradient": object_schema(json!({
+                    "kind": { "type": "string", "enum": ["linear", "radial"] },
+                    "from": point_schema(),
+                    "to": point_schema(),
+                    "softness": { "type": "number", "minimum": 0, "maximum": 1, "default": 1 }
+                }), &["kind", "from", "to"]),
+                "combine": combine_schema()
+            }),
+            &["layer", "gradient"],
+        ),
+        "mask_set_modifier" => object_schema(
+            json!({
+                "layer": layer_schema(),
+                "modifier": {
+                    "description": "Exactly one of: {\"invert\": bool}, {\"levels\": {black, white, gamma}}, \
+                                    {\"snap\": \"off\"|\"expand\"|\"contract\"|\"nearest\"}, {\"feather\": 0–32 target px}",
+                    "type": "object"
+                }
+            }),
+            &["layer", "modifier"],
+        ),
+        _ => json!({
+            "type": "object",
+            "description": "The command's arguments as in a convert64 recipe file \
+                            (crates/convert64-cli/src/recipe.rs, JsonCommand), without \"command\"."
+        }),
+    }
+}
+
+fn tools() -> Value {
+    let mut list = vec![json!({
+        "name": "recipe_open",
+        "description": "Open a convert64 recipe file (JSON: layers and commands) and run its commands.",
+        "inputSchema": object_schema(json!({ "path": { "type": "string" } }), &["path"]),
+    })];
+    for c in REGISTRY {
+        list.push(json!({
+            "name": c.name,
+            "description": c.summary,
+            "inputSchema": command_schema(c.name),
+        }));
+    }
+    for (name, description) in [
+        ("undo", "Undo the last command."),
+        ("redo", "Redo the last undone command."),
+    ] {
+        list.push(json!({ "name": name, "description": description,
+                          "inputSchema": { "type": "object" } }));
+    }
+    list.push(json!({
+        "name": "mask_export",
+        "description": "Write a layer's evaluated mask (sources and modifiers applied) on the super grid as a 16-bit greyscale PNG.",
+        "inputSchema": object_schema(json!({ "layer": layer_schema(), "path": { "type": "string" } }), &["layer", "path"]),
+    }));
+    list.push(json!({
+        "name": "composite_export",
+        "description": "Write the composite on the target grid (sRGB, alpha = coverage) as a PNG.",
+        "inputSchema": object_schema(json!({ "path": { "type": "string" } }), &["path"]),
+    }));
+    list.push(json!({
+        "name": "attributes_export",
+        "description": "Write the attribute map's debug render (hue = dither method, lightness = strength) as a PNG.",
+        "inputSchema": object_schema(json!({ "path": { "type": "string" } }), &["path"]),
+    }));
+    Value::Array(list)
+}
+
+impl Server {
+    /// Handles one line of input; returns the response line, or `None` for a
+    /// notification.
+    pub fn handle_line(&mut self, line: &str) -> Option<String> {
+        let reply = match serde_json::from_str::<Value>(line) {
+            Ok(msg) => self.handle(&msg)?,
+            Err(e) => error_reply(&Value::Null, -32700, &format!("parse error: {e}")),
+        };
+        Some(reply.to_string())
+    }
+
+    /// Handles one JSON-RPC message; `None` for a notification.
+    pub fn handle(&mut self, msg: &Value) -> Option<Value> {
+        let id = msg.get("id")?.clone();
+        let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+        let params = msg.get("params").cloned().unwrap_or(Value::Null);
+        Some(match method {
+            "initialize" => {
+                let requested = params.get("protocolVersion").and_then(Value::as_str);
+                let version = match requested {
+                    Some(v @ ("2025-06-18" | "2025-03-26" | "2024-11-05")) => v,
+                    _ => PROTOCOL_VERSION,
+                };
+                ok_reply(
+                    &id,
+                    json!({
+                        "protocolVersion": version,
+                        "capabilities": { "tools": { "listChanged": false } },
+                        "serverInfo": { "name": "convert64-mcp", "version": env!("CARGO_PKG_VERSION") },
+                        "instructions": "Open a recipe with recipe_open, then edit masks with the mask_* tools \
+                                         and export results. Layers are referenced by index or name."
+                    }),
+                )
+            }
+            "ping" => ok_reply(&id, json!({})),
+            "tools/list" => ok_reply(&id, json!({ "tools": tools() })),
+            "tools/call" => {
+                let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+                let args = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                let result = match self.call(name, args) {
+                    Ok(text) => {
+                        json!({ "content": [{ "type": "text", "text": text }], "isError": false })
+                    }
+                    Err(text) => {
+                        json!({ "content": [{ "type": "text", "text": text }], "isError": true })
+                    }
+                };
+                ok_reply(&id, result)
+            }
+            other => error_reply(&id, -32601, &format!("method not found: {other}")),
+        })
+    }
+
+    fn session(&mut self) -> Result<&mut Session, String> {
+        self.session
+            .as_mut()
+            .ok_or_else(|| "no recipe is open; call recipe_open first".to_owned())
+    }
+
+    /// Runs a tool; `Err` becomes an MCP tool error (`isError: true`).
+    pub fn call(&mut self, name: &str, args: Value) -> Result<String, String> {
+        let str_arg = |k: &str| -> Result<String, String> {
+            args.get(k)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| format!("missing string argument {k:?}"))
+        };
+        match name {
+            "recipe_open" => {
+                let path = str_arg("path")?;
+                let s = Session::open(Path::new(&path)).map_err(|e| e.to_string())?;
+                let text = format!(
+                    "opened {path}: {} layer(s): {}",
+                    s.project().layers.len(),
+                    s.project()
+                        .layers
+                        .iter()
+                        .map(|l| l.name().to_owned())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                self.session = Some(s);
+                Ok(text)
+            }
+            "undo" => Ok(match self.session()?.editor_mut().undo() {
+                Some(d) => format!("undone ({d:?})"),
+                None => "nothing to undo".to_owned(),
+            }),
+            "redo" => match self.session()?.editor_mut().redo() {
+                Some(r) => r
+                    .map(|d| format!("redone ({d:?})"))
+                    .map_err(|e| e.to_string()),
+                None => Ok("nothing to redo".to_owned()),
+            },
+            "mask_export" => {
+                let path = str_arg("path")?;
+                let layer: LayerRef = serde_json::from_value(
+                    args.get("layer")
+                        .cloned()
+                        .ok_or("missing argument \"layer\"")?,
+                )
+                .map_err(|e| e.to_string())?;
+                let s = self.session()?;
+                let i = s.resolve(&layer).map_err(|e| e.to_string())?;
+                s.write_mask(i, Path::new(&path))
+                    .map_err(|e| e.to_string())?;
+                Ok(format!("mask of layer {i} -> {path}"))
+            }
+            "composite_export" => {
+                let path = str_arg("path")?;
+                self.session()?
+                    .write_composite(Path::new(&path))
+                    .map_err(|e| e.to_string())?;
+                Ok(format!("composite -> {path}"))
+            }
+            "attributes_export" => {
+                let path = str_arg("path")?;
+                self.session()?
+                    .write_attributes(Path::new(&path))
+                    .map_err(|e| e.to_string())?;
+                Ok(format!("attribute map -> {path}"))
+            }
+            cmd if REGISTRY.iter().any(|c| c.name == cmd) => {
+                let mut obj = match args {
+                    Value::Object(m) => m,
+                    Value::Null => serde_json::Map::new(),
+                    _ => return Err("arguments must be an object".to_owned()),
+                };
+                obj.insert("command".to_owned(), Value::String(cmd.to_owned()));
+                let parsed: JsonCommand = serde_json::from_value(Value::Object(obj))
+                    .map_err(|e| format!("{cmd}: {e}"))?;
+                let dirty = self.session()?.run(parsed).map_err(|e| e.to_string())?;
+                Ok(format!("{cmd} done ({dirty:?})"))
+            }
+            other => Err(format!("unknown tool {other:?}")),
+        }
+    }
+}
+
+fn ok_reply(id: &Value, result: Value) -> Value {
+    json!({ "jsonrpc": "2.0", "id": id, "result": result })
+}
+
+fn error_reply(id: &Value, code: i64, message: &str) -> Value {
+    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req(id: u64, method: &str, params: Value) -> Value {
+        json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
+    }
+
+    #[test]
+    fn handshake_and_tool_list() {
+        let mut s = Server::default();
+        let r = s
+            .handle(&req(1, "initialize", json!({ "protocolVersion": "2025-06-18", "capabilities": {},
+                                                    "clientInfo": { "name": "t", "version": "0" } })))
+            .unwrap();
+        assert_eq!(r["result"]["protocolVersion"], "2025-06-18");
+        assert!(r["result"]["capabilities"]["tools"].is_object());
+        assert!(
+            s.handle(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+                .is_none()
+        );
+        let r = s.handle(&req(2, "tools/list", json!({}))).unwrap();
+        let names: Vec<&str> = r["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        for n in [
+            "mask_key",
+            "mask_gradient",
+            "recipe_open",
+            "mask_export",
+            "undo",
+        ] {
+            assert!(names.contains(&n), "{n} missing from {names:?}");
+        }
+        for c in REGISTRY {
+            assert!(names.contains(&c.name));
+        }
+        assert_eq!(
+            s.handle(&req(3, "nope", json!({}))).unwrap()["error"]["code"],
+            -32601
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&s.handle_line("{not json").unwrap()).unwrap()["error"]["code"],
+            -32700
+        );
+    }
+
+    #[test]
+    fn tool_errors_are_reported_not_fatal() {
+        let mut s = Server::default();
+        let r = s
+            .handle(&req(
+                1,
+                "tools/call",
+                json!({ "name": "mask_key", "arguments": { "layer": 0 } }),
+            ))
+            .unwrap();
+        assert_eq!(r["result"]["isError"], true);
+        let r = s
+            .handle(&req(
+                2,
+                "tools/call",
+                json!({ "name": "recipe_open", "arguments": { "path": "/nonexistent.json" } }),
+            ))
+            .unwrap();
+        assert_eq!(r["result"]["isError"], true);
+    }
+}

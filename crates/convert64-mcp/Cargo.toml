@@ -11,9 +11,18 @@ publish.workspace = true
 
 [dependencies]
 convert64-core = { workspace = true }
+convert64-cli = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+image = { workspace = true }
 
 [lints]
 workspace = true
+
+[lib]
+name = "convert64_mcp"
+path = "src/lib.rs"
 
 [[bin]]
 name = "convert64-mcp"

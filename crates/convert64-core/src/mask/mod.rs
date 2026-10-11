@@ -6,12 +6,14 @@
 //! map's dither strength by the same mask (ADR-002), so dither fades across a feather.
 
 pub(crate) mod eval;
+pub(crate) mod paint;
 mod source;
 
 pub use eval::HALF_RES_FEATHER;
+pub use paint::PaintMode;
 pub use source::{Combine, Gradient, GradientKind, Key, KeyChannel, MaskSource, SourceEntry};
 
-use crate::geom::Vec2;
+use crate::geom::{PxRect, Vec2};
 use crate::layer::{Levels, SourceImage};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -178,6 +180,23 @@ impl MaskRaster {
     }
 }
 
+/// Side of the square raster tiles that undo saves (layer pixels).
+pub const TILE: u32 = 64;
+
+/// A saved rectangle of raster values, for undo.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Tile {
+    rect: PxRect,
+    data: Vec<f32>,
+}
+
+impl Tile {
+    /// Bytes held, for history budgeting and tests.
+    pub(crate) fn len(&self) -> usize {
+        self.data.len()
+    }
+}
+
 /// Quantising the mask edge to whole target cells (ADR-008).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -227,6 +246,26 @@ impl TryFrom<ModifiersData> for Modifiers {
 }
 
 impl Modifiers {
+    /// These modifiers with `invert` changed.
+    pub fn with_invert(self, invert: bool) -> Self {
+        Self { invert, ..self }
+    }
+
+    /// These modifiers with `levels` changed.
+    pub fn with_levels(self, levels: Levels) -> Self {
+        Self { levels, ..self }
+    }
+
+    /// These modifiers with `snap` changed.
+    pub fn with_snap(self, snap: SnapToCells) -> Self {
+        Self { snap, ..self }
+    }
+
+    /// These modifiers with `feather` changed; it must be in `0..=32`.
+    pub fn with_feather(self, feather: f32) -> Result<Self, MaskError> {
+        Self::new(self.invert, self.levels, self.snap, feather)
+    }
+
     /// Modifiers; `feather` is a Gaussian σ in target pixels, `0..=32`.
     pub fn new(
         invert: bool,
@@ -364,6 +403,55 @@ impl Mask {
         self.raster = raster;
         self.generation = next_generation();
         Ok(())
+    }
+
+    /// Runs `f` on the raster (keeping values in `0..=1` is `f`'s job), bumps the
+    /// generation and returns the rectangle `f` reports as touched.
+    pub(crate) fn paint(&mut self, f: impl FnOnce(&mut MaskRaster) -> PxRect) -> PxRect {
+        self.generation = next_generation();
+        f(&mut self.raster)
+    }
+
+    /// Copies of the [`TILE`]-sized tiles of the raster that overlap `rect`.
+    pub(crate) fn tiles(&self, rect: PxRect) -> Vec<Tile> {
+        let (w, h) = self.raster.size();
+        let rect = rect.intersect(PxRect::of_size(w, h));
+        let mut out = Vec::new();
+        if rect.is_empty() {
+            return out;
+        }
+        let mut ty = rect.y0 / TILE * TILE;
+        while ty < rect.y1 {
+            let mut tx = rect.x0 / TILE * TILE;
+            while tx < rect.x1 {
+                let r = PxRect::new(tx, ty, (tx + TILE).min(w), (ty + TILE).min(h));
+                let mut data = Vec::with_capacity((r.width() * r.height()) as usize);
+                for y in r.y0..r.y1 {
+                    let row = (y * w) as usize;
+                    data.extend_from_slice(
+                        &self.raster.data[row + r.x0 as usize..row + r.x1 as usize],
+                    );
+                }
+                out.push(Tile { rect: r, data });
+                tx += TILE;
+            }
+            ty += TILE;
+        }
+        out
+    }
+
+    /// Writes saved tiles back and bumps the generation.
+    pub(crate) fn restore(&mut self, tiles: &[Tile]) {
+        let w = self.raster.width;
+        for t in tiles {
+            let tw = t.rect.width() as usize;
+            for (k, y) in (t.rect.y0..t.rect.y1).enumerate() {
+                let row = (y * w) as usize;
+                self.raster.data[row + t.rect.x0 as usize..row + t.rect.x1 as usize]
+                    .copy_from_slice(&t.data[k * tw..(k + 1) * tw]);
+            }
+        }
+        self.generation = next_generation();
     }
 
     /// The raster's and sources' generation: equal generations mean unchanged layer-space
