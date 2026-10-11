@@ -3,6 +3,7 @@
 
 use super::{Modifiers, SnapToCells};
 use crate::geom::{PxRect, SuperGrid};
+use crate::scratch;
 
 /// Feather σ (target px) from which the blur runs at half resolution (#76, #98).
 pub const HALF_RES_FEATHER: f32 = 4.0;
@@ -131,7 +132,12 @@ fn half_tap(i: usize, n: usize) -> (usize, usize, f32) {
 /// Blur at half resolution: 2 × 2 box down, blur with σ/2, bilinear back up.
 pub(crate) fn blur_half_res(values: &mut [f32], w: usize, h: usize, sigma: f32) {
     let (hw, hh) = (w.div_ceil(2), h.div_ceil(2));
-    let mut half = vec![0.0f32; hw * hh];
+    scratch::with(hw * hh, |half| blur_half_res_in(values, w, h, sigma, half));
+}
+
+/// [`blur_half_res`] with `half` (`⌈w/2⌉ × ⌈h/2⌉`) as scratch.
+fn blur_half_res_in(values: &mut [f32], w: usize, h: usize, sigma: f32, half: &mut [f32]) {
+    let (hw, hh) = (w.div_ceil(2), h.div_ceil(2));
     {
         let src: &[f32] = values;
         let mut rows: Vec<(usize, &mut [f32])> = half.chunks_mut(hw).enumerate().collect();
@@ -172,7 +178,8 @@ pub(crate) fn blur_half_res(values: &mut [f32], w: usize, h: usize, sigma: f32) 
             }
         });
     }
-    blur(&mut half, hw, hh, sigma / 2.0);
+    blur(half, hw, hh, sigma / 2.0);
+    let half: &[f32] = half;
     let cols: Vec<(usize, usize, f32, f32)> = (0..w)
         .map(|x| {
             let (x0, x1, tx) = half_tap(x, hw);
@@ -218,19 +225,21 @@ pub(crate) fn blur_half_res(values: &mut [f32], w: usize, h: usize, sigma: f32) 
         let n = rows.len() / w;
         let (j0, _, _) = half_tap(y0, hh);
         let (_, j1, _) = half_tap(y0 + n - 1, hh);
-        let mut lines = vec![0.0f32; (j1 - j0 + 1) * w];
-        for (j, line) in lines.chunks_mut(w).enumerate() {
-            interpolate(j0 + j, line);
-        }
-        for (i, row) in rows.chunks_mut(w).enumerate() {
-            let (ya, yb, ty) = half_tap(y0 + i, hh);
-            let (top, bot) = (&lines[(ya - j0) * w..][..w], &lines[(yb - j0) * w..][..w]);
-            for ((v, t), b) in row.iter_mut().zip(top).zip(bot) {
-                *v = t * (1.0 - ty) + b * ty;
+        scratch::with((j1 - j0 + 1) * w, |lines| {
+            for (j, line) in lines.chunks_mut(w).enumerate() {
+                interpolate(j0 + j, line);
             }
-        }
+            for (i, row) in rows.chunks_mut(w).enumerate() {
+                let (ya, yb, ty) = half_tap(y0 + i, hh);
+                let (top, bot) = (&lines[(ya - j0) * w..][..w], &lines[(yb - j0) * w..][..w]);
+                for ((v, t), b) in row.iter_mut().zip(top).zip(bot) {
+                    *v = t * (1.0 - ty) + b * ty;
+                }
+            }
+        });
     });
 }
+
 fn gaussian_kernel(sigma: f32) -> Vec<f32> {
     let r = (3.0 * sigma).ceil() as i32;
     let mut k: Vec<f32> = (-r..=r)
@@ -272,29 +281,34 @@ fn convolve_rows(values: &mut [f32], w: usize, _h: usize, k: &[f32]) {
     let r = (k.len() / 2) as isize;
     let mut rows: Vec<&mut [f32]> = values.chunks_mut(w).collect();
     crate::par::for_each(&mut rows, |row| {
-        let src = row.to_vec();
-        for (x, out) in row.iter_mut().enumerate() {
-            let mut acc = 0.0;
-            for (j, kw) in k.iter().enumerate() {
-                acc += kw * src[clamp_idx(x as isize + j as isize - r, w)];
+        scratch::with(w, |src| {
+            src.copy_from_slice(row);
+            for (x, out) in row.iter_mut().enumerate() {
+                let mut acc = 0.0;
+                for (j, kw) in k.iter().enumerate() {
+                    acc += kw * src[clamp_idx(x as isize + j as isize - r, w)];
+                }
+                *out = acc;
             }
-            *out = acc;
-        }
+        });
     });
 }
 
 fn convolve_cols(values: &mut [f32], w: usize, h: usize, k: &[f32]) {
     let r = (k.len() / 2) as isize;
-    let src = values.to_vec();
-    let mut rows: Vec<(usize, &mut [f32])> = values.chunks_mut(w).enumerate().collect();
-    crate::par::for_each(&mut rows, |(y, row)| {
-        row.fill(0.0);
-        for (j, kw) in k.iter().enumerate() {
-            let sy = clamp_idx(*y as isize + j as isize - r, h);
-            for (o, s) in row.iter_mut().zip(&src[sy * w..(sy + 1) * w]) {
-                *o += kw * s;
+    scratch::with(values.len(), |src| {
+        src.copy_from_slice(values);
+        let src: &[f32] = src;
+        let mut rows: Vec<(usize, &mut [f32])> = values.chunks_mut(w).enumerate().collect();
+        crate::par::for_each(&mut rows, |(y, row)| {
+            row.fill(0.0);
+            for (j, kw) in k.iter().enumerate() {
+                let sy = clamp_idx(*y as isize + j as isize - r, h);
+                for (o, s) in row.iter_mut().zip(&src[sy * w..(sy + 1) * w]) {
+                    *o += kw * s;
+                }
             }
-        }
+        });
     });
 }
 
@@ -309,12 +323,33 @@ fn convolve_cols(values: &mut [f32], w: usize, h: usize, k: &[f32]) {
 /// independent, so the inner loops vectorise across them, and only the last `2r + 1`
 /// prefix rows are kept.
 fn box_lanes(src: &[f32], stride: usize, lanes: usize, n: usize, r: usize, out: &mut [f32]) {
-    let inv = 1.0 / (2 * r + 1) as f64;
     let span = 2 * r + 1;
     // Slot `p mod span` holds prefix[p] until step p + span reads it as prefix[i] and
     // overwrites it; prefix[0] is the zero slot 0 starts with.
-    let mut ring = vec![0.0f64; span * lanes];
-    let mut acc = vec![0.0f64; lanes];
+    scratch::with(span * lanes + lanes, |ring| {
+        ring.fill(0.0);
+        let (ring, acc) = ring.split_at_mut(span * lanes);
+        box_lanes_in(src, stride, lanes, n, r, out, ring, acc);
+    });
+}
+
+/// [`box_lanes`] with zeroed scratch: `ring` (`(2r + 1) × lanes`) and `acc` (`lanes`).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the lines' layout and two scratch buffers"
+)]
+fn box_lanes_in(
+    src: &[f32],
+    stride: usize,
+    lanes: usize,
+    n: usize,
+    r: usize,
+    out: &mut [f32],
+    ring: &mut [f64],
+    acc: &mut [f64],
+) {
+    let inv = 1.0 / (2 * r + 1) as f64;
+    let span = 2 * r + 1;
     let mut slot = 0;
     for k in 0..n + 2 * r {
         let line = &src[clamp_idx(k as isize - r as isize, n) * stride..][..lanes];
@@ -349,19 +384,20 @@ pub(crate) fn box_rows(values: &mut [f32], w: usize, _h: usize, r: usize) {
     let mut groups: Vec<&mut [f32]> = values.chunks_mut(w * ROW_GROUP).collect();
     crate::par::for_each(&mut groups, |rows| {
         let g = rows.len() / w;
-        let mut t = vec![0.0f32; w * g];
-        for (j, row) in rows.chunks(w).enumerate() {
-            for (x, &v) in row.iter().enumerate() {
-                t[x * g + j] = v;
+        scratch::with(2 * w * g, |t| {
+            let (t, out) = t.split_at_mut(w * g);
+            for (j, row) in rows.chunks(w).enumerate() {
+                for (x, &v) in row.iter().enumerate() {
+                    t[x * g + j] = v;
+                }
             }
-        }
-        let mut out = vec![0.0f32; w * g];
-        box_lanes(&t, g, g, w, r, &mut out);
-        for (j, row) in rows.chunks_mut(w).enumerate() {
-            for (x, v) in row.iter_mut().enumerate() {
-                *v = out[x * g + j];
+            box_lanes(t, g, g, w, r, out);
+            for (j, row) in rows.chunks_mut(w).enumerate() {
+                for (x, v) in row.iter_mut().enumerate() {
+                    *v = out[x * g + j];
+                }
             }
-        }
+        });
     });
 }
 
@@ -369,20 +405,27 @@ pub(crate) fn box_cols(values: &mut [f32], w: usize, h: usize, r: usize) {
     if r == 0 {
         return;
     }
-    let strips: Vec<usize> = (0..w).step_by(COL_STRIP).collect();
-    let src: &[f32] = values;
-    let results = crate::par::map(&strips, |&x0| {
-        let lanes = COL_STRIP.min(w - x0);
-        let mut out = vec![0.0f32; lanes * h];
-        box_lanes(&src[x0..], w, lanes, h, r, &mut out);
-        out
-    });
-    let mut rows: Vec<(usize, &mut [f32])> = values.chunks_mut(w).enumerate().collect();
-    crate::par::for_each(&mut rows, |(y, row)| {
-        for (&x0, strip) in strips.iter().zip(&results) {
-            let lanes = COL_STRIP.min(w - x0);
-            row[x0..x0 + lanes].copy_from_slice(&strip[*y * lanes..][..lanes]);
+    // The strips' results, one after another: strip `s` (columns from `s × COL_STRIP`)
+    // is `lanes × h` values from `s × COL_STRIP × h`.
+    scratch::with(w * h, |results| {
+        {
+            let src: &[f32] = values;
+            let mut strips: Vec<(usize, &mut [f32])> =
+                results.chunks_mut(COL_STRIP * h).enumerate().collect();
+            crate::par::for_each(&mut strips, |(s, out)| {
+                let x0 = *s * COL_STRIP;
+                let lanes = COL_STRIP.min(w - x0);
+                box_lanes(&src[x0..], w, lanes, h, r, out);
+            });
         }
+        let results: &[f32] = results;
+        let mut rows: Vec<(usize, &mut [f32])> = values.chunks_mut(w).enumerate().collect();
+        crate::par::for_each(&mut rows, |(y, row)| {
+            for (strip, x0) in results.chunks(COL_STRIP * h).zip((0..w).step_by(COL_STRIP)) {
+                let lanes = COL_STRIP.min(w - x0);
+                row[x0..x0 + lanes].copy_from_slice(&strip[*y * lanes..][..lanes]);
+            }
+        });
     });
 }
 

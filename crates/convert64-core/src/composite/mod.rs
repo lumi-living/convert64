@@ -20,6 +20,7 @@ use crate::geom::{CellSet, PxRect, SuperGrid, Vec2};
 use crate::layer::{AdjustCache, Adjustments, Blend, Layer, SourceImage, Transform};
 use crate::mask::{Mask, Modifiers, SnapToCells};
 use crate::region::Region;
+use crate::scratch;
 use attr::AttrPlanes;
 use blend::RgbaRow;
 use resample::{AxisMap, Planes, resample_into, resample_planes};
@@ -950,84 +951,90 @@ fn fold(
     let len = n as usize * width;
     let mut groups: Vec<&mut [FoldBand<'_>]> = bands.chunks_mut(BANDS_PER_TASK).collect();
     crate::par::for_each(&mut groups, |group| {
-        // The band being composed: its `n` super rows over the area, as planes.
-        let mut rgba = Planes::new(len);
-        let mut code = vec![attr::UNCLAIMED; len];
-        let mut strength = vec![0.0f32; len];
-        let mut seen = Vec::with_capacity(4);
-        for (ty, px, colour, coverage, target_attr, changed) in group.iter_mut() {
-            let y0 = *ty as u32 * n;
-            if base.is_none() {
-                rgba.clear();
-                code.fill(attr::UNCLAIMED);
-                strength.fill(0.0);
-            }
-            if let Some(b) = base {
-                for sy in 0..n as usize {
-                    let o = (y0 as usize + sy) * w;
-                    let (from, to) = (o + x0..o + x1, sy * width..(sy + 1) * width);
-                    rgba.copy_rows(&b.rgba, from.clone(), to.clone());
-                    code[to.clone()].copy_from_slice(&b.attrs.code[from.clone()]);
-                    strength[to].copy_from_slice(&b.attrs.strength[from]);
-                }
-            }
-            compose_band(
-                rgba.slice(0..len),
-                &mut code,
-                &mut strength,
-                stack,
-                area,
-                y0,
-                n,
-            );
-            for (j, region) in regions.iter().enumerate() {
-                let rc = attr::AttrSource::Region(u16::try_from(j).expect("few regions")).code();
-                let s = region.recipe().strength();
-                for sy in 0..n {
-                    let row = sy as usize * width..(sy as usize + 1) * width;
-                    let attrs = code[row.clone()].iter_mut().zip(&mut strength[row]);
-                    for (x, (c, st)) in (area.x0..area.x1).zip(attrs) {
-                        let m = region.sample(grid.super_px_centre_in_canvas(x, y0 + sy));
-                        if m > 0.0 {
-                            *c = rc;
-                            *st = s * m;
+        // The band being composed, its `n` super rows over the area: colour planes, then
+        // the strength plane, and the code plane.
+        scratch::with(5 * len, |planes| {
+            scratch::with(len, |code: &mut [u16]| {
+                let (rgba, strength) = planes.split_at_mut(4 * len);
+                let (r, rest) = rgba.split_at_mut(len);
+                let (g, rest) = rest.split_at_mut(len);
+                let (b, a) = rest.split_at_mut(len);
+                let mut rgba = RgbaRow { r, g, b, a };
+                let mut seen = Vec::with_capacity(4);
+                for (ty, px, colour, coverage, target_attr, changed) in group.iter_mut() {
+                    let y0 = *ty as u32 * n;
+                    match base {
+                        None => {
+                            for p in [&mut *rgba.r, &mut *rgba.g, &mut *rgba.b, &mut *rgba.a] {
+                                p.fill(0.0);
+                            }
+                            code.fill(attr::UNCLAIMED);
+                            strength.fill(0.0);
+                        }
+                        Some(b) => {
+                            for sy in 0..n as usize {
+                                let o = (y0 as usize + sy) * w;
+                                let (from, to) = (o + x0..o + x1, sy * width..(sy + 1) * width);
+                                rgba.r[to.clone()].copy_from_slice(&b.rgba.r[from.clone()]);
+                                rgba.g[to.clone()].copy_from_slice(&b.rgba.g[from.clone()]);
+                                rgba.b[to.clone()].copy_from_slice(&b.rgba.b[from.clone()]);
+                                rgba.a[to.clone()].copy_from_slice(&b.rgba.a[from.clone()]);
+                                code[to.clone()].copy_from_slice(&b.attrs.code[from.clone()]);
+                                strength[to].copy_from_slice(&b.attrs.strength[from]);
+                            }
                         }
                     }
-                }
-            }
-            for sy in 0..n as usize {
-                rgba.write_rows(
-                    sy * width..(sy + 1) * width,
-                    &mut px[sy * w + x0..sy * w + x1],
-                );
-            }
-            // Box-filter into the frame, noting the cell columns whose output changed.
-            let txs = x0 / n as usize..x1 / n as usize;
-            let mut bits = 0u64;
-            frame::reduce_row(px, w, n, txs.clone(), |tx, c, v| {
-                if colour[tx] != c || coverage[tx] != v {
-                    bits |= 1 << (tx / cell_w);
-                }
-                (colour[tx], coverage[tx]) = (c, v);
-            });
-            let t0 = txs.start;
-            attr::reduce_row(
-                &code,
-                &strength,
-                width,
-                n,
-                0..txs.len(),
-                &mut seen,
-                |t, a| {
-                    let tx = t0 + t;
-                    if target_attr[tx] != a {
-                        bits |= 1 << (tx / cell_w);
+                    compose_band(rgba.slice(0..len), code, strength, stack, area, y0, n);
+                    for (j, region) in regions.iter().enumerate() {
+                        let rc =
+                            attr::AttrSource::Region(u16::try_from(j).expect("few regions")).code();
+                        let s = region.recipe().strength();
+                        for sy in 0..n {
+                            let row = sy as usize * width..(sy as usize + 1) * width;
+                            let attrs = code[row.clone()].iter_mut().zip(&mut strength[row]);
+                            for (x, (c, st)) in (area.x0..area.x1).zip(attrs) {
+                                let m = region.sample(grid.super_px_centre_in_canvas(x, y0 + sy));
+                                if m > 0.0 {
+                                    *c = rc;
+                                    *st = s * m;
+                                }
+                            }
+                        }
                     }
-                    target_attr[tx] = a;
-                },
-            );
-            **changed = bits;
-        }
+                    for sy in 0..n as usize {
+                        let from = sy * width..(sy + 1) * width;
+                        let (r, g, b, a) = (
+                            &rgba.r[from.clone()],
+                            &rgba.g[from.clone()],
+                            &rgba.b[from.clone()],
+                            &rgba.a[from],
+                        );
+                        for (i, o) in px[sy * w + x0..sy * w + x1].iter_mut().enumerate() {
+                            *o = [r[i], g[i], b[i], a[i]];
+                        }
+                    }
+                    // Box-filter into the frame, noting the cell columns whose output
+                    // changed.
+                    let txs = x0 / n as usize..x1 / n as usize;
+                    let mut bits = 0u64;
+                    frame::reduce_row(px, w, n, txs.clone(), |tx, c, v| {
+                        if colour[tx] != c || coverage[tx] != v {
+                            bits |= 1 << (tx / cell_w);
+                        }
+                        (colour[tx], coverage[tx]) = (c, v);
+                    });
+                    let t0 = txs.start;
+                    attr::reduce_row(code, strength, width, n, 0..txs.len(), &mut seen, |t, a| {
+                        let tx = t0 + t;
+                        if target_attr[tx] != a {
+                            bits |= 1 << (tx / cell_w);
+                        }
+                        target_attr[tx] = a;
+                    });
+                    **changed = bits;
+                }
+            });
+        });
     });
     changed
 }
@@ -1036,22 +1043,6 @@ fn fold(
 const BANDS_PER_TASK: usize = 4;
 
 impl Planes {
-    fn clear(&mut self) {
-        for p in [&mut self.r, &mut self.g, &mut self.b, &mut self.a] {
-            p.fill(0.0);
-        }
-    }
-
-    /// Pixels `cols`.
-    fn slice(&mut self, cols: std::ops::Range<usize>) -> RgbaRow<'_> {
-        RgbaRow {
-            r: &mut self.r[cols.clone()],
-            g: &mut self.g[cols.clone()],
-            b: &mut self.b[cols.clone()],
-            a: &mut self.a[cols],
-        }
-    }
-
     /// Chunks of `n` pixels.
     fn rows_mut(&mut self, n: usize) -> impl Iterator<Item = RgbaRow<'_>> {
         self.r
@@ -1059,32 +1050,6 @@ impl Planes {
             .zip(self.g.chunks_mut(n))
             .zip(self.b.chunks_mut(n).zip(self.a.chunks_mut(n)))
             .map(|((r, g), (b, a))| RgbaRow { r, g, b, a })
-    }
-
-    /// Copies `other`'s pixels `from` to pixels `to`.
-    fn copy_rows(
-        &mut self,
-        other: &Self,
-        from: std::ops::Range<usize>,
-        to: std::ops::Range<usize>,
-    ) {
-        self.r[to.clone()].copy_from_slice(&other.r[from.clone()]);
-        self.g[to.clone()].copy_from_slice(&other.g[from.clone()]);
-        self.b[to.clone()].copy_from_slice(&other.b[from.clone()]);
-        self.a[to].copy_from_slice(&other.a[from]);
-    }
-
-    /// Writes pixels `from` interleaved into `out`.
-    fn write_rows(&self, from: std::ops::Range<usize>, out: &mut [[f32; 4]]) {
-        let (r, g, b, a) = (
-            &self.r[from.clone()],
-            &self.g[from.clone()],
-            &self.b[from.clone()],
-            &self.a[from],
-        );
-        for (i, o) in out.iter_mut().enumerate() {
-            *o = [r[i], g[i], b[i], a[i]];
-        }
     }
 }
 

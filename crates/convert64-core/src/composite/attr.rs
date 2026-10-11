@@ -257,12 +257,11 @@ fn reduce_row_n(
     let nn = n as usize;
     let uniform = |tx: usize| {
         let first = codes[tx * nn];
-        let same = (0..nn).fold(true, |all, sy| {
+        (0..nn).fold(true, |all, sy| {
             codes[sy * w + tx * nn..][..nn]
                 .iter()
                 .fold(all, |all, &c| all & (c == first))
-        });
-        same
+        })
     };
     let mut tx = txs.start;
     while tx + LANES <= txs.end {

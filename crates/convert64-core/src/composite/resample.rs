@@ -9,10 +9,11 @@
 //! fits the canvas exactly is therefore fully opaque, and a sub-pixel nudge moves its
 //! edge coverage linearly.
 
+use crate::scratch;
 use std::f32::consts::PI;
 
 /// A pixel value that can be accumulated with weights.
-pub(crate) trait Px: Copy + Send + Sync {
+pub(crate) trait Px: Copy + Send + Sync + crate::scratch::Scratch {
     /// The additive identity.
     const ZERO: Self;
     /// `self += w × v`.
@@ -221,9 +222,8 @@ pub(crate) fn resample<T: Px>(src: &[T], sw: u32, mx: &AxisMap, my: &AxisMap) ->
 const CHUNK_ROWS: usize = 16;
 
 /// The horizontal pass of one chunk: source rows `r0..=r1` resampled through `mx`.
-fn horizontal<T: Px>(src: &[T], sw: usize, mx: &AxisMap, r0: u32, r1: u32) -> Vec<T> {
+fn horizontal<T: Px>(src: &[T], sw: usize, mx: &AxisMap, r0: u32, tmp: &mut [T]) {
     let ow = mx.len() as usize;
-    let mut tmp = vec![T::ZERO; (r1 - r0 + 1) as usize * ow];
     for (r, row) in tmp.chunks_mut(ow).enumerate() {
         let line = &src[(r0 as usize + r) * sw..][..sw];
         for (k, out) in row.iter_mut().enumerate() {
@@ -234,7 +234,6 @@ fn horizontal<T: Px>(src: &[T], sw: usize, mx: &AxisMap, r0: u32, r1: u32) -> Ve
             *out = acc;
         }
     }
-    tmp
 }
 
 /// The vertical pass for output row `k` from `tmp`, the chunk's horizontal pass that
@@ -306,11 +305,13 @@ pub(crate) fn resample_into<T: Px>(
     crate::par::for_each(&mut chunks, |(c, rows)| {
         let k0 = *c * CHUNK_ROWS;
         let (r0, r1) = my.src_range_of(k0, k0 + rows.len() / ow);
-        let tmp = horizontal(src, sw as usize, mx, r0, r1);
-        for (i, row) in rows.chunks_mut(ow).enumerate() {
-            vertical(&tmp, r0, my, k0 + i, row);
-            finish(k0 + i, row);
-        }
+        scratch::with((r1 - r0 + 1) as usize * ow, |tmp| {
+            horizontal(src, sw as usize, mx, r0, tmp);
+            for (i, row) in rows.chunks_mut(ow).enumerate() {
+                vertical(tmp, r0, my, k0 + i, row);
+                finish(k0 + i, row);
+            }
+        });
     });
 }
 
@@ -373,20 +374,22 @@ pub(crate) fn resample_planes<X: Copy + Default + Send>(
     crate::par::for_each(&mut chunks, |(c, (((r, g), (b, a)), extra))| {
         let k0 = *c * CHUNK_ROWS;
         let (r0, r1) = my.src_range_of(k0, k0 + extra.len());
-        let tmp = horizontal(src, sw as usize, mx, r0, r1);
-        let mut row = vec![[0.0f32; 4]; ow];
-        for (i, x) in extra.iter_mut().enumerate() {
-            vertical(&tmp, r0, my, k0 + i, &mut row);
-            *x = finish(k0 + i, &mut row);
-            let o = i * ow;
-            let planes = r[o..o + ow]
-                .iter_mut()
-                .zip(&mut g[o..o + ow])
-                .zip(b[o..o + ow].iter_mut().zip(&mut a[o..o + ow]));
-            for (((r, g), (b, a)), p) in planes.zip(&row) {
-                [*r, *g, *b, *a] = *p;
+        scratch::with((r1 - r0 + 1) as usize * ow + ow, |tmp| {
+            let (tmp, row) = tmp.split_at_mut(tmp.len() - ow);
+            horizontal(src, sw as usize, mx, r0, tmp);
+            for (i, x) in extra.iter_mut().enumerate() {
+                vertical(tmp, r0, my, k0 + i, row);
+                *x = finish(k0 + i, row);
+                let o = i * ow;
+                let planes = r[o..o + ow]
+                    .iter_mut()
+                    .zip(&mut g[o..o + ow])
+                    .zip(b[o..o + ow].iter_mut().zip(&mut a[o..o + ow]));
+                for (((r, g), (b, a)), p) in planes.zip(&*row) {
+                    [*r, *g, *b, *a] = *p;
+                }
             }
-        }
+        });
     });
 }
 
