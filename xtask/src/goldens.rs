@@ -7,14 +7,15 @@
 //! rendering to `target/golden-candidates/<fixture>/expected.png`
 //! (`CONVERT64_GOLDEN_OUT`). It then compares candidates with the committed goldens.
 //!
-//! - Without `--accept`: prints what would change, removes the `*.snap.new` files and
-//!   exits 1 if anything differs.
-//! - With `--accept --reason "..."`: replaces the goldens, appends one line per changed
-//!   fixture to `fixtures/CHANGELOG.md` (date, commit, files, reason) and re-runs the
-//!   harness, which must now pass.
-//!
-//! It refuses to run on a dirty git tree: the changelog records the commit whose code
-//! produced the goldens, which is only true when nothing is uncommitted.
+//! - Report mode (`--report`, or no flag): prints what would change, removes the
+//!   `*.snap.new` files it created and exits 1 if anything differs. It changes no
+//!   committed file, so it runs on a dirty tree: that is how you check uncommitted
+//!   solver work. It stops if `*.snap.new` files already exist, because the harness
+//!   would overwrite them.
+//! - Accept mode (`--accept --reason "..."`): replaces the goldens, appends one line per
+//!   changed fixture to `fixtures/CHANGELOG.md` (date, commit, files, reason) and
+//!   re-runs the harness, which must now pass. It refuses a dirty tree, because the
+//!   changelog records the commit whose code produced the goldens.
 
 use convert64_core::palette::{Rgb8, oklab_of};
 use std::collections::BTreeMap;
@@ -40,6 +41,15 @@ enum Apply {
     Png { from: PathBuf, to: PathBuf },
 }
 
+/// Whether a run only reads (report) or writes goldens and the changelog (accept).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mode {
+    /// List differences; changes no committed file. Allowed on a dirty tree.
+    Report,
+    /// Replace goldens and append to the changelog. Needs a clean tree.
+    Accept,
+}
+
 pub(crate) fn run(accept: bool, reason: Option<&str>) -> Result<(), String> {
     let reason = match (accept, reason.map(str::trim)) {
         (true, None | Some("")) => {
@@ -48,13 +58,25 @@ pub(crate) fn run(accept: bool, reason: Option<&str>) -> Result<(), String> {
         (true, Some(r)) => Some(r.to_owned()),
         (false, _) => None,
     };
+    let mode = if accept { Mode::Accept } else { Mode::Report };
     let root = repo_root();
-    ensure_clean_tree(&root)?;
-    let commit = git(&root, &["rev-parse", "--short=12", "HEAD"])?;
+    let dirty = check_tree(&root, mode)?;
+    let head = git(&root, &["rev-parse", "--short=12", "HEAD"])?;
+    let commit = if dirty {
+        format!("{head} plus uncommitted changes")
+    } else {
+        head
+    };
+    if let Some(pending) = pending_snapshots(&root)?.first() {
+        return Err(format!(
+            "{} is a pending insta snapshot; review or delete it first (the harness would \
+             overwrite it)",
+            pending.display()
+        ));
+    }
 
     let candidates = root.join("target").join("golden-candidates");
     let _ = fs::remove_dir_all(&candidates);
-    remove_pending_snapshots(&root)?;
     run_harness(&root, &candidates, false)?;
 
     let changes = collect_changes(&root, &candidates)?;
@@ -113,15 +135,17 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-fn ensure_clean_tree(root: &Path) -> Result<(), String> {
+/// Checks the working tree for `mode`. Returns whether it is dirty; accept mode fails on
+/// a dirty tree.
+fn check_tree(root: &Path, mode: Mode) -> Result<bool, String> {
     let status = git(root, &["status", "--porcelain"])?;
-    if status.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
+    match (mode, status.is_empty()) {
+        (_, true) => Ok(false),
+        (Mode::Report, false) => Ok(true),
+        (Mode::Accept, false) => Err(format!(
             "the git tree is dirty; commit or stash first, because fixtures/CHANGELOG.md records \
-             the commit that produced the goldens:\n{status}"
-        ))
+             the commit that produced the goldens (report mode works on a dirty tree):\n{status}"
+        )),
     }
 }
 
@@ -137,14 +161,23 @@ fn fixture_dirs(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(dirs)
 }
 
-fn remove_pending_snapshots(root: &Path) -> Result<(), String> {
+fn pending_snapshots(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut found = Vec::new();
     for dir in fixture_dirs(root)? {
         for entry in fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
             let path = entry.path();
             if path.to_string_lossy().ends_with(".snap.new") {
-                fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                found.push(path);
             }
         }
+    }
+    found.sort();
+    Ok(found)
+}
+
+fn remove_pending_snapshots(root: &Path) -> Result<(), String> {
+    for path in pending_snapshots(root)? {
+        fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     Ok(())
 }
@@ -332,8 +365,56 @@ fn civil_date(days: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Apply, Change, changelog_lines, civil_date, run};
-    use std::path::PathBuf;
+    use super::{Apply, Change, Mode, changelog_lines, check_tree, civil_date, run};
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.invalid",
+            ])
+            .args(args)
+            .output()
+            .expect("git runs")
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    /// A throwaway git repository with one committed file.
+    fn temp_repo(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("convert64-xtask-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        git(&dir, &["-c", "init.defaultBranch=main", "init", "-q"]);
+        std::fs::write(dir.join("a.txt"), "one\n").expect("write");
+        git(&dir, &["add", "a.txt"]);
+        git(&dir, &["commit", "-q", "-m", "init"]);
+        dir
+    }
+
+    #[test]
+    fn report_mode_runs_on_a_dirty_tree_and_accept_mode_refuses() {
+        let repo = temp_repo("dirty");
+        assert_eq!(check_tree(&repo, Mode::Report), Ok(false));
+        assert_eq!(check_tree(&repo, Mode::Accept), Ok(false));
+
+        std::fs::write(repo.join("a.txt"), "two\n").expect("uncommitted change");
+        assert_eq!(check_tree(&repo, Mode::Report), Ok(true));
+        let err = check_tree(&repo, Mode::Accept).expect_err("accept refuses");
+        assert!(err.contains("dirty") && err.contains("a.txt"), "{err}");
+
+        std::fs::write(repo.join("new.txt"), "untracked\n").expect("untracked file");
+        assert_eq!(check_tree(&repo, Mode::Report), Ok(true));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
 
     #[test]
     fn civil_dates() {
