@@ -1,6 +1,6 @@
 # Convert64 — Product Design Document
 
-**Status:** v0.2, accepted direction (2026-10-11). Technical detail lives in [TAD.md](TAD.md); decisions in [adr/](adr/).
+**Status:** v0.2, accepted direction (2026-10-11). Technical detail lives in [TAD.md](TAD.md); decisions in [adr/](adr/). UX foundations (layout, shortcuts, vocabulary, states) in [UX.md](UX.md).
 
 ## One-liner
 
