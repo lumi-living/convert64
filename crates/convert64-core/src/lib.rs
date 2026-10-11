@@ -17,6 +17,7 @@ pub mod par;
 pub mod region;
 pub mod rule;
 mod scratch;
+pub mod solve;
 pub mod validate;
 
 pub use colour::{ColourIndex, ColourSet, InvalidColourIndex};

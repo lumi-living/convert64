@@ -7,7 +7,7 @@
 //! RGB values come from `docs/reference/vic-ii-constraints.md` §1.
 
 mod colodore;
-mod convert;
+pub(crate) mod convert;
 pub mod luma;
 mod vpl;
 

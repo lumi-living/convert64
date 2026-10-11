@@ -148,12 +148,12 @@ const fn to_f32(m: &[[f64; 3]; 3]) -> [[f32; 3]; 3] {
     out
 }
 
-const LIN_SRGB_TO_LMS_F32: [[f32; 3]; 3] = to_f32(&LIN_SRGB_TO_LMS);
+pub(crate) const LIN_SRGB_TO_LMS_F32: [[f32; 3]; 3] = to_f32(&LIN_SRGB_TO_LMS);
 const LMS_TO_LIN_SRGB_F32: [[f32; 3]; 3] = to_f32(&LMS_TO_LIN_SRGB);
-const LMS_TO_OKLAB_F32: [[f32; 3]; 3] = to_f32(&LMS_TO_OKLAB);
+pub(crate) const LMS_TO_OKLAB_F32: [[f32; 3]; 3] = to_f32(&LMS_TO_OKLAB);
 const OKLAB_TO_LMS_F32: [[f32; 3]; 3] = to_f32(&OKLAB_TO_LMS);
 
-fn mul_f32(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+pub(crate) fn mul_f32(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
     [
         m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
         m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
@@ -186,34 +186,43 @@ pub(crate) fn xyz_to_oklab(xyz: [f64; 3]) -> [f64; 3] {
     mul(&LMS_TO_OKLAB, [lms[0].cbrt(), lms[1].cbrt(), lms[2].cbrt()])
 }
 
+/// CSS `D65_to_D50` (Bradford-derived).
+const D65_TO_D50: [[f64; 3]; 3] = [
+    [
+        1.047_929_792_544_997,
+        0.022_946_870_601_609_652,
+        -0.050_192_266_289_205_24,
+    ],
+    [
+        0.029_627_808_770_055_99,
+        0.990_434_426_753_879_9,
+        -0.017_073_799_063_418_826,
+    ],
+    [
+        -0.009_243_040_646_204_504,
+        0.015_055_191_490_298_152,
+        0.751_874_281_428_137_1,
+    ],
+];
+
 /// CIE XYZ D65 to D50 (CSS `D65_to_D50`, Bradford-derived).
 fn xyz_d65_to_d50(xyz: [f64; 3]) -> [f64; 3] {
-    const M: [[f64; 3]; 3] = [
-        [
-            1.047_929_792_544_997,
-            0.022_946_870_601_609_652,
-            -0.050_192_266_289_205_24,
-        ],
-        [
-            0.029_627_808_770_055_99,
-            0.990_434_426_753_879_9,
-            -0.017_073_799_063_418_826,
-        ],
-        [
-            -0.009_243_040_646_204_504,
-            0.015_055_191_490_298_152,
-            0.751_874_281_428_137_1,
-        ],
-    ];
-    mul(&M, xyz)
+    mul(&D65_TO_D50, xyz)
 }
+
+/// Linear sRGB straight to CIE XYZ relative to D50, multiplied out at compile time.
+pub(crate) const LIN_SRGB_TO_XYZ_D50_F32: [[f32; 3]; 3] =
+    to_f32(&mat_mul(&D65_TO_D50, &LIN_SRGB_TO_XYZ));
+
+/// The D50 white point CIELAB is relative to (CSS `D50`).
+pub(crate) const D50_WHITE: [f64; 3] = [0.3457 / 0.3585, 1.0, (1.0 - 0.3457 - 0.3585) / 0.3585];
 
 /// CIE XYZ (D65) to CIELAB relative to D50 (CSS `D65_to_D50` then `XYZ_to_Lab`).
 /// `L` is `0..=100`.
 pub(crate) fn xyz_to_lab(xyz_d65: [f64; 3]) -> [f64; 3] {
     const EPSILON: f64 = 216.0 / 24_389.0;
     const KAPPA: f64 = 24_389.0 / 27.0;
-    const D50: [f64; 3] = [0.3457 / 0.3585, 1.0, (1.0 - 0.3457 - 0.3585) / 0.3585];
+    const D50: [f64; 3] = D50_WHITE;
     let xyz = xyz_d65_to_d50(xyz_d65);
     let f = |i: usize| {
         let v = xyz[i] / D50[i];
