@@ -1,0 +1,6 @@
+---
+source: crates/convert64-core/src/composite/mod.rs
+expression: hex(&bytes)
+---
+ff ff ff ff ff ff ff ff fe fc f7 ed df c9 ae 90
+6f 51 36 20 12 08 03 01 00 00 00 00 00 00 00 00

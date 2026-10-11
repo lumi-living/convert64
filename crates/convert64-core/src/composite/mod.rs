@@ -11,8 +11,9 @@
 mod blend;
 mod resample;
 
-use crate::geom::{PxRect, SuperGrid};
+use crate::geom::{CellSet, PxRect, SuperGrid, Vec2};
 use crate::layer::{AdjustCache, Adjustments, Blend, Layer, SourceImage, Transform};
+use crate::mask::{HALF_RES_FEATHER, Modifiers, SnapToCells};
 use resample::{AxisMap, resample};
 use std::sync::Arc;
 
@@ -85,7 +86,8 @@ struct LayerRaster {
     rect: PxRect,
     /// Premultiplied colour and PNG alpha, coverage applied; `rect`-sized.
     rgba: Vec<[f32; 4]>,
-    /// The resampled mask, `rect`-sized, or `None` for an unmasked layer.
+    /// The resampled layer-space mask (raster ⊕ sources, before modifiers), `rect`-sized,
+    /// or `None` for an unmasked layer.
     mask: Option<Vec<f32>>,
 }
 
@@ -119,10 +121,29 @@ impl RasterKey {
     }
 }
 
+/// A mask after its modifiers, with what it was built from.
+#[derive(Debug)]
+struct EvaluatedMask {
+    modifiers: Modifiers,
+    /// The raster it was evaluated from (pointer identity).
+    from: Arc<LayerRaster>,
+    values: Arc<Vec<f32>>,
+}
+
 #[derive(Debug, Default)]
 struct LayerCache {
     adjust: AdjustCache,
     raster: Option<(RasterKey, Arc<LayerRaster>)>,
+    /// The feather cache: rebuilt only when the modifiers or the raster change.
+    mask: Option<EvaluatedMask>,
+}
+
+/// One layer ready to blend.
+struct Blendable {
+    blend: Blend,
+    opacity: f32,
+    raster: Arc<LayerRaster>,
+    mask: Option<Arc<Vec<f32>>>,
 }
 
 /// Composites layers onto a [`SuperGrid`], caching each layer's resampled raster.
@@ -132,6 +153,7 @@ pub struct Compositor {
     caches: Vec<LayerCache>,
     canvas: Canvas,
     resamples: u64,
+    mask_evals: u64,
 }
 
 impl Compositor {
@@ -142,6 +164,7 @@ impl Compositor {
             caches: Vec::new(),
             canvas: Canvas::new(grid),
             resamples: 0,
+            mask_evals: 0,
         }
     }
 
@@ -169,6 +192,20 @@ impl Compositor {
         self.resamples
     }
 
+    /// How many masks have been (re)evaluated (modifiers, including feather).
+    pub const fn mask_evals(&self) -> u64 {
+        self.mask_evals
+    }
+
+    /// Layer `i`'s mask after its modifiers, on the super grid, from the last composite:
+    /// the rectangle it covers and its values. `None` for an unmasked, hidden or unknown
+    /// layer. For the quick-mask overlay and tests.
+    pub fn evaluated_mask(&self, i: usize) -> Option<(PxRect, &[f32])> {
+        let c = self.caches.get(i)?;
+        let m = c.mask.as_ref()?;
+        Some((m.from.rect, m.values.as_slice()))
+    }
+
     /// Composites `layers` (bottom first) and returns the canvas.
     pub fn composite(&mut self, layers: &[Layer]) -> &Canvas {
         self.caches.resize_with(layers.len(), LayerCache::default);
@@ -188,7 +225,41 @@ impl Compositor {
                 self.resamples += 1;
             }
             let (_, raster) = cache.raster.as_ref().expect("filled above");
-            stack.push((layer.blend(), layer.opacity(), Arc::clone(raster)));
+            let mask = match (layer.mask(), &raster.mask) {
+                (Some(m), Some(raw)) => {
+                    let modifiers = m.modifiers();
+                    let stale = cache
+                        .mask
+                        .as_ref()
+                        .is_none_or(|e| e.modifiers != modifiers || !Arc::ptr_eq(&e.from, raster));
+                    if stale {
+                        let mut values = raw.clone();
+                        crate::mask::eval::apply_modifiers(
+                            &mut values,
+                            raster.rect,
+                            grid,
+                            &modifiers,
+                        );
+                        cache.mask = Some(EvaluatedMask {
+                            modifiers,
+                            from: Arc::clone(raster),
+                            values: Arc::new(values),
+                        });
+                        self.mask_evals += 1;
+                    }
+                    cache.mask.as_ref().map(|e| Arc::clone(&e.values))
+                }
+                _ => {
+                    cache.mask = None;
+                    None
+                }
+            };
+            stack.push(Blendable {
+                blend: layer.blend(),
+                opacity: layer.opacity(),
+                raster: Arc::clone(raster),
+                mask,
+            });
         }
         fold(&mut self.canvas, &stack, grid.bounds());
         &self.canvas
@@ -232,7 +303,7 @@ fn build_raster(layer: &Layer, adjust: &mut AdjustCache, grid: SuperGrid) -> Lay
         }
     });
     let mask = layer.mask().map(|m| {
-        let mut v = resample(m.raster().values(), sw, &mx, &my);
+        let mut v = resample(&m.layer_values(src), sw, &mx, &my);
         for x in &mut v {
             *x = x.clamp(0.0, 1.0);
         }
@@ -243,7 +314,7 @@ fn build_raster(layer: &Layer, adjust: &mut AdjustCache, grid: SuperGrid) -> Lay
 }
 
 /// Blends `stack` (bottom first) into `canvas` over `area`, clearing it first.
-fn fold(canvas: &mut Canvas, stack: &[(Blend, f32, Arc<LayerRaster>)], area: PxRect) {
+fn fold(canvas: &mut Canvas, stack: &[Blendable], area: PxRect) {
     let (w, _) = canvas.grid.size();
     let w = w as usize;
     let mut rows: Vec<(usize, &mut [[f32; 4]])> = canvas
@@ -258,7 +329,8 @@ fn fold(canvas: &mut Canvas, stack: &[(Blend, f32, Arc<LayerRaster>)], area: PxR
         for p in &mut row[x0..x1] {
             *p = [0.0; 4];
         }
-        for (mode, opacity, r) in stack {
+        for b in stack {
+            let r = &b.raster;
             let span = r.rect.intersect(PxRect::new(area.x0, y, area.x1, y + 1));
             if span.is_empty() {
                 continue;
@@ -267,19 +339,76 @@ fn fold(canvas: &mut Canvas, stack: &[(Blend, f32, Arc<LayerRaster>)], area: PxR
             let base = (y - r.rect.y0) as usize * rw;
             for x in span.x0..span.x1 {
                 let i = base + (x - r.rect.x0) as usize;
-                let k = opacity * r.mask.as_ref().map_or(1.0, |m| m[i]);
+                let k = b.opacity * b.mask.as_ref().map_or(1.0, |m| m[i]);
                 let s = r.rgba[i];
-                blend::blend(*mode, &mut row[x as usize], s.map(|v| v * k));
+                blend::blend(b.blend, &mut row[x as usize], s.map(|v| v * k));
             }
         }
     });
+}
+
+/// The target cells a change to `layer`'s mask inside `layer_rect` (layer pixels) can
+/// affect: the rectangle mapped through the layer transform onto the super grid, grown
+/// by the resampling support, snapped out to whole cells when the mask snaps, and grown
+/// by the feather's reach. The solver re-solves only these cells (ADR-008).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "coordinates are clamped to the super grid before casting"
+)]
+pub fn mask_change_cells(grid: SuperGrid, layer: &Layer, layer_rect: PxRect) -> CellSet {
+    if layer_rect.is_empty() {
+        return CellSet::EMPTY;
+    }
+    let size = layer.source().size();
+    let t = layer.transform();
+    let a = grid.canvas_to_super(
+        t.layer_to_canvas(size, Vec2::new(layer_rect.x0 as f32, layer_rect.y0 as f32)),
+    );
+    let b = grid.canvas_to_super(
+        t.layer_to_canvas(size, Vec2::new(layer_rect.x1 as f32, layer_rect.y1 as f32)),
+    );
+    let step = grid.super_px_in_canvas();
+    // Resampling reaches one source pixel (bilinear) or three super pixels (Lanczos).
+    let reach_x = (t.scale().x / step.x).max(3.0).ceil() as u32 + 1;
+    let reach_y = (t.scale().y / step.y).max(3.0).ceil() as u32 + 1;
+    let (gw, gh) = grid.size();
+    let clampf = |v: f32, hi: u32| v.clamp(0.0, hi as f32);
+    let mut r = PxRect::new(
+        (clampf(a.x.min(b.x), gw).floor() as u32).saturating_sub(reach_x),
+        (clampf(a.y.min(b.y), gh).floor() as u32).saturating_sub(reach_y),
+        (clampf(a.x.max(b.x), gw).ceil() as u32 + reach_x).min(gw),
+        (clampf(a.y.max(b.y), gh).ceil() as u32 + reach_y).min(gh),
+    );
+    let m = layer
+        .mask()
+        .map(crate::mask::Mask::modifiers)
+        .unwrap_or_default();
+    if m.snap() != SnapToCells::Off {
+        let (cw, ch) = grid.cell_size_super();
+        r = PxRect::new(
+            r.x0 / cw * cw,
+            r.y0 / ch * ch,
+            r.x1.div_ceil(cw) * cw,
+            r.y1.div_ceil(ch) * ch,
+        )
+        .intersect(grid.bounds());
+    }
+    if m.feather() > 0.0 {
+        let mut reach = 3.0 * m.feather() * f32::from(grid.n()) + 3.0;
+        if m.feather() > HALF_RES_FEATHER {
+            reach += 4.0;
+        }
+        r = r.grow(reach.ceil() as u32, grid.bounds());
+    }
+    CellSet::from_super_rect(grid, r)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::geom::Vec2;
-    use crate::mask::{Mask, MaskRaster};
+    use crate::mask::{Mask, MaskRaster, Modifiers, SnapToCells};
     use crate::mode::Mode;
     use proptest::prelude::*;
 
@@ -444,6 +573,285 @@ mod tests {
         l.set_opacity(0.0).unwrap();
         assert_eq!(c.composite(&[l]).pixel(0, 0), [0.0; 4]);
         assert_eq!(c.resamples(), 0);
+    }
+
+    fn masked(src: Arc<SourceImage>, mask: Vec<f32>, m: Modifiers) -> Layer {
+        let (w, h) = src.size();
+        let mut l = Layer::new("m", src);
+        let mut mk = Mask::new(MaskRaster::from_values(w, h, mask).unwrap());
+        mk.set_modifiers(m);
+        l.set_mask(Some(mk)).unwrap();
+        l
+    }
+
+    /// A mask that is 1 left of source column `edge` and 0 from it on.
+    fn half_mask(w: u32, h: u32, edge: u32) -> Vec<f32> {
+        (0..w * h)
+            .map(|i| if i % w < edge { 1.0 } else { 0.0 })
+            .collect()
+    }
+
+    #[test]
+    fn identity_modifiers_leave_the_mask_untouched() {
+        let g = grid(Mode::HiresBitmap, 2);
+        let vals: Vec<f32> = (0..64).map(|i| (i % 7) as f32 / 6.0).collect();
+        let mut v = vals.clone();
+        crate::mask::eval::apply_modifiers(
+            &mut v,
+            PxRect::new(3, 5, 11, 13),
+            g,
+            &Modifiers::default(),
+        );
+        assert_eq!(v, vals);
+        let mut v = vals.clone();
+        let m =
+            Modifiers::new(true, crate::layer::Levels::IDENTITY, SnapToCells::Off, 0.0).unwrap();
+        crate::mask::eval::apply_modifiers(&mut v, PxRect::new(3, 5, 11, 13), g, &m);
+        crate::mask::eval::apply_modifiers(&mut v, PxRect::new(3, 5, 11, 13), g, &m);
+        for (a, b) in v.iter().zip(&vals) {
+            assert!((a - b).abs() < 1e-6, "invert twice");
+        }
+    }
+
+    #[test]
+    fn snap_never_leaves_a_partially_covered_cell() {
+        for mode in [Mode::HiresBitmap, Mode::MulticolorBitmap] {
+            let g = grid(mode, 4);
+            for snap in [
+                SnapToCells::Expand,
+                SnapToCells::Contract,
+                SnapToCells::Nearest,
+            ] {
+                let (w, h) = (90, 70);
+                let vals: Vec<f32> = (0..w * h)
+                    .map(|i| {
+                        let (x, y) = ((i % w) as f32, (i / w) as f32);
+                        if (x - 45.0).hypot(y - 35.0) < 27.3 {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    })
+                    .collect();
+                let m = Modifiers::new(false, crate::layer::Levels::IDENTITY, snap, 0.0).unwrap();
+                let l = at(masked(solid(w, h, [1.0; 4]), vals, m), 13.3, 9.7);
+                let mut c = Compositor::new(g);
+                c.composite(&[l]);
+                let (rect, v) = c.evaluated_mask(0).unwrap();
+                let (cw, ch) = g.cell_size_super();
+                let mut cells = std::collections::HashMap::new();
+                for y in rect.y0..rect.y1 {
+                    for x in rect.x0..rect.x1 {
+                        let val = v[((y - rect.y0) * rect.width() + x - rect.x0) as usize];
+                        let prev = *cells.entry((x / cw, y / ch)).or_insert(val);
+                        assert_eq!(prev, val, "{mode} {snap:?}: cell ({}, {})", x / cw, y / ch);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Mean of the evaluated mask over each target pixel of super row band `ty`.
+    fn target_row(c: &Compositor, g: SuperGrid, ty: u32) -> Vec<f32> {
+        let (rect, v) = c.evaluated_mask(0).unwrap();
+        let n = u32::from(g.n());
+        let (tw, _) = g.target_size();
+        (0..tw)
+            .map(|tx| {
+                let mut sum = 0.0;
+                for sy in ty * n..(ty + 1) * n {
+                    for sx in tx * n..(tx + 1) * n {
+                        if rect.contains(sx, sy) {
+                            sum += v[((sy - rect.y0) * rect.width() + sx - rect.x0) as usize];
+                        }
+                    }
+                }
+                sum / (n * n) as f32
+            })
+            .collect()
+    }
+
+    #[test]
+    fn feather_width_is_in_target_pixels_whatever_the_source_resolution() {
+        for mode in [Mode::HiresBitmap, Mode::MulticolorBitmap] {
+            let g = grid(mode, 4);
+            let m = Modifiers::feathered(4.0).unwrap();
+            let small = masked(solid(320, 200, [1.0; 4]), half_mask(320, 200, 160), m);
+            let mut big = masked(solid(2000, 1250, [1.0; 4]), half_mask(2000, 1250, 1000), m);
+            big.set_transform(
+                Transform::new(Vec2::ZERO, Vec2::new(0.16, 0.16), false, false).unwrap(),
+            );
+            let mut a = Compositor::new(g);
+            a.composite(&[small]);
+            let mut b = Compositor::new(g);
+            b.composite(&[big]);
+            let (ra, rb) = (target_row(&a, g, 100), target_row(&b, g, 100));
+            let width = |r: &[f32]| r.iter().filter(|&&v| v > 0.1 && v < 0.9).count();
+            assert!(width(&ra) > 4, "{mode}: the feather must actually fade");
+            assert_eq!(width(&ra), width(&rb), "{mode}: {ra:?} vs {rb:?}");
+            for (x, (p, q)) in ra.iter().zip(&rb).enumerate() {
+                assert!((p - q).abs() < 0.02, "{mode} x {x}: {p} vs {q}");
+            }
+        }
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes
+            .chunks(16)
+            .map(|c| {
+                c.iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A feathered edge on the cell boundary at hi-res x = 40, as target-pixel mask values
+    /// (quantised to 8 bits) across cells 3–6 of one row.
+    #[test]
+    fn feathered_edge_across_a_cell_boundary_snapshot() {
+        let g = grid(Mode::HiresBitmap, 4);
+        let l = masked(
+            solid(320, 200, [1.0; 4]),
+            half_mask(320, 200, 40),
+            Modifiers::feathered(3.0).unwrap(),
+        );
+        let mut c = Compositor::new(g);
+        c.composite(&[l]);
+        let row = target_row(&c, g, 100);
+        let bytes: Vec<u8> = row[24..56]
+            .iter()
+            .map(|v| (v * 255.0).round() as u8)
+            .collect();
+        insta::assert_snapshot!(hex(&bytes));
+    }
+
+    #[test]
+    fn mask_changes_touch_only_the_reported_cells() {
+        for (mode, snap, feather) in [
+            (Mode::HiresBitmap, SnapToCells::Off, 0.0),
+            (Mode::HiresBitmap, SnapToCells::Expand, 3.0),
+            (Mode::MulticolorBitmap, SnapToCells::Nearest, 12.0),
+        ] {
+            let g = grid(mode, 2);
+            let m = Modifiers::new(false, crate::layer::Levels::IDENTITY, snap, feather).unwrap();
+            let mut l = masked(
+                solid(200, 150, [0.8, 0.4, 0.2, 1.0]),
+                vec![0.0; 200 * 150],
+                m,
+            );
+            l.set_transform(
+                Transform::new(Vec2::new(30.5, 20.25), Vec2::new(1.3, 0.9), false, false).unwrap(),
+            );
+            let mut c = Compositor::new(g);
+            let before = c.composite(&[l.clone()]).downsample();
+            let dirty = PxRect::new(100, 60, 130, 90);
+            let mut vals = l.mask().unwrap().raster().values().to_vec();
+            for y in dirty.y0..dirty.y1 {
+                for x in dirty.x0..dirty.x1 {
+                    vals[(y * 200 + x) as usize] = 1.0;
+                }
+            }
+            l.mask_mut()
+                .unwrap()
+                .set_raster(MaskRaster::from_values(200, 150, vals).unwrap())
+                .unwrap();
+            let after = c.composite(&[l.clone()]).downsample();
+            let reported = mask_change_cells(g, &l, dirty);
+            let (tw, _) = g.target_size();
+            let mut changed = CellSet::EMPTY;
+            for (i, (p, q)) in before.iter().zip(&after).enumerate() {
+                if p != q {
+                    changed.insert(g.target_px_to_cell(i as u32 % tw, i as u32 / tw).unwrap());
+                }
+            }
+            assert!(!changed.is_empty(), "{mode} {snap:?}");
+            assert_eq!(
+                changed.intersection(reported),
+                changed,
+                "{mode} {snap:?}: {changed:?} ⊄ {reported:?}"
+            );
+            assert!(
+                reported.len() < 1000 / 2,
+                "{mode} {snap:?}: {} cells",
+                reported.len()
+            );
+        }
+    }
+
+    #[test]
+    fn sources_combine_with_the_raster() {
+        use crate::mask::{
+            Combine, Gradient, GradientKind, Key, KeyChannel, MaskSource, SourceEntry,
+        };
+        let g = grid(Mode::HiresBitmap, 1);
+        // Left half red, right half green; mask raster empty.
+        let px: Vec<[f32; 4]> = (0..64 * 8)
+            .map(|i| {
+                if i % 64 < 32 {
+                    [1.0, 0.0, 0.0, 1.0]
+                } else {
+                    [0.0, 1.0, 0.0, 1.0]
+                }
+            })
+            .collect();
+        let src = Arc::new(SourceImage::from_linear(64, 8, px).unwrap());
+        let mut l = masked(Arc::clone(&src), vec![0.0; 64 * 8], Modifiers::default());
+        let key = Key::new(KeyChannel::Colour, [0.0, 1.0, 0.0], 0.05, 0.0).unwrap();
+        l.mask_mut().unwrap().push_source(SourceEntry {
+            source: MaskSource::Key(key),
+            combine: Combine::Max,
+        });
+        let mut c = Compositor::new(g);
+        let canvas = c.composite(&[l.clone()]).clone();
+        assert_eq!(canvas.pixel(10, 4)[3], 0.0, "red is not keyed");
+        assert_eq!(canvas.pixel(50, 4)[3], 1.0, "green is keyed");
+        // Multiply by a left-to-right gradient that is 0 from x = 48 on.
+        let grad = Gradient::new(
+            GradientKind::Linear,
+            Vec2::new(32.0, 0.0),
+            Vec2::new(48.0, 0.0),
+            1.0,
+        )
+        .unwrap();
+        l.mask_mut().unwrap().push_source(SourceEntry {
+            source: MaskSource::Gradient(grad),
+            combine: Combine::Multiply,
+        });
+        let canvas = c.composite(&[l]);
+        assert_eq!(canvas.pixel(60, 4)[3], 0.0);
+        assert!(canvas.pixel(40, 4)[3] > 0.4 && canvas.pixel(40, 4)[3] < 0.6);
+    }
+
+    #[test]
+    fn feather_is_cached_until_modifiers_or_raster_change() {
+        let g = grid(Mode::HiresBitmap, 2);
+        let mut l = masked(
+            solid(64, 64, [1.0; 4]),
+            half_mask(64, 64, 32),
+            Modifiers::feathered(2.0).unwrap(),
+        );
+        let mut c = Compositor::new(g);
+        c.composite(&[l.clone()]);
+        c.composite(&[l.clone()]);
+        assert_eq!((c.resamples(), c.mask_evals()), (1, 1));
+        l.mask_mut()
+            .unwrap()
+            .set_modifiers(Modifiers::feathered(4.0).unwrap());
+        c.composite(&[l.clone()]);
+        assert_eq!(
+            (c.resamples(), c.mask_evals()),
+            (1, 2),
+            "a slider drag does not resample"
+        );
+        l.set_opacity(0.5).unwrap();
+        c.composite(&[l.clone()]);
+        assert_eq!((c.resamples(), c.mask_evals()), (1, 2));
+        l.set_transform(Transform::translated(Vec2::new(0.5, 0.0)).unwrap());
+        c.composite(&[l]);
+        assert_eq!((c.resamples(), c.mask_evals()), (2, 3));
     }
 
     proptest! {

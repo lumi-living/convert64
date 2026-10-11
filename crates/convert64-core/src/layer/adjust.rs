@@ -121,7 +121,8 @@ impl Levels {
         self.gamma
     }
 
-    fn eval(&self, v: f32) -> f32 {
+    /// The levels curve at `v`.
+    pub fn eval(&self, v: f32) -> f32 {
         let t = ((v - self.black) / (self.white - self.black)).clamp(0.0, 1.0);
         if self.gamma == 1.0 {
             t

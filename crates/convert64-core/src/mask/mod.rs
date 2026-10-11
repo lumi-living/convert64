@@ -1,6 +1,20 @@
 //! Layer masks (ADR-008): one raster per layer in layer space at the source's
-//! resolution.
+//! resolution, procedural sources combined with it, and parametric modifiers applied at
+//! composite time in the fixed order Invert → Levels → SnapToCells → Feather.
+//!
+//! Effective alpha = PNG alpha × mask; the compositor also multiplies the attribute
+//! map's dither strength by the same mask (ADR-002), so dither fades across a feather.
 
+pub(crate) mod eval;
+mod source;
+
+pub use eval::HALF_RES_FEATHER;
+pub use source::{Combine, Gradient, GradientKind, Key, KeyChannel, MaskSource, SourceEntry};
+
+use crate::geom::Vec2;
+use crate::layer::{Levels, SourceImage};
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -32,6 +46,15 @@ pub enum MaskError {
         /// The raster's size.
         found: (u32, u32),
     },
+    /// A source or modifier parameter is out of range.
+    Param {
+        /// Which parameter.
+        what: &'static str,
+        /// The value given (NaN for a non-finite point).
+        value: f32,
+    },
+    /// A source index does not exist.
+    NoSource(usize),
 }
 
 impl fmt::Display for MaskError {
@@ -47,6 +70,8 @@ impl fmt::Display for MaskError {
                 "mask is {}×{} but the layer source is {}×{}",
                 found.0, found.1, expected.0, expected.1
             ),
+            Self::Param { what, value } => write!(f, "{what} is out of range: {value}"),
+            Self::NoSource(i) => write!(f, "the mask has no source {i}"),
         }
     }
 }
@@ -153,20 +178,126 @@ impl MaskRaster {
     }
 }
 
+/// Quantising the mask edge to whole target cells (ADR-008).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SnapToCells {
+    /// No snapping.
+    #[default]
+    Off,
+    /// A cell takes the highest mask value in it.
+    Expand,
+    /// A cell takes the lowest mask value in it.
+    Contract,
+    /// A cell takes the highest value if its mean is at least ½, else the lowest.
+    Nearest,
+}
+
+/// Largest feather σ, in target pixels (ADR-008).
+pub const MAX_FEATHER: f32 = 32.0;
+
+#[derive(Deserialize)]
+struct ModifiersData {
+    #[serde(default)]
+    invert: bool,
+    #[serde(default)]
+    levels: Levels,
+    #[serde(default)]
+    snap: SnapToCells,
+    #[serde(default)]
+    feather: f32,
+}
+
+/// Parametric mask modifiers, never baked into the raster: dragging a slider from 6 to
+/// 4 loses nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(try_from = "ModifiersData")]
+pub struct Modifiers {
+    invert: bool,
+    levels: Levels,
+    snap: SnapToCells,
+    feather: f32,
+}
+
+impl TryFrom<ModifiersData> for Modifiers {
+    type Error = MaskError;
+    fn try_from(d: ModifiersData) -> Result<Self, MaskError> {
+        Self::new(d.invert, d.levels, d.snap, d.feather)
+    }
+}
+
+impl Modifiers {
+    /// Modifiers; `feather` is a Gaussian σ in target pixels, `0..=32`.
+    pub fn new(
+        invert: bool,
+        levels: Levels,
+        snap: SnapToCells,
+        feather: f32,
+    ) -> Result<Self, MaskError> {
+        if !(feather.is_finite() && (0.0..=MAX_FEATHER).contains(&feather)) {
+            return Err(MaskError::Param {
+                what: "feather",
+                value: feather,
+            });
+        }
+        Ok(Self {
+            invert,
+            levels,
+            snap,
+            feather,
+        })
+    }
+
+    /// Only a feather.
+    pub fn feathered(feather: f32) -> Result<Self, MaskError> {
+        Self::new(false, Levels::IDENTITY, SnapToCells::Off, feather)
+    }
+
+    /// Invert the mask first.
+    pub const fn invert(&self) -> bool {
+        self.invert
+    }
+
+    /// Levels after invert.
+    pub const fn levels(&self) -> Levels {
+        self.levels
+    }
+
+    /// Snap after levels.
+    pub const fn snap(&self) -> SnapToCells {
+        self.snap
+    }
+
+    /// Feather σ in target pixels, last.
+    pub const fn feather(&self) -> f32 {
+        self.feather
+    }
+
+    /// Whether every modifier is off.
+    pub fn is_identity(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// A layer's mask (ADR-008). Effective alpha = PNG alpha × mask; a layer without a mask
 /// behaves as mask = 1.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mask {
     raster: MaskRaster,
-    /// Changes whenever the raster does.
+    sources: Vec<SourceEntry>,
+    modifiers: Modifiers,
+    /// Changes whenever the raster or the sources do (not the modifiers, which caches
+    /// compare by value).
     generation: u64,
 }
 
 impl Mask {
-    /// A mask with this raster.
+    /// A mask with this raster, no sources and no modifiers.
     pub fn new(raster: MaskRaster) -> Self {
         Self {
             raster,
+            sources: Vec::new(),
+            modifiers: Modifiers::default(),
             generation: next_generation(),
         }
     }
@@ -186,9 +317,84 @@ impl Mask {
         self.raster.size()
     }
 
-    /// The raster's generation: equal generations mean an unchanged raster.
+    /// The procedural sources, applied in order after the raster.
+    pub fn sources(&self) -> &[SourceEntry] {
+        &self.sources
+    }
+
+    /// The modifiers.
+    pub const fn modifiers(&self) -> Modifiers {
+        self.modifiers
+    }
+
+    /// Replaces the modifiers.
+    pub fn set_modifiers(&mut self, m: Modifiers) {
+        self.modifiers = m;
+    }
+
+    /// Appends a source.
+    pub fn push_source(&mut self, s: SourceEntry) {
+        self.sources.push(s);
+        self.generation = next_generation();
+    }
+
+    /// Removes source `i`.
+    pub fn remove_source(&mut self, i: usize) -> Result<SourceEntry, MaskError> {
+        if i >= self.sources.len() {
+            return Err(MaskError::NoSource(i));
+        }
+        self.generation = next_generation();
+        Ok(self.sources.remove(i))
+    }
+
+    /// Replaces the sources.
+    pub fn set_sources(&mut self, sources: Vec<SourceEntry>) {
+        self.sources = sources;
+        self.generation = next_generation();
+    }
+
+    /// Replaces the raster with one of the same size.
+    pub fn set_raster(&mut self, raster: MaskRaster) -> Result<(), MaskError> {
+        if raster.size() != self.raster.size() {
+            return Err(MaskError::Size {
+                expected: self.raster.size(),
+                found: raster.size(),
+            });
+        }
+        self.raster = raster;
+        self.generation = next_generation();
+        Ok(())
+    }
+
+    /// The raster's and sources' generation: equal generations mean unchanged layer-space
+    /// content.
     pub const fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// The raster combined with every source, in layer space. `source` is the layer's
+    /// own (unadjusted) pixels, which keys sample; it must be the mask's size.
+    pub fn layer_values<'a>(&'a self, source: &SourceImage) -> Cow<'a, [f32]> {
+        if self.sources.is_empty() {
+            return Cow::Borrowed(self.raster.values());
+        }
+        assert_eq!(source.size(), self.size(), "mask and source sizes differ");
+        let w = self.raster.width as usize;
+        let mut out = self.raster.data.clone();
+        let mut rows: Vec<(usize, &mut [f32])> = out.chunks_mut(w).enumerate().collect();
+        crate::par::for_each(&mut rows, |(y, row)| {
+            for (x, v) in row.iter_mut().enumerate() {
+                let p = Vec2::new(x as f32 + 0.5, *y as f32 + 0.5);
+                for e in &self.sources {
+                    let s = match &e.source {
+                        MaskSource::Gradient(g) => g.value(p),
+                        MaskSource::Key(k) => k.value(source.pixels()[*y * w + x]),
+                    };
+                    *v = e.combine.apply(*v, s);
+                }
+            }
+        });
+        Cow::Owned(out)
     }
 }
 
