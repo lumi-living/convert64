@@ -4,26 +4,34 @@ Everything Convert64 outputs must satisfy this document. The validator in `conve
 
 ## 1. Palette
 
-The C64 has exactly 16 colours. They cannot be changed. RGB values below are the Pepto / Colodore reference used by VICE and most tools; Convert64 ships several presets and lets users load `.vpl` palettes, but **index semantics never change**.
+The C64 has exactly 16 colours. They cannot be changed. Convert64 ships the three presets below and lets users load `.vpl` palettes, but **index semantics never change**: a palette only decides which RGB value an index is shown as.
 
-| Index | Name | Hex (Pepto) | Luma |
-|---|---|---|---|
-| 0 | Black | `#000000` | 0 |
-| 1 | White | `#FFFFFF` | 31 |
-| 2 | Red | `#813338` | 10 |
-| 3 | Cyan | `#75CEC8` | 20 |
-| 4 | Purple | `#8E3C97` | 12 |
-| 5 | Green | `#56AC4D` | 16 |
-| 6 | Blue | `#2E2C9B` | 8 |
-| 7 | Yellow | `#EDF171` | 24 |
-| 8 | Orange | `#8E5029` | 12 |
-| 9 | Brown | `#553800` | 8 |
-| 10 | Light Red | `#C46C71` | 16 |
-| 11 | Dark Grey | `#4A4A4A` | 10 |
-| 12 | Medium Grey | `#7B7B7B` | 15 |
-| 13 | Light Green | `#A9FF9F` | 24 |
-| 14 | Light Blue | `#706DEB` | 15 |
-| 15 | Light Grey | `#B2B2B2` | 20 |
+| Index | Name | Pepto (PAL) | Pepto (NTSC) | Colodore (default) | Luma |
+|---|---|---|---|---|---|
+| 0 | Black | `#000000` | `#000000` | `#000000` | 0 |
+| 1 | White | `#FFFFFF` | `#FFFFFF` | `#FFFFFF` | 31 |
+| 2 | Red | `#68372B` | `#67372B` | `#813338` | 10 |
+| 3 | Cyan | `#70A4B2` | `#70A3B1` | `#75CEC8` | 20 |
+| 4 | Purple | `#6F3D86` | `#6F3D86` | `#8E3C97` | 12 |
+| 5 | Green | `#588D43` | `#588C42` | `#56AC4D` | 16 |
+| 6 | Blue | `#352879` | `#342879` | `#2E2C9B` | 8 |
+| 7 | Yellow | `#B8C76F` | `#B7C66E` | `#EDF171` | 24 |
+| 8 | Orange | `#6F4F25` | `#6F4E25` | `#8E5029` | 12 |
+| 9 | Brown | `#433900` | `#423800` | `#553800` | 8 |
+| 10 | Light Red | `#9A6759` | `#996659` | `#C46C71` | 16 |
+| 11 | Dark Grey | `#444444` | `#434343` | `#4A4A4A` | 10 |
+| 12 | Medium Grey | `#6C6C6C` | `#6B6B6B` | `#7B7B7B` | 15 |
+| 13 | Light Green | `#9AD284` | `#9AD183` | `#A9FF9F` | 24 |
+| 14 | Light Blue | `#6C5EB5` | `#6B5EB5` | `#706DEB` | 15 |
+| 15 | Light Grey | `#959595` | `#959595` | `#B2B2B2` | 20 |
+
+Sources:
+- **Pepto (PAL)** and **Pepto (NTSC)**: Pepto's measurements (pepto.de/projects/colorvic) as shipped by VICE in `data/C64/pepto-pal.vpl` and `data/C64/pepto-ntsc.vpl`.
+- **Colodore (default)**: the output of colodore.com's palette generator at its default settings (brightness 50, contrast 100, saturation 50). Convert64 reproduces the generator exactly, so other slider settings are available too. For example, VICE's `data/C64/colodore.vpl` is the generator at brightness 47, contrast 100, saturation 70.
+
+*Correction (2026-10-11):* earlier versions of this table labelled the Colodore column "Hex (Pepto)". The 16 values themselves are unchanged. The port of colodore.com's `renderPalette()` in `convert64-core` (`palette::colodore`) reproduces them byte for byte at the default settings, and reproduces VICE's `colodore.vpl` at brightness 47 and saturation 70. The Pepto columns were added from the VICE files named above.
+
+Luma is on a 0–31 scale. Colodore's generator uses the same levels with white at 32, which groups the colours identically.
 
 **Luminance groups** (nine levels). Colours in the same group blend cleanly when dithered or alternated on PAL displays, which the quantiser can reward:
 
