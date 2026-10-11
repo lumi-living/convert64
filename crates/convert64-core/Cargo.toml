@@ -19,5 +19,8 @@ parallel = ["dep:rayon"]
 rayon = { workspace = true, optional = true }
 serde = { workspace = true }
 
+[dev-dependencies]
+proptest = { workspace = true }
+
 [lints]
 workspace = true
