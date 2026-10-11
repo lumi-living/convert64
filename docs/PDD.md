@@ -58,6 +58,7 @@ What is missing is the step *between* the source art and the pixel editor — wh
 - ✅ Palette presets: Pepto PAL (default), Colodore with brightness/contrast/saturation, Pepto NTSC, user `.vpl`.
 - ✅ Correct 2:1 multicolor aspect, border colour, 1×–4× nearest-neighbour zoom.
 - ✅ Side-by-side / split / flicker A-B between source and result.
+- ✅ Light and dark UI themes (system-following, user override); the C64 preview itself is never themed. Icons: Material Symbols ([ADR-007](adr/ADR-007-light-dark-theme-and-material-icons.md)).
 - ⏩ PAL chroma/luma blur + scanline shader, opt-in.
 
 ### Export

@@ -102,7 +102,7 @@ convert64/                      cargo workspace only (Rust 2024)
 └─ docs/                        PDD, TAD, adr/, reference/, TOOLING, github/
 ```
 
-Crates: `image` (decode), own OKLab code, `rayon` behind a `parallel` feature, `serde` (project file + command args), `clap`, `rmcp`, `eframe`/`egui`, `rfd` (file dialogs), `insta` + `proptest` (tests). No `std::fs` in core. See [ADR-005](adr/ADR-005-command-engine-with-cli-json-mcp.md) and [ADR-006](adr/ADR-006-egui-single-rust-workspace.md).
+Crates: `image` (decode), own OKLab code, `rayon` behind a `parallel` feature, `serde` (project file + command args), `clap`, `rmcp`, `eframe`/`egui`, `egui_material_icons` (icons, ADR-007), `rfd` (file dialogs), `insta` + `proptest` (tests). No `std::fs` in core. See [ADR-005](adr/ADR-005-command-engine-with-cli-json-mcp.md) and [ADR-006](adr/ADR-006-egui-single-rust-workspace.md).
 
 ## 5. Stack rationale (summary of ADR-001, ADR-005, ADR-006)
 - **Rust core:** first-class WASM, `rayon`, safety, one crate graph for app + CLI + MCP.
