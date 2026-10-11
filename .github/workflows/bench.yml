@@ -1,0 +1,35 @@
+name: bench
+
+# The E4 compositor benchmark (#87) on the CI macOS runner class. Not part of CI: run it
+# on demand (Actions → bench → Run workflow) or by pushing a branch named bench/<anything>.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["bench/**"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  composite:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.9.2
+      - name: Runner
+        run: |
+          sysctl -n machdep.cpu.brand_string hw.ncpu
+          echo "### Runner: $(sysctl -n machdep.cpu.brand_string), $(sysctl -n hw.ncpu) cores" >> "$GITHUB_STEP_SUMMARY"
+      - name: Bench (sequential)
+        run: |
+          cargo test --release -p convert64-core --test bench -- --ignored --nocapture | tee seq.txt
+          { echo '```'; grep 'bench:' seq.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Bench (parallel)
+        run: |
+          cargo test --release -p convert64-core --features parallel --test bench -- --ignored --nocapture | tee par.txt
+          { echo '```'; grep 'bench:' par.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

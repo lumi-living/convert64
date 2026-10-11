@@ -351,19 +351,18 @@ impl Compositor {
         area: PxRect,
     ) {
         let stack: Vec<Blendable> = state.iter().flatten().cloned().collect();
-        fold(&mut self.canvas, &mut self.attrs, &stack, regions, area);
         self.frame.attributes_mut().set_recipes(
             layers.iter().map(|l| *l.recipe()).collect(),
             regions.iter().map(|r| *r.recipe()).collect(),
         );
-        let n = u32::from(self.grid.n());
-        let target = PxRect::new(
-            area.x0 / n,
-            area.y0 / n,
-            area.x1.div_ceil(n),
-            area.y1.div_ceil(n),
+        fold(
+            &mut self.canvas,
+            &mut self.attrs,
+            &mut self.frame,
+            &stack,
+            regions,
+            area,
         );
-        self.frame.reduce_rect(&self.canvas, &self.attrs, target);
         self.last = Some((state, regions.to_vec()));
     }
 
@@ -517,74 +516,118 @@ fn build_raster(layer: &Layer, adjust: &mut AdjustCache, grid: SuperGrid) -> Lay
     LayerRaster { rect, rgba, mask }
 }
 
-/// A canvas row and its attribute row, with the row index.
-type FoldRow<'a> = (usize, &'a mut [[f32; 4]], &'a mut [AttrPx]);
+/// A layer's part of one super-grid row: the canvas columns, its pixels and its mask.
+type RowSlices<'a> = (std::ops::Range<usize>, &'a [[f32; 4]], Option<&'a [f32]>);
 
-/// Blends `stack` (bottom first) into `canvas` over `area`, clearing it first, and
-/// rebuilds the attribute map there: the top-most layer with effective alpha (PNG alpha ×
-/// mask) above zero wins, strength × that alpha; then each region in order wins where
-/// its mask is above zero, strength × mask.
+/// Where layer `b` meets row `y` of `area`, or `None`.
+fn row_slices(b: &Blendable, area: PxRect, y: u32) -> Option<RowSlices<'_>> {
+    let r = &b.raster;
+    let span = r.rect.intersect(PxRect::new(area.x0, y, area.x1, y + 1));
+    if span.is_empty() {
+        return None;
+    }
+    let i0 = (y - r.rect.y0) as usize * r.rect.width() as usize + (span.x0 - r.rect.x0) as usize;
+    let n = span.width() as usize;
+    Some((
+        span.x0 as usize..span.x1 as usize,
+        &r.rgba[i0..i0 + n],
+        b.mask.as_ref().map(|m| &m[i0..i0 + n]),
+    ))
+}
+
+/// Blends `stack` (bottom first) into `canvas` over `area` (aligned to whole target
+/// pixels), clearing it first, rebuilds the attribute map there, and box-filters the
+/// result into `frame`. Works one target row at a time, so the `n` super rows it filters
+/// are still in cache.
+///
+/// Colour blends bottom-up. Attributes are claimed top-down: the top-most layer whose
+/// effective alpha (PNG alpha × mask) is above zero wins, strength × that alpha, and a
+/// row stops once every pixel is claimed; then each region in order wins where its
+/// mask is above zero, strength × mask.
 fn fold(
     canvas: &mut Canvas,
     attrs: &mut [AttrPx],
+    frame: &mut TargetFrame,
     stack: &[Blendable],
     regions: &[Region],
     area: PxRect,
 ) {
     let grid = canvas.grid;
     let (w, _) = grid.size();
-    let w = w as usize;
-    let mut rows: Vec<FoldRow<'_>> = canvas
+    let (tw, _) = grid.target_size();
+    let n = u32::from(grid.n());
+    debug_assert!(
+        [area.x0, area.y0, area.x1, area.y1]
+            .iter()
+            .all(|v| v.is_multiple_of(n)),
+        "area must cover whole target pixels: {area:?}"
+    );
+    let (w, tw, band) = (w as usize, tw as usize, n as usize * w as usize);
+    let (colour, coverage, target_attrs) = frame.parts_mut();
+    let mut bands: Vec<FoldBand<'_>> = canvas
         .px
-        .chunks_mut(w)
-        .zip(attrs.chunks_mut(w))
+        .chunks_mut(band)
+        .zip(attrs.chunks_mut(band))
+        .zip(colour.chunks_mut(tw).zip(coverage.chunks_mut(tw)))
+        .zip(target_attrs.chunks_mut(tw))
         .enumerate()
-        .filter(|(y, _)| (area.y0 as usize..area.y1 as usize).contains(y))
-        .map(|(y, (p, a))| (y, p, a))
+        .filter(|(ty, _)| ((area.y0 / n) as usize..(area.y1 / n) as usize).contains(ty))
+        .map(|(ty, (((px, at), (c, cov)), ta))| (ty, px, at, c, cov, ta))
         .collect();
-    crate::par::for_each(&mut rows, |(y, row, attr)| {
-        let y = *y as u32;
+    crate::par::for_each(&mut bands, |(ty, px, at, colour, coverage, target_attr)| {
         let (x0, x1) = (area.x0 as usize, area.x1 as usize);
-        row[x0..x1].fill([0.0; 4]);
-        attr[x0..x1].fill(AttrPx::EMPTY);
-        for b in stack {
-            let r = &b.raster;
-            let span = r.rect.intersect(PxRect::new(area.x0, y, area.x1, y + 1));
-            if span.is_empty() {
-                continue;
+        for sy in 0..n as usize {
+            let y = (*ty * n as usize + sy) as u32;
+            let row = &mut px[sy * w..(sy + 1) * w];
+            let attr = &mut at[sy * w..(sy + 1) * w];
+            row[x0..x1].fill([0.0; 4]);
+            attr[x0..x1].fill(AttrPx::EMPTY);
+            for b in stack {
+                if let Some((xs, src, mask)) = row_slices(b, area, y) {
+                    blend::span(b.blend, &mut row[xs], src, mask, b.opacity);
+                }
             }
-            let rw = r.rect.width() as usize;
-            let base = (y - r.rect.y0) as usize * rw;
-            for x in span.x0..span.x1 {
-                let i = base + (x - r.rect.x0) as usize;
-                let m = b.mask.as_ref().map_or(1.0, |m| m[i]);
-                let s = r.rgba[i];
-                let k = b.opacity * m;
-                blend::blend(b.blend, &mut row[x as usize], s.map(|v| v * k));
-                let alpha = s[3] * m;
-                if alpha > 0.0 {
-                    attr[x as usize] = AttrPx {
-                        code: b.code,
-                        strength: b.strength * alpha,
-                    };
+            let mut unclaimed = x1 - x0;
+            for b in stack.iter().rev() {
+                if unclaimed == 0 {
+                    break;
+                }
+                if let Some((xs, src, mask)) = row_slices(b, area, y) {
+                    unclaimed -= blend::claim(&mut attr[xs], src, mask, b.code, b.strength);
+                }
+            }
+            for (j, region) in regions.iter().enumerate() {
+                let code = attr::AttrSource::Region(u16::try_from(j).expect("few regions")).code();
+                let strength = region.recipe().strength();
+                for x in area.x0..area.x1 {
+                    let m = region.sample(grid.super_px_centre_in_canvas(x, y));
+                    if m > 0.0 {
+                        attr[x as usize] = AttrPx {
+                            code,
+                            strength: strength * m,
+                        };
+                    }
                 }
             }
         }
-        for (j, region) in regions.iter().enumerate() {
-            let code = attr::AttrSource::Region(u16::try_from(j).expect("few regions")).code();
-            let strength = region.recipe().strength();
-            for x in area.x0..area.x1 {
-                let m = region.sample(grid.super_px_centre_in_canvas(x, y));
-                if m > 0.0 {
-                    attr[x as usize] = AttrPx {
-                        code,
-                        strength: strength * m,
-                    };
-                }
-            }
+        let mut seen = Vec::with_capacity(4);
+        for tx in x0 / n as usize..x1 / n as usize {
+            (colour[tx], coverage[tx]) = frame::reduce_px(px, w, n, tx);
+            target_attr[tx] = attr::reduce_px(at, w, n, tx, &mut seen);
         }
     });
 }
+
+/// One target row's work: its index, its `n` canvas and attribute super rows, and its
+/// colour, coverage and attribute target rows.
+type FoldBand<'a> = (
+    usize,
+    &'a mut [[f32; 4]],
+    &'a mut [AttrPx],
+    &'a mut [[f32; 3]],
+    &'a mut [f32],
+    &'a mut [TargetAttr],
+);
 
 /// The target cells a change to `layer`'s mask inside `layer_rect` (layer pixels) can
 /// affect: the rectangle mapped through the layer transform onto the super grid, grown

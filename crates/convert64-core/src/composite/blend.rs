@@ -1,54 +1,144 @@
 //! Blend modes on premultiplied linear RGBA (W3C Compositing and Blending Level 1).
 //!
 //! The general formula `co = cs (1 − αb) + cb (1 − αs) + αs αb B(Cb, Cs)` is expanded
-//! per mode in premultiplied terms, so no channel is ever divided by alpha.
+//! per mode in premultiplied terms, so no channel is ever divided by alpha. A fully
+//! transparent source leaves the backdrop exactly unchanged in every mode (each term
+//! with `cs` or `αs` vanishes), so the inner loops need no early-out branch and
+//! vectorise.
 
 use crate::layer::Blend;
 
+use super::attr::AttrPx;
+
 /// Composites premultiplied `src` onto premultiplied `dst` in place.
 #[inline]
+#[cfg(test)]
 pub(crate) fn blend(mode: Blend, dst: &mut [f32; 4], src: [f32; 4]) {
-    let (sa, da) = (src[3], dst[3]);
-    if sa <= 0.0 {
-        return;
-    }
-    let inv_sa = 1.0 - sa;
     match mode {
-        Blend::Normal => {
-            for i in 0..3 {
-                dst[i] = src[i] + dst[i] * inv_sa;
-            }
-        }
-        Blend::Multiply => {
-            let inv_da = 1.0 - da;
-            for i in 0..3 {
-                let (cs, cb) = (src[i], dst[i]);
-                dst[i] = cs * inv_da + cb * inv_sa + cs * cb;
-            }
-        }
-        Blend::Screen => {
-            for i in 0..3 {
-                // cs(1−αb) + cb(1−αs) + αs·cb + αb·cs − cs·cb  =  cs + cb − cs·cb
-                let (cs, cb) = (src[i], dst[i]);
-                dst[i] = cs + cb - cs * cb;
-            }
-        }
-        Blend::Overlay => {
-            let inv_da = 1.0 - da;
-            for i in 0..3 {
-                let (cs, cb) = (src[i], dst[i]);
-                // B = HardLight(Cs, Cb) with the backdrop deciding: multiply when
-                // Cb ≤ ½ (cb ≤ ½ αb), screen otherwise.
-                let mixed = if 2.0 * cb <= da {
-                    2.0 * cs * cb
-                } else {
-                    sa * da - 2.0 * (da - cb) * (sa - cs)
-                };
-                dst[i] = cs * inv_da + cb * inv_sa + mixed;
-            }
-        }
+        Blend::Normal => normal(dst, src),
+        Blend::Multiply => multiply(dst, src),
+        Blend::Screen => screen(dst, src),
+        Blend::Overlay => overlay(dst, src),
+    }
+}
+
+#[inline(always)]
+fn normal(dst: &mut [f32; 4], src: [f32; 4]) {
+    let sa = src[3];
+    let inv_sa = 1.0 - sa;
+    for i in 0..3 {
+        dst[i] = src[i] + dst[i] * inv_sa;
+    }
+    dst[3] = sa + dst[3] * inv_sa;
+}
+
+#[inline(always)]
+fn multiply(dst: &mut [f32; 4], src: [f32; 4]) {
+    let (sa, da) = (src[3], dst[3]);
+    let (inv_sa, inv_da) = (1.0 - sa, 1.0 - da);
+    for i in 0..3 {
+        let (cs, cb) = (src[i], dst[i]);
+        dst[i] = cs * inv_da + cb * inv_sa + cs * cb;
     }
     dst[3] = sa + da * inv_sa;
+}
+
+#[inline(always)]
+fn screen(dst: &mut [f32; 4], src: [f32; 4]) {
+    let (sa, da) = (src[3], dst[3]);
+    for i in 0..3 {
+        // cs(1−αb) + cb(1−αs) + αs·cb + αb·cs − cs·cb  =  cs + cb − cs·cb
+        let (cs, cb) = (src[i], dst[i]);
+        dst[i] = cs + cb - cs * cb;
+    }
+    dst[3] = sa + da * (1.0 - sa);
+}
+
+#[inline(always)]
+fn overlay(dst: &mut [f32; 4], src: [f32; 4]) {
+    let (sa, da) = (src[3], dst[3]);
+    let (inv_sa, inv_da) = (1.0 - sa, 1.0 - da);
+    for i in 0..3 {
+        let (cs, cb) = (src[i], dst[i]);
+        // B = HardLight(Cs, Cb) with the backdrop deciding: multiply when
+        // Cb ≤ ½ (cb ≤ ½ αb), screen otherwise.
+        // Both arms computed, then selected: branch-free, so the loop vectorises.
+        let multiply = 2.0 * cs * cb;
+        let screen = sa * da - 2.0 * (da - cb) * (sa - cs);
+        let mixed = if 2.0 * cb <= da { multiply } else { screen };
+        dst[i] = cs * inv_da + cb * inv_sa + mixed;
+    }
+    dst[3] = sa + da * inv_sa;
+}
+
+/// One layer's colour contribution to a run of pixels: `src` (premultiplied, coverage
+/// applied) scaled by `opacity × mask` and blended onto `dst`. Specialised per blend mode
+/// and per masked/unmasked layer; the loop is branch-free so it vectorises.
+pub(crate) fn span(
+    mode: Blend,
+    dst: &mut [[f32; 4]],
+    src: &[[f32; 4]],
+    mask: Option<&[f32]>,
+    opacity: f32,
+) {
+    #[inline(always)]
+    fn run(
+        f: impl Fn(&mut [f32; 4], [f32; 4]),
+        dst: &mut [[f32; 4]],
+        src: &[[f32; 4]],
+        mask: Option<&[f32]>,
+        opacity: f32,
+    ) {
+        match mask {
+            Some(mask) => {
+                for ((d, s), &m) in dst.iter_mut().zip(src).zip(mask) {
+                    let k = opacity * m;
+                    f(d, s.map(|v| v * k));
+                }
+            }
+            None => {
+                for (d, s) in dst.iter_mut().zip(src) {
+                    f(d, s.map(|v| v * opacity));
+                }
+            }
+        }
+    }
+    match mode {
+        Blend::Normal => run(normal, dst, src, mask, opacity),
+        Blend::Multiply => run(multiply, dst, src, mask, opacity),
+        Blend::Screen => run(screen, dst, src, mask, opacity),
+        Blend::Overlay => run(overlay, dst, src, mask, opacity),
+    }
+}
+
+/// One layer's attribute contribution, applied **top-down**: every pixel of `attr` still
+/// unclaimed whose effective alpha (`alpha × mask`) is above zero takes this layer's
+/// `code` and `strength × alpha × mask`. Running the layers from the top makes the first
+/// claim the top-most one, so each pixel is written once. Returns how many pixels this
+/// layer claimed, so a row can stop once every pixel is claimed.
+pub(crate) fn claim(
+    attr: &mut [AttrPx],
+    src: &[[f32; 4]],
+    mask: Option<&[f32]>,
+    code: u16,
+    strength: f32,
+) -> usize {
+    let unclaimed = AttrPx::EMPTY.code;
+    let mut claimed = 0;
+    for (k, a) in attr.iter_mut().enumerate() {
+        if a.code != unclaimed {
+            continue;
+        }
+        let alpha = src[k][3] * mask.map_or(1.0, |m| m[k]);
+        if alpha > 0.0 {
+            *a = AttrPx {
+                code,
+                strength: strength * alpha,
+            };
+            claimed += 1;
+        }
+    }
+    claimed
 }
 
 #[cfg(test)]
