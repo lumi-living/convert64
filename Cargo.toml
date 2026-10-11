@@ -23,7 +23,17 @@ publish = false
 convert64-core = { path = "crates/convert64-core" }
 convert64-formats = { path = "crates/convert64-formats" }
 rayon = "1.12.0"
-eframe = "0.36.2"
+# glow (OpenGL / WebGL2) renderer instead of the default wgpu: ADR-006 keeps
+# the app wgpu-free. Otherwise eframe's default feature set.
+eframe = { version = "0.36.2", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "glow",
+    "links",
+    "wayland",
+    "web_screen_reader",
+    "x11",
+] }
 egui = "0.36.2"
 
 [workspace.lints.rust]
