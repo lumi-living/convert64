@@ -104,21 +104,8 @@ impl Input {
                 }
             })
             .collect();
-        let p = cw * ch;
-        let mut dist = vec![0.0f32; cx * cy * 16 * p];
+        let dist = build_dist(&px, tables, w, (cw, ch), (cx, cy));
         let mut allowed = vec![ColourSet::ALL; cx * cy];
-        let cells: Vec<(usize, &mut [f32])> = dist.chunks_mut(16 * p).enumerate().collect();
-        let mut cells = cells;
-        crate::par::for_each(&mut cells, |(ci, table)| {
-            let (gx, gy) = (*ci % cx, *ci / cx);
-            for (k, (x, y)) in cell_pixels(gx, gy, cw, ch).enumerate() {
-                let q = &px[y * w + x];
-                let colours = tables.colours(q.metric.space());
-                for (c, coord) in colours.iter().enumerate() {
-                    table[c * p + k] = q.weight * q.metric.distance(q.coords, *coord);
-                }
-            }
-        });
         for (ci, set) in allowed.iter_mut().enumerate() {
             let (gx, gy) = (ci % cx, ci / cx);
             for (x, y) in cell_pixels(gx, gy, cw, ch) {
@@ -138,6 +125,26 @@ impl Input {
             px,
             dist,
             allowed,
+        }
+    }
+
+    /// The same input with every pixel's colour moved by the error it received in a
+    /// dithering pass: what the refinement re-picks cell sets from (TAD §3.1).
+    pub(crate) fn retarget(&self, received: &[[f32; 3]], tables: &MetricTables) -> Self {
+        let px: Vec<Px> = self
+            .px
+            .iter()
+            .zip(received)
+            .map(|(q, e)| Px {
+                coords: [q.coords[0] + e[0], q.coords[1] + e[1], q.coords[2] + e[2]],
+                ..*q
+            })
+            .collect();
+        let dist = build_dist(&px, tables, self.size.0, self.cell, self.cells);
+        Self {
+            px,
+            dist,
+            ..self.clone()
         }
     }
 
@@ -200,6 +207,12 @@ impl Input {
         out
     }
 
+    /// The cell at index `i` (row-major).
+    #[expect(clippy::cast_possible_truncation, reason = "cells are below 40 × 25")]
+    pub(crate) const fn cell_at(&self, i: usize) -> CellPos {
+        CellPos::new((i % self.cells.0) as u16, (i / self.cells.0) as u16)
+    }
+
     /// Cell index of `cell`.
     pub(crate) const fn index(&self, cell: CellPos) -> usize {
         cell.y as usize * self.cells.0 + cell.x as usize
@@ -238,6 +251,30 @@ impl Input {
                 })
             })
     }
+}
+
+/// Per cell, the `16 × P` table of weighted distances.
+fn build_dist(
+    px: &[Px],
+    tables: &MetricTables,
+    w: usize,
+    (cw, ch): (usize, usize),
+    (cx, cy): (usize, usize),
+) -> Vec<f32> {
+    let p = cw * ch;
+    let mut dist = vec![0.0f32; cx * cy * 16 * p];
+    let mut cells: Vec<(usize, &mut [f32])> = dist.chunks_mut(16 * p).enumerate().collect();
+    crate::par::for_each(&mut cells, |(ci, table)| {
+        let (gx, gy) = (*ci % cx, *ci / cx);
+        for (k, (x, y)) in cell_pixels(gx, gy, cw, ch).enumerate() {
+            let q = &px[y * w + x];
+            let colours = tables.colours(q.metric.space());
+            for (c, coord) in colours.iter().enumerate() {
+                table[c * p + k] = q.weight * q.metric.distance(q.coords, *coord);
+            }
+        }
+    });
+    dist
 }
 
 fn cell_pixels(gx: usize, gy: usize, cw: usize, ch: usize) -> impl Iterator<Item = (usize, usize)> {

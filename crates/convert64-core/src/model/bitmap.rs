@@ -238,6 +238,78 @@ impl BitmapImage {
             .unwrap_or_else(|| unreachable!("bit pattern is within the palette"))
     }
 
+    /// Encodes a pixel-level picture (the solver's output) into Screen RAM, Colour RAM
+    /// and bitmap bytes.
+    ///
+    /// Multicolor: per cell, the colours other than the background in ascending index
+    /// order take bit pairs `01` (Screen high), `10` (Screen low) and `11` (Colour RAM);
+    /// unused slots hold black. Hi-res: the lower index takes bit `0` (Screen low), the
+    /// higher bit `1` (Screen high); a one-colour cell uses it for both. The assignment is
+    /// deterministic, so the same picture always gives the same bytes.
+    ///
+    /// # Errors
+    /// [`ModelError::CellColours`] (rule 1) when a cell has more colours than the mode
+    /// can show.
+    pub fn encode(img: &IndexedBitmap) -> Result<Self, ModelError> {
+        let bg = img.background();
+        let multicolor = bg.is_some();
+        let (cw, max) = if multicolor {
+            (4u16, 4u32)
+        } else {
+            (8u16, 2u32)
+        };
+        let mut bitmap = vec![0u8; BITMAP_BYTES];
+        let mut screen = Vec::with_capacity(CELLS);
+        let mut colour = Vec::with_capacity(CELLS);
+        for cy in 0..CELLS_Y {
+            for cx in 0..CELLS_X {
+                let cell = CellPos::new(cx, cy);
+                let used = img.cell_colours(cell);
+                let own: Vec<ColourIndex> = used.iter().filter(|c| Some(*c) != bg).collect();
+                let found = own.len() as u32 + u32::from(multicolor);
+                if found > max || (!multicolor && own.len() > 2) {
+                    return Err(ModelError::CellColours { cell, found, max });
+                }
+                let slot = |c: ColourIndex| -> u8 {
+                    if Some(c) == bg {
+                        0
+                    } else {
+                        let i = own.iter().position(|&o| o == c).expect("own colour");
+                        if multicolor { i as u8 + 1 } else { i as u8 }
+                    }
+                };
+                let at = |i: usize| own.get(i).copied().unwrap_or(ColourIndex::BLACK);
+                if multicolor {
+                    screen.push(ScreenCell {
+                        high: at(0),
+                        low: at(1),
+                    });
+                    colour.push(at(2));
+                } else {
+                    let low = at(0);
+                    let high = own.get(1).copied().unwrap_or(low);
+                    screen.push(ScreenCell { high, low });
+                }
+                for row in 0..8u16 {
+                    let mut byte = 0u8;
+                    for px in 0..cw {
+                        let c = img.pixel(cx * cw + px, cy * 8 + row);
+                        byte |= if multicolor {
+                            slot(c) << (6 - 2 * px)
+                        } else {
+                            slot(c) << (7 - px)
+                        };
+                    }
+                    bitmap[usize::from(cy) * 320 + usize::from(cx) * 8 + usize::from(row)] = byte;
+                }
+            }
+        }
+        match bg {
+            Some(bg) => Self::multicolor(bitmap, screen, colour, bg),
+            None => Self::hires(bitmap, screen),
+        }
+    }
+
     /// Decodes every pixel into an [`IndexedBitmap`] (the preview's view of the picture).
     pub fn to_indexed(&self) -> IndexedBitmap {
         let (width, height) = if self.background.is_some() {
@@ -265,7 +337,7 @@ impl fmt::Debug for BitmapImage {
 
 #[cfg(test)]
 mod tests {
-    use super::{BitmapImage, ScreenCell};
+    use super::{BitmapImage, IndexedBitmap, ScreenCell};
     use crate::colour::ColourIndex;
     use crate::mode::Mode;
     use crate::model::{CellPos, ModelError};
@@ -356,6 +428,66 @@ mod tests {
         assert_eq!(
             img.cell_palette(CellPos::new(0, 0)).as_slice(),
             [ColourIndex::BLACK, ColourIndex::WHITE]
+        );
+    }
+
+    /// A legal pseudo-random picture: per cell up to `k` own colours (plus `bg`).
+    fn random_legal(mode: Mode, bg: Option<ColourIndex>, k: usize, seed: u32) -> IndexedBitmap {
+        let (w, cw) = if bg.is_some() {
+            (160u16, 4u16)
+        } else {
+            (320, 8)
+        };
+        let mut s = seed;
+        let mut next = move || {
+            s = s.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (s >> 16) as usize
+        };
+        let mut palettes = Vec::new();
+        for _ in 0..1000 {
+            let n = 1 + next() % k;
+            let mut own: Vec<ColourIndex> = (0..n).map(|_| ColourIndex::ALL[next() % 16]).collect();
+            own.extend(bg);
+            palettes.push(own);
+        }
+        let pixels = (0..200u16)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let p = &palettes[usize::from(y / 8) * 40 + usize::from(x / cw)];
+                p[(usize::from(x) * 7 + usize::from(y) * 3) % p.len()]
+            })
+            .collect();
+        IndexedBitmap::new(mode, pixels, bg).unwrap()
+    }
+
+    #[test]
+    fn encode_round_trips_through_decode() {
+        for seed in 0..5 {
+            let mc = random_legal(Mode::MulticolorBitmap, Some(ColourIndex::BLUE), 3, seed);
+            let enc = BitmapImage::encode(&mc).unwrap();
+            assert_eq!(enc.to_indexed(), mc);
+            assert_eq!(
+                BitmapImage::encode(&enc.to_indexed()).unwrap(),
+                enc,
+                "deterministic"
+            );
+            let hi = random_legal(Mode::HiresBitmap, None, 2, seed);
+            assert_eq!(BitmapImage::encode(&hi).unwrap().to_indexed(), hi);
+        }
+    }
+
+    #[test]
+    fn encode_rejects_an_overfull_cell() {
+        let mut img = IndexedBitmap::filled(Mode::HiresBitmap, ColourIndex::BLACK).unwrap();
+        img.set_pixel(1, 0, ColourIndex::WHITE);
+        img.set_pixel(2, 0, ColourIndex::RED);
+        assert_eq!(
+            BitmapImage::encode(&img),
+            Err(ModelError::CellColours {
+                cell: CellPos::new(0, 0),
+                found: 3,
+                max: 2
+            })
         );
     }
 }

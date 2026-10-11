@@ -8,7 +8,9 @@ pub mod dither;
 pub mod input;
 pub mod metric;
 pub mod ordered;
+pub mod solver;
 
 pub use cell::{CellChoice, Constraints};
 pub use input::{Input, InputOptions};
 pub use metric::{Metric, MetricTables, Space};
+pub use solver::{Background, Solution, SolveOptions, Solver};
