@@ -70,16 +70,20 @@ impl DitherKind {
     }
 }
 
-/// Orientation preference: `VerticalBiased` favours patterns that survive the 2:1
-/// multicolor stretch and PAL colour bleed (the "line- and 2:1-biased variants" in PDD).
+/// Orientation preference for ordered and noise patterns (the PDD's "line- and
+/// 2:1-biased variants").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Orientation {
-    /// Let the method choose.
+    /// The pattern as is, sampled in target pixels.
     #[default]
     Auto,
-    /// Prefer vertical structures.
+    /// Line variant: the threshold changes along x and holds for `n` rows, so the
+    /// pattern forms short vertical lines, which survive PAL colour bleed.
     VerticalBiased,
+    /// 2:1 variant: each matrix row covers two target rows, so on a multicolor screen
+    /// (2:1 pixels) the pattern's dots are square.
+    TwoToOne,
 }
 
 /// A dither method: the kind and its orientation preference.

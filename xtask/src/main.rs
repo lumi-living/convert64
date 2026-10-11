@@ -10,6 +10,7 @@
 //!   capture with it (local only).
 
 mod baselines;
+mod bluenoise;
 mod goldens;
 mod vice;
 
@@ -26,6 +27,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Regenerate the solver's 64 × 64 blue-noise tile by void-and-cluster from its fixed
+    /// seed (`crates/convert64-core/src/solve/blue_noise_64.bin`).
+    BlueNoise,
     /// Regenerate the png2c64 baselines of every fixture.
     ///
     /// Runs png2c64 on each `fixtures/<name>/source.png` with the settings recorded in
@@ -93,6 +97,7 @@ pub(crate) fn repo_root() -> PathBuf {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
+        Command::BlueNoise => bluenoise::run(&repo_root()),
         Command::Png2c64Baselines { png2c64, only } => baselines::run(&png2c64, &only),
         Command::ViceCheck { x64sc, only } => vice::run(&x64sc, &only),
         Command::RegenGoldens {

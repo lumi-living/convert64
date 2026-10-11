@@ -6,6 +6,7 @@
 pub mod cell;
 pub mod input;
 pub mod metric;
+pub mod ordered;
 
 pub use cell::{CellChoice, Constraints};
 pub use input::{Input, InputOptions};
