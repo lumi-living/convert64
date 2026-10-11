@@ -10,6 +10,7 @@ pub mod model;
 pub mod palette;
 pub mod par;
 pub mod rule;
+pub mod validate;
 
 pub use colour::{ColourIndex, ColourSet, InvalidColourIndex};
 pub use mode::{Mode, ModeSpec};
@@ -19,3 +20,6 @@ pub use model::{
 };
 pub use palette::Palette;
 pub use rule::Rule;
+pub use validate::{
+    C64Image, Location, Placement, Violation, validate, validate_export, validate_placement,
+};
