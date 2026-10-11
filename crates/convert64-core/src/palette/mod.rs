@@ -9,8 +9,10 @@
 mod colodore;
 mod convert;
 pub mod luma;
+mod vpl;
 
 pub use colodore::{DEFAULT_BRIGHTNESS, DEFAULT_CONTRAST, DEFAULT_SATURATION};
+pub use vpl::VplError;
 
 use crate::colour::ColourIndex;
 use std::fmt;

@@ -65,6 +65,23 @@ Separate files with no headers, plus a small manifest:
 ```
 AFLI omits Colour RAM and background. The first three columns of every row are unusable on hardware.
 
+## Palettes
+
+### VICE palette (`.vpl`)
+Plain text, one colour per line, 16 entries in index order (black first). This is what `Palette::from_vpl` accepts, following VICE's own loader (`palette_load_core` in VICE `src/palette.c`):
+```
+# comment                      a line whose first non-blank character is '#'
+# NAME:Pepto (PAL)             optional; Convert64 uses it as the palette name
+# TYPE:VICII                   optional; informational only
+                               blank lines are ignored
+68 37 2b                       red green blue, hexadecimal, 00–FF each
+68 37 2b 0                     optional 4th value: dither nybble 0–F (older files; ignored)
+```
+- Values are separated by spaces or tabs. Each is one or more hex digits with an optional `0x` prefix, so `0`, `00` and `0x00` are equal; case does not matter.
+- Line endings may be LF or CRLF.
+- Exactly 16 entries are required. Fewer or more is an error.
+- Anything after the colour and optional dither value is an error in Convert64. VICE only warns about it.
+
 ## Sprites
 
 ### Raw sprite block (64 bytes, 64-byte aligned)
