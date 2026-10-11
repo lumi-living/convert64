@@ -31,7 +31,7 @@ What is missing is the step *between* the source art and the pixel editor — wh
 |---|---|
 | Scope | Converter, **not** a pixel editor. Everything that steers conversion is in: cell colour pins, cell locks, per-region dither/metric overrides, Force vs Adaptive colour fitting, region masks, allow/deny colour subsets. Freehand painting is out ([ADR-003](adr/ADR-003-converter-not-pixel-editor.md)). |
 | Licence | MIT, open source from the first commit, under Lumi Living ([ADR-004](adr/ADR-004-open-source-mit-under-lumi-living.md)). |
-| Stack | Rust core + Tauri 2 + Svelte 5, CLI with GUI parity ([ADR-001](adr/ADR-001-rust-core-with-tauri-svelte-ui.md)). |
+| Stack | Single Rust workspace: core + egui/eframe app + CLI + MCP, one command engine ([ADR-005](adr/ADR-005-command-engine-with-cli-json-mcp.md), [ADR-006](adr/ADR-006-egui-single-rust-workspace.md)). |
 | Core algorithm | Dithering as a per-pixel attribute carried through compositing ([ADR-002](adr/ADR-002-dither-as-per-pixel-attribute.md)). |
 
 ## Feature list (✅ = M1/M2, ⏩ = later)
@@ -111,7 +111,7 @@ The risk is scope (resist FLI, resist becoming a pixel editor) and UI effort, no
 | Milestone | Goal | Exit criterion |
 |---|---|---|
 | **M0 Scaffold** | Workspace, CI, fixtures, validator | `cargo test` green on 3 platforms + WASM build; validator rejects illegal data |
-| **M1 Bitmap MVP** | MC + hi-res bitmap solver, formats, CLI, first Tauri/Svelte UI with layers and recipes | A *No Glory* title screen converted from a layered project, loads in VICE, exported via Makefile |
+| **M1 Bitmap MVP** | MC + hi-res bitmap solver, formats, CLI, first egui UI with layers and recipes | A *No Glory* title screen converted from a layered project, loads in VICE, exported via Makefile |
 | **M2 Charsets & sprites** | Charset/tile modes with budget, sprite modes incl. overlay, `.spd`, CharPad bins, MCP server | *No Glory* terrain tileset and HUD portraits produced through Convert64 |
 | **M3 Scene features** | FLI, PAL shader, interlace modes, `.ctm`, D64/Ultimate, Aseprite bridge | Opportunistic |
 

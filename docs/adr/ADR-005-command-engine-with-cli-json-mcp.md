@@ -1,6 +1,6 @@
 # ADR-005: One command engine behind UI, CLI and MCP
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-10-11
 **Deciders:** Jaakko Haaparanta
 
@@ -11,7 +11,7 @@ Convert64 must be driven three ways: interactively (Tauri/Svelte UI), headlessly
 ## Decision
 
 - `convert64-core` exposes a **document model** (`Project`: layers, recipes, pins/locks, target mode, palette) and a **command registry**: every user-visible action (`add_layer`, `set_layer_transform`, `set_dither_recipe`, `pin_cell`, `lock_cell`, `solve`, `export`, …) is a named command with a serde-serialisable argument struct and result. Commands are the only way to mutate a project; undo/redo is command history.
-- Front-ends are thin: the Svelte UI calls commands over Tauri IPC (or the WASM facade), the CLI maps subcommands and flags to commands, and `convert64-mcp` exposes the registry as MCP tools over stdio with JSON-schema generated from the argument structs.
+- Front-ends are thin: the egui app calls commands in-process, the CLI maps subcommands and flags to commands, and `convert64-mcp` exposes the registry as MCP tools over stdio with JSON-schema generated from the argument structs.
 - Solver and export results are returned as data (clash report, timing, output bytes or paths) so an agent can reason about them without screenshots.
 
 ## Options considered

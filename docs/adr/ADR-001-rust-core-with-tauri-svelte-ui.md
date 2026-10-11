@@ -1,6 +1,6 @@
 # ADR-001: Rust core, Tauri 2 + Svelte 5 UI, CLI with GUI parity
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-006](ADR-006-egui-single-rust-workspace.md) for the UI stack (2026-10-11). The Rust-core and CLI-parity decisions remain in force and are restated in ADR-006.
 **Date:** 2026-10-11
 **Deciders:** Jaakko Haaparanta
 

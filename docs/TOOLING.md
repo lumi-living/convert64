@@ -5,9 +5,10 @@
 | Need | Tool |
 |---|---|
 | Rust | stable, pinned in `rust-toolchain.toml`; `cargo fmt`, `cargo clippy -D warnings`, `cargo test` |
-| WASM | `wasm-pack` targeting `wasm32-unknown-unknown` for `crates/convert64-wasm` |
-| UI | Node LTS (`.nvmrc`), pnpm, Vite, Svelte 5, TypeScript strict |
-| Desktop | Tauri 2 (`pnpm tauri dev` / `pnpm tauri build`) |
+| UI | egui via eframe (`cargo run -p convert64-app`) |
+| Web build | `trunk` targeting `wasm32-unknown-unknown` (`trunk serve` in `crates/convert64-app`) |
+| MCP | `rmcp` (official Rust MCP SDK), stdio transport |
+| Release | `cargo-dist` for native binaries; GitHub Pages for the web build |
 | Snapshots | `insta` (`cargo insta review`) |
 | Verification | VICE `x64sc` for every exported picture; a C64 Ultimate or real hardware when available |
 
@@ -20,7 +21,7 @@ Everything the code must agree with is in [`docs/reference/`](reference/README.m
 This project is developed with AI coding agents alongside humans. If you use one:
 
 - Point it at `CLAUDE.md` (the non-negotiables) and `docs/reference/` (the facts). The file name follows the Claude Code convention but the content is agent-agnostic.
-- Have it check Tauri, Svelte and wasm-bindgen APIs against current docs rather than training data.
+- Have it check egui/eframe, rmcp and trunk APIs against current docs rather than training data.
 - Treat its solver output like anyone else's: golden tests, OKLab-MSE delta against the png2c64 baseline, and a VICE load before merge.
 
 No private prompts, skills or MCP servers are required to work on Convert64.
