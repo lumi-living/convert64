@@ -8,8 +8,6 @@
 
 use crate::layer::Blend;
 
-use super::attr::AttrPx;
-
 /// Composites premultiplied `src` onto premultiplied `dst` in place.
 #[inline]
 #[cfg(test)]
@@ -71,78 +69,172 @@ fn overlay(dst: &mut [f32; 4], src: [f32; 4]) {
     dst[3] = sa + da * inv_sa;
 }
 
-/// One layer's colour contribution to a run of pixels: `src` (premultiplied, coverage
-/// applied) scaled by `opacity × mask` and blended onto `dst`. Specialised per blend mode
-/// and per masked/unmasked layer; the loop is branch-free so it vectorises.
+/// What one layer writes into the attribute map where it is visible.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Claim {
+    /// The layer's attribute code.
+    pub code: u16,
+    /// Recipe strength × opacity (#99: a 30 %-opaque layer fades its dither as a
+    /// feathered edge does).
+    pub scale: f32,
+}
+
+/// One super-grid row's attribute planes, for [`span`].
+pub(crate) struct AttrRow<'a> {
+    pub code: &'a mut [u16],
+    pub strength: &'a mut [f32],
+}
+
+/// One super-grid row's premultiplied colour, one plane per channel so the blend loops
+/// vectorise across pixels.
+pub(crate) struct RgbaRow<'a> {
+    pub r: &'a mut [f32],
+    pub g: &'a mut [f32],
+    pub b: &'a mut [f32],
+    pub a: &'a mut [f32],
+}
+
+impl RgbaRow<'_> {
+    /// The pixels `cols` of this row.
+    pub fn slice(&mut self, cols: std::ops::Range<usize>) -> RgbaRow<'_> {
+        RgbaRow {
+            r: &mut self.r[cols.clone()],
+            g: &mut self.g[cols.clone()],
+            b: &mut self.b[cols.clone()],
+            a: &mut self.a[cols],
+        }
+    }
+}
+
+/// `a` if `on`, else `b`, as a bit blend: written as a branch, the compiler turns the
+/// store into per-lane conditional stores, which do not vectorise.
+#[inline(always)]
+fn pick(on: bool, a: u16, b: u16) -> u16 {
+    let m = u16::from(on).wrapping_neg();
+    (a & m) | (b & !m)
+}
+
+/// One layer's contribution to a run of pixels, layers applied **bottom-up**.
+///
+/// Colour: `src` (premultiplied, coverage applied) scaled by `opacity × mask` and
+/// blended onto `dst`.
+///
+/// Attributes: every pixel whose effective alpha (`alpha × mask`) is above zero takes
+/// the layer's code and `scale × alpha × mask`, overwriting what a lower layer wrote, so
+/// the top-most visible layer governs. Opacity scales the strength only; whether the
+/// layer governs a pixel depends on `alpha × mask` alone.
+///
+/// Specialised per blend mode and per masked/unmasked layer; the loops are branch-free so
+/// they vectorise across pixels. Each pixel gets exactly the arithmetic of the per-pixel
+/// blend functions.
 pub(crate) fn span(
     mode: Blend,
-    dst: &mut [[f32; 4]],
-    src: &[[f32; 4]],
+    dst: RgbaRow<'_>,
+    attr: AttrRow<'_>,
+    src: [&[f32]; 4],
     mask: Option<&[f32]>,
     opacity: f32,
+    claim: Claim,
 ) {
     #[inline(always)]
     fn run(
         f: impl Fn(&mut [f32; 4], [f32; 4]),
-        dst: &mut [[f32; 4]],
-        src: &[[f32; 4]],
+        dst: RgbaRow<'_>,
+        attr: AttrRow<'_>,
+        src: [&[f32]; 4],
         mask: Option<&[f32]>,
         opacity: f32,
+        claim: Claim,
     ) {
+        let n = src[3].len();
+        let px = dst.r[..n]
+            .iter_mut()
+            .zip(&mut dst.g[..n])
+            .zip(dst.b[..n].iter_mut().zip(&mut dst.a[..n]))
+            .zip(attr.code[..n].iter_mut().zip(&mut attr.strength[..n]))
+            .zip(src[0][..n].iter().zip(&src[1][..n]))
+            .zip(src[2][..n].iter().zip(&src[3][..n]));
+        let Claim { code: c, scale } = claim;
         match mask {
             Some(mask) => {
-                for ((d, s), &m) in dst.iter_mut().zip(src).zip(mask) {
+                for ((((((r, g), (b, a)), (cd, st)), (s0, s1)), (s2, s3)), &m) in px.zip(&mask[..n])
+                {
                     let k = opacity * m;
-                    f(d, s.map(|v| v * k));
+                    let mut d = [*r, *g, *b, *a];
+                    f(&mut d, [s0 * k, s1 * k, s2 * k, s3 * k]);
+                    [*r, *g, *b, *a] = d;
+                    let alpha = s3 * m;
+                    let on = alpha > 0.0;
+                    *cd = pick(on, c, *cd);
+                    *st = if on { scale * alpha } else { *st };
                 }
             }
             None => {
-                for (d, s) in dst.iter_mut().zip(src) {
-                    f(d, s.map(|v| v * opacity));
+                for (((((r, g), (b, a)), (cd, st)), (s0, s1)), (s2, s3)) in px {
+                    let k = opacity;
+                    let mut d = [*r, *g, *b, *a];
+                    f(&mut d, [s0 * k, s1 * k, s2 * k, s3 * k]);
+                    [*r, *g, *b, *a] = d;
+                    let alpha = *s3;
+                    let on = alpha > 0.0;
+                    *cd = pick(on, c, *cd);
+                    *st = if on { scale * alpha } else { *st };
                 }
             }
         }
     }
     match mode {
-        Blend::Normal => run(normal, dst, src, mask, opacity),
-        Blend::Multiply => run(multiply, dst, src, mask, opacity),
-        Blend::Screen => run(screen, dst, src, mask, opacity),
-        Blend::Overlay => run(overlay, dst, src, mask, opacity),
+        Blend::Normal => run(normal, dst, attr, src, mask, opacity, claim),
+        Blend::Multiply => run(multiply, dst, attr, src, mask, opacity, claim),
+        Blend::Screen => run(screen, dst, attr, src, mask, opacity, claim),
+        Blend::Overlay => run(overlay, dst, attr, src, mask, opacity, claim),
     }
 }
 
-/// One layer's attribute contribution, applied **top-down**: every pixel of `attr` still
-/// unclaimed whose effective alpha (`alpha × mask`) is above zero takes this layer's
-/// `code` and `strength × alpha × mask × opacity` (#99: a 30 %-opaque layer fades its
-/// dither as a feathered edge does). Opacity scales the strength only; whether the layer
-/// claims the pixel depends on `alpha × mask` alone. Running the layers from the top
-/// makes the first claim the top-most one, so each pixel is written once. Returns how
-/// many pixels this layer claimed, so a row can stop once every pixel is claimed.
-pub(crate) fn claim(
-    attr: &mut [AttrPx],
-    src: &[[f32; 4]],
+/// [`span`] onto a transparent, unclaimed backdrop, whatever `dst` and `attr` hold:
+/// every mode then gives the scaled source itself (each term with the backdrop's colour
+/// or alpha vanishes, and the backdrop is non-negative), and the attribute is the claim
+/// or nothing.
+pub(crate) fn store(
+    dst: RgbaRow<'_>,
+    attr: AttrRow<'_>,
+    src: [&[f32]; 4],
     mask: Option<&[f32]>,
-    code: u16,
-    strength: f32,
     opacity: f32,
-) -> usize {
-    let unclaimed = AttrPx::EMPTY.code;
-    let scale = strength * opacity;
-    let mut claimed = 0;
-    for (k, a) in attr.iter_mut().enumerate() {
-        if a.code != unclaimed {
-            continue;
+    claim: Claim,
+) {
+    let n = src[3].len();
+    let px = dst.r[..n]
+        .iter_mut()
+        .zip(&mut dst.g[..n])
+        .zip(dst.b[..n].iter_mut().zip(&mut dst.a[..n]))
+        .zip(attr.code[..n].iter_mut().zip(&mut attr.strength[..n]))
+        .zip(src[0][..n].iter().zip(&src[1][..n]))
+        .zip(src[2][..n].iter().zip(&src[3][..n]));
+    let Claim { code: c, scale } = claim;
+    let none = super::attr::UNCLAIMED;
+    match mask {
+        Some(mask) => {
+            for ((((((r, g), (b, a)), (cd, st)), (s0, s1)), (s2, s3)), &m) in px.zip(&mask[..n]) {
+                let k = opacity * m;
+                [*r, *g, *b, *a] = [s0 * k, s1 * k, s2 * k, s3 * k];
+                let alpha = s3 * m;
+                let on = alpha > 0.0;
+                *cd = pick(on, c, none);
+                *st = if on { scale * alpha } else { 0.0 };
+            }
         }
-        let alpha = src[k][3] * mask.map_or(1.0, |m| m[k]);
-        if alpha > 0.0 {
-            *a = AttrPx {
-                code,
-                strength: scale * alpha,
-            };
-            claimed += 1;
+        None => {
+            for (((((r, g), (b, a)), (cd, st)), (s0, s1)), (s2, s3)) in px {
+                let k = opacity;
+                [*r, *g, *b, *a] = [s0 * k, s1 * k, s2 * k, s3 * k];
+                let alpha = *s3;
+                let on = alpha > 0.0;
+                *cd = pick(on, c, none);
+                *st = if on { scale * alpha } else { 0.0 };
+            }
         }
     }
-    claimed
 }
 
 #[cfg(test)]
@@ -209,6 +301,54 @@ mod tests {
         let mut d = bd;
         blend(Blend::Overlay, &mut d, src);
         assert!(close(d, [0.42, 0.42, 0.42, 0.75]), "{d:?}");
+    }
+
+    /// `store` gives exactly what `span` gives onto a transparent, unclaimed backdrop.
+    #[test]
+    fn store_equals_a_span_onto_nothing() {
+        let n = 37;
+        let planes: Vec<Vec<f32>> = (0..4)
+            .map(|c| {
+                (0..n)
+                    .map(|i| ((i * 7 + c * 3) % 11) as f32 / 10.0 * if c == 3 { 1.0 } else { 0.7 })
+                    .collect()
+            })
+            .collect();
+        let src = [&planes[0][..], &planes[1], &planes[2], &planes[3]];
+        let mask: Vec<f32> = (0..n).map(|i| (i % 4) as f32 / 3.0).collect();
+        let claim = Claim {
+            code: 5,
+            scale: 0.35,
+        };
+        for mode in [
+            Blend::Normal,
+            Blend::Multiply,
+            Blend::Screen,
+            Blend::Overlay,
+        ] {
+            for m in [Some(&mask[..]), None] {
+                let run = |stored: bool| {
+                    let fill = if stored { 9.0 } else { 0.0 };
+                    let mut p: [Vec<f32>; 4] = std::array::from_fn(|_| vec![fill; n]);
+                    let unclaimed = super::super::attr::UNCLAIMED;
+                    let mut code = vec![if stored { 7 } else { unclaimed }; n];
+                    let mut strength = vec![fill; n];
+                    let [r, g, b, a] = p.each_mut().map(Vec::as_mut_slice);
+                    let dst = RgbaRow { r, g, b, a };
+                    let attr = AttrRow {
+                        code: &mut code,
+                        strength: &mut strength,
+                    };
+                    if stored {
+                        store(dst, attr, src, m, 0.8, claim);
+                    } else {
+                        span(mode, dst, attr, src, m, 0.8, claim);
+                    }
+                    (p, code, strength)
+                };
+                assert_eq!(run(true), run(false), "{mode:?}");
+            }
+        }
     }
 
     #[test]
