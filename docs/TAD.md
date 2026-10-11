@@ -189,7 +189,7 @@ As built in E4 (2026-10-11): the compositor and attribute map ([ADR-002](adr/ADR
   These meet #98's budgets: nudge ≤ 10 / 12 ms with `parallel`, cold composite ≤ 60 ms with `parallel`, and single-threaded warm ≤ 12 / 16 ms. The single-threaded hi-res warm recomposite went over in one run of three (18.8 ms), on a host where every row was slow.
 - **Builds.** `convert64-cli` and `convert64-mcp` build the core with `parallel`. The app does not, because it also targets wasm.
 
-As built in E5 (2026-10-12): the bitmap solver (§3.1, §3.4–§3.5), in `convert64-core::solve`. #5 tracks the PRs.
+As built in E5 (2026-10-12): the bitmap solver (§3.1, §3.4–§3.5), in `convert64-core::solve` (#126–#136; #5 tracks them). The full dither scope in [reference/dither-methods.md](reference/dither-methods.md) continues in #114–#116 and #120.
 
 **Types**
 - **`metric`.**
