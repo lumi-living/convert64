@@ -1,0 +1,37 @@
+# Two full-screen layers on a hi-res target at 4×: a desaturated portrait (Atkinson) under
+# the title blended with Multiply at 70 % opacity, faded in from the bottom by a linear
+# gradient mask that snaps to whole cells (Nearest) before a 2 px feather; plus a region
+# that overrides the recipe (no dither, 50 %) over a rectangle. Exercises adjustments
+# (OKLCh saturation), Multiply, opacity, SnapToCells and regions.
+target = "hires-bitmap"
+n = 4
+
+[[layers]]
+name = "portrait"
+source = "portrait"
+transform = { scale = { x = 0.3125, y = 0.3125 } }
+recipe = { strength = 0.8, method = { kind = "atkinson" } }
+
+[layers.adjustments.hsl]
+saturation = -0.4
+
+[[layers]]
+name = "title"
+source = "title"
+transform = { scale = { x = 0.3125, y = 0.3125 } }
+opacity = 0.7
+blend = "multiply"
+recipe = { strength = 0.5, method = { kind = "bayer8" } }
+
+[layers.mask]
+fill = 1.0
+modifiers = { snap = "nearest", feather = 2.0 }
+
+[[layers.mask.sources]]
+combine = "multiply"
+source = { type = "gradient", kind = "linear", from = { x = 0.0, y = 637.0 }, to = { x = 0.0, y = 0.0 }, softness = 1.0 }
+
+[[regions]]
+name = "sign"
+rect = [200, 20, 300, 80]
+recipe = { strength = 0.5, method = { kind = "none" } }
