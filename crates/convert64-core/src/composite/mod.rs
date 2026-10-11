@@ -517,6 +517,25 @@ fn build_raster(layer: &Layer, adjust: &mut AdjustCache, grid: SuperGrid) -> Lay
     LayerRaster { rect, rgba, mask }
 }
 
+/// A layer's part of one super-grid row: the canvas columns, its pixels and its mask.
+type RowSlices<'a> = (std::ops::Range<usize>, &'a [[f32; 4]], Option<&'a [f32]>);
+
+/// Where layer `b` meets row `y` of `area`, or `None`.
+fn row_slices(b: &Blendable, area: PxRect, y: u32) -> Option<RowSlices<'_>> {
+    let r = &b.raster;
+    let span = r.rect.intersect(PxRect::new(area.x0, y, area.x1, y + 1));
+    if span.is_empty() {
+        return None;
+    }
+    let i0 = (y - r.rect.y0) as usize * r.rect.width() as usize + (span.x0 - r.rect.x0) as usize;
+    let n = span.width() as usize;
+    Some((
+        span.x0 as usize..span.x1 as usize,
+        &r.rgba[i0..i0 + n],
+        b.mask.as_ref().map(|m| &m[i0..i0 + n]),
+    ))
+}
+
 /// A canvas row and its attribute row, with the row index.
 type FoldRow<'a> = (usize, &'a mut [[f32; 4]], &'a mut [AttrPx]);
 
@@ -547,27 +566,20 @@ fn fold(
         let (x0, x1) = (area.x0 as usize, area.x1 as usize);
         row[x0..x1].fill([0.0; 4]);
         attr[x0..x1].fill(AttrPx::EMPTY);
+        // Colour bottom-up; attributes top-down, each pixel claimed once, stopping when
+        // the whole row is claimed.
         for b in stack {
-            let r = &b.raster;
-            let span = r.rect.intersect(PxRect::new(area.x0, y, area.x1, y + 1));
-            if span.is_empty() {
-                continue;
+            if let Some((xs, src, mask)) = row_slices(b, area, y) {
+                blend::span(b.blend, &mut row[xs], src, mask, b.opacity);
             }
-            let rw = r.rect.width() as usize;
-            let base = (y - r.rect.y0) as usize * rw;
-            for x in span.x0..span.x1 {
-                let i = base + (x - r.rect.x0) as usize;
-                let m = b.mask.as_ref().map_or(1.0, |m| m[i]);
-                let s = r.rgba[i];
-                let k = b.opacity * m;
-                blend::blend(b.blend, &mut row[x as usize], s.map(|v| v * k));
-                let alpha = s[3] * m;
-                if alpha > 0.0 {
-                    attr[x as usize] = AttrPx {
-                        code: b.code,
-                        strength: b.strength * alpha,
-                    };
-                }
+        }
+        let mut unclaimed = (area.x1 - area.x0) as usize;
+        for b in stack.iter().rev() {
+            if unclaimed == 0 {
+                break;
+            }
+            if let Some((xs, src, mask)) = row_slices(b, area, y) {
+                unclaimed -= blend::claim(&mut attr[xs], src, mask, b.code, b.strength);
             }
         }
         for (j, region) in regions.iter().enumerate() {
