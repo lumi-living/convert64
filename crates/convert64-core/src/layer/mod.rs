@@ -6,7 +6,10 @@
 pub mod adjust;
 pub mod recipe;
 
-pub use adjust::Adjustments;
+pub use adjust::{
+    AdjustCache, AdjustError, AdjustPlan, Adjustments, BrightnessContrast, Curve, Curves, Hsl,
+    Levels,
+};
 pub use recipe::{
     DitherFamily, DitherKind, FitMode, Method, Metric, Orientation, PatternPhase, Recipe,
     RecipeError,
