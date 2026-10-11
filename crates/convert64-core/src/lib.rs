@@ -5,3 +5,6 @@
 //! [`par`] for the single-source iterator helpers.
 
 pub mod par;
+
+/// Throwaway: deliberate clippy and rustfmt violations to prove CI fails.
+pub fn ci_must_fail(  x : u32) -> u32 { let y = x; return y }
