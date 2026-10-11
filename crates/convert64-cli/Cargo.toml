@@ -1,0 +1,21 @@
+[package]
+name = "convert64-cli"
+description = "Headless convert64 command-line tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+convert64-core = { workspace = true }
+convert64-formats = { workspace = true }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "convert64"
+path = "src/main.rs"

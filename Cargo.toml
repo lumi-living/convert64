@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/convert64-core",
+    "crates/convert64-formats",
+    "crates/convert64-cli",
+    "crates/convert64-mcp",
+    "crates/convert64-app",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+repository = "https://github.com/lumi-living/convert64"
+authors = ["Lumi Living <https://github.com/lumi-living>"]
+publish = false
+
+# Every external crate is pinned here and referenced from the member crates
+# with `{ workspace = true }` (docs/TAD.md §4 lists the allowed set).
+[workspace.dependencies]
+convert64-core = { path = "crates/convert64-core" }
+convert64-formats = { path = "crates/convert64-formats" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
