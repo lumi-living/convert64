@@ -2,7 +2,7 @@
 //! since #193 the target mode, palette and solve settings, which the registry's
 //! `mode_set`, `palette_set`, `background_pin` and `solve_set` commands change.
 
-use crate::layer::Layer;
+use crate::layer::{Layer, Snap};
 use crate::mode::Mode;
 use crate::palette::Palette;
 use crate::region::Region;
@@ -27,10 +27,12 @@ pub struct Project {
     pub palette: Palette,
     /// How the picture is solved.
     pub solve: SolveSettings,
+    /// What transform commands snap to (ADR-011); never stored in a transform.
+    pub snap: Snap,
 }
 
 impl Default for Project {
-    /// No layers, multicolor bitmap, Pepto PAL, the default solve settings.
+    /// No layers, multicolor bitmap, Pepto PAL, the default solve settings, no snap.
     fn default() -> Self {
         Self {
             layers: Vec::new(),
@@ -39,6 +41,7 @@ impl Default for Project {
             target: Mode::MulticolorBitmap,
             palette: Palette::pepto_pal(),
             solve: SolveSettings::default(),
+            snap: Snap::Off,
         }
     }
 }

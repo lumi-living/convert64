@@ -135,5 +135,12 @@ details §3–§5 left open. The Decision section above is kept as written.
    steps. C64 pixel steps are 1 canvas px (multicolor: 2 across), Cell steps are 8 × 8
    canvas px in both modes. It also rounds `rotate` to 0.5° or 15°. Anchor and flips
    are kept.
-9. **png2c64 parity.** The compatibility path of #190 also requires `rotate == 0`.
-   The fit transform alone does not exclude a full turn.
+9. **Where the snap lives.** `Project::snap` holds the setting, and the project file
+   stores it as a top-level `snap`, written only when not `off`. `snap_set` changes it.
+   `layer_set_transform` and the new `layer_rotate` write the snapped transform, under
+   the project's setting or a `snap` argument: the app's Cmd-drag passes the inverted
+   setting there. `layer_nudge` stays unsnapped, so the arrow keys' fixed steps
+   (UX §6) still move by what they say.
+10. **png2c64 parity.** The compatibility path of #190 (PR #201, not merged when this
+    was written) must also require `rotate == 0`. The fit transform alone does not
+    exclude a full turn, which takes the rotated path.

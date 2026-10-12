@@ -18,9 +18,9 @@ use crate::paths;
 use crate::store::Store;
 use convert64_core::command::{
     AdjustmentsSet, Command, Dirty, LayerAdd, LayerDuplicate, LayerNudge, LayerRemove, LayerRename,
-    LayerReorder, LayerSetBlend, LayerSetOpacity, LayerSetTransform, LayerSetVisible, LayerViaMask,
-    MaskClear, MaskFill, MaskFromAlpha, MaskGradient, MaskKey, MaskLoad, MaskSetModifier,
-    MaskStroke, PaletteSet, RecipeSet,
+    LayerReorder, LayerRotate, LayerSetBlend, LayerSetOpacity, LayerSetTransform, LayerSetVisible,
+    LayerViaMask, MaskClear, MaskFill, MaskFromAlpha, MaskGradient, MaskKey, MaskLoad,
+    MaskSetModifier, MaskStroke, PaletteSet, RecipeSet,
 };
 use convert64_core::layer::{Layer, SourceImage};
 use convert64_core::mask::{Mask, MaskRaster};
@@ -167,6 +167,7 @@ impl Session {
                 target: file.target,
                 palette: palette.clone(),
                 solve: file.solve,
+                snap: file.snap,
             }),
             compositor: Compositor::new(grid),
             base: base.to_owned(),
@@ -261,6 +262,7 @@ impl Session {
                 .collect(),
             steering: SteeringSpec::from_steering(&p.steering),
             solve: p.solve.clone(),
+            snap: p.snap,
             commands: Vec::new(),
         })
     }
@@ -485,12 +487,28 @@ impl Session {
                 layer: self.resolve(&layer)?,
                 blend,
             }),
-            JsonCommand::LayerSetTransform { layer, transform } => {
-                Command::LayerSetTransform(LayerSetTransform {
-                    layer: self.resolve(&layer)?,
-                    transform,
-                })
-            }
+            JsonCommand::LayerSetTransform {
+                layer,
+                transform,
+                snap,
+            } => Command::LayerSetTransform(LayerSetTransform {
+                layer: self.resolve(&layer)?,
+                transform,
+                snap,
+            }),
+            JsonCommand::LayerRotate {
+                layer,
+                degrees,
+                relative,
+                anchor,
+                snap,
+            } => Command::LayerRotate(LayerRotate {
+                layer: self.resolve(&layer)?,
+                degrees,
+                relative,
+                anchor,
+                snap,
+            }),
             JsonCommand::LayerNudge { layer, by } => Command::LayerNudge(LayerNudge {
                 layer: self.resolve(&layer)?,
                 by,
@@ -524,6 +542,7 @@ impl Session {
             }
             JsonCommand::BackgroundPin(c) => Command::BackgroundPin(c),
             JsonCommand::SolveSet(c) => Command::SolveSet(c),
+            JsonCommand::SnapSet(c) => Command::SnapSet(c),
         })
     }
 
