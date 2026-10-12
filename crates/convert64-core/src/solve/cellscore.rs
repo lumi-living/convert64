@@ -224,7 +224,7 @@ type Near = Option<(f32, ColourIndex)>;
 /// Weight of the lightness-bracketing term in the rendered score (#156), per pixel and
 /// per unit of squared bracket width: a set whose colours bracket each pixel's OKLab L
 /// closely (the intermediate grey of a ramp) beats one that leaves wide gaps.
-pub const BRIDGE_WEIGHT: f32 = 0.05;
+pub const BRIDGE_WEIGHT: f32 = 0.01;
 
 /// How many colours the rendered re-pick's short list keeps.
 pub const RENDER_SHORT_LIST: usize = 6;

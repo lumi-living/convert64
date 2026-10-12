@@ -603,7 +603,8 @@ mod flat_areas {
 
     /// The swatch band of `gradient` is the 16 Pepto colours, 10 multicolor pixels each:
     /// solved from the raw source (png2c64's gamma would move them off the palette),
-    /// every pixel of the cell rows wholly inside the band is its swatch's index.
+    /// every pixel of the cell rows wholly inside the band, away from the swatch edges,
+    /// is its swatch's index.
     #[test]
     fn gradient_swatches_quantise_exactly() {
         let s = solved_with(
@@ -615,7 +616,9 @@ mod flat_areas {
             Gamma::IDENTITY,
         );
         for y in 152..200 {
-            for x in 0..160 {
+            // The column on either side of a swatch edge blends through the resampler,
+            // and png2c64's ordered semantics (#156) dither a blend, as they should.
+            for x in (0..160).filter(|x| !matches!(x % 10, 0 | 9)) {
                 assert_eq!(
                     s.output.pixel(x, y),
                     ColourIndex::ALL[(x / 10) as usize],
