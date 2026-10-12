@@ -38,3 +38,8 @@ Every change to a golden file (`fixtures/<name>/expected_*.snap`, `fixtures/<nam
 - 2026-10-12 #144 **portrait** (expected.png, expected_smooth.png): #142: ordered pixels mix their nearest colour with the best partner, not the second nearest
 - 2026-10-12 #144 **terrain** (expected.png): #142: ordered pixels mix their nearest colour with the best partner, not the second nearest
 - 2026-10-12 #144 **title** (expected.png): #142: ordered pixels mix their nearest colour with the best partner, not the second nearest
+- 2026-10-12 #pending **gradient** (expected.png, expected_m-none.png): #114: every threshold method on gradient; dither-aware cell-set search (threshold-nudged lightness)
+- 2026-10-12 #pending **photo** (expected.png): #114: every threshold method on gradient; dither-aware cell-set search (threshold-nudged lightness)
+- 2026-10-12 #pending **portrait** (expected.png, expected_levels0.png, expected_luma0.png, expected_smooth.png): #114: every threshold method on gradient; dither-aware cell-set search (threshold-nudged lightness)
+- 2026-10-12 #pending **terrain** (expected.png): #114: every threshold method on gradient; dither-aware cell-set search (threshold-nudged lightness)
+- 2026-10-12 #pending **title** (expected.png): #114: every threshold method on gradient; dither-aware cell-set search (threshold-nudged lightness)
