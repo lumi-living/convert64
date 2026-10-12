@@ -1,6 +1,8 @@
 //! eframe/egui user interface; native via `cargo run -p convert64-app`, web via `trunk build` (`docs/TAD.md §4`).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
+use convert64_app::theme;
+
 /// Placeholder for the document being converted.
 ///
 /// Will be replaced by `convert64_core::Project` in E2.
@@ -53,7 +55,11 @@ impl eframe::App for App {
             });
         });
 
-        egui::CentralPanel::default().show(ui, |_ui| {});
+        // The working view: the canvas background around the (future) C64 preview.
+        let canvas = theme::Theme::current(ui.ctx()).canvas_bg;
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(ui.style()).fill(canvas))
+            .show(ui, |_ui| {});
     }
 }
 
@@ -67,7 +73,10 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Convert64",
         native_options,
-        Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))),
+        Box::new(|cc| {
+            theme::install(&cc.egui_ctx);
+            Ok(Box::new(App::new(&cc.egui_ctx)))
+        }),
     )
 }
 
@@ -97,7 +106,10 @@ fn main() {
             .start(
                 canvas,
                 eframe::WebOptions::default(),
-                Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))),
+                Box::new(|cc| {
+                    theme::install(&cc.egui_ctx);
+                    Ok(Box::new(App::new(&cc.egui_ctx)))
+                }),
             )
             .await;
 

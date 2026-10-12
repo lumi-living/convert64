@@ -2,3 +2,4 @@
 //! (`cargo test -p convert64-app`). The binary (`main.rs`) is the egui front end.
 
 pub mod scheduler;
+pub mod theme;
