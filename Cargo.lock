@@ -758,6 +758,7 @@ version = "0.0.0"
 dependencies = [
  "convert64-core",
  "image",
+ "insta",
  "serde",
  "serde_json",
 ]

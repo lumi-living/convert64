@@ -277,5 +277,24 @@ Emitted labels follow `lowercase_with_underscores`; constants `UPPERCASE_WITH_UN
 ```
 C header exports emit `static const unsigned char name[] = { ... };` with a size constant.
 
+### Bitmap pictures (`convert64_formats::asm::emit`)
+
+`emit(Assembler, &BitmapImage, &EmitOptions)` returns `Vec<(PathBuf, Vec<u8>)>`: the source file first, then any file it includes. Paths are bare file names.
+
+| Target (`Assembler`, id) | Source file | Program counter | Label definition | Constant |
+|---|---|---|---|---|
+| KickAssembler (`kickass`) | `<name>.asm` | `* = $6000 "<name>"` | `name_bitmap:` | `.const NAME_BITMAP_SIZE = 8000` |
+| ACME (`acme`) | `<name>.a` | `* = $6000` | `name_bitmap` | `NAME_BITMAP_SIZE = 8000` |
+| 64tass (`64tass`) | `<name>.tas` | `* = $6000` | `name_bitmap` | `NAME_BITMAP_SIZE = 8000` |
+| ca65 (`ca65`) | `<name>.s` | `.segment "NAME"` | `name_bitmap:` | `NAME_BITMAP_SIZE = 8000` |
+| C header (`c`) | `<name>.h` | — | `static const unsigned char name_bitmap[NAME_BITMAP_SIZE]` | `#define NAME_BITMAP_SIZE 8000` |
+
+- **Data and addresses.** The data is the picture file's body in its own order, at the format's load address: Koala `bitmap` `$6000`, `screen` `$7F40`, `colour` `$8328`, `background` `$8710`; Art Studio `bitmap` `$2000`, `screen` `$3F40`. Assembling the source therefore gives the bytes `BitmapFormat::write` writes after its load address, and KickAssembler, ACME (`-f cbm`) and 64tass, which write a load address in front, produce the `.kla` / `.art` file itself. `EmitOptions::load_address` moves the data; ca65 leaves placement to the linker (the header comment shows a matching `ld65` config).
+- **Names.** `EmitOptions::name` is the file stem. Labels are it lowercased with every character other than an ASCII letter or digit turned into `_` (prefixed `pic_` if it starts with a digit): `<name>_bitmap`, `<name>_screen`, `<name>_colour`, `<name>_background`. Constants are the same uppercased: `<NAME>_LOAD_ADDRESS`, `<NAME>_<BLOCK>_SIZE` per block, `<NAME>_BACKGROUND_COLOUR` (multicolor). The ca65 segment is `<NAME>`, the C include guard `<NAME>_H`.
+- **Data styles** (`DataStyle`). `Bytes`: byte lines, 16 bytes per line, lowercase hex (`$0b`, or `0x0b` in C). `IncludeRaw`: one binary include per block of the [raw bitmap set](#raw-bitmap-set-convert64---format-raw) (`<name>.bitmap.bin`, …), which are returned with the source. `IncludePicture`: one include of `<name>.kla` / `<name>.art` that skips its load address, the other labels defined as offsets from `<name>_bitmap`; the picture file is returned with the source. A C header always holds the bytes, since C has no standard binary include.
+- **Header comment.** Name, mode and layout, then the address and size of each block, then how to assemble.
+
+Tests (`crates/convert64-formats/tests/asm_emit.rs`, #161): every target and data style on every fixture baseline yields the binary writer's bytes (read back by a small parser of the emitted directives); golden text snapshots of each target (`tests/snapshots/asm_emit__*.snap`); where ACME, 64tass, ca65/ld65, KickAssembler (`KICKASS_JAR`) or a C compiler (`cc`) is installed, the real tool's output is compared too, otherwise skipped.
+
 ---
 *Layouts cross-checked against retropixels' documented writers, the Koala/Art Studio/Doodle conventions used by VICE and common viewers, and community documentation of SpritePad/CharPad project files. Corrections welcome with a VICE or hardware screenshot.*
