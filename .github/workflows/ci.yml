@@ -39,6 +39,11 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
       - name: cargo test
         run: cargo test --workspace
+      # The No Glory title screen builds from make with the CLI alone (#167); `cargo
+      # test` has just built target/debug/convert64. Windows runners have no make.
+      - name: make check (examples/no-glory)
+        if: runner.os != 'Windows'
+        run: make -C examples/no-glory CONVERT64="$GITHUB_WORKSPACE/target/debug/convert64" check
 
   # Fixed name: branch protection on main requires the "wasm" context.
   wasm:

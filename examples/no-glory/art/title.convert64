@@ -1,0 +1,43 @@
+{
+  "schema_version": 2,
+  "target": "multicolor-bitmap",
+  "palette": "pepto-pal",
+  "layers": [
+    {
+      "name": "sky",
+      "source": { "path": "title.png" },
+      "recipe": { "method": { "kind": "bayer4" }, "strength": 0.8 }
+    },
+    {
+      "name": "snow",
+      "source": { "layer": 0 },
+      "recipe": { "method": { "kind": "floyd-steinberg" }, "strength": 0.6 },
+      "mask": {
+        "raster": { "fill": 1.0 },
+        "sources": [
+          {
+            "source": { "type": "gradient", "kind": "linear",
+                        "from": { "x": 0, "y": 200 }, "to": { "x": 0, "y": 36 }, "softness": 0.02 },
+            "combine": "multiply"
+          }
+        ]
+      }
+    },
+    {
+      "name": "lettering",
+      "source": { "layer": 0 },
+      "recipe": { "method": { "kind": "none" }, "strength": 1.0 },
+      "mask": {
+        "raster": { "fill": 1.0 },
+        "sources": [
+          {
+            "source": { "type": "gradient", "kind": "linear",
+                        "from": { "x": 0, "y": 0 }, "to": { "x": 0, "y": 108 }, "softness": 0.02 },
+            "combine": "multiply"
+          }
+        ]
+      }
+    }
+  ],
+  "solve": { "background": "auto" }
+}

@@ -24,3 +24,6 @@ Thumbs.db
 
 # Agent worktrees created by Claude Code sessions
 .claude/worktrees/
+
+# Example build output
+examples/*/build/

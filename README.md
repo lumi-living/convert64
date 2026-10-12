@@ -48,7 +48,7 @@ Pure Rust, one cargo workspace:
 
 - `crates/convert64-core` — no I/O: document model, command registry, compositor, attribute map, solvers, validators. Compiles natively and to WASM unchanged.
 - `crates/convert64-formats` — byte-exact readers/writers and assembler emitters.
-- `crates/convert64-cli` — `convert64` binary for Makefiles and batch work (GUI and CLI have feature parity).
+- `crates/convert64-cli` — `convert64` binary for Makefiles and batch work (GUI and CLI have feature parity): [docs/reference/cli.md](docs/reference/cli.md), and [examples/no-glory](examples/no-glory) for a title screen built by `make` from a `.convert64` project.
 - `crates/convert64-mcp` — MCP server exposing the same commands to AI agents.
 - `crates/convert64-app` — egui/eframe UI; the same code builds the native app (macOS, Windows, Linux) and the browser version.
 
