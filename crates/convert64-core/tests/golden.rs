@@ -625,12 +625,14 @@ mod flat_areas {
         }
     }
 
-    /// E5's continuous per-pixel ratio is still there as `mix_levels = 0`.
+    /// E5's continuous per-pixel ratio is still there as `mix_levels = 0` (legacy
+    /// semantics, #156).
     #[test]
     fn portrait_continuous_ratio() {
         let r = Recipe::with_method(DitherKind::Bayer2, 0.7)
             .and_then(|r| r.with_mix_levels(0))
-            .expect("recipe");
+            .expect("recipe")
+            .with_ordered_semantics(convert64_core::layer::OrderedSemantics::Legacy);
         check_variant(
             "portrait",
             BitmapFormat::Koala,
@@ -640,12 +642,13 @@ mod flat_areas {
         );
     }
 
-    /// Pre-smoothing of the mix ratio (off by default).
+    /// Pre-smoothing of the mix ratio (off by default; legacy semantics, #156).
     #[test]
     fn portrait_smoothed_ratio() {
         let r = Recipe::with_method(DitherKind::Bayer2, 0.7)
             .expect("recipe")
-            .with_smooth(true);
+            .with_smooth(true)
+            .with_ordered_semantics(convert64_core::layer::OrderedSemantics::Legacy);
         check_variant(
             "portrait",
             BitmapFormat::Koala,
