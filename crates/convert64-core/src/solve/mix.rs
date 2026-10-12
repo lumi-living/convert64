@@ -6,11 +6,12 @@
 //! with dark colours came out too bright (the eye averages a pattern in linear light,
 //! not in OKLab). With `mix_levels = N` an ordered pixel instead works like this:
 //!
-//! 1. It finds its two nearest colours of its cell's set (in its metric) and orders them
-//!    by palette index (`lo`, `hi`). Its *ratio* is the share of `hi` whose linear-light
-//!    average reproduces its colour (projection onto the `lo`–`hi` segment in linear
-//!    RGB). If that mix (plus [`SPREAD_PENALTY`]) is no closer than the nearest colour,
-//!    the pixel shows the nearest colour instead.
+//! 1. It finds its nearest colour of its cell's set (in its metric) and the partner
+//!    whose linear-light mix with it reproduces the pixel best (projection onto the
+//!    segment between them in linear RGB, scored in the metric plus
+//!    [`SPREAD_PENALTY`]). The pair is ordered by palette index (`lo`, `hi`); the
+//!    pixel's *ratio* is the share of `hi`. If no mix beats the nearest colour alone,
+//!    the pixel shows that colour.
 //! 2. Per cell and pair, pixels within half a level step of the pair's median ratio are
 //!    *flat*; their mean is the cell's ratio. Other pixels (edges, texture, highlights)
 //!    keep their own continuous ratio, so detail is dithered as in E5.
@@ -138,32 +139,47 @@ fn see_cell(
             let colours = tables.colours(q.metric.space());
             let (mix, k) = mix_colours(q, set, colours);
             let s = (q.strength * q.adapt).clamp(0.0, 1.0);
-            let (c1, c2) = ordered::nearest_two(q.metric, q.coords, &mix[..k], colours);
-            if c1 == c2 || s <= 0.0 {
+            let c1 = ordered::nearest(q.metric, q.coords, &mix[..k], colours);
+            if k < 2 || s <= 0.0 {
                 return Seen::Solid(c1);
             }
-            let (lo, hi) = if c1 < c2 { (c1, c2) } else { (c2, c1) };
-            let (a, b) = (linear[lo.as_usize()], linear[hi.as_usize()]);
-            let seg = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-            let len2 = seg[0] * seg[0] + seg[1] * seg[1] + seg[2] * seg[2];
-            if len2 <= 0.0 {
-                return Seen::Solid(c1);
+            // The partner: the colour whose linear-light mix with the nearest one best
+            // reproduces the pixel. A mix far from the pixel (a hue the pair cannot
+            // make) or of far-apart colours (speckle) must still beat the nearest colour
+            // alone, or the pixel shows that.
+            let alone = q.metric.distance(q.coords, colours[c1.as_usize()]);
+            let mut best: Option<(f32, ColourIndex, f32)> = None;
+            for &c2 in mix[..k].iter().filter(|&&c| c != c1) {
+                let (a, b) = (linear[c1.as_usize()], linear[c2.as_usize()]);
+                let seg = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                let len2 = seg[0] * seg[0] + seg[1] * seg[1] + seg[2] * seg[2];
+                if len2 <= 0.0 {
+                    continue;
+                }
+                let d = [q.lin[0] - a[0], q.lin[1] - a[1], q.lin[2] - a[2]];
+                let u = ((d[0] * seg[0] + d[1] * seg[1] + d[2] * seg[2]) / len2).clamp(0.0, 1.0);
+                if u <= 0.0 {
+                    continue;
+                }
+                let m = [0, 1, 2].map(|i| a[i] + u * seg[i]);
+                let spread = q
+                    .metric
+                    .distance(colours[c1.as_usize()], colours[c2.as_usize()]);
+                let score = q.metric.distance(q.coords, q.metric.coords(m))
+                    + SPREAD_PENALTY * u * (1.0 - u) * spread;
+                if score < alone && best.is_none_or(|b| score < b.0) {
+                    best = Some((score, c2, u));
+                }
             }
-            let d = [q.lin[0] - a[0], q.lin[1] - a[1], q.lin[2] - a[2]];
-            let t = ((d[0] * seg[0] + d[1] * seg[1] + d[2] * seg[2]) / len2).clamp(0.0, 1.0);
-            // A pixel off the segment can be further from the mix than from its nearest
-            // colour (a hue the pair cannot make), and far-apart pairs read as speckle:
-            // the pixel then shows its nearest colour.
-            let m = [0, 1, 2].map(|i| a[i] + t * seg[i]);
-            let spread = q
-                .metric
-                .distance(colours[lo.as_usize()], colours[hi.as_usize()]);
-            if q.metric.distance(q.coords, q.metric.coords(m))
-                + SPREAD_PENALTY * t * (1.0 - t) * spread
-                >= q.metric.distance(q.coords, colours[c1.as_usize()])
-            {
+            let Some((_, c2, u)) = best else {
                 return Seen::Solid(c1);
-            }
+            };
+            // `u` is the share of `c2`; the pair is stored by palette index.
+            let (lo, hi, t) = if c1 < c2 {
+                (c1, c2, u)
+            } else {
+                (c2, c1, 1.0 - u)
+            };
             Seen::Pair {
                 lo,
                 hi,

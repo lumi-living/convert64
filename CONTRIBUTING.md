@@ -34,7 +34,7 @@ Every file in the repository, test data included, must be MIT-compatible: no GPL
 - **`solver::<fixture>`, perceptual.** The fixture's `source.png` gets png2c64's preprocessing (gamma 1.5), is composited at 4× and solved with the recipe closest to png2c64's baseline settings (Bayer 2×2 at 70 % for multicolor, no dither for `lineart`). The result is rendered through Pepto PAL and compared by mean squared OKLab distance with `fixtures/<fixture>/expected.png` (at most `mse_vs_golden_max`). It is also compared with the preprocessed source, box-filtered to the target grid, per pixel and after a blur in linear light. The blurred distance must not be worse than png2c64's own (`png2c64_blur_mse_vs_source` in `thresholds.toml`). The per-pixel one is reported only (#142). Each case prints a line you can paste into your PR:
 
   ```
-  portrait, multicolor-bitmap, mse_vs_golden=0.000000, mse_vs_png2c64=0.020517, mse_vs_source=0.031691, png2c64_vs_source=0.017110, blur_mse=0.001906, png2c64_blur_mse=0.014463
+  portrait, multicolor-bitmap, mse_vs_golden=0.000000, mse_vs_png2c64=0.068384, mse_vs_source=0.031691, png2c64_vs_source=0.017110, blur_mse=0.001906, png2c64_blur_mse=0.014463
   ```
 
   `mse_vs_png2c64` is the distance to png2c64's baseline, the delta `CLAUDE.md` asks solver PRs to report. Run with `-- --nocapture` to see the lines.
