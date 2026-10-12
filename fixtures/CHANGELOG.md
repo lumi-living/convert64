@@ -52,3 +52,4 @@ Every change to a golden file (`fixtures/<name>/expected_*.snap`, `fixtures/<nam
 - 2026-10-12 #148 **gradient** (expected_m-knoll.png, expected_m-luma.png, expected_m-pair.png, expected_m-yliluoma1.png, expected_m-yliluoma2.png, expected_m-yliluoma3.png): #115: palette-aware methods on gradient and portrait (with ostromoukhov and checker for comparison)
 - 2026-10-12 #148 **portrait** (expected_checker.png, expected_knoll.png, expected_luma.png, expected_ostromoukhov.png, expected_pair.png, expected_yliluoma1.png, expected_yliluoma2.png, expected_yliluoma3.png): #115: palette-aware methods on gradient and portrait (with ostromoukhov and checker for comparison)
 - 2026-10-12 #148 **portrait** (expected_ostromoukhov.png): #115: palette-aware methods after the deterministic resampler
+- 2026-10-12 #pending **title** (expected_cell-blur.png, expected_cell-ssim.png): #120: title with the blur and ssim cell metrics
