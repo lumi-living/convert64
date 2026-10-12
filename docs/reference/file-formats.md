@@ -64,14 +64,47 @@ Total   9006
 ```
 
 ### Raw bitmap set (Convert64 `--format raw`)
-Separate files with no headers, plus a small manifest:
+Separate files with no headers, plus a JSON manifest (`convert64_formats::raw`):
 ```
-<name>.bitmap.bin   8000 bytes
-<name>.screen.bin   1000 bytes
-<name>.colour.bin   1000 bytes   (multicolor only)
-<name>.bg.bin       1 byte       (multicolor only)
-<name>.json         mode, palette preset, suggested load addresses
+File                Size   Suggested address   Content
+<name>.bitmap.bin   8000   $6000               Bitmap, VIC-II cell order (as in Koala/Art Studio)
+<name>.screen.bin   1000   $5C00               Screen RAM (nybbles as in Koala/Art Studio)
+<name>.colour.bin   1000   $D800               Colour RAM, high nybbles clear   (multicolor only)
+<name>.bg.bin       1      — ($D021)           Background colour 0–15           (multicolor only)
+<name>.json         —      —                   Manifest
 ```
+The block files concatenated in this order are a Koala (multicolor) or Art Studio (hi-res) file without its two-byte load address. The suggested addresses are VIC bank 1, the layout the display PRG uses: `$DD00` bits 0–1 = `%10`, `$D018` = `$78`.
+
+The manifest, as written for a hi-res set called `line` (pretty-printed with two-space indents, LF line endings, a trailing newline; a multicolor set lists four files):
+```json
+{
+  "format": "convert64-raw-bitmap",
+  "version": 1,
+  "mode": "hires-bitmap",
+  "palette": {
+    "name": "Pepto (PAL)",
+    "rgb": ["#000000", "#FFFFFF", "…14 more, index order"]
+  },
+  "files": [
+    { "block": "bitmap", "file": "line.bitmap.bin", "size": 8000, "load_address": "$6000" },
+    { "block": "screen", "file": "line.screen.bin", "size": 1000, "load_address": "$5C00" }
+  ]
+}
+```
+
+| Field | Value |
+|---|---|
+| `format` | always `convert64-raw-bitmap` |
+| `version` | `1`; a reader refuses versions newer than it knows |
+| `mode` | `multicolor-bitmap` or `hires-bitmap` |
+| `palette.name` | the palette preset the picture was solved and previewed with |
+| `palette.rgb` | its 16 colours in index order, `#RRGGBB` (uppercase when written; either case read) |
+| `files[]` | one per block, in the order `bitmap`, `screen`, then `colour`, `background` for multicolor |
+| `files[].file` | the file name, next to the manifest; a name with a directory is refused |
+| `files[].size` | 8000, 1000, 1000, 1 |
+| `files[].load_address` | the suggested address as `$XXXX`; absent for `background`, which is the `$D021` value |
+
+Unknown fields are refused. Reading (`raw::read`, `raw::read_files`) checks the format, the version, that the files are exactly the mode's blocks, every size in the manifest and on disk (rule 6) and the background (rule 2), and keeps only the low nybble of Colour RAM bytes. Every fixture, solved in both modes, round-trips through a raw set to the identical `BitmapImage` (`crates/convert64-formats/tests/raw_roundtrip.rs`, #159).
 
 ### FLI (`.fli`, raw layout as used by retropixels/Convert64)
 ```
