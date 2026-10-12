@@ -136,6 +136,25 @@ pub enum DitherKind {
     /// Error diffusion along a Hilbert curve with a 16-sample history (Riemersma): no
     /// directional artefacts.
     Riemersma,
+    /// Palette-aware, Yliluoma's algorithm 1: per pixel the best mix of two set
+    /// colours and its ratio, placed by Bayer 8.
+    Yliluoma1,
+    /// Palette-aware, Yliluoma's algorithm 2: a 16-entry candidate list whose running
+    /// average approaches the pixel, indexed by Bayer 8.
+    Yliluoma2,
+    /// Palette-aware, Yliluoma's algorithm 3: Knoll's error-accumulating candidate list
+    /// in linear light.
+    Yliluoma3,
+    /// Palette-aware, Thomas Knoll's pattern dithering (Photoshop "Pattern"): the
+    /// candidate list built by accumulating error in the metric's space.
+    Knoll,
+    /// Palette-aware, dithering on lightness only: the nearest colour and the set colour
+    /// on the other side in lightness closest to its hue, so no colour speckle.
+    Luma,
+    /// Palette-aware, same-luma pair weaving: the two set colours whose even mix is
+    /// nearest, same-luma pairs preferred, alternated by scanline (multicolor, so a
+    /// PAL display blends them) or as a checker (hi-res).
+    Pair,
 }
 
 /// The UI's grouping of [`DitherKind`]s (UX §6, group 4).
@@ -153,7 +172,8 @@ pub enum DitherFamily {
     /// Thresholds that are effects rather than quantisers (`radial`, `crosshatch`,
     /// `value-noise`): kept out of the quality-bar comparisons.
     Effects,
-    /// Methods that search colour mixes for the small fixed palette (#115).
+    /// Methods that search colour mixes for the small fixed palette, placed by Bayer 8
+    /// (`docs/reference/dither-methods.md` §4).
     PaletteAware,
 }
 
@@ -168,7 +188,7 @@ impl DitherFamily {
 impl DitherKind {
     /// Every kind: E5's nine first (their order is part of the attribute map's debug
     /// colours), then the rest by family.
-    pub const ALL: [Self; 52] = [
+    pub const ALL: [Self; 58] = [
         Self::None,
         Self::Bayer2,
         Self::Bayer4,
@@ -221,6 +241,12 @@ impl DitherKind {
         Self::Ostromoukhov,
         Self::ZhouFang,
         Self::Riemersma,
+        Self::Yliluoma1,
+        Self::Yliluoma2,
+        Self::Yliluoma3,
+        Self::Knoll,
+        Self::Luma,
+        Self::Pair,
     ];
 
     /// The family this kind belongs to.
@@ -246,6 +272,12 @@ impl DitherKind {
             | Self::Riemersma => DitherFamily::Diffusion,
             Self::BlueNoise | Self::Ign | Self::R2 | Self::WhiteNoise => DitherFamily::Noise,
             Self::Crosshatch | Self::Radial | Self::ValueNoise => DitherFamily::Effects,
+            Self::Yliluoma1
+            | Self::Yliluoma2
+            | Self::Yliluoma3
+            | Self::Knoll
+            | Self::Luma
+            | Self::Pair => DitherFamily::PaletteAware,
             Self::Bayer2
             | Self::Bayer4
             | Self::Bayer8
@@ -794,6 +826,10 @@ mod tests {
             ("shiau-fan1", DitherKind::ShiauFan1),
             ("zhou-fang", DitherKind::ZhouFang),
             ("riemersma", DitherKind::Riemersma),
+            ("yliluoma2", DitherKind::Yliluoma2),
+            ("knoll", DitherKind::Knoll),
+            ("luma", DitherKind::Luma),
+            ("pair", DitherKind::Pair),
         ] {
             let m: Method = toml::from_str(&format!("kind = \"{id}\"")).unwrap();
             assert_eq!(m.kind, want, "{id}");
