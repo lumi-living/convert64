@@ -24,7 +24,7 @@ enum JsonLocation {
 /// Sets `file`, `format`, `mode`, `legal` and `violations`.
 pub(crate) fn set_report(run: &mut Run, r: &Report) {
     run.set("file", &r.file);
-    run.set("format", r.format);
+    run.set("format", &r.format);
     run.set("mode", r.mode);
     run.set("legal", r.findings.is_empty());
     let violations: Vec<_> = r
