@@ -7,7 +7,7 @@ use super::metric::{Metric, MetricTables};
 use crate::colour::{ColourIndex, ColourSet};
 use crate::composite::{AttrSource, TargetFrame};
 use crate::geom::SuperGrid;
-use crate::layer::{DitherFamily, DitherKind, FitMode, Orientation, PatternPhase, Recipe};
+use crate::layer::{CustomMatrix, DitherKind, FitMode, Orientation, PatternPhase, Recipe};
 use crate::model::CellPos;
 
 /// One target pixel as the solver sees it.
@@ -42,7 +42,19 @@ pub(crate) struct Px {
     /// The colour in linear RGB (pre-smoothed like `coords`): mix ratios are taken in
     /// linear light, where the eye averages a dither pattern.
     pub lin: [f32; 3],
+    /// [`DitherKind::Custom`]'s matrix: an index into `Input::customs` plus one, or 0.
+    pub custom: u8,
+    /// What the cell-set search scores this pixel as (its metric's coordinates): its
+    /// colour, with a threshold pixel's lightness nudged by its pattern threshold so the
+    /// search picks colours the pattern can mix ([`SEARCH_BIAS_L`]).
+    pub search: [f32; 3],
 }
+
+/// How far (OKLab L, at full strength, per unit of threshold offset from ½) a threshold
+/// pixel's lightness is nudged for the cell-set search: png2c64's dither-aware search
+/// (`precompute_cell_dist`). Without it a cell in a smooth ramp keeps only the colour
+/// its pixels are nearest to, and the pattern has nothing to mix with.
+pub const SEARCH_BIAS_L: f32 = 0.15;
 
 /// Solver options that shape the per-pixel input.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -80,6 +92,8 @@ pub struct Input {
     /// For each layer or region with Force pixels, its intended colours: the top
     /// [`FORCE_TOP_K`] of its own nearest-colour histogram.
     pub(crate) intended: Vec<(AttrSource, ColourSet)>,
+    /// The custom threshold matrices the pixels' recipes use (see `Px::custom`).
+    pub(crate) customs: Vec<CustomMatrix>,
 }
 
 /// How much more a Force pixel counts than an Adaptive one in the cell-set search
@@ -130,15 +144,12 @@ impl Input {
             let r = attrs
                 .recipe(attrs.pixels()[i].source)
                 .unwrap_or(&default_recipe);
-            r.smooth()
-                && matches!(
-                    r.method().kind.family(),
-                    DitherFamily::Ordered | DitherFamily::Noise
-                )
+            r.smooth() && r.method().kind.family().is_threshold()
         };
         let smoothed = (0..w * h)
             .any(smooths)
             .then(|| smooth_colours(frame.colour(), frame.coverage(), w, h));
+        let mut customs: Vec<CustomMatrix> = Vec::new();
         let px: Vec<Px> = (0..w * h)
             .map(|i| {
                 let a = attrs.pixels()[i];
@@ -164,11 +175,19 @@ impl Input {
                         Some(s) if smooths(i) => s[i],
                         _ => colour,
                     },
+                    custom: match method.custom {
+                        Some(m) if method.kind == DitherKind::Custom => {
+                            custom_index(&mut customs, m)
+                        }
+                        _ => 0,
+                    },
+                    search: [0.0; 3],
                 }
             })
             .collect();
         let mut px = px;
         apply_adaptive(&mut px, frame.colour(), w, h);
+        search_colours(&mut px, frame.colour(), &customs, w);
         let intended = intended_colours(&px, tables);
         let dist = build_dist(&px, tables, w, (cw, ch), (cx, cy), &intended, only);
         let mut allowed = vec![ColourSet::ALL; cx * cy];
@@ -192,6 +211,7 @@ impl Input {
             dist,
             allowed,
             intended,
+            customs,
         }
     }
 
@@ -204,6 +224,7 @@ impl Input {
             .zip(received)
             .map(|(q, e)| Px {
                 coords: [q.coords[0] + e[0], q.coords[1] + e[1], q.coords[2] + e[2]],
+                search: [q.search[0] + e[0], q.search[1] + e[1], q.search[2] + e[2]],
                 ..*q
             })
             .collect();
@@ -228,6 +249,7 @@ impl Input {
             dist,
             allowed: self.allowed.clone(),
             intended: self.intended.clone(),
+            customs: self.customs.clone(),
         }
     }
 
@@ -339,6 +361,54 @@ impl Input {
                     (ColourIndex::ALL[best], w)
                 })
             })
+    }
+}
+
+/// Fills every pixel's `search` colour: its coordinates, or for a threshold pixel with
+/// strength the colour with OKLab L moved by `(threshold − ½) × strength ×`
+/// [`SEARCH_BIAS_L`] (pattern position in screen pixels).
+fn search_colours(px: &mut [Px], colour: &[[f32; 3]], customs: &[CustomMatrix], w: usize) {
+    use super::metric::Space;
+    use crate::palette::{LinearRgb, Oklab};
+    let mut rows: Vec<(usize, &mut [Px])> = px.chunks_mut(w).enumerate().collect();
+    crate::par::for_each(&mut rows, |(y, row)| {
+        for (x, q) in row.iter_mut().enumerate() {
+            let s = q.strength * q.adapt;
+            if !q.kind.family().is_threshold() || s <= 0.0 || q.weight <= 0.0 {
+                q.search = q.coords;
+                continue;
+            }
+            let (xi, yi) = (x as i64, *y as i64);
+            let thr = match q.custom {
+                0 => super::ordered::threshold(q.kind, q.orientation, xi, yi)
+                    .expect("threshold methods have thresholds"),
+                c => super::ordered::custom_threshold(
+                    &customs[usize::from(c) - 1],
+                    q.orientation,
+                    xi,
+                    yi,
+                ),
+            };
+            let [l, a, b] = Space::OkLab.coords(colour[*y * w + x]);
+            let lin = LinearRgb::from_oklab(Oklab {
+                l: l + (thr - 0.5) * s.min(1.0) * SEARCH_BIAS_L,
+                a,
+                b,
+            });
+            q.search = q.metric.coords([lin.r, lin.g, lin.b].map(|v| v.max(0.0)));
+        }
+    });
+}
+
+/// The index (plus one) of `m` in `customs`, added if new.
+#[expect(clippy::cast_possible_truncation, reason = "a frame has few recipes")]
+fn custom_index(customs: &mut Vec<CustomMatrix>, m: CustomMatrix) -> u8 {
+    match customs.iter().position(|c| *c == m) {
+        Some(i) => i as u8 + 1,
+        None => {
+            customs.push(m);
+            customs.len() as u8
+        }
     }
 }
 
@@ -521,7 +591,7 @@ fn fill_cell(
     let p = cw * ch;
     for (k, (x, y)) in cell_pixels(gx, gy, cw, ch).enumerate() {
         let q = &px[y * w + x];
-        let d = tables.distances(q.metric, q.coords);
+        let d = tables.distances(q.metric, q.search);
         let force = (q.fit == FitMode::Force)
             .then(|| {
                 intended

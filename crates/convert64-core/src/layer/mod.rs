@@ -11,8 +11,8 @@ pub use adjust::{
     Hsl, Levels, RangeMatch, suggest_range_match,
 };
 pub use recipe::{
-    DitherFamily, DitherKind, FitMode, Method, Metric, Orientation, PatternPhase, Recipe,
-    RecipeError,
+    CustomMatrix, DitherFamily, DitherKind, FitMode, Method, Metric, Orientation, PatternPhase,
+    Recipe, RecipeError,
 };
 
 use crate::geom::Vec2;

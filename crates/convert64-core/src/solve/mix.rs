@@ -31,7 +31,6 @@ use super::input::{Input, Px};
 use super::metric::MetricTables;
 use super::ordered;
 use crate::colour::ColourIndex;
-use crate::layer::DitherFamily;
 use crate::layer::recipe::MAX_LUMA_DIFF_OFF;
 use crate::palette::luma;
 
@@ -130,10 +129,7 @@ fn see_cell(
                 return Seen::Solid(prev[idx]);
             }
             let q = &input.px[idx];
-            if q.weight <= 0.0
-                || q.mix_levels == 0
-                || !matches!(q.kind.family(), DitherFamily::Ordered | DitherFamily::Noise)
-            {
+            if q.weight <= 0.0 || q.mix_levels == 0 || !q.kind.family().is_threshold() {
                 return Seen::Skip;
             }
             let colours = tables.colours(q.metric.space());
@@ -291,9 +287,10 @@ pub(crate) fn plan(
 ) -> Vec<Option<Mix>> {
     let (w, h) = input.size;
     let (cx, cy) = input.cells;
-    let wants = input.px.iter().any(|q| {
-        q.mix_levels > 0 && matches!(q.kind.family(), DitherFamily::Ordered | DitherFamily::Noise)
-    });
+    let wants = input
+        .px
+        .iter()
+        .any(|q| q.mix_levels > 0 && q.kind.family().is_threshold());
     if !wants {
         return vec![None; w * h];
     }
@@ -360,8 +357,7 @@ pub(crate) fn plan(
                         .expect("every pair was collected");
                     let level = if p.is_flat(t) { levels[k] } else { t };
                     let q = &input.px[y * w + x];
-                    let size = ordered::pattern_size(q.kind).expect("ordered pixel");
-                    let shown = ordered::shown_share(level, size, q.strength * q.adapt);
+                    let shown = ordered::shown_share(level, q.kind, q.strength * q.adapt);
                     let (a, b) = (linear[lo.as_usize()], linear[hi.as_usize()]);
                     let m = [0, 1, 2].map(|i| a[i] + shown * (b[i] - a[i]));
                     let error = q.metric.distance(q.coords, q.metric.coords(m));

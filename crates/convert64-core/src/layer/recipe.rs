@@ -5,28 +5,108 @@ use crate::colour::ColourSet;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// How a pixel is dithered. Grouped into families in the UI (UX §6).
+/// How a pixel is dithered (`docs/reference/dither-methods.md`). Grouped into
+/// [`DitherFamily`]s in the UI (UX §6). The serialised id is the reference's; png2c64's
+/// own names are accepted too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DitherKind {
     /// Nearest colour, no dither.
     None,
     /// Ordered, 2 × 2 Bayer matrix.
+    #[serde(alias = "bayer2x2")]
     Bayer2,
     /// Ordered, 4 × 4 Bayer matrix.
+    #[serde(alias = "bayer4x4")]
     Bayer4,
     /// Ordered, 8 × 8 Bayer matrix.
+    #[serde(alias = "bayer8x8")]
     Bayer8,
     /// Error diffusion, Floyd–Steinberg.
+    #[serde(alias = "fs")]
     FloydSteinberg,
     /// Error diffusion, Atkinson (diffuses 6/8 of the error).
     Atkinson,
     /// Error diffusion, Jarvis–Judice–Ninke.
+    #[serde(alias = "jarvis")]
     JarvisJudiceNinke,
-    /// Error diffusion, Sierra.
+    /// Error diffusion, Sierra (three rows).
+    #[serde(alias = "sierra3")]
     Sierra,
-    /// Threshold against a blue-noise texture.
+    /// Threshold against the committed 64 × 64 blue-noise tile.
     BlueNoise,
+    /// Ordered, 16 × 16 Bayer matrix: smooth gradients over large areas.
+    Bayer16,
+    /// Ordered, png2c64's 2 × 2 Bayer for 2:1 pixels (the same matrix as `bayer2`).
+    Bayer2x2Mc,
+    /// Ordered, 50 % checkerboard: two levels, png2c64's default.
+    Checker,
+    /// Ordered, png2c64's 2 × 4 Bayer: eight levels, square on 2:1 pixels.
+    H2x4,
+    /// Ordered, png2c64's 4 × 4 clustered dot, shaped for 2:1 pixels.
+    #[serde(alias = "clustered-dot")]
+    Clustered4,
+    /// Ordered, 8 × 8 clustered dot: one round dot per tile.
+    Clustered8,
+    /// Ordered, png2c64's 8 × 8 45° round-dot halftone.
+    #[serde(alias = "halftone8x8")]
+    Halftone8,
+    /// Ordered, ArcPaint64 "Dot": a 6 × 6 round dot.
+    Dot,
+    /// Ordered, ArcPaint64 "Diamond": an 8 × 8 dot growing as a diamond.
+    Diamond,
+    /// Ordered, ArcPaint64 "Star": an 8 × 8 dot growing along its axes first.
+    Star,
+    /// Ordered, horizontal lines with period 2 (png2c64 `line2`).
+    #[serde(alias = "line2")]
+    LineH2,
+    /// Ordered, horizontal lines with period 4 (png2c64 `line4`).
+    #[serde(alias = "line4")]
+    LineH4,
+    /// Ordered, horizontal lines with period 8 (png2c64 `line8`).
+    #[serde(alias = "line8")]
+    LineH8,
+    /// Ordered, vertical lines with period 2 (ArcPaint64 "Vertical").
+    LineV2,
+    /// Ordered, vertical lines with period 4 (ArcPaint64 "Vertical 4").
+    LineV4,
+    /// Ordered, vertical lines with period 8 (ArcPaint64 "Vertical 8").
+    LineV8,
+    /// Ordered, png2c64's lines with a checker offset (ArcPaint64 "Horizontal +
+    /// Checker").
+    LineChecker,
+    /// Ordered, 45° lines falling to the right (ArcPaint64 "Diagonal").
+    DiagDown,
+    /// Ordered, 45° lines rising to the right.
+    DiagUp,
+    /// Ordered, png2c64's 8 × 8 diagonal clustered dot.
+    #[serde(alias = "diagonal8x8")]
+    Diagonal8,
+    /// Ordered, png2c64's 5 × 5 spiral.
+    #[serde(alias = "spiral5x5")]
+    Spiral5,
+    /// Ordered, png2c64's 5 × 5 slanted tiling.
+    #[serde(alias = "hex5x5")]
+    Hex5,
+    /// Ordered, png2c64's 8 × 8 hexagonal tiling.
+    #[serde(alias = "hex8x8")]
+    Hex8,
+    /// Ordered, a user 8 × 8 or 16 × 16 matrix ([`Method::custom`]); Bayer 8 without
+    /// one.
+    Custom,
+    /// Noise, interleaved gradient noise (Jimenez).
+    Ign,
+    /// Noise, the R2 low-discrepancy sequence (Roberts).
+    #[serde(alias = "r2-sequence")]
+    R2,
+    /// Noise, a per-pixel hash (png2c64's; the same everywhere, so goldens hold).
+    WhiteNoise,
+    /// Effect, png2c64's overlaid angled lines (pen and ink).
+    Crosshatch,
+    /// Effect, png2c64's concentric circles around the screen centre (engraving).
+    Radial,
+    /// Effect, png2c64's smooth hash noise (organic clumps).
+    ValueNoise,
 }
 
 /// The UI's grouping of [`DitherKind`]s (UX §6, group 4).
@@ -41,11 +121,25 @@ pub enum DitherFamily {
     Diffusion,
     /// Noise thresholds.
     Noise,
+    /// Thresholds that are effects rather than quantisers (`radial`, `crosshatch`,
+    /// `value-noise`): kept out of the quality-bar comparisons.
+    Effects,
+    /// Methods that search colour mixes for the small fixed palette (#115).
+    PaletteAware,
+}
+
+impl DitherFamily {
+    /// Whether the family thresholds each pixel against a pattern (ordered, noise and
+    /// effects): positional, parallel, no error carried between pixels.
+    pub const fn is_threshold(self) -> bool {
+        matches!(self, Self::Ordered | Self::Noise | Self::Effects)
+    }
 }
 
 impl DitherKind {
-    /// Every kind, in UI order.
-    pub const ALL: [Self; 9] = [
+    /// Every kind: E5's nine first (their order is part of the attribute map's debug
+    /// colours), then the rest by family.
+    pub const ALL: [Self; 39] = [
         Self::None,
         Self::Bayer2,
         Self::Bayer4,
@@ -55,17 +149,74 @@ impl DitherKind {
         Self::JarvisJudiceNinke,
         Self::Sierra,
         Self::BlueNoise,
+        Self::Bayer16,
+        Self::Bayer2x2Mc,
+        Self::Checker,
+        Self::H2x4,
+        Self::Clustered4,
+        Self::Clustered8,
+        Self::Halftone8,
+        Self::Dot,
+        Self::Diamond,
+        Self::Star,
+        Self::LineH2,
+        Self::LineH4,
+        Self::LineH8,
+        Self::LineV2,
+        Self::LineV4,
+        Self::LineV8,
+        Self::LineChecker,
+        Self::DiagDown,
+        Self::DiagUp,
+        Self::Diagonal8,
+        Self::Spiral5,
+        Self::Hex5,
+        Self::Hex8,
+        Self::Custom,
+        Self::Ign,
+        Self::R2,
+        Self::WhiteNoise,
+        Self::Crosshatch,
+        Self::Radial,
+        Self::ValueNoise,
     ];
 
     /// The family this kind belongs to.
     pub const fn family(self) -> DitherFamily {
         match self {
             Self::None => DitherFamily::None,
-            Self::Bayer2 | Self::Bayer4 | Self::Bayer8 => DitherFamily::Ordered,
             Self::FloydSteinberg | Self::Atkinson | Self::JarvisJudiceNinke | Self::Sierra => {
                 DitherFamily::Diffusion
             }
-            Self::BlueNoise => DitherFamily::Noise,
+            Self::BlueNoise | Self::Ign | Self::R2 | Self::WhiteNoise => DitherFamily::Noise,
+            Self::Crosshatch | Self::Radial | Self::ValueNoise => DitherFamily::Effects,
+            Self::Bayer2
+            | Self::Bayer4
+            | Self::Bayer8
+            | Self::Bayer16
+            | Self::Bayer2x2Mc
+            | Self::Checker
+            | Self::H2x4
+            | Self::Clustered4
+            | Self::Clustered8
+            | Self::Halftone8
+            | Self::Dot
+            | Self::Diamond
+            | Self::Star
+            | Self::LineH2
+            | Self::LineH4
+            | Self::LineH8
+            | Self::LineV2
+            | Self::LineV4
+            | Self::LineV8
+            | Self::LineChecker
+            | Self::DiagDown
+            | Self::DiagUp
+            | Self::Diagonal8
+            | Self::Spiral5
+            | Self::Hex5
+            | Self::Hex8
+            | Self::Custom => DitherFamily::Ordered,
         }
     }
 }
@@ -86,7 +237,8 @@ pub enum Orientation {
     TwoToOne,
 }
 
-/// A dither method: the kind and its orientation preference.
+/// A dither method: the kind, its orientation preference and, for
+/// [`DitherKind::Custom`], the user's matrix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Method {
     /// Which algorithm.
@@ -94,6 +246,9 @@ pub struct Method {
     /// Orientation preference.
     #[serde(default)]
     pub orientation: Orientation,
+    /// The threshold matrix of [`DitherKind::Custom`] (ignored by other kinds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom: Option<CustomMatrix>,
 }
 
 impl Method {
@@ -102,7 +257,70 @@ impl Method {
         Self {
             kind,
             orientation: Orientation::Auto,
+            custom: None,
         }
+    }
+
+    /// [`DitherKind::Custom`] with `matrix`.
+    pub const fn custom(matrix: CustomMatrix) -> Self {
+        Self {
+            kind: DitherKind::Custom,
+            orientation: Orientation::Auto,
+            custom: Some(matrix),
+        }
+    }
+}
+
+/// A user threshold matrix for [`DitherKind::Custom`] (`docs/reference/dither-methods.md`
+/// §1): 8 × 8 or 16 × 16 values, row-major. Only their order matters: they are ranked
+/// (ties by position) and the pixel at rank `r` of `n²` gets threshold `(r + ½) / n²`.
+/// Serialised as the ranks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "Vec<u16>", into = "Vec<u16>")]
+pub struct CustomMatrix {
+    size: u8,
+    ranks: [u8; 256],
+}
+
+impl CustomMatrix {
+    /// A matrix from 64 (8 × 8) or 256 (16 × 16) values, row-major.
+    pub fn new(values: &[u16]) -> Result<Self, String> {
+        let size: u8 = match values.len() {
+            64 => 8,
+            256 => 16,
+            n => return Err(format!("a custom matrix has 64 or 256 values, got {n}")),
+        };
+        let mut order: Vec<usize> = (0..values.len()).collect();
+        order.sort_by_key(|&i| (values[i], i));
+        let mut ranks = [0u8; 256];
+        for (rank, &i) in order.iter().enumerate() {
+            ranks[i] = u8::try_from(rank).expect("at most 256 values");
+        }
+        Ok(Self { size, ranks })
+    }
+
+    /// Side length, 8 or 16.
+    pub const fn size(&self) -> usize {
+        self.size as usize
+    }
+
+    /// The rank of cell `(x, y)`, `0..size²`.
+    pub const fn rank(&self, x: usize, y: usize) -> u8 {
+        self.ranks[y * self.size as usize + x]
+    }
+}
+
+impl TryFrom<Vec<u16>> for CustomMatrix {
+    type Error = String;
+    fn try_from(v: Vec<u16>) -> Result<Self, String> {
+        Self::new(&v)
+    }
+}
+
+impl From<CustomMatrix> for Vec<u16> {
+    fn from(m: CustomMatrix) -> Self {
+        let n = m.size() * m.size();
+        m.ranks[..n].iter().map(|&r| u16::from(r)).collect()
     }
 }
 
@@ -473,6 +691,60 @@ mod tests {
         assert_eq!(DitherKind::Bayer8.family(), DitherFamily::Ordered);
         assert_eq!(DitherKind::Sierra.family(), DitherFamily::Diffusion);
         assert_eq!(DitherKind::BlueNoise.family(), DitherFamily::Noise);
+        for k in [
+            DitherKind::Radial,
+            DitherKind::Crosshatch,
+            DitherKind::ValueNoise,
+        ] {
+            assert_eq!(k.family(), DitherFamily::Effects);
+        }
+        assert!(DitherFamily::Effects.is_threshold() && !DitherFamily::Diffusion.is_threshold());
+    }
+
+    #[test]
+    fn every_kind_is_listed_once_and_round_trips_by_its_id() {
+        let mut seen = std::collections::HashSet::new();
+        for k in DitherKind::ALL {
+            assert!(seen.insert(k), "{k:?} twice");
+            assert_eq!(
+                DitherKind::ALL[k as usize],
+                k,
+                "ALL is in declaration order"
+            );
+            let text = toml::to_string(&Method::new(k)).unwrap();
+            let back: Method = toml::from_str(&text).unwrap();
+            assert_eq!(back.kind, k, "{text}");
+        }
+        // The reference's ids and png2c64's names are accepted.
+        for (id, want) in [
+            ("fs", DitherKind::FloydSteinberg),
+            ("jarvis", DitherKind::JarvisJudiceNinke),
+            ("sierra3", DitherKind::Sierra),
+            ("bayer16", DitherKind::Bayer16),
+            ("bayer2x2-mc", DitherKind::Bayer2x2Mc),
+            ("line-h2", DitherKind::LineH2),
+            ("line2", DitherKind::LineH2),
+            ("line-v8", DitherKind::LineV8),
+            ("diag-down", DitherKind::DiagDown),
+            ("clustered-dot", DitherKind::Clustered4),
+            ("halftone8x8", DitherKind::Halftone8),
+            ("r2-sequence", DitherKind::R2),
+            ("white-noise", DitherKind::WhiteNoise),
+            ("value-noise", DitherKind::ValueNoise),
+        ] {
+            let m: Method = toml::from_str(&format!("kind = \"{id}\"")).unwrap();
+            assert_eq!(m.kind, want, "{id}");
+        }
+    }
+
+    #[test]
+    fn custom_matrices_serialise_as_ranks() {
+        let values: Vec<u16> = (0..64).rev().collect();
+        let m = Method::custom(CustomMatrix::new(&values).unwrap());
+        let text = toml::to_string(&m).unwrap();
+        let back: Method = toml::from_str(&text).unwrap();
+        assert_eq!(back, m);
+        assert!(toml::from_str::<Method>("kind = \"custom\"\ncustom = [1, 2]").is_err());
     }
 
     #[test]

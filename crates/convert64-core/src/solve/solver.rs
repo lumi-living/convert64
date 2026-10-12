@@ -1072,7 +1072,7 @@ mod tests {
         #[test]
         fn any_solver_output_validates(
             seed in 0u32..10_000,
-            kind in 0usize..9,
+            kind in 0usize..DitherKind::ALL.len(),
             strength in 0.0f32..=1.0,
             mc in proptest::prelude::any::<bool>(),
         ) {

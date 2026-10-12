@@ -197,7 +197,7 @@ pub fn pass(
                     .unwrap_or_else(|| ordered::nearest(q.metric, q.coords, set, colours))
             } else {
                 match family {
-                    DitherFamily::Ordered | DitherFamily::Noise => {
+                    f if f.is_threshold() => {
                         let origin = match q.source {
                             crate::composite::AttrSource::Layer(l) => {
                                 layer_origins.get(usize::from(l)).copied().unwrap_or((0, 0))
@@ -206,8 +206,16 @@ pub fn pass(
                         };
                         let (px, py) =
                             ordered::pattern_position(x as i64, y as i64, q.phase, origin);
-                        let thr = ordered::threshold(q.kind, q.orientation, px, py)
-                            .expect("ordered and noise methods have thresholds");
+                        let thr = match q.custom {
+                            0 => ordered::threshold(q.kind, q.orientation, px, py)
+                                .expect("threshold methods have thresholds"),
+                            c => ordered::custom_threshold(
+                                &input.customs[usize::from(c) - 1],
+                                q.orientation,
+                                px,
+                                py,
+                            ),
+                        };
                         match mixes[idx] {
                             Some(m) => m.pick(0.5 + (thr - 0.5) * (q.strength * q.adapt).min(1.0)),
                             None => ordered::ordered_pick(
