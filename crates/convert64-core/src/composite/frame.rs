@@ -96,6 +96,9 @@ pub struct TargetFrame {
     colour: Vec<[f32; 3]>,
     coverage: Vec<f32>,
     attributes: AttributeMap,
+    /// The colour is png2c64's prepared image (its front end, #190): already through
+    /// its preprocessing, which the reference solver then does not repeat.
+    prepared: bool,
 }
 
 impl TargetFrame {
@@ -108,6 +111,25 @@ impl TargetFrame {
             colour: vec![[0.0; 3]; len],
             coverage: vec![0.0; len],
             attributes: AttributeMap::empty(grid),
+            prepared: false,
+        }
+    }
+
+    /// Whether the colour is png2c64's prepared image (one plain layer, #190): scaled
+    /// with png2c64's bicubic, then gamma and range matching, then its OKLab round trip.
+    pub const fn png2c64_prepared(&self) -> bool {
+        self.prepared
+    }
+
+    /// Replaces the colour with png2c64's prepared image, or marks it as the
+    /// compositor's own again.
+    pub(crate) fn set_prepared(&mut self, colour: Option<&[[f32; 3]]>) {
+        match colour {
+            Some(c) => {
+                self.colour.copy_from_slice(c);
+                self.prepared = true;
+            }
+            None => self.prepared = false,
         }
     }
 

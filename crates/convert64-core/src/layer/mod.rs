@@ -96,6 +96,9 @@ pub struct SourceImage {
     width: u32,
     height: u32,
     pixels: Vec<[f32; 4]>,
+    /// The 8-bit sRGB colour it was decoded from, when it came from 8-bit bytes and is
+    /// fully opaque: png2c64's front end (#190) starts from these bytes.
+    srgb8: Option<Arc<[[u8; 3]]>>,
 }
 
 impl SourceImage {
@@ -130,11 +133,22 @@ impl SourceImage {
                 ]
             })
             .collect();
+        let chunks = rgba.as_chunks::<4>().0;
+        let srgb8 = chunks
+            .iter()
+            .all(|p| p[3] == 255)
+            .then(|| chunks.iter().map(|p| [p[0], p[1], p[2]]).collect());
         Ok(Self {
             width,
             height,
             pixels,
+            srgb8,
         })
+    }
+
+    /// The 8-bit sRGB colour of a fully opaque source decoded from bytes, row-major.
+    pub fn srgb8(&self) -> Option<&[[u8; 3]]> {
+        self.srgb8.as_deref()
     }
 
     /// Wraps linear straight-alpha pixels; every channel must be finite and alpha in
@@ -163,6 +177,7 @@ impl SourceImage {
             width,
             height,
             pixels,
+            srgb8: None,
         })
     }
 

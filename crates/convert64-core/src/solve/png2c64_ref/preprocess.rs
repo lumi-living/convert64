@@ -171,7 +171,16 @@ pub fn match_palette_range(image: &mut Image, palette: &[[f32; 3]], percentile: 
         let span = hi[k] - lo[k];
         (lo[k] + span * margin, hi[k] - span * margin)
     };
-    let (tl, ta, tb) = (target(0), target(1), target(2));
+    match_range_to(image, percentile, [target(0), target(1), target(2)]);
+}
+
+/// [`match_palette_range`] onto given OKLab target ranges `[(lo, hi); 3]` for L, a and
+/// b (our `RangeMatch` stores them, computed from the palette).
+pub fn match_range_to(image: &mut Image, percentile: f32, targets: [(f32, f32); 3]) {
+    if image.px.is_empty() {
+        return;
+    }
+    let [tl, ta, tb] = targets;
     let labs: Vec<[f32; 3]> = image.px.iter().map(|&p| linear_to_oklab(p)).collect();
     let chan = |k: usize| {
         let mut v: Vec<f32> = labs.iter().map(|l| l[k]).collect();

@@ -43,7 +43,9 @@ jobs:
       # The standing bar of #181: the reference solver against png2c64's renders,
       # >= 99 % identical per method id and input; prints every percentage.
       - name: png2c64 parity
-        run: cargo test -p convert64-core --test png2c64_parity -- --nocapture
+        run: |
+          cargo test -p convert64-core --test png2c64_parity -- --nocapture
+          cargo test -p convert64-cli --test png2c64_convert -- --nocapture
       # The No Glory title screen builds from make with the CLI alone (#167); `cargo
       # test` has just built target/debug/convert64. Windows runners have no make.
       - name: make check (examples/no-glory)

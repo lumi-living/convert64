@@ -161,13 +161,16 @@ pub(crate) fn solve(
     let mode = ref_mode(target).expect("a bitmap mode");
     let (w, h) = mode.screen();
     let mut image = Image::new(w, h, frame.colour().to_vec());
-    preprocess::apply(
-        &mut image,
-        &preprocess::Settings {
-            gamma: 1.0,
-            ..preprocess::Settings::default()
-        },
-    );
+    // png2c64's front end (#190) has run its preprocessing already.
+    if !frame.png2c64_prepared() {
+        preprocess::apply(
+            &mut image,
+            &preprocess::Settings {
+                gamma: 1.0,
+                ..preprocess::Settings::default()
+            },
+        );
+    }
     let attrs = frame.attributes();
     let default_recipe = Recipe::default();
     let (cols, rows) = mode.cells();
