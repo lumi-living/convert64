@@ -758,6 +758,8 @@ version = "0.0.0"
 dependencies = [
  "convert64-core",
  "image",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
