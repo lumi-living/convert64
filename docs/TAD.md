@@ -345,6 +345,8 @@ As built in #120 (2026-10-12): cell metrics for the set search (`solve::cellscor
 | `title` multicolor, Bayer 2 | 57.0 / 10.9 ms | 86.1 / 20.0 ms | 79.6 / 18.5 ms |
 | `lineart` hi-res, none | 7.3 / 7.4 ms | 34.8 / 23.1 ms | 25.3 / 17.7 ms |
 
+As built in #150 (2026-10-12): `error_clamp`. The #116 comparison sheet showed Floyd–Steinberg and Sierra Lite smearing colour across the test card's saturated bands. An out-of-gamut colour, which no palette colour reaches, accumulated diffused error row after row, both in the unconstrained diffusion the set search uses and in the cell-clamped pass. Recipes now carry `error_clamp`, png2c64's per-channel limit on received error: default 0.1 (its default), 0 for off, `--error-clamp` on the CLI. It applies in every diffusion pass, Riemersma included.
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.

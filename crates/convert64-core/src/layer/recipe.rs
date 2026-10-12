@@ -478,6 +478,8 @@ pub enum RecipeError {
     Adaptive(f32),
     /// `mix_levels` is above [`MAX_MIX_LEVELS`].
     MixLevels(u8),
+    /// `error_clamp` is not a number in `0..=1`.
+    ErrorClamp(f32),
 }
 
 impl fmt::Display for RecipeError {
@@ -487,6 +489,7 @@ impl fmt::Display for RecipeError {
             Self::EmptyAllowedSet => f.write_str("a recipe must allow at least one colour"),
             Self::MaxLumaDiff(n) => write!(f, "max_luma_diff must be 0–8 luma levels, got {n}"),
             Self::Adaptive(a) => write!(f, "adaptive must be in 0–1, got {a}"),
+            Self::ErrorClamp(c) => write!(f, "error_clamp must be in 0–1, got {c}"),
             Self::MixLevels(n) => {
                 write!(f, "mix_levels must be 0–{MAX_MIX_LEVELS}, got {n}")
             }
@@ -520,7 +523,16 @@ struct RecipeData {
     smooth: bool,
     #[serde(default)]
     cell_metric: CellMetric,
+    #[serde(default = "default_error_clamp")]
+    error_clamp: f32,
 }
+
+const fn default_error_clamp() -> f32 {
+    DEFAULT_ERROR_CLAMP
+}
+
+/// The default `error_clamp`: png2c64's, 0.1 per metric channel.
+pub const DEFAULT_ERROR_CLAMP: f32 = 0.1;
 
 const fn all_colours() -> ColourSet {
     ColourSet::ALL
@@ -565,6 +577,7 @@ pub struct Recipe {
     mix_levels: u8,
     smooth: bool,
     cell_metric: CellMetric,
+    error_clamp: f32,
 }
 
 impl TryFrom<RecipeData> for Recipe {
@@ -577,7 +590,8 @@ impl TryFrom<RecipeData> for Recipe {
         .with_max_luma_diff(d.max_luma_diff)?
         .with_adaptive(d.adaptive)?
         .with_mix_levels(d.mix_levels)
-        .map(|r| r.with_smooth(d.smooth).with_cell_metric(d.cell_metric))
+        .map(|r| r.with_smooth(d.smooth).with_cell_metric(d.cell_metric))?
+        .with_error_clamp(d.error_clamp)
     }
 }
 
@@ -597,6 +611,7 @@ impl Default for Recipe {
             mix_levels: DEFAULT_MIX_LEVELS,
             smooth: false,
             cell_metric: CellMetric::Mse,
+            error_clamp: DEFAULT_ERROR_CLAMP,
         }
     }
 }
@@ -630,6 +645,7 @@ impl Recipe {
             mix_levels: DEFAULT_MIX_LEVELS,
             smooth: false,
             cell_metric: CellMetric::Mse,
+            error_clamp: DEFAULT_ERROR_CLAMP,
         })
     }
 
@@ -694,6 +710,23 @@ impl Recipe {
     pub const fn with_cell_metric(mut self, metric: CellMetric) -> Self {
         self.cell_metric = metric;
         self
+    }
+
+    /// This recipe with `error_clamp` set (diffusion; #150): the error a pixel has
+    /// received is clamped to `±error_clamp` in each channel of its metric, as png2c64
+    /// does (its default, 0.1, is ours). Without it an out-of-gamut colour, which no
+    /// palette colour reaches, accumulates error row after row and smears. 0 is off.
+    pub fn with_error_clamp(mut self, clamp: f32) -> Result<Self, RecipeError> {
+        if !(0.0..=1.0).contains(&clamp) {
+            return Err(RecipeError::ErrorClamp(clamp));
+        }
+        self.error_clamp = clamp;
+        Ok(self)
+    }
+
+    /// The diffused-error clamp (see [`Self::with_error_clamp`]).
+    pub const fn error_clamp(&self) -> f32 {
+        self.error_clamp
     }
 
     /// The cell-set search's score (see [`CellMetric`]).
@@ -905,6 +938,8 @@ mod tests {
         let d = Recipe::default();
         assert!(d.cell_clamp() && d.max_luma_diff() == MAX_LUMA_DIFF_OFF && d.adaptive() == 0.0);
         assert!(d.mix_levels() == DEFAULT_MIX_LEVELS && !d.smooth());
+        assert_eq!(d.error_clamp(), DEFAULT_ERROR_CLAMP);
+        assert_eq!(d.with_error_clamp(1.5), Err(RecipeError::ErrorClamp(1.5)));
     }
 
     #[test]

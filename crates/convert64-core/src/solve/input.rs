@@ -39,6 +39,8 @@ pub(crate) struct Px {
     pub max_luma_diff: u8,
     /// `1 − adaptive × detail`: scales this pixel's dither (1 when `adaptive` is 0).
     pub adapt: f32,
+    /// Received diffusion error is clamped to `±error_clamp` per channel (0: off).
+    pub error_clamp: f32,
     /// Mix-ratio levels of an ordered or noise pixel (0 = continuous).
     pub mix_levels: u8,
     /// The colour in linear RGB (pre-smoothed like `coords`): mix ratios are taken in
@@ -180,6 +182,7 @@ impl Input {
                     cell_clamp: recipe.cell_clamp(),
                     max_luma_diff: recipe.max_luma_diff(),
                     adapt: recipe.adaptive(),
+                    error_clamp: recipe.error_clamp(),
                     mix_levels: recipe.mix_levels(),
                     lin: match &smoothed {
                         Some(s) if smooths(i) => s[i],

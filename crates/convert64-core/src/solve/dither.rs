@@ -351,7 +351,7 @@ pub fn pass(
                     e[k] += h[k] * wt / 16.0;
                 }
             }
-            let e = e.map(|v| v * q.adapt);
+            let e = clamp_error(e, q.error_clamp).map(|v| v * q.adapt);
             let mut target = add(q.coords, e);
             if q.cell_clamp && !accepts(q.metric, target, full_sets[cell], tables) {
                 target = q.coords;
@@ -557,7 +557,7 @@ pub fn pass(
                 {
                     continue;
                 }
-                received[n] = add(received[n], part);
+                received[n] = clamp_error(add(received[n], part), r.error_clamp);
             }
         }
     }
@@ -624,7 +624,10 @@ pub(crate) fn unconstrained(
                 if r.metric != q.metric || r.kind.family() != DitherFamily::Diffusion {
                     continue;
                 }
-                received[n] = add(received[n], err.map(|v| v * scale * f32::from(wt)));
+                received[n] = clamp_error(
+                    add(received[n], err.map(|v| v * scale * f32::from(wt))),
+                    r.error_clamp,
+                );
             }
         }
     }
@@ -664,6 +667,15 @@ fn accepts(metric: Metric, target: [f32; 3], set: ColourSet, tables: &MetricTabl
         }
     }
     bits & (1 << best.1) != 0
+}
+
+/// `e` clamped to `±clamp` per channel (`clamp` 0: unchanged).
+fn clamp_error(e: [f32; 3], clamp: f32) -> [f32; 3] {
+    if clamp > 0.0 {
+        e.map(|v| v.clamp(-clamp, clamp))
+    } else {
+        e
+    }
 }
 
 fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -816,7 +828,14 @@ mod tests {
                 "g",
                 Arc::new(SourceImage::from_linear(320, 200, px.clone()).unwrap()),
             );
-            layer.set_recipe(Recipe::with_method(kind, 1.0).unwrap());
+            // Unclamped: black and white are ±0.5 L from the grey, past the 0.1 clamp,
+            // which trades this accuracy for stability on out-of-gamut colours.
+            layer.set_recipe(
+                Recipe::with_method(kind, 1.0)
+                    .unwrap()
+                    .with_error_clamp(0.0)
+                    .unwrap(),
+            );
             let mut c = Compositor::new(SuperGrid::new(Mode::HiresBitmap, 1).unwrap());
             c.update(&[layer], &[]);
             let t = MetricTables::new(&Palette::pepto_pal());
@@ -918,6 +937,43 @@ mod tests {
                 pass(&input, &t, &s, None, &[], None),
                 pass(&input, &t, &s, None, &[], None),
                 "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn error_on_an_out_of_gamut_colour_stays_clamped() {
+        // Pure linear blue: no C64 colour reaches it, so unclamped error keeps growing.
+        let solve = |clamp: f32, kind: DitherKind| {
+            let px = vec![[0.0f32, 0.0, 1.0, 1.0]; 320 * 200];
+            let mut layer = Layer::new(
+                "blue",
+                Arc::new(SourceImage::from_linear(320, 200, px).unwrap()),
+            );
+            layer.set_recipe(
+                Recipe::with_method(kind, 1.0)
+                    .unwrap()
+                    .with_error_clamp(clamp)
+                    .unwrap(),
+            );
+            let mut c = Compositor::new(SuperGrid::new(Mode::HiresBitmap, 1).unwrap());
+            c.update(&[layer], &[]);
+            let t = MetricTables::new(&Palette::pepto_pal());
+            let input = Input::new(c.frame(), &t, InputOptions::default());
+            let s: ColourSet = [ColourIndex::BLUE, ColourIndex::LIGHT_BLUE]
+                .into_iter()
+                .collect();
+            let r = pass(&input, &t, &vec![s; 1000], None, &[], None);
+            r.received
+                .iter()
+                .flat_map(|e| e.iter().map(|v| v.abs()))
+                .fold(0.0f32, f32::max)
+        };
+        for kind in [DitherKind::FloydSteinberg, DitherKind::Riemersma] {
+            assert!(solve(0.1, kind) <= 0.1 + 1e-6, "{kind:?}");
+            assert!(
+                solve(0.0, kind) > 0.2,
+                "{kind:?}: unclamped error should grow"
             );
         }
     }
