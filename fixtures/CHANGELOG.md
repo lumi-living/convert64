@@ -27,3 +27,9 @@ Every change to a golden file (`fixtures/<name>/expected_*.snap`, `fixtures/<nam
 - 2026-10-11 #135 **terrain** (expected.png): real solver replaces the identity stub; recipe closest to png2c64 (#111)
 - 2026-10-11 #135 **title** (expected.png): real solver replaces the identity stub; recipe closest to png2c64 (#111)
 - 2026-10-12 #143 **portrait** (expected_adaptive.png, expected_fs-clamped.png, expected_fs-unclamped.png, expected_hysteresis.png, expected_luma0.png): solver knob variants on portrait (#123): cell_clamp on/off, max_luma_diff 0, adaptive 0.5, hysteresis 0.97
+- 2026-10-12 #pending **gradient** (expected_kla.snap, expected_prg.snap, expected.png): #142: solved from png2c64's gamma-1.5 source with mix levels (linear-light ratio, flat cells share one level); gradient swatches now Pepto
+- 2026-10-12 #pending **lineart** (expected.png): #142: solved from png2c64's gamma-1.5 source with mix levels (linear-light ratio, flat cells share one level); gradient swatches now Pepto
+- 2026-10-12 #pending **photo** (expected.png): #142: solved from png2c64's gamma-1.5 source with mix levels (linear-light ratio, flat cells share one level); gradient swatches now Pepto
+- 2026-10-12 #pending **portrait** (expected.png, expected_adaptive.png, expected_fs-clamped.png, expected_fs-unclamped.png, expected_hysteresis.png, expected_levels0.png, expected_luma0.png, expected_smooth.png): #142: solved from png2c64's gamma-1.5 source with mix levels (linear-light ratio, flat cells share one level); gradient swatches now Pepto
+- 2026-10-12 #pending **terrain** (expected.png): #142: solved from png2c64's gamma-1.5 source with mix levels (linear-light ratio, flat cells share one level); gradient swatches now Pepto
+- 2026-10-12 #pending **title** (expected.png): #142: solved from png2c64's gamma-1.5 source with mix levels (linear-light ratio, flat cells share one level); gradient swatches now Pepto
