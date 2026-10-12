@@ -104,13 +104,14 @@ impl Screen {
 pub type Threshold<'a> = &'a (dyn Fn(usize, usize) -> f32 + Sync);
 
 /// One cell's distance table: per pixel, the squared distance to each of the 16 colours
-/// (`precompute_cell_dist`, pixel-major).
+/// (`precompute_cell_dist`, pixel-major). `bias[i]` is pixel `i`'s threshold offset `t`
+/// (png2c64's `threshold_fn(x, y) × threshold_strength`), or `None` for no bias.
 fn cell_table(
     image: &Image,
     mode: Mode,
     cell: usize,
     pal: &[Lab; 16],
-    threshold: Option<(Threshold<'_>, f32)>,
+    bias: &[Option<f32>],
 ) -> Vec<[f32; 16]> {
     let (cw, ch) = mode.cell();
     let cols = mode.cells().0;
@@ -120,8 +121,7 @@ fn cell_table(
         for dx in 0..cw {
             let (x, y) = (px + dx, py + dy);
             let mut lab = linear_to_oklab(image.at(x, y));
-            if let Some((f, strength)) = threshold {
-                let t = f(x, y) * strength;
+            if let Some(t) = bias[y * image.w + x] {
                 lab[0] += t * 0.15;
                 lab[1] += t * 0.03;
                 lab[2] += t * 0.03;
@@ -367,19 +367,51 @@ pub fn quantize(
     threshold: Option<Threshold<'_>>,
     threshold_strength: f32,
 ) -> Screen {
+    let (w, h) = mode.screen();
+    let bias: Vec<Option<f32>> = (0..w * h)
+        .map(|i| threshold.map(|f| f(i % w, i / w) * threshold_strength))
+        .collect();
+    quantize_px(image, palette, mode, &bias, &Hooks::default())
+}
+
+/// What the cell search may be told beyond png2c64's own inputs. The default changes
+/// nothing: the search is png2c64's.
+#[derive(Clone, Debug, Default)]
+pub struct Hooks {
+    /// Search only this background (multicolor); `None` tries all 16, as png2c64.
+    pub background: Option<u8>,
+}
+
+/// [`quantize`] with a per-pixel threshold offset: `bias[i]` is pixel `i`'s `t`
+/// (`threshold × strength × strength` for an ordered pixel), `None` for a pixel without
+/// one. A cell none of whose pixels has an offset gets the global Floyd–Steinberg
+/// replacement; with one offset for every pixel, or none, this is png2c64's `quantize`.
+///
+/// # Panics
+/// If `image` is not the mode's screen size or `bias` not one entry per pixel.
+pub fn quantize_px(
+    image: &Image,
+    palette: &[Rgb; 16],
+    mode: Mode,
+    bias: &[Option<f32>],
+    hooks: &Hooks,
+) -> Screen {
     assert_eq!((image.w, image.h), mode.screen(), "image size for {mode:?}");
+    assert_eq!(bias.len(), image.w * image.h, "one bias per pixel");
     let pal = palette.map(linear_to_oklab);
     let (cols, rows) = mode.cells();
     let cells: Vec<usize> = (0..cols * rows).collect();
-    let thr = threshold.map(|f| (f, threshold_strength));
     let tables: Vec<Vec<[f32; 16]>> =
-        crate::par::map(&cells, |&i| cell_table(image, mode, i, &pal, thr));
+        crate::par::map(&cells, |&i| cell_table(image, mode, i, &pal, bias));
     let mut screen = match mode {
         Mode::Multicolor => {
             let per_cell: Vec<[([u8; 3], f32); 16]> =
                 crate::par::map(&tables, |t| best_triples(&errors4(t)));
             let (mut best_bg, mut best_total) = (0u8, f32::MAX);
             for bg in 0..16u8 {
+                if hooks.background.is_some_and(|b| b != bg) {
+                    continue;
+                }
                 let total = per_cell
                     .iter()
                     .fold(0.0f32, |s, c| s + c[usize::from(bg)].1);
@@ -426,8 +458,16 @@ pub fn quantize(
             }
         }
     };
-    if threshold.is_none() {
-        fs_replace(image, &pal, &mut screen);
+    let (cw, ch) = mode.cell();
+    let unbiased: Vec<bool> = cells
+        .iter()
+        .map(|&i| {
+            let (px, py) = ((i % cols) * cw, (i / cols) * ch);
+            (0..ch).all(|dy| (0..cw).all(|dx| bias[(py + dy) * image.w + px + dx].is_none()))
+        })
+        .collect();
+    if unbiased.contains(&true) {
+        fs_replace(image, &pal, &mut screen, &unbiased);
     }
     screen
 }
@@ -435,8 +475,8 @@ pub fn quantize(
 /// The global-FS palette replacement (`quantize_multicolor_bruteforce` and
 /// `quantize_hires` when `tfn` is empty): each cell's colours become the most used
 /// colours of [`global_fs_indices`] in it, the background excluded and fixed in slot 0
-/// (multicolor), most used first, ties to the lower index.
-fn fs_replace(image: &Image, pal: &[Lab; 16], screen: &mut Screen) {
+/// (multicolor), most used first, ties to the lower index. Only cells marked in `which`.
+fn fs_replace(image: &Image, pal: &[Lab; 16], screen: &mut Screen, which: &[bool]) {
     let mode = screen.mode;
     let global = global_fs_indices(image, pal);
     let hists = histograms(mode, &global);
@@ -481,9 +521,18 @@ fn fs_replace(image: &Image, pal: &[Lab; 16], screen: &mut Screen) {
         }
     });
     let idx: Vec<usize> = (0..screen.cells.len()).collect();
-    let pixels = crate::par::map(&idx, |&i| assign(image, mode, i, pal, &replaced[i]));
-    for ((cell, colors), px) in screen.cells.iter_mut().zip(replaced).zip(pixels) {
-        cell.colors = colors;
-        cell.px = px;
+    let pixels = crate::par::map(&idx, |&i| {
+        if which[i] {
+            assign(image, mode, i, pal, &replaced[i])
+        } else {
+            Vec::new()
+        }
+    });
+    for (((cell, colors), px), &on) in screen.cells.iter_mut().zip(replaced).zip(pixels).zip(which)
+    {
+        if on {
+            cell.colors = colors;
+            cell.px = px;
+        }
     }
 }

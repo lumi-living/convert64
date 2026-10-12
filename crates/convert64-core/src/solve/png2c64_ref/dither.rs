@@ -211,6 +211,56 @@ impl Default for Settings {
     }
 }
 
+/// One pixel's dither settings, for pictures whose pixels follow different recipes.
+/// With the same settings for every pixel the result is png2c64's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PxSettings {
+    /// The method.
+    pub method: Method,
+    /// 0 = no dithering, 1 = full.
+    pub strength: f32,
+    /// Maximum diffused error per OKLab channel, on receipt and on write.
+    pub error_clamp: f32,
+    /// Contrast-adaptive diffusion, 0 = off.
+    pub adaptive: f32,
+    /// Where the pixel's pattern is anchored: its threshold is taken at
+    /// `(x − origin.0, y − origin.1)` (`(0, 0)`, the screen, as png2c64).
+    pub origin: (i64, i64),
+}
+
+impl From<&Settings> for PxSettings {
+    fn from(s: &Settings) -> Self {
+        Self {
+            method: s.method,
+            strength: s.strength,
+            error_clamp: s.error_clamp,
+            adaptive: s.adaptive,
+            origin: (0, 0),
+        }
+    }
+}
+
+impl PxSettings {
+    /// The search's threshold offset for this pixel at `(x, y)`
+    /// (`ordered_threshold × strength`, × strength again as png2c64's
+    /// `precompute_cell_dist` does), or `None` for `none` and diffusion.
+    pub fn bias(&self, x: usize, y: usize) -> Option<f32> {
+        if !self.method.is_ordered() || self.method == Method::None {
+            return None;
+        }
+        // Patterns repeat every 2, 4, 5, 8 or 64 pixels; 3200 is a multiple of all.
+        let (x, y) = if self.origin == (0, 0) {
+            (x, y)
+        } else {
+            (
+                (x as i64 - self.origin.0).rem_euclid(3200) as usize,
+                (y as i64 - self.origin.1).rem_euclid(3200) as usize,
+            )
+        };
+        Some(ordered_threshold(self.method, x, y) * self.strength * self.strength)
+    }
+}
+
 const FLOYD_STEINBERG: [(i64, i64, f32); 4] = [
     (1, 0, 7.0 / 16.0),
     (-1, 1, 3.0 / 16.0),
@@ -624,30 +674,42 @@ fn contrast_map(lab: &[Lab], w: usize, h: usize) -> Vec<f32> {
     out
 }
 
-/// `apply_error_diffusion` and `apply_ostromoukhov`: error diffusion in OKLab within
-/// each cell's colours. The incoming error is clamped to `error_clamp` per channel
-/// (and scaled down by local contrast with `adaptive`), the outgoing error scaled by
-/// `strength`, and each neighbour's accumulated error clamped again on write.
-fn diffuse(image: &Image, screen: &mut Screen, pal: &[Lab; 16], s: &Settings) {
-    let Some(kernel) = s.method.kernel() else {
-        return;
-    };
-    let ostro = s.method == Method::Ostromoukhov;
+/// `apply_error_diffusion` and `apply_ostromoukhov`, per pixel: every pixel whose method
+/// diffuses takes in its error (clamped to its `error_clamp`, scaled down by local
+/// contrast with `adaptive`), picks the nearest of its cell's colours, and passes the
+/// error, × its strength, to its kernel's neighbours, each neighbour's sum clamped again
+/// on write. Other pixels keep their slots and pass nothing on.
+pub fn diffuse_px(
+    image: &Image,
+    screen: &mut Screen,
+    palette: &[Rgb; 16],
+    px: &[PxSettings],
+    serpentine: bool,
+) {
+    let pal = palette.map(linear_to_oklab);
     let (w, h) = screen.mode.screen();
-    let ec = s.error_clamp;
-    let clamp = |e: Lab| e.map(|v| v.clamp(-ec, ec));
     let lab: Vec<Lab> = image.px.iter().map(|&p| linear_to_oklab(p)).collect();
-    let contrast = if !ostro && s.adaptive > 0.0 {
+    let contrast = if px
+        .iter()
+        .any(|s| s.adaptive > 0.0 && s.method.kernel().is_some())
+    {
         contrast_map(&lab, w, h)
     } else {
         Vec::new()
     };
     let mut err = vec![[0.0f32; 3]; w * h];
     for y in 0..h {
-        let reverse = s.serpentine && y % 2 == 1;
+        let reverse = serpentine && y % 2 == 1;
         for step in 0..w {
             let x = if reverse { w - 1 - step } else { step };
             let idx = y * w + x;
+            let s = &px[idx];
+            let Some(kernel) = s.method.kernel() else {
+                continue;
+            };
+            let ostro = s.method == Method::Ostromoukhov;
+            let ec = s.error_clamp;
+            let clamp = |e: Lab| e.map(|v| v.clamp(-ec, ec));
             let (c, p) = cell_of(screen, x, y);
             let mut ce = clamp(err[idx]);
             if !ostro && s.adaptive > 0.0 {
@@ -661,10 +723,10 @@ fn diffuse(image: &Image, screen: &mut Screen, pal: &[Lab; 16], s: &Settings) {
             ];
             let colors = &screen.cells[c].colors;
             let (slot, chosen, scale) = if ostro {
-                let pair = nearest_pair(adj, colors, pal);
+                let pair = nearest_pair(adj, colors, &pal);
                 (pair.a, pair.lab_a, Some(0.6 + 0.8 * blend(&pair)))
             } else {
-                let (slot, chosen) = nearest(adj, colors, pal);
+                let (slot, chosen) = nearest(adj, colors, &pal);
                 (slot, chosen, None)
             };
             screen.cells[c].px[p] = slot;
@@ -691,11 +753,20 @@ fn diffuse(image: &Image, screen: &mut Screen, pal: &[Lab; 16], s: &Settings) {
 /// `dither::apply`: re-picks every pixel's slot within its cell's colours with
 /// `settings.method`. `none` leaves the screen as it is.
 pub fn apply(image: &Image, screen: &mut Screen, palette: &[Rgb; 16], settings: &Settings) {
-    let pal = palette.map(linear_to_oklab);
     match settings.method {
         Method::None => {}
-        m if m.is_ordered() => apply_ordered(image, screen, m, &pal, settings.strength),
-        _ => diffuse(image, screen, &pal, settings),
+        m if m.is_ordered() => apply_ordered(
+            image,
+            screen,
+            m,
+            &palette.map(linear_to_oklab),
+            settings.strength,
+        ),
+        _ => {
+            let (w, h) = screen.mode.screen();
+            let px = vec![PxSettings::from(settings); w * h];
+            diffuse_px(image, screen, palette, &px, settings.serpentine);
+        }
     }
 }
 

@@ -65,3 +65,9 @@ Every change to a golden file (`fixtures/<name>/expected_*.snap`, `fixtures/<nam
 - 2026-10-12 #157 **portrait** (expected.png, expected_checker.png, expected_luma0.png): #156: png2c64's ordered semantics, chroma guard and rendered set search (bracketing weight 0.01)
 - 2026-10-12 #157 **terrain** (expected.png): #156: png2c64's ordered semantics, chroma guard and rendered set search (bracketing weight 0.01)
 - 2026-10-12 #157 **title** (expected.png): #156: png2c64's ordered semantics, chroma guard and rendered set search (bracketing weight 0.01)
+- 2026-10-12 #186 **gradient** (expected.png, expected_native.png): reference solver is now default, #181
+- 2026-10-12 #186 **lineart** (expected.png, expected_native.png): reference solver is now default, #181
+- 2026-10-12 #186 **photo** (expected.png, expected_native.png): reference solver is now default, #181
+- 2026-10-12 #186 **portrait** (expected.png, expected_native.png): reference solver is now default, #181
+- 2026-10-12 #186 **terrain** (expected.png, expected_native.png): reference solver is now default, #181
+- 2026-10-12 #186 **title** (expected.png, expected_native.png): reference solver is now default, #181

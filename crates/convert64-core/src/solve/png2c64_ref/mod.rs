@@ -102,19 +102,39 @@ pub fn convert(
     mode: quantize::Mode,
     settings: &dither::Settings,
 ) -> quantize::Screen {
-    let method = settings.method;
-    let strength = settings.strength;
-    let threshold = move |x: usize, y: usize| dither::ordered_threshold(method, x, y) * strength;
-    let ordered = method.is_ordered() && method != dither::Method::None;
-    let mut screen = quantize::quantize(
+    let (w, h) = mode.screen();
+    let px = vec![dither::PxSettings::from(settings); w * h];
+    convert_px(
         image,
         palette,
         mode,
-        ordered.then_some(&threshold as quantize::Threshold<'_>),
-        strength,
-    );
-    if !method.is_ordered() {
-        dither::apply(image, &mut screen, palette, settings);
+        &px,
+        settings.serpentine,
+        &quantize::Hooks::default(),
+    )
+}
+
+/// [`convert`] with each pixel's own dither settings (the attribute map): ordered pixels
+/// bias the search, cells without any get the global Floyd–Steinberg choice, and the
+/// diffusion pixels are then diffused. With the same settings for every pixel this is
+/// [`convert`], bit for bit.
+pub fn convert_px(
+    image: &Image,
+    palette: &[Rgb; 16],
+    mode: quantize::Mode,
+    px: &[dither::PxSettings],
+    serpentine: bool,
+    hooks: &quantize::Hooks,
+) -> quantize::Screen {
+    let (w, _) = mode.screen();
+    let bias: Vec<Option<f32>> = px
+        .iter()
+        .enumerate()
+        .map(|(i, s)| s.bias(i % w, i / w))
+        .collect();
+    let mut screen = quantize::quantize_px(image, palette, mode, &bias, hooks);
+    if px.iter().any(|s| s.method.kernel().is_some()) {
+        dither::diffuse_px(image, &mut screen, palette, px, serpentine);
     }
     screen
 }

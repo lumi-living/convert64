@@ -50,24 +50,25 @@ For a PNG, a `.kla` or `.art` output also picks the mode when `--mode` is not gi
 
 | Option | Overrides | Values |
 |---|---|---|
+| `--solver` | `solve.solver` | `reference` (default: png2c64's pipeline, #181), `native` |
 | `--mode` | `target` | `koala` (also `mc`, `multicolor`), `hires` (also `hi-res`, `art`) |
 | `--palette` | `palette` | `pepto` / `pepto-pal`, `pepto-ntsc`, `colodore`, or a `.vpl` path |
 | `--dither` | each layer's `recipe.method.kind` | Any id in [dither-methods.md](dither-methods.md) |
 | `--strength` | `recipe.strength` | 0–1 |
 | `--metric` | `recipe.metric` | `oklab`, `cielab`, `pepto-yuv`, `rgb`; png2c64's `mse`, `blur`, `ssim` set `cell_metric` |
 | `--cell-metric` | `recipe.cell_metric` | `mse`, `blur`, `ssim` |
-| `--no-cell-clamp` | `recipe.cell_clamp` | |
-| `--max-luma-diff` | `recipe.max_luma_diff` | 0–8 |
-| `--ordered-semantics` | `recipe.ordered_semantics` | `png2c64` (default), `legacy` |
-| `--no-chroma-guard` | `recipe.chroma_guard` | |
+| `--no-cell-clamp` | `recipe.cell_clamp` | native solver |
+| `--max-luma-diff` | `recipe.max_luma_diff` | 0–8; native solver |
+| `--ordered-semantics` | `recipe.ordered_semantics` | `png2c64` (default), `legacy`; native solver |
+| `--no-chroma-guard` | `recipe.chroma_guard` | native solver |
 | `--error-clamp` | `recipe.error_clamp` | 0–1 |
 | `--adaptive` | `recipe.adaptive` | 0–1 |
-| `--mix-levels` | `recipe.mix_levels` | 0–16 |
-| `--smooth` | `recipe.smooth` | |
+| `--mix-levels` | `recipe.mix_levels` | 0–16; native solver |
+| `--smooth` | `recipe.smooth` | native solver |
 | `--gamma` | each layer's `adjustments.gamma` | 0.1–8 |
 | `--match-range` | `adjustments.match_range` | |
 | `--bg` | `solve.background` | `auto` or 0–15 |
-| `--hysteresis` | `solve.hysteresis` | (0, 1] |
+| `--hysteresis` | `solve.hysteresis` | (0, 1]; native solver |
 | `--supersample` | `supersample` | 1–8 |
 
 Other options:
@@ -79,7 +80,7 @@ Other options:
 | `--save-project PATH` | Also save the project, overrides applied, as `.convert64` (sources linked relative to it) |
 | `--embed` / `--link` | With `--save-project`: embed every source PNG, or link every one |
 
-JSON fields: `input`, `mode`, `palette` (its name), `outputs` (`path`, `format`), `background`, `clashes`, `max_clashes`, `legal`, `violations`, `solve_error`, `summary` (`clashes`, `total_error`, `dropped_cost`, `worst`, `luma_crossings`) and `worst`.
+JSON fields: `input`, `mode`, `palette` (its name), `outputs` (`path`, `format`), `background`, `clashes`, `max_clashes`, `legal`, `violations`, `solve_error`, `solver` (`reference` or `native`), `solver_fallback` (why the native solver ran, when the reference was asked for), `summary` (`clashes`, `total_error`, `dropped_cost`, `worst`, `luma_crossings`) and `worst`.
 
 A `Makefile` rule:
 
@@ -131,7 +132,7 @@ max-clashes = 20
 skip = true
 ```
 
-Every table takes `convert`'s options in kebab-case (`mode`, `palette`, `dither`, `strength`, `metric`, `cell-metric`, `no-cell-clamp`, `max-luma-diff`, `ordered-semantics`, `no-chroma-guard`, `error-clamp`, `adaptive`, `mix-levels`, `smooth`, `gamma`, `match-range`, `bg`, `hysteresis`, `supersample`), plus `outputs` (`kla`, `art`, `prg`, `png`, `raw`), `max-clashes`, `zoom` (PNG previews) and `skip`. Unknown keys are errors. A file's table wins over `[defaults]`; options on the command line win over both.
+Every table takes `convert`'s options in kebab-case (`solver`, `mode`, `palette`, `dither`, `strength`, `metric`, `cell-metric`, `no-cell-clamp`, `max-luma-diff`, `ordered-semantics`, `no-chroma-guard`, `error-clamp`, `adaptive`, `mix-levels`, `smooth`, `gamma`, `match-range`, `bg`, `hysteresis`, `supersample`), plus `outputs` (`kla`, `art`, `prg`, `png`, `raw`), `max-clashes`, `zoom` (PNG previews) and `skip`. Unknown keys are errors. A file's table wins over `[defaults]`; options on the command line win over both.
 
 Files convert independently: one failure does not stop the others. The exit code is the worst file's (3, then 2, then 1). JSON fields: `dir`, `manifest`, `out`, `converted`, `failed`, `skipped` (`input`, `reason`) and `files`, one `convert` report per file with its `input`.
 

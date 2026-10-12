@@ -57,6 +57,7 @@ Fixed 16 colours. Reference values Pepto / Colodore. Nine luminance levels (0, 8
 ## 3. Algorithms
 
 ### 3.1 Per-cell constraint solving (bitmap modes)
+Since #181 the default bitmap solver is png2c64's pipeline, ported (`solve::png2c64_ref`, [ADR-010](adr/ADR-010-png2c64-reference-solver.md)), with a parity test against png2c64 as its bar ([reference/png2c64-reference.md](reference/png2c64-reference.md)); the outline below is the native solver (`SolverKind::Native`), which frames the reference cannot solve yet fall back to.
 ```
 solve(target, mode):
   for bg in candidate_bgs (16, or pinned 1):
@@ -489,6 +490,6 @@ The public data model every front-end, solver, reader and writer shares. Constru
 - **VICE check (local, not in CI).** `cargo xtask vice-check` shows every png2c64 baseline in VICE `x64sc`. It builds a display PRG from the committed `baseline.kla`/`.art` with `convert64-formats::prg` ([file-formats.md](reference/file-formats.md#koala--art-studio-display-prg-convert64_formatsprgdisplay_prg)) and checks the PRG carries the baseline byte for byte, so it needs only VICE and a clone. VICE runs PAL, with the Pepto palette at neutral colour settings and no CRT filter. The task crops the 320×200 window from the 384×272 exit screenshot and maps every pixel to its nearest palette index. It requires **≥ 99.5 %** agreement with the decoded baseline and every cell showing only the baseline cell's colours. It writes `fixtures/<name>/vice.png` and a line in the fixture README. Tests in `xtask/src/vice.rs` run the comparison in CI on the committed captures, with negative controls: another fixture's baseline and a capture shifted one pixel right or down must fail. VICE is not installed on the CI runners, so run it locally whenever baselines change: `cargo xtask png2c64-baselines --png2c64 <bin>`, then `cargo xtask vice-check`. Never lower the bar to make a fixture pass.
 
 ## 7. Performance budgets
-- Full re-solve (MC bitmap, 16 bg search): < 100 ms native, < 300 ms WASM.
+- Full re-solve (MC bitmap, 16 bg search): < 100 ms native, < 300 ms WASM. Measured (`tests/solve_bench.rs`, portrait at 4×, Apple M-series, release), sequential / `parallel`: reference solver Floyd–Steinberg 26.8 / 8.4 ms, Bayer 4 24.4 / 5.1 ms; native solver 49.0 / 15.8 ms and 95.4 / 13.9 ms (#181).
 - Interactive single pass while dragging: < 16 ms native, < 50 ms WASM.
 - UI uploads the 320×200 preview as an egui texture with nearest-neighbour filtering and draws it at integer zoom with 2:1 pixel aspect where applicable; overlays (cell grid, pins/locks, clash heatmap) are painter calls over the same rect.
