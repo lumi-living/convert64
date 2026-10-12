@@ -16,6 +16,7 @@
 
 pub mod colour;
 pub mod preprocess;
+pub mod quantize;
 pub mod scale;
 
 #[cfg(test)]
