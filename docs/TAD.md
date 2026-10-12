@@ -153,7 +153,7 @@ As built in E4 (2026-10-11): the compositor and attribute map ([ADR-002](adr/ADR
   - **The blend** stays at 7.5 ms, now over a quarter of the 26.9 ms total (was 42.7 ms). The blend and the colour resample are close to their arithmetic floor for bit-identical output.
   - **Not done: resampling on decode.** The resampled raster depends on the transform and the super grid, so resampling at load would only move the same work from the first composite into the load, and the first frame would come no sooner. Doing it outside the compositor would also take it out of the benchmark's timed region without making anything faster.
   - **Not done: a quarter-resolution feather.** From σ = 32 super px (8 target px at 4×) it would save about a tenth of the hi-res cold composite. Its error on hard edges stays below one 8-bit step, but on `portrait-over-title` with the feather raised to 8 target px the mask error is 0.0066 (half resolution: 0.0022), and two attribute pixels change source inside the feather. That fails #98's bar, so it was not kept.
-- **Front-ends.** `convert64-cli` is also a library, holding the recipe-file JSON and `Session`. `convert64 recipe apply` and `convert64-mcp` run the same `Session`.
+- **Front-ends.** `convert64-cli` is also a library, holding the recipe-file JSON and `Session` (and, since #163, the project file). `convert64 recipe apply` and `convert64-mcp` run the same `Session`.
 
 **Deviations from ADR-002, ADR-008 and this document**
 - **Effective alpha.** The top-most layer whose PNG alpha × mask is above zero governs a pixel. Its strength is multiplied by PNG alpha × mask × opacity (#99, which amends ADR-008; E4 first shipped it without opacity). On the target grid, the source covering most super pixels wins, and its strength is summed over its super pixels and divided by n².
@@ -387,6 +387,16 @@ As built in #120 (2026-10-12): cell metrics for the set search (`solve::cellscor
 | `lineart` hi-res, none | 7.3 / 7.4 ms | 34.8 / 23.1 ms | 25.3 / 17.7 ms |
 
 As built in #150 (2026-10-12): `error_clamp`. The #116 comparison sheet showed Floyd–Steinberg and Sierra Lite smearing colour across the test card's saturated bands. An out-of-gamut colour, which no palette colour reaches, accumulated diffused error row after row, both in the unconstrained diffusion the set search uses and in the cell-clamped pass. Recipes now carry `error_clamp`, png2c64's per-channel limit on received error: default 0.1 (its default), 0 for off, `--error-clamp` on the CLI. It applies in every diffusion pass, Riemersma included.
+
+As built in #163 (2026-10-12): the `.convert64` project file ([ADR-009](adr/ADR-009-project-file.md), [reference/project-file.md](reference/project-file.md)).
+
+- **Where.** `convert64_cli::project`: serde types for the file (`ProjectFile`, `LayerEntry`, `SourceSpec`, `MaskSpec`, `RegionEntry`, `SteeringSpec`, `PaletteSpec`), path helpers and the PNG and base64 codecs for embedded data. `convert64_cli::recipe::Session` loads a project or a version-1 recipe (`Session::open`), and saves one (`Session::save`, `to_project_file`). The core is unchanged: `Project` stays layers, regions and steering; the target mode, palette and solve options are the session's.
+- **State, not history.** A saved project holds every layer's mask raster, sources and modifiers, the regions and the steering. Optional `commands` run after loading, as in a recipe; saving writes their result and no commands.
+- **Sources.** Linked (path relative to the project file), embedded (the original PNG bytes in base64) or shared with an earlier layer, per layer. `Embed::{Keep, All, None}` chooses on save; `recipe apply --save PATH [--embed | --link]` exposes it.
+- **Masks on disk.** A uniform raster is one exact value; anything else an embedded 16-bit greyscale PNG (ADR-008's u16 on disk). The first save of a painted mask rounds it to 1/65535; after that load → save → load is byte-identical, and so is the solve (`tests/project.rs`).
+- **Palette.** `pepto-pal` (default), `pepto-ntsc`, `colodore`, 16 custom colours or a VICE `.vpl` file. `Session` builds its `Solver` from it, so the palette a project names is the one it is solved with.
+- **Solve options** gain `refinements` and `finalists` (defaults 2 and 3), checked on load with `hysteresis` and `luma_pair_bias`.
+- **Base64** is a 60-line encoder/decoder in the CLI crate rather than a new dependency.
 
 ### 4.1 Image model (`convert64-core::model`)
 
