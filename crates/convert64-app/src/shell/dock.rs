@@ -189,7 +189,7 @@ fn tab_content(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui, actions: 
         match shell.tab {
             DockTab::Export => return export_tab(shell, ws, ui),
             DockTab::Layers => return super::layers::show(shell, ws, ui, actions),
-            DockTab::Recipe => {}
+            DockTab::Recipe => return super::recipe::show(shell, ws, ui, actions),
         }
     }
     let (glyph, what) = match shell.tab {
