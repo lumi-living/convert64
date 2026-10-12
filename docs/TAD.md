@@ -398,6 +398,14 @@ As built in #163 (2026-10-12): the `.convert64` project file ([ADR-009](adr/ADR-
 - **Solve options** gain `refinements` and `finalists` (defaults 2 and 3), checked on load with `hysteresis` and `luma_pair_bias`.
 - **Base64** is a 60-line encoder/decoder in the CLI crate rather than a new dependency.
 
+As built in #164 (2026-10-12): `convert64 convert` over projects, every M1 output, exit codes and `--json` ([reference/cli.md](reference/cli.md)).
+
+- **One path.** A PNG becomes a one-layer project (`ProjectFile::from_png`, scaled to fill the canvas); a `.convert64` project or version-1 recipe is read as it is. Command-line options are applied to the project file's data before it is loaded (`Overrides::apply`): recipe options as a JSON patch on every layer's recipe, so the core's validating constructors check them; regions keep their own recipes. Then `Session` composites and solves, as `recipe apply` and the MCP server do; `convert` no longer has its own pipeline.
+- **Outputs.** Repeatable `-o`, format from the extension or `--format`: `kla`, `art`, and `prg` (`convert64_formats::prg::display_prg`). One solve feeds every output. For a PNG a `.kla` or `.art` output picks the mode. Raw sets and PNG previews (E6 #159, #160) are added once `convert64-formats` has them.
+- **Exit codes.** 0 ok, 1 not legal or more clashes than `--max-clashes` (files still written), 2 input or option error (clap usage errors included), 3 write error.
+- **`--json`** is global. Every command prints one object: `command`, `ok`, `exit_code`, `error`, `timing_ms` (`total` and phases), `files_written`, then its own fields (`report.rs`). `convert`'s solve fields are `background`, `clashes`, `legal`, `violations`, `solve_error`, `summary`, `worst`; the total solve error moved from `error` to `solve_error`, since `error` is now the message.
+- **`--save-project`** writes the project `convert` solved, overrides applied, so `convert64 convert title.png --dither bayer4 --save-project art/title.convert64` starts a project from the command line.
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.
