@@ -79,6 +79,10 @@ enum Command {
         /// PAL-blend safe; 8 = off).
         #[arg(long, default_value_t = 8)]
         max_luma_diff: u8,
+        /// Clamp diffused error to ± this per metric channel, 0–1 (png2c64 --error-clamp;
+        /// 0 = off).
+        #[arg(long, default_value_t = 0.1)]
+        error_clamp: f32,
         /// Dither less where the picture has detail, 0–1 (png2c64 --adaptive).
         #[arg(long, default_value_t = 0.0)]
         adaptive: f32,
@@ -204,6 +208,7 @@ fn main() -> ExitCode {
             supersample,
             no_cell_clamp,
             max_luma_diff,
+            error_clamp,
             adaptive,
             hysteresis,
             mix_levels,
@@ -224,6 +229,7 @@ fn main() -> ExitCode {
                 supersample,
                 cell_clamp: !no_cell_clamp,
                 max_luma_diff,
+                error_clamp,
                 adaptive,
                 hysteresis,
                 mix_levels,
@@ -331,6 +337,7 @@ struct ConvertOptions {
     supersample: u8,
     cell_clamp: bool,
     max_luma_diff: u8,
+    error_clamp: f32,
     adaptive: f32,
     hysteresis: Option<f32>,
     mix_levels: u8,
@@ -400,6 +407,7 @@ fn run_convert(
             .with_max_luma_diff(o.max_luma_diff)
     })
     .and_then(|r| r.with_adaptive(o.adaptive))
+    .and_then(|r| r.with_error_clamp(o.error_clamp))
     .and_then(|r| r.with_mix_levels(o.mix_levels))
     .map(|r| r.with_smooth(o.smooth).with_cell_metric(cell_metric))
     .map_err(|e| e.to_string())?;
