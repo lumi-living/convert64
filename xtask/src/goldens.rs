@@ -459,7 +459,7 @@ fn append_changelog(
 }
 
 /// Today's UTC date as `YYYY-MM-DD`.
-fn today() -> String {
+pub(crate) fn today() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());

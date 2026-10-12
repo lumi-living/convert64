@@ -8,10 +8,14 @@
 //!   `fixtures/CHANGELOG.md` (needs a clean tree).
 //! - `vice-check [--x64sc <path>]`: show each png2c64 baseline in VICE and compare the
 //!   capture with it (local only).
+//! - `dither-sheet [--input <png> --out <dir>] [--mode mc|hires] [--reason "..."]`: render
+//!   every dither method and the comparison sheets (`docs/reference/dither-previews/`).
 
 mod baselines;
 mod bluenoise;
+mod font;
 mod goldens;
+mod sheet;
 mod vice;
 
 use clap::{Parser, Subcommand};
@@ -89,6 +93,37 @@ enum Command {
         #[arg(long, value_name = "N", conflicts_with_all = ["accept", "report"])]
         set_pr: Option<u32>,
     },
+    /// Render every dither method on the test card and the portrait, and the sheets.
+    ///
+    /// Without `--input`, regenerates the committed previews in
+    /// `docs/reference/dither-previews/convert64-card/`, `convert64-portrait/` and
+    /// `convert64-sheets/` (card, grey-ramp zoom, portrait, and ours next to png2c64's
+    /// for the 30 shared ids with their OKLab MSE), and records `--reason` in that
+    /// directory's CHANGELOG.md. With `--input <png> --out <dir>`, renders that picture
+    /// instead.
+    DitherSheet {
+        /// A picture to render instead of the committed previews.
+        #[arg(long, requires = "out")]
+        input: Option<PathBuf>,
+        /// Target mode.
+        #[arg(long, value_enum, default_value = "mc")]
+        mode: SheetMode,
+        /// Where `--input`'s renders go.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Why the committed previews change (needed without `--input`).
+        #[arg(long, conflicts_with = "input")]
+        reason: Option<String>,
+    },
+}
+
+/// `dither-sheet`'s target mode.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum SheetMode {
+    /// Multicolor bitmap.
+    Mc,
+    /// Hi-res bitmap.
+    Hires,
 }
 
 /// The repository root (the parent of this crate's directory).
@@ -105,6 +140,21 @@ fn main() -> ExitCode {
         Command::BlueNoise => bluenoise::run(&repo_root()),
         Command::Png2c64Baselines { png2c64, only } => baselines::run(&png2c64, &only),
         Command::ViceCheck { x64sc, only } => vice::run(&x64sc, &only),
+        Command::DitherSheet {
+            input,
+            mode,
+            out,
+            reason,
+        } => sheet::run(
+            &repo_root(),
+            input,
+            match mode {
+                SheetMode::Mc => convert64_core::mode::Mode::MulticolorBitmap,
+                SheetMode::Hires => convert64_core::mode::Mode::HiresBitmap,
+            },
+            out,
+            reason.as_deref(),
+        ),
         Command::RegenGoldens {
             report: _,
             accept,

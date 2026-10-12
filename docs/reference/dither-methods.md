@@ -11,7 +11,7 @@ Reference points: png2c64 (30 methods), ArcPaint64's pattern grid, Ditherista,
 Photoshop/GIMP/Aseprite indexed-colour dialogs, and the classic literature
 (Ulichney, Ostromoukhov, Yliluoma).
 
-Reference renders of all 30 png2c64 methods are in [`dither-previews/`](dither-previews/README.md) (`sheet-card.png`, `sheet-zoom.png`, `sheet-portrait.png`).
+Reference renders of all 30 png2c64 methods are in [`dither-previews/`](dither-previews/README.md) (`sheet-card.png`, `sheet-zoom.png`, `sheet-portrait.png`). Convert64's renders of every id, and a sheet pairing them with png2c64's, are in `dither-previews/convert64-*/`, made by `cargo xtask dither-sheet` (#116).
 
 Every method below honours per-pixel `strength` (0–100 %, scales the threshold
 offset or the propagated error), `allowed_set` and cell clamping. Ordered
