@@ -32,32 +32,30 @@ Consensus across the surveyed editors: menu bar → options/tool bar → canvas 
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│ Menu bar  File  Edit  View  Layer  Export  Help        ◐ theme │ 26 px
+│ Menu bar  File  Edit  View  Layer  Recipe  Export  Help        │ 22 px
 ├────────────────────────────────────────────────────────────────┤
-│ Toolbar  [Source ▾ view] │ ✥ Nudge 📌 Pin 🔒 Lock 🖌 Region │ ⊞ Grid ▦ Clashes ◫ Compare ▾ │ zoom ▾ │ 36 px
+│ 📌 🔒 🖌 ✥ │ ⊕ ⊖ ⛶ │ ⇄ ◫          Working view: Source (Q → Result · hold \ to flip) │ 28 px
 ├──────────────────────────────────────────┬─────────────────────┤
-│                                          │ RESULT  Multicolor ▾│ 320×200 at 1×
-│                                          │ ┌─────────────────┐ │ + border,
-│          WORKING VIEW                    │ │   C64 result    │ │ always on,
-│                                          │ │  (hardware px)  │ │ clash dots
+│                                          │ Result  Multicolor·1×│ 26 px header
+│                                          │ ┌─────────────────┐ │ 320×200 at 1×
+│          WORKING VIEW                    │ │   C64 result    │ │ + border,
+│                                          │ │  (hardware px)  │ │ always on
 │   Source (16-bit, layers, masks)         │ └─────────────────┘ │
-│   or Result (zoomed, overlays, compare)  │ 0 clashes · 38 ms   │
-│                                          ├─────────────────────┤
-│                                          │ RECIPE / ADJUSTMENTS│ right dock
-│                                          │  (selected layer)   │ 320 px
-│                                          ├─────────────────────┤ (260–420)
-│                                          │ LAYERS              │
-│                                          │  + ─ ⧉ 🗑            │
+│   or Result (zoomed, overlays, compare)  ├─────────────────────┤
+│                                          │ Recipe Layers Export│ right dock
+│                                          │  (selected tab)     │ 320 px
+│                                          │                     │ (260–420)
 ├──────────────────────────────────────────┴─────────────────────┤
-│ Status  200% │ Source │ cell 17,9 │ 3 colours+bg │ 12 clashes (worst 31,4) │ Koala, 10 003 B │ 22 px
+│ Status  Multicolor 160×200 · Source · cell 12,7 · px 48,56 · 400%   3 clashes · solve 42 ms │ 22 px
 └────────────────────────────────────────────────────────────────┘
 ```
 
-- **Right dock, three stacked groups:** **Result** (fixed height, never scrolls away), **Recipe** and **Layers** (share the remaining height, draggable divider, default 55 : 45). Default width 320 px = one C64 result at 1× plus padding; resizable 260–420, and the result scales down (never up) if the dock is narrower than 320. `Tab` hides all chrome, `Shift+Tab` hides only the dock (Photoshop/GIMP convention); when the dock is hidden the result is gone too, which is the point of `Tab` — full-screen working.
-- **Working view** gets all remaining space and has two modes, **Source** and **Result**, switched with `Q` or the toolbar dropdown. Source is the default on open. The status bar always names the current mode.
+Heights and the dock width are the Figma `convert64/*` layout variables (`theme::layout`); the Figma `App Shell / Light` and `/ Dark` frames are the reference.
+
+- **Right dock: the result, then tabs.** **Result** (header and the C64 result at 1×, fixed height, never scrolls away), then the **Recipe**, **Layers** and **Export** tabs (Figma `Dock Tabs`; the Recipe tab also lists the layers, so the common case needs no tab switch). Default width 320 px = one C64 result at 1×; resizable 260–420, and the result scales down (never up) if the dock is narrower than 320. `Tab` hides all chrome, `Shift+Tab` hides only the dock (Photoshop/GIMP convention); when the dock is hidden the result is gone too, which is the point of `Tab` — full-screen working. (Until #203 this section stacked Recipe and Layers with a draggable divider and collapsed them to tabs below ~700 px; the Figma frames chose tabs at every width.)
+- **Working view** gets all remaining space and has two modes, **Source** and **Result**, switched with `Q` or the toolbar's Source/Result button. Source is the default on open. The status bar always names the current mode.
 - **The result panel is also a navigator:** when the working view is in Result mode and zoomed, the panel shows the visible rectangle; clicking or dragging on the panel pans the working view there (Photoshop Navigator behaviour). In Source mode a click on the panel switches the working view to Result and centres on that spot.
 - **No docking framework in v1.** Fixed `egui::Panel`s with persisted sizes; egui_tiles only if users ask to rearrange.
-- Below ~900 px wide the Recipe and Layers groups collapse to headers but the Result stays; below ~700 px the dock becomes a single tabbed group with Result pinned above the tabs.
 
 ## 4. The working view and the result panel
 
@@ -245,8 +243,8 @@ Sample strings:
 
 - **Theme:** egui `Visuals::light()` / `dark()`, system-following, override in View (ADR-007). Dark is what most users of this category expect (Photoshop, Affinity, Krita, PhotoCraft Pro default dark); light must be equally finished.
 - **Semantic colours** (one `Theme` struct, two instances): `clash` (red family), `pin` (amber), `lock` (blue-grey), `region` (teal), `selection` (accent), `grid` (40 % of fg), each verified for ≥3:1 against the dock surface and visible over the four test palette colours (Black, White, Yellow, Blue).
-- **Type:** egui default proportional at 13 px for panels, 12 px status bar, monospace for numbers in the status bar and any address/size (`tabular_nums` equivalent: monospace). Headings 14 px semibold. No display type.
-- **Density:** 8 px spacing unit; rows 24 px in the layer list; 28 px touch targets minimum on controls (egui default), toolbar buttons 28×28 with icon + optional label.
+- **Type:** egui default proportional at 13 px for panels, the status bar in egui's `Small` style as the Figma `Status Bar` draws it (#203; monospace numbers there are a Figma follow-up), monospace for any address/size. Headings 14 px semibold. No display type.
+- **Density:** 8 px spacing unit; rows 24 px in the layer list; 28 px touch targets minimum on controls (egui default), toolbar buttons 24×24 in the 28 px toolbar (Figma `Toolbar Button`; #203).
 - **Icons:** Material Symbols, glyph map in ADR-007, 16 px in rows and toolbar, 20 px for the four tools. Icon + text on every toolbar button except tools (icon + tooltip + key).
 - **Motion:** none beyond egui's 100 ms panel animations; the A/B flicker is the only "animation" and it is a feature.
 
