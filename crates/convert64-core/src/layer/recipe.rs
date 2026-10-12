@@ -476,6 +476,22 @@ impl From<CustomMatrix> for Vec<u16> {
     }
 }
 
+/// How an ordered, noise or effect pixel turns its threshold into a colour (#156).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OrderedSemantics {
+    /// png2c64's `apply_ordered_matrix`: the nearest and second-nearest colours of the
+    /// cell's set (metric distances `dA ≤ dB`), `t = √dA / (√dA + √dB)`, and the second
+    /// colour where `threshold < t × strength`. The pattern spans the whole interval
+    /// between the two colours.
+    #[default]
+    Png2c64,
+    /// What E5 shipped: the positional pick with thresholds pulled towards ½ by
+    /// strength, and #142's mix levels (`mix_levels`, linear-light ratio, best
+    /// partner). Kept so earlier goldens can be reproduced.
+    Legacy,
+}
+
 /// How the cell-set search scores a candidate set (`docs/reference/dither-methods.md`
 /// §6, #120). The dither method then places the pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -589,6 +605,10 @@ struct RecipeData {
     cell_metric: CellMetric,
     #[serde(default = "default_error_clamp")]
     error_clamp: f32,
+    #[serde(default)]
+    ordered_semantics: OrderedSemantics,
+    #[serde(default = "yes")]
+    chroma_guard: bool,
 }
 
 const fn default_error_clamp() -> f32 {
@@ -642,6 +662,8 @@ pub struct Recipe {
     smooth: bool,
     cell_metric: CellMetric,
     error_clamp: f32,
+    ordered_semantics: OrderedSemantics,
+    chroma_guard: bool,
 }
 
 impl TryFrom<RecipeData> for Recipe {
@@ -656,6 +678,10 @@ impl TryFrom<RecipeData> for Recipe {
         .with_mix_levels(d.mix_levels)
         .map(|r| r.with_smooth(d.smooth).with_cell_metric(d.cell_metric))?
         .with_error_clamp(d.error_clamp)
+        .map(|r| {
+            r.with_ordered_semantics(d.ordered_semantics)
+                .with_chroma_guard(d.chroma_guard)
+        })
     }
 }
 
@@ -676,6 +702,8 @@ impl Default for Recipe {
             smooth: false,
             cell_metric: CellMetric::Mse,
             error_clamp: DEFAULT_ERROR_CLAMP,
+            ordered_semantics: OrderedSemantics::Png2c64,
+            chroma_guard: true,
         }
     }
 }
@@ -710,6 +738,8 @@ impl Recipe {
             smooth: false,
             cell_metric: CellMetric::Mse,
             error_clamp: DEFAULT_ERROR_CLAMP,
+            ordered_semantics: OrderedSemantics::Png2c64,
+            chroma_guard: true,
         })
     }
 
@@ -786,6 +816,31 @@ impl Recipe {
         }
         self.error_clamp = clamp;
         Ok(self)
+    }
+
+    /// This recipe with ordered pixels turned into colours by `semantics` (#156).
+    pub const fn with_ordered_semantics(mut self, semantics: OrderedSemantics) -> Self {
+        self.ordered_semantics = semantics;
+        self
+    }
+
+    /// How ordered pixels pick colours (see [`OrderedSemantics`]).
+    pub const fn ordered_semantics(&self) -> OrderedSemantics {
+        self.ordered_semantics
+    }
+
+    /// This recipe with the chroma guard on or off (#156): with it, an ordered pixel
+    /// never mixes in a second colour whose mean OKLab chroma with its first exceeds
+    /// the pixel's own chroma by more than `CHROMA_MARGIN`, so neutral areas dither
+    /// with greys only. On by default.
+    pub const fn with_chroma_guard(mut self, guard: bool) -> Self {
+        self.chroma_guard = guard;
+        self
+    }
+
+    /// Whether the chroma guard is on (see [`Self::with_chroma_guard`]).
+    pub const fn chroma_guard(&self) -> bool {
+        self.chroma_guard
     }
 
     /// The diffused-error clamp (see [`Self::with_error_clamp`]).

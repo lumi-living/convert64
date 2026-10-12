@@ -218,6 +218,233 @@ pub(crate) fn repick(
     best
 }
 
+/// The nearest colour so far and its distance.
+type Near = Option<(f32, ColourIndex)>;
+
+/// Weight of the lightness-bracketing term in the rendered score (#156), per pixel and
+/// per unit of squared bracket width: a set whose colours bracket each pixel's OKLab L
+/// closely (the intermediate grey of a ramp) beats one that leaves wide gaps.
+pub const BRIDGE_WEIGHT: f32 = 0.05;
+
+/// How many colours the rendered re-pick's short list keeps.
+pub const RENDER_SHORT_LIST: usize = 6;
+
+/// Whether pixel `q` is rendered by png2c64's ordered pick.
+pub(crate) fn png2c64_ordered(q: &super::input::Px) -> bool {
+    q.kind.family().is_threshold() && q.semantics == crate::layer::OrderedSemantics::Png2c64
+}
+
+/// Cell `i` scored by what it renders with `full` (#156): for ordered pixels the
+/// distance to the linear-light mix of the pair png2c64's pick takes, at the share its
+/// pattern shows, plus [`BRIDGE_WEIGHT`] × the squared width of the OKLab-L bracket the
+/// set gives the pixel (an unbracketed pixel counts ½ plus its distance to the nearest
+/// end); other pixels count their nearest colour as in the squared-distance search.
+pub(crate) fn rendered_score(
+    input: &Input,
+    tables: &MetricTables,
+    i: usize,
+    full: ColourSet,
+    bias: f32,
+) -> f32 {
+    rendered_score_memo(input, tables, i, full, bias, &mut Vec::new())
+}
+
+/// [`rendered_score`] with each pixel's mix error per pair memoised in `memo` (the
+/// k-th pixel of the cell, pair `16 × a + b`; NaN = not yet), shared across the sets
+/// one re-pick tries: a pixel takes the same pair in most of them.
+fn rendered_score_memo(
+    input: &Input,
+    tables: &MetricTables,
+    i: usize,
+    full: ColourSet,
+    bias: f32,
+    memo: &mut Vec<f32>,
+) -> f32 {
+    let w = input.size.0;
+    if memo.len() != input.per_cell() * 256 {
+        *memo = vec![f32::NAN; input.per_cell() * 256];
+    }
+    let colours: Vec<ColourIndex> = full.iter().collect();
+    let oklab = tables.colours(super::metric::Space::OkLab);
+    let linear: [[f32; 3]; 16] = ColourIndex::ALL.map(|c| {
+        let l = tables.palette().linear(c);
+        [l.r, l.g, l.b]
+    });
+    let mut total = 0.0f32;
+    for (k, (x, y)) in input.pixels_of(i).enumerate() {
+        let q = &input.px[y * w + x];
+        if q.weight <= 0.0 {
+            continue;
+        }
+        let space = q.metric.space();
+        let pal = tables.colours(space);
+        if !png2c64_ordered(q) {
+            let c = super::ordered::nearest(q.metric, q.coords, &colours, pal);
+            total += q.weight * q.metric.distance(q.coords, pal[c.as_usize()]);
+            continue;
+        }
+        let (_, a, b, share) = super::ordered::png2c64_pick(
+            q.metric,
+            q.coords,
+            &colours,
+            pal,
+            q.chroma_guard.then_some((q.oklab, oklab)),
+            0.5,
+            q.strength * q.adapt,
+        );
+        // No spread penalty: the hue guard already keeps far-hued pairs out, and a
+        // penalty on distance would also forbid the lightness bridges (brown with black
+        // under dark olive) that ordered dithering is for.
+        let slot = k * 256 + a.as_usize() * 16 + b.as_usize();
+        if memo[slot].is_nan() {
+            let (la, lb) = (linear[a.as_usize()], linear[b.as_usize()]);
+            let mix = [0, 1, 2].map(|c| la[c] + share * (lb[c] - la[c]));
+            memo[slot] = q.metric.distance(q.coords, q.metric.coords(mix));
+        }
+        total += q.weight * memo[slot];
+        // Lightness bracket among the set's colours the guard lets this pixel use.
+        let l = q.oklab[0];
+        let (mut lo, mut hi) = (f32::NEG_INFINITY, f32::INFINITY);
+        for &c in &colours {
+            let o = oklab[c.as_usize()];
+            // Only colours the guard allows bracket a pixel, and a chromatic pixel is
+            // bracketed by colours of its own hue, not by greys: a grey bracket would
+            // drain skin and olive of colour.
+            let chromatic = super::ordered::chroma(q.oklab) > 2.0 * super::ordered::CHROMA_MARGIN;
+            if (q.chroma_guard && !super::ordered::guard_allows(q.oklab, o))
+                || (chromatic && super::ordered::chroma(o) <= 2.0 * super::ordered::CHROMA_MARGIN)
+            {
+                continue;
+            }
+            if o[0] <= l {
+                lo = lo.max(o[0]);
+            }
+            if o[0] >= l {
+                hi = hi.min(o[0]);
+            }
+        }
+        let width = match (lo.is_finite(), hi.is_finite()) {
+            (true, true) => hi - lo,
+            // Unbracketed: the pixel can only be approached from one side.
+            (true, false) => 0.5 + (l - lo),
+            (false, true) => 0.5 + (hi - l),
+            (false, false) => 1.0,
+        };
+        total += q.weight * BRIDGE_WEIGHT * width * width;
+    }
+    total + luma_pair_bias(full, bias)
+}
+
+/// The best set for cell `i` by [`rendered_score`] among a short list: the colours
+/// its ordered pixels' own guarded pairs take over all allowed colours (png2c64's
+/// unconstrained choice, weighted by how much each shows), the squared-distance
+/// winner's and the cell's most wanted, [`RENDER_SHORT_LIST`] at most.
+pub(crate) fn rendered_repick(
+    input: &Input,
+    tables: &MetricTables,
+    i: usize,
+    bg: Option<ColourIndex>,
+    c: &Constraints,
+    bias: f32,
+    mse: CellChoice,
+) -> CellChoice {
+    let w = input.size.0;
+    let bg_set = bg.map_or(ColourSet::EMPTY, |b| ColourSet::EMPTY.with(b));
+    let allowed: Vec<ColourIndex> = c.candidates.union(bg_set).iter().collect();
+    let oklab = tables.colours(super::metric::Space::OkLab);
+    let mut weight = [0.0f32; 16];
+    for (x, y) in input.pixels_of(i) {
+        let q = &input.px[y * w + x];
+        if q.weight <= 0.0 || !png2c64_ordered(q) {
+            continue;
+        }
+        let (_, a, b, share) = super::ordered::png2c64_pick(
+            q.metric,
+            q.coords,
+            &allowed,
+            tables.colours(q.metric.space()),
+            q.chroma_guard.then_some((q.oklab, oklab)),
+            0.5,
+            q.strength * q.adapt,
+        );
+        weight[a.as_usize()] += q.weight * (1.0 - share);
+        weight[b.as_usize()] += q.weight * share;
+        // And the colours that bracket its lightness most closely, from below and
+        // above, among those the guard allows (black under dark olive, which png2c64's
+        // pair would pass over for an equally near dark grey).
+        let l = q.oklab[0];
+        let (mut lo, mut hi): (Near, Near) = (None, None);
+        for &col in &allowed {
+            let o = oklab[col.as_usize()];
+            if q.chroma_guard && !super::ordered::guard_allows(q.oklab, o) {
+                continue;
+            }
+            let near = q
+                .metric
+                .distance(q.coords, tables.colours(q.metric.space())[col.as_usize()]);
+            if o[0] <= l && lo.is_none_or(|(d, _)| near < d) {
+                lo = Some((near, col));
+            }
+            if o[0] >= l && hi.is_none_or(|(d, _)| near < d) {
+                hi = Some((near, col));
+            }
+        }
+        for (_, col) in lo.into_iter().chain(hi) {
+            weight[col.as_usize()] += 0.5 * q.weight;
+        }
+    }
+    for col in mse.set.iter() {
+        weight[col.as_usize()] += 1e-3;
+    }
+    for (col, wt) in input.wanted_colours(input.cell_at(i)).into_iter().take(3) {
+        weight[col.as_usize()] += 1e-4 * wt;
+    }
+    let mut ranked: Vec<ColourIndex> = ColourIndex::ALL
+        .into_iter()
+        .filter(|col| {
+            weight[col.as_usize()] > 0.0 && c.candidates.contains(*col) && !bg_set.contains(*col)
+        })
+        .collect();
+    ranked.sort_by(|a, b| {
+        weight[b.as_usize()]
+            .total_cmp(&weight[a.as_usize()])
+            .then(a.cmp(b))
+    });
+    let required = c.required.difference(bg_set);
+    let mut short = required;
+    for col in ranked {
+        if short.len() as usize >= RENDER_SHORT_LIST {
+            break;
+        }
+        short = short.with(col);
+    }
+    let k = input.k();
+    let free: Vec<ColourIndex> = short.difference(required).iter().collect();
+    let picks = k.saturating_sub(required.len() as usize).min(free.len());
+    let full_of = |set: ColourSet| bg.map_or(set, |b| set.with(b));
+    let mut memo = Vec::new();
+    let mut best = CellChoice {
+        set: mse.set,
+        score: rendered_score_memo(input, tables, i, full_of(mse.set), bias, &mut memo),
+    };
+    let mut idx: Vec<usize> = (0..picks).collect();
+    loop {
+        let set = idx.iter().fold(required, |s, &j| s.with(free[j]));
+        let sc = rendered_score_memo(input, tables, i, full_of(set), bias, &mut memo);
+        if sc < best.score {
+            best = CellChoice { set, score: sc };
+        }
+        let Some(pos) = (0..picks).rev().find(|&p| idx[p] < free.len() - picks + p) else {
+            break;
+        };
+        idx[pos] += 1;
+        for q in pos + 1..picks {
+            idx[q] = idx[q - 1] + 1;
+        }
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

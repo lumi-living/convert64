@@ -425,6 +425,106 @@ pub(crate) fn nearest_two(
     (best.1, second.1)
 }
 
+/// How much more chroma (OKLab) a mix may carry than the pixel it renders: a second
+/// colour whose mean chroma with the first exceeds the pixel's by more than this is
+/// skipped by the chroma guard (#156). About two just-noticeable steps of chroma.
+pub const CHROMA_MARGIN: f32 = 0.03;
+
+/// The smallest cosine of the hue angle between a chromatic pixel and a chromatic
+/// partner colour the chroma guard accepts (about 53°): light red and green average to
+/// amber but read as noise.
+pub const HUE_COS: f32 = 0.6;
+
+/// Whether colour `c` (OKLab) may join a mix for pixel `px` (OKLab) by hue: always
+/// when either is near-grey, else when their hue angles are within [`HUE_COS`].
+fn same_hue(px: [f32; 3], c: [f32; 3]) -> bool {
+    let (cp, cc) = (chroma(px), chroma(c));
+    if cp <= 2.0 * CHROMA_MARGIN || cc <= 2.0 * CHROMA_MARGIN {
+        return true;
+    }
+    (px[1] * c[1] + px[2] * c[2]) >= HUE_COS * cp * cc
+}
+
+/// A pixel at most this chromatic (OKLab) is neutral: the chroma guard then keeps its
+/// mixes to near-greys.
+pub const NEUTRAL_CHROMA: f32 = 0.02;
+
+/// Whether the chroma guard lets pixel `px` (OKLab) use colour `c` (OKLab) at all: a
+/// neutral pixel only near-greys (within [`CHROMA_MARGIN`] of its chroma), a tinted one
+/// any colour of a close hue ([`same_hue`]).
+pub(crate) fn guard_allows(px: [f32; 3], c: [f32; 3]) -> bool {
+    if chroma(px) <= NEUTRAL_CHROMA {
+        chroma(c) - chroma(px) <= CHROMA_MARGIN
+    } else {
+        same_hue(px, c)
+    }
+}
+
+/// OKLab chroma of OKLab coordinates.
+pub(crate) fn chroma(lab: [f32; 3]) -> f32 {
+    (lab[1] * lab[1] + lab[2] * lab[2]).sqrt()
+}
+
+/// png2c64's ordered pick (`apply_ordered_matrix`, #156): `a` the nearest colour of
+/// `set` to `x` and `b` the second nearest, `t = √dA / (√dA + √dB)`, and `b` where
+/// `thr < t × strength`. With `guard = Some((pixel in OKLab, palette in OKLab))` (the
+/// chroma guard), only colours [`guard_allows`] are used when the set has any, and a
+/// neutral pixel's `b` must also keep the pair's mean chroma within [`CHROMA_MARGIN`]
+/// of its own; with no partner the pixel shows `a`. Returns the colour shown, the pair
+/// and the share of `b` the pattern shows on average (`t × strength`).
+pub fn png2c64_pick(
+    metric: Metric,
+    x: [f32; 3],
+    set: &[ColourIndex],
+    colours: &[[f32; 3]; 16],
+    guard: Option<([f32; 3], &[[f32; 3]; 16])>,
+    thr: f32,
+    strength: f32,
+) -> (ColourIndex, ColourIndex, ColourIndex, f32) {
+    // The guard first keeps the colours no more chromatic than the pixel allows (when
+    // the set has any), so a pale grey takes grey and white, not light green. Fixed
+    // arrays: this runs per pixel for every candidate set.
+    let mut items = [(0.0f32, ColourIndex::BLACK); 16];
+    let mut n = 0;
+    for &c in set {
+        if guard.is_none_or(|(px, lab)| guard_allows(px, lab[c.as_usize()])) {
+            items[n] = (metric.distance(x, colours[c.as_usize()]), c);
+            n += 1;
+        }
+    }
+    if n == 0 {
+        for &c in set {
+            items[n] = (metric.distance(x, colours[c.as_usize()]), c);
+            n += 1;
+        }
+    }
+    let by_distance = &mut items[..n];
+    by_distance.sort_unstable_by(|p, q| p.0.total_cmp(&q.0).then(p.1.cmp(&q.1)));
+    let (da, a) = by_distance[0];
+    let partner = by_distance[1..]
+        .iter()
+        .copied()
+        .find(|&(_, b)| match guard {
+            None => true,
+            Some((px, lab)) => {
+                let (la, lb) = (lab[a.as_usize()], lab[b.as_usize()]);
+                if chroma(px) <= NEUTRAL_CHROMA {
+                    (chroma(la) + chroma(lb)) / 2.0 - chroma(px) <= CHROMA_MARGIN
+                } else {
+                    same_hue(px, lb)
+                }
+            }
+        });
+    let Some((db, b)) = partner else {
+        return (a, a, a, 0.0);
+    };
+    let (sa, sb) = (da.sqrt(), db.sqrt());
+    let t = if sa + sb > 1e-6 { sa / (sa + sb) } else { 0.0 };
+    let share = (t * strength).clamp(0.0, 1.0);
+    let shows = if thr < share { b } else { a };
+    (shows, a, b, share)
+}
+
 /// The colour an ordered pixel takes: between its nearest and second-nearest colour of
 /// `set`, by threshold `thr` pulled towards ½ by `1 − strength`.
 pub fn ordered_pick(
@@ -629,6 +729,64 @@ mod tests {
             let (px, py) = pattern_position(12, 7, PatternPhase::Layer, (0, 0));
             threshold(DitherKind::Bayer4, Orientation::Auto, px, py)
         });
+    }
+
+    #[test]
+    fn png2c64_pick_follows_png2c64_s_formula() {
+        // A grey a quarter of the way (in OKLab) from black to white: dA = (L/4)², dB =
+        // (3L/4)², so t = ¼, and at strength 1 a threshold below ¼ shows white.
+        let t = MetricTables::new(&Palette::pepto_pal());
+        let colours = t.colours(Space::OkLab);
+        let (b, w) = (colours[0], colours[1]);
+        let x = [0, 1, 2].map(|i| b[i] + 0.25 * (w[i] - b[i]));
+        let set = [ColourIndex::BLACK, ColourIndex::WHITE];
+        let pick = |thr, s| png2c64_pick(Metric::OkLab, x, &set, colours, None, thr, s);
+        let (_, a, bb, share) = pick(0.1, 1.0);
+        assert_eq!((a, bb), (ColourIndex::BLACK, ColourIndex::WHITE));
+        assert!((share - 0.25).abs() < 1e-4, "{share}");
+        assert_eq!(pick(0.24, 1.0).0, ColourIndex::WHITE);
+        assert_eq!(pick(0.26, 1.0).0, ColourIndex::BLACK);
+        // Strength scales t: at ½ only thresholds below ⅛ show white.
+        assert_eq!(pick(0.12, 0.5).0, ColourIndex::WHITE);
+        assert_eq!(pick(0.13, 0.5).0, ColourIndex::BLACK);
+    }
+
+    #[test]
+    fn the_chroma_guard_keeps_greys_grey() {
+        // A pale neutral grey between light grey and white with light green in the set:
+        // without the guard light green (nearest) can show; with it only greys do.
+        let t = MetricTables::new(&Palette::pepto_pal());
+        let colours = t.colours(Space::OkLab);
+        let set = [
+            ColourIndex::LIGHT_GREY,
+            ColourIndex::WHITE,
+            ColourIndex::LIGHT_GREEN,
+            ColourIndex::BLACK,
+        ];
+        let x = [0.85, 0.0, 0.0];
+        for i in 0..64 {
+            let thr = (f32::from(i as u8) + 0.5) / 64.0;
+            let (shows, ..) = png2c64_pick(
+                Metric::OkLab,
+                x,
+                &set,
+                colours,
+                Some((x, colours)),
+                thr,
+                1.0,
+            );
+            assert!(
+                matches!(shows, ColourIndex::LIGHT_GREY | ColourIndex::WHITE),
+                "{shows}"
+            );
+        }
+        // A tinted pixel keeps colours of its own hue.
+        let olive = [0.21, -0.01, 0.025];
+        assert!(guard_allows(olive, colours[ColourIndex::BROWN.as_usize()]));
+        assert!(!guard_allows(
+            x,
+            colours[ColourIndex::LIGHT_GREEN.as_usize()]
+        ));
     }
 
     #[test]

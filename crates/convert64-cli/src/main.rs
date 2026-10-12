@@ -79,6 +79,14 @@ enum Command {
         /// PAL-blend safe; 8 = off).
         #[arg(long, default_value_t = 8)]
         max_luma_diff: u8,
+        /// How ordered dithers pick colours: png2c64 (default, png2c64's formula) or
+        /// legacy (E5's, with mix levels).
+        #[arg(long, default_value = "png2c64")]
+        ordered_semantics: String,
+        /// Let ordered mixes add chroma the source lacks (the chroma guard is on by
+        /// default).
+        #[arg(long)]
+        no_chroma_guard: bool,
         /// Clamp diffused error to ± this per metric channel, 0–1 (png2c64 --error-clamp;
         /// 0 = off).
         #[arg(long, default_value_t = 0.1)]
@@ -208,6 +216,8 @@ fn main() -> ExitCode {
             supersample,
             no_cell_clamp,
             max_luma_diff,
+            ordered_semantics,
+            no_chroma_guard,
             error_clamp,
             adaptive,
             hysteresis,
@@ -229,6 +239,8 @@ fn main() -> ExitCode {
                 supersample,
                 cell_clamp: !no_cell_clamp,
                 max_luma_diff,
+                ordered_semantics,
+                chroma_guard: !no_chroma_guard,
                 error_clamp,
                 adaptive,
                 hysteresis,
@@ -337,6 +349,8 @@ struct ConvertOptions {
     supersample: u8,
     cell_clamp: bool,
     max_luma_diff: u8,
+    ordered_semantics: String,
+    chroma_guard: bool,
     error_clamp: f32,
     adaptive: f32,
     hysteresis: Option<f32>,
@@ -361,8 +375,8 @@ fn run_convert(
 ) -> Result<(), String> {
     use convert64_core::geom::Vec2;
     use convert64_core::layer::{
-        Adjustments, CellMetric, DitherKind, Gamma, Layer, Method, Metric, RangeMatch, Recipe,
-        Transform, suggest_range_match,
+        Adjustments, CellMetric, DitherKind, Gamma, Layer, Method, Metric, OrderedSemantics,
+        RangeMatch, Recipe, Transform, suggest_range_match,
     };
     use convert64_core::mode::Mode;
     use convert64_core::solve::{Background, SolveOptions, Solver, Steering};
@@ -380,6 +394,7 @@ fn run_convert(
             Ok(c) => (Metric::default(), Some(c)),
             Err(_) => (named("metric", &o.metric)?, None),
         };
+    let semantics: OrderedSemantics = named("ordered semantics", &o.ordered_semantics)?;
     let cell_metric = match &o.cell_metric {
         Some(name) => named("cell metric", name)?,
         None => png2c64_cell.unwrap_or_default(),
@@ -408,8 +423,13 @@ fn run_convert(
     })
     .and_then(|r| r.with_adaptive(o.adaptive))
     .and_then(|r| r.with_error_clamp(o.error_clamp))
+    .map(|r| r.with_chroma_guard(o.chroma_guard))
     .and_then(|r| r.with_mix_levels(o.mix_levels))
-    .map(|r| r.with_smooth(o.smooth).with_cell_metric(cell_metric))
+    .map(|r| {
+        r.with_smooth(o.smooth)
+            .with_cell_metric(cell_metric)
+            .with_ordered_semantics(semantics)
+    })
     .map_err(|e| e.to_string())?;
     let palette = Palette::default();
     let adjustments = Adjustments {
