@@ -81,6 +81,21 @@ enum Command {
         /// ratio (e.g. 0.97); off by default.
         #[arg(long)]
         hysteresis: Option<f32>,
+        /// Ordered and noise dithers: mix each cell's colour pairs at one of N + 1 levels,
+        /// 0–16 (4 = 0/25/50/75/100 %; 0 = continuous per-pixel ratio, as E5).
+        #[arg(long, default_value_t = 4)]
+        mix_levels: u8,
+        /// Ordered and noise dithers: take the mix ratio from an edge-aware blur of the
+        /// picture (σ ≈ 1 target pixel).
+        #[arg(long)]
+        smooth: bool,
+        /// png2c64-style gamma, 0.1–8: every channel raised to this power in linear light
+        /// before anything else (> 1 darkens; png2c64's default is 1.5).
+        #[arg(long, default_value_t = 1.0)]
+        gamma: f32,
+        /// Map the picture's OKLab range onto the palette's (png2c64 --match-range).
+        #[arg(long)]
+        match_range: bool,
         /// Output file (.kla for multicolor, .art for hi-res).
         #[arg(short, long)]
         output: PathBuf,
@@ -185,6 +200,10 @@ fn main() -> ExitCode {
             max_luma_diff,
             adaptive,
             hysteresis,
+            mix_levels,
+            smooth,
+            gamma,
+            match_range,
             output,
             report,
             json,
@@ -200,6 +219,10 @@ fn main() -> ExitCode {
                 max_luma_diff,
                 adaptive,
                 hysteresis,
+                mix_levels,
+                smooth,
+                gamma,
+                match_range,
             };
             match run_convert(&input, &opts, &output, report, json) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -302,6 +325,10 @@ struct ConvertOptions {
     max_luma_diff: u8,
     adaptive: f32,
     hysteresis: Option<f32>,
+    mix_levels: u8,
+    smooth: bool,
+    gamma: f32,
+    match_range: bool,
 }
 
 /// A serde enum value from its kebab-case name.
@@ -318,7 +345,10 @@ fn run_convert(
     json: bool,
 ) -> Result<(), String> {
     use convert64_core::geom::Vec2;
-    use convert64_core::layer::{DitherKind, Layer, Method, Metric, Recipe, Transform};
+    use convert64_core::layer::{
+        Adjustments, DitherKind, Gamma, Layer, Method, Metric, RangeMatch, Recipe, Transform,
+        suggest_range_match,
+    };
     use convert64_core::mode::Mode;
     use convert64_core::solve::{Background, SolveOptions, Solver, Steering};
     use convert64_core::{Compositor, Palette, SuperGrid};
@@ -352,13 +382,38 @@ fn run_convert(
             .with_max_luma_diff(o.max_luma_diff)
     })
     .and_then(|r| r.with_adaptive(o.adaptive))
+    .and_then(|r| r.with_mix_levels(o.mix_levels))
+    .map(|r| r.with_smooth(o.smooth))
     .map_err(|e| e.to_string())?;
+    let palette = Palette::default();
+    let adjustments = Adjustments {
+        gamma: Gamma::new(o.gamma).map_err(|e| e.to_string())?,
+        match_range: o
+            .match_range
+            .then(|| {
+                RangeMatch::for_palette(
+                    &palette,
+                    RangeMatch::DEFAULT_PERCENTILE,
+                    RangeMatch::DEFAULT_MARGIN,
+                )
+            })
+            .transpose()
+            .map_err(|e| e.to_string())?,
+        ..Adjustments::default()
+    };
     if let Some(h) = o.hysteresis
         && !(h > 0.0 && h <= 1.0)
     {
         return Err(format!("--hysteresis must be in (0, 1], got {h}"));
     }
     let src = convert64_cli::recipe::load_source(input).map_err(|e| e.to_string())?;
+    // "Auto levels" (#142): suggested, never applied unasked.
+    if !o.match_range && suggest_range_match(&src, &palette).is_some() {
+        eprintln!(
+            "hint: the picture's lightness range is narrow; --match-range stretches it to \
+             the palette's (png2c64 --match-range)"
+        );
+    }
     let (w, h) = src.size();
     let mut layer = Layer::new("source", std::sync::Arc::new(src));
     layer.set_transform(
@@ -371,11 +426,12 @@ fn run_convert(
         .map_err(|e| e.to_string())?,
     );
     layer.set_recipe(recipe);
+    layer.set_adjustments(adjustments);
     let grid = SuperGrid::new(mode, o.supersample).map_err(|e| e.to_string())?;
     let mut c = Compositor::new(grid);
     c.update(&[layer], &[]);
     let started = std::time::Instant::now();
-    let sol = Solver::new(&Palette::default()).solve(
+    let sol = Solver::new(&palette).solve(
         c.frame(),
         &Steering::new(),
         None,

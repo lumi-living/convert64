@@ -54,7 +54,7 @@ into blend. Added to `dither-methods.md` §5.
 | Background | try all 16, keep lowest error (png2c64, tiledither) | Retropic: image mean | try all 16, or pinned |
 | Error across cell borders | **allowed** (png2c64 intentionally, Dithertron, tiledither) | Retropic: clamped | clamped by default (TAD), **`cell_clamp: false`** as a recipe option — png2c64's results show it is viable |
 | Metric | perceptual (OKLab, CIELAB, redmean, luma-weighted) | Retropixels: Euclidean XYZ | OKLab default; CIELAB, Pepto-YUV, RGB |
-| Gamma | preprocess step (png2c64 1.5) | — | composite and dither in linear light, gamma 1.0 default |
+| Gamma | preprocess step (png2c64 1.5) | — | composite and dither in linear light, gamma 1.0 default; png2c64's power is the `gamma` adjustment (`--gamma`), and the golden harness applies 1.5 so both converters solve the same picture (#142) |
 | Dither default | ordered (Bayer 4×4 Retropixels, checker png2c64) | — | checker |
 | Luma-pair awareness | **none** in any converter read | Yliluoma's luma-spread cap | pair bias + `max_luma_diff` — a real differentiator |
 | Refinement | fixed sets then dither | Dithertron: iterate to convergence with hysteresis (accept a set change only if error drops past a threshold, sub-palette ratio 0.97) | 1–2 refinement passes **with hysteresis** so cell sets do not flip-flop |

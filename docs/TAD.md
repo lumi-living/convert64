@@ -220,7 +220,7 @@ As built in E5 (2026-10-12): the bitmap solver (§3.1, §3.4–§3.5), in `conve
 | Hi-res, Floyd–Steinberg | 23.6 ms | 24.8 ms | 10.2 ms |
 | Hi-res, Bayer 4 | 11.1 ms | 12.2 ms | 9.8–18.0 ms (noisy runner) |
 
-**Quality bar:** OKLab MSE against the source, ours vs png2c64 (`thresholds.toml`):
+**Quality bar as E5 shipped it** (superseded by #142 below): OKLab MSE against the unpreprocessed source, ours vs png2c64:
 
 | Fixture | Ours | png2c64 |
 |---|---|---|
@@ -247,6 +247,26 @@ As built in E5 (2026-10-12): the bitmap solver (§3.1, §3.4–§3.5), in `conve
 - **`Orientation` gains `TwoToOne`** next to `VerticalBiased` (the line variant).
 - **The writers came early.** The Koala and Art Studio writers are E6 scope (#6), pulled forward for `convert64 convert`.
 
+As built in #142 (2026-10-12): calm flat areas, linear-light mixes and a fair quality bar.
+
+- **Why.** Side by side, png2c64 looked better on `portrait` and `photo` although E5 scored 1.4–5× lower MSE. E5's per-pixel ratio followed the source's micro-texture, so flat areas dithered in blotches. Its ratio was taken in OKLab, while the eye averages a pattern in linear light, so mixes with dark colours came out too bright. And the bar compared png2c64's output, solved from a gamma-1.5 source, with the unpreprocessed one.
+- **Mix levels** (`solve::mix`, recipe `mix_levels`, default 4; ordered and noise methods). A pixel mixes its nearest colour of the cell's set with the partner whose linear-RGB mix reproduces it best (not simply the second nearest: dark olive next to brown mixes with black, not the nearer dark grey), and its ratio is that mix's share. Per cell and pair, pixels within half a level step of the median are flat: they take one ratio, the cell's mean, snapped to what the eight neighbouring cells show of the same two colours when within half a step (hysteresis), and quantised to `N + 1` levels. Other pixels (edges, texture) keep their own continuous ratio. A pixel mixes only if the mix plus a spread penalty (`SPREAD_PENALTY` 0.25 × t(1 − t) × the pair's distance, after Yliluoma) is closer than its nearest colour alone, so pale areas next to a dark background colour are not peppered with it. `mix_levels = 0` keeps E5's continuous OKLab ratio.
+- **Ranking by what the eye sees.** `PassResult::seen` measures a mixed pixel against the linear-light mix it is part of, at the share its pattern actually shows (`ordered::shown_share`). Finalists and refinement rounds are ranked by it; `Solution::error` and the clash report stay per pixel.
+- **Pre-smoothing** (recipe `smooth`, default off). The ratio is taken from an edge-aware 5 × 5 Gaussian (σ = 1 target pixel; neighbours ≥ 0.08 OKLab ΔE away are left out), while colours are still chosen from the unblurred composite. It is off by default because, with mix levels doing the calming, it raised the blurred error on every fixture (title past png2c64's).
+- **Levels.** `Adjustments` gains `gamma` (png2c64's `--gamma`: a per-channel power in linear light, applied first) and `match_range` (png2c64's `--match-range`: the image's 1st–99th-percentile OKLab extent mapped onto a palette's, applied last over the whole image). `suggest_range_match` is the "Auto levels" suggestion for sources whose L range covers under 60 % of the palette's. `convert64 convert` prints it as a hint and never applies it unasked (`--gamma`, `--match-range`, `--mix-levels`, `--smooth`).
+- **Fair comparison.** The golden harness solves every fixture from png2c64's preprocessed source (`Gamma::PNG2C64` as a layer adjustment) and scores both converters against that source.
+- **Blurred quality bar.** Both renderings are blurred in linear light (binomial, σ ≈ 1.4 display pixels) before the OKLab MSE. Ours must not be worse than png2c64's (`png2c64_blur_mse_vs_source`). Per-pixel MSE is still reported but is no longer a bar: against a colour the palette cannot reach, it is lowest for a flat wrong colour, which is what this issue removes. `portrait`'s olive background now dithers brown and black to the right tone, so its per-pixel MSE is 1.9× png2c64's while its blurred error is 10× lower.
+- **Fixture fix.** `gradient`'s swatch band held Colodore values while the solve uses Pepto. It now holds the 16 Pepto colours, as its README says. Its png2c64 baseline was regenerated (VICE check 100 %), and `flat_areas::gradient_swatches_quantise_exactly` checks every swatch pixel, solved from the raw source.
+
+| Fixture | Blurred MSE, ours | Blurred MSE, png2c64 | Per-pixel MSE, ours | Per-pixel MSE, png2c64 |
+|---|---|---|---|---|
+| portrait | 0.00144 | 0.01446 | 0.0331 | 0.0171 |
+| terrain | 0.00116 | 0.00314 | 0.0088 | 0.0082 |
+| title | 0.00226 | 0.00291 | 0.0082 | 0.0074 |
+| gradient | 0.01052 | 0.01161 | 0.0163 | 0.0135 |
+| photo | 0.00255 | 0.00376 | 0.0118 | 0.0157 |
+| lineart | 0.00031 | 0.00045 | 0.0032 | 0.0151 |
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.
@@ -272,7 +292,7 @@ The public data model every front-end, solver, reader and writer shares. Constru
 ## 6. Testing
 - Unit tests per solver stage; property tests that every solver output passes the validator.
 - Golden fixtures: `fixtures/<name>/source.png` + expected `.kla/.art/.png`; compared bit-exact for formats, perceptually (OKLab MSE threshold) for solver output.
-- Baseline comparison against png2c64 output on the same fixtures: each solver golden requires our OKLab MSE against the source within png2c64's + 2 % (`png2c64_mse_vs_source` in `thresholds.toml`).
+- Baseline comparison against png2c64 output on the same fixtures: both are scored against the source with png2c64's preprocessing (gamma 1.5), from which ours is solved too. Each solver golden requires our OKLab MSE after a blur in linear light to be no worse than png2c64's (`png2c64_blur_mse_vs_source` in `thresholds.toml`, #142). Per-pixel MSE (`png2c64_mse_vs_source`) is reported, not gated.
 - Composite scenes (`fixtures/composite/<scene>/scene.toml`): layered scenes rendered by the compositor and compared with `expected_1x.png` (target-grid composite, alpha = coverage) and `expected_attr.png` (attribute-map debug render), within ±2 per channel; regenerated through `cargo xtask regen-goldens` like every golden.
 - Golden updates: `cargo xtask regen-goldens --accept --reason "…" --pr pending` before the first push, then `--set-pr N` once the pull request exists (#140). `fixtures/CHANGELOG.md` cites pull requests, not commit hashes, and no golden regeneration needs a red CI run. Details are in CONTRIBUTING.md.
 - Acceptance: exported files load and display in VICE `x64sc`.
