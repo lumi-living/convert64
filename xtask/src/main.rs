@@ -6,8 +6,9 @@
 //! - `regen-goldens [--report | --accept --reason "..." --pr N|pending | --set-pr N]`: list golden-test changes
 //!   (report mode, works on a dirty tree); accept them only with a reason, recorded in
 //!   `fixtures/CHANGELOG.md` (needs a clean tree).
-//! - `vice-check [--x64sc <path>]`: show each png2c64 baseline in VICE and compare the
-//!   capture with it (local only).
+//! - `vice-check [--x64sc <path>] [--skip-baselines] [--skip-exports]`: show each png2c64
+//!   baseline, and every export of Convert64's own solve of each fixture, in VICE and
+//!   compare the capture with it (local only).
 //! - `dither-sheet [--input <png> --out <dir>] [--mode mc|hires] [--reason "..."]`: render
 //!   every dither method and the comparison sheets (`docs/reference/dither-previews/`).
 
@@ -17,6 +18,7 @@ mod font;
 mod goldens;
 mod sheet;
 mod vice;
+mod vice_exports;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -49,13 +51,16 @@ enum Command {
         #[arg(long)]
         only: Vec<String>,
     },
-    /// Show every png2c64 baseline in VICE and compare the capture with it.
+    /// Show every png2c64 baseline and every export of our own solves in VICE and
+    /// compare each capture with the picture.
     ///
-    /// Needs only VICE (`x64sc`): the display PRGs are built from the committed baselines
-    /// with `convert64_formats::prg`. Writes
-    /// `fixtures/<name>/vice.png` and, for fixtures that pass (≥ 99.5 % of pixels agree
-    /// and every cell shows only the baseline's colours), a line in the fixture README.
-    /// Local only: VICE is not on the CI runners.
+    /// Needs only VICE (`x64sc`): the display PRGs are built with
+    /// `convert64_formats::prg`. Baselines: writes `fixtures/<name>/vice.png` and, for
+    /// fixtures that pass (≥ 99.5 % of pixels agree and every cell shows only the
+    /// baseline's colours), a line in the fixture README. Exports: solves each fixture
+    /// in both modes and checks the Koala / Art Studio writer, each bitpair policy and
+    /// the raw set (captures in `target/xtask/vice/exports/`) against the same bar, and
+    /// records them in the fixture README. Local only: VICE is not on the CI runners.
     ViceCheck {
         /// The VICE C64 emulator binary.
         #[arg(long, default_value = "x64sc")]
@@ -63,6 +68,12 @@ enum Command {
         /// Only these fixtures (default: all).
         #[arg(long)]
         only: Vec<String>,
+        /// Do not check the png2c64 baselines.
+        #[arg(long)]
+        skip_baselines: bool,
+        /// Do not check the exports of our own solves.
+        #[arg(long)]
+        skip_exports: bool,
     },
     /// List golden-test changes; accept them only with a reason.
     ///
@@ -139,7 +150,24 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::BlueNoise => bluenoise::run(&repo_root()),
         Command::Png2c64Baselines { png2c64, only } => baselines::run(&png2c64, &only),
-        Command::ViceCheck { x64sc, only } => vice::run(&x64sc, &only),
+        Command::ViceCheck {
+            x64sc,
+            only,
+            skip_baselines,
+            skip_exports,
+        } => {
+            let baselines = if skip_baselines {
+                Ok(())
+            } else {
+                vice::run(&x64sc, &only)
+            };
+            let exports = if skip_exports {
+                Ok(())
+            } else {
+                vice_exports::run(&x64sc, &only)
+            };
+            baselines.and(exports)
+        }
         Command::DitherSheet {
             input,
             mode,
