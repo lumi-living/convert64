@@ -1,0 +1,54 @@
+//! The keyboard shortcuts of `docs/UX.md` §8 that have a menu item or a shell action.
+//! `COMMAND` is `Cmd` on macOS and `Ctrl` elsewhere; menus show each one with
+//! `ctx.format_shortcut`.
+
+use egui::{Key, KeyboardShortcut, Modifiers};
+
+const fn cmd(key: Key) -> KeyboardShortcut {
+    KeyboardShortcut::new(Modifiers::COMMAND, key)
+}
+
+const fn shift_cmd(key: Key) -> KeyboardShortcut {
+    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), key)
+}
+
+const fn bare(key: Key) -> KeyboardShortcut {
+    KeyboardShortcut::new(Modifiers::NONE, key)
+}
+
+/// Open image or project.
+pub const OPEN: KeyboardShortcut = cmd(Key::O);
+/// Save project.
+pub const SAVE: KeyboardShortcut = cmd(Key::S);
+/// Save project as.
+pub const SAVE_AS: KeyboardShortcut = shift_cmd(Key::S);
+/// Export.
+pub const EXPORT: KeyboardShortcut = cmd(Key::E);
+/// Export again with the same settings.
+pub const EXPORT_AGAIN: KeyboardShortcut = shift_cmd(Key::E);
+/// Quit (native).
+pub const QUIT: KeyboardShortcut = cmd(Key::Q);
+/// Undo.
+pub const UNDO: KeyboardShortcut = cmd(Key::Z);
+/// Redo.
+pub const REDO: KeyboardShortcut = shift_cmd(Key::Z);
+/// New layer from file.
+pub const NEW_LAYER: KeyboardShortcut = shift_cmd(Key::N);
+/// Duplicate layer.
+pub const DUPLICATE_LAYER: KeyboardShortcut = cmd(Key::J);
+/// Zoom in.
+pub const ZOOM_IN: KeyboardShortcut = cmd(Key::Equals);
+/// Zoom out.
+pub const ZOOM_OUT: KeyboardShortcut = cmd(Key::Minus);
+/// Zoom to fit.
+pub const ZOOM_FIT: KeyboardShortcut = cmd(Key::Num0);
+/// Zoom to 100 %.
+pub const ZOOM_100: KeyboardShortcut = cmd(Key::Num1);
+/// Cell grid overlay.
+pub const GRID: KeyboardShortcut = cmd(Key::Quote);
+/// Working view: Source ⇄ Result.
+pub const SOURCE_RESULT: KeyboardShortcut = bare(Key::Q);
+/// Hide all chrome.
+pub const HIDE_CHROME: KeyboardShortcut = bare(Key::Tab);
+/// Hide the dock.
+pub const HIDE_DOCK: KeyboardShortcut = KeyboardShortcut::new(Modifiers::SHIFT, Key::Tab);

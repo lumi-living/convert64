@@ -36,12 +36,14 @@ insta = "1.48.0"
 serde_json = "1"
 toml = "1.1"
 # glow (OpenGL / WebGL2) renderer instead of the default wgpu: ADR-006 keeps
-# the app wgpu-free. Otherwise eframe's default feature set.
+# the app wgpu-free. Otherwise eframe's default feature set, plus `persistence` for the
+# View › Theme choice (#203).
 eframe = { version = "0.36.2", default-features = false, features = [
     "accesskit",
     "default_fonts",
     "glow",
     "links",
+    "persistence",
     "wayland",
     "web_screen_reader",
     "x11",
