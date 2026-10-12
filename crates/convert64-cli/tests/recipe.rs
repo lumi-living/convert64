@@ -196,7 +196,9 @@ fn recipe_apply_reports_clashes_as_json() {
     let json_start = text.find('{').expect("JSON after the summary line");
     let v: serde_json::Value = serde_json::from_str(&text[json_start..]).unwrap();
     assert!(v["summary"]["clashes"].is_u64());
-    assert!(v["error"].as_f64().unwrap() > 0.0);
+    assert!(v["solve_error"].as_f64().unwrap() > 0.0);
+    assert_eq!(v["command"], "recipe apply");
+    assert_eq!(v["error"], serde_json::Value::Null);
     assert!(v["worst"].as_array().unwrap().len() <= 10);
     let plain = Process::new(env!("CARGO_BIN_EXE_convert64"))
         .args(["recipe", "apply", "recipe.json", "--report"])
