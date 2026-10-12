@@ -77,15 +77,173 @@ const SIERRA: Kernel = Kernel {
     divisor: 32.0,
 };
 
-/// The kernel of a diffusion method.
+/// "False" Floyd–Steinberg: 3/8 right, 3/8 down, 2/8 down-right.
+const FALSE_FS: Kernel = Kernel {
+    taps: &[(1, 0, 3), (0, 1, 3), (1, 1, 2)],
+    divisor: 8.0,
+};
+
+/// png2c64's Floyd–Steinberg for 2:1 pixels: weight moved from the wide horizontal
+/// neighbour to the one below.
+const FS_WIDE: Kernel = Kernel {
+    taps: &[(1, 0, 5), (-1, 1, 3), (0, 1, 6), (1, 1, 2)],
+    divisor: 16.0,
+};
+
+/// png2c64's line-biased Floyd–Steinberg: nothing to the right, so the pixels of a row
+/// dither independently and rows stay coherent.
+const LINE_FS: Kernel = Kernel {
+    taps: &[(-1, 1, 2), (0, 1, 3), (1, 1, 2), (0, 2, 1)],
+    divisor: 8.0,
+};
+
+/// Stucki (1981).
+const STUCKI: Kernel = Kernel {
+    taps: &[
+        (1, 0, 8),
+        (2, 0, 4),
+        (-2, 1, 2),
+        (-1, 1, 4),
+        (0, 1, 8),
+        (1, 1, 4),
+        (2, 1, 2),
+        (-2, 2, 1),
+        (-1, 2, 2),
+        (0, 2, 4),
+        (1, 2, 2),
+        (2, 2, 1),
+    ],
+    divisor: 42.0,
+};
+
+/// Burkes (1988): Stucki's first two rows.
+const BURKES: Kernel = Kernel {
+    taps: &[
+        (1, 0, 8),
+        (2, 0, 4),
+        (-2, 1, 2),
+        (-1, 1, 4),
+        (0, 1, 8),
+        (1, 1, 4),
+        (2, 1, 2),
+    ],
+    divisor: 32.0,
+};
+
+/// Two-row Sierra.
+const SIERRA2: Kernel = Kernel {
+    taps: &[
+        (1, 0, 4),
+        (2, 0, 3),
+        (-2, 1, 1),
+        (-1, 1, 2),
+        (0, 1, 3),
+        (1, 1, 2),
+        (2, 1, 1),
+    ],
+    divisor: 16.0,
+};
+
+/// Sierra Lite.
+const SIERRA_LITE: Kernel = Kernel {
+    taps: &[(1, 0, 2), (-1, 1, 1), (0, 1, 1)],
+    divisor: 4.0,
+};
+
+/// Stevenson–Arce (1985), weights for a hexagonal grid laid on the square one.
+const STEVENSON_ARCE: Kernel = Kernel {
+    taps: &[
+        (2, 0, 32),
+        (-3, 1, 12),
+        (-1, 1, 26),
+        (1, 1, 30),
+        (3, 1, 16),
+        (-2, 2, 12),
+        (0, 2, 26),
+        (2, 2, 12),
+        (-3, 3, 5),
+        (-1, 3, 12),
+        (1, 3, 12),
+        (3, 3, 5),
+    ],
+    divisor: 200.0,
+};
+
+/// Shiau–Fan (1996), four taps.
+const SHIAU_FAN1: Kernel = Kernel {
+    taps: &[(1, 0, 4), (-2, 1, 1), (-1, 1, 1), (0, 1, 2)],
+    divisor: 8.0,
+};
+
+/// Shiau–Fan (1996), five taps.
+const SHIAU_FAN2: Kernel = Kernel {
+    taps: &[(1, 0, 8), (-3, 1, 1), (-2, 1, 1), (-1, 1, 2), (0, 1, 4)],
+    divisor: 16.0,
+};
+
+/// The kernel of a diffusion method; Riemersma has none (it walks a Hilbert curve).
 pub(crate) const fn kernel(kind: DitherKind) -> Option<&'static Kernel> {
     match kind {
-        DitherKind::FloydSteinberg => Some(&FLOYD_STEINBERG),
+        DitherKind::FloydSteinberg | DitherKind::Ostromoukhov | DitherKind::ZhouFang => {
+            Some(&FLOYD_STEINBERG)
+        }
         DitherKind::Atkinson => Some(&ATKINSON),
         DitherKind::JarvisJudiceNinke => Some(&JARVIS_JUDICE_NINKE),
         DitherKind::Sierra => Some(&SIERRA),
+        DitherKind::FalseFs => Some(&FALSE_FS),
+        DitherKind::FsWide => Some(&FS_WIDE),
+        DitherKind::LineFs => Some(&LINE_FS),
+        DitherKind::Stucki => Some(&STUCKI),
+        DitherKind::Burkes => Some(&BURKES),
+        DitherKind::Sierra2 => Some(&SIERRA2),
+        DitherKind::SierraLite => Some(&SIERRA_LITE),
+        DitherKind::StevensonArce => Some(&STEVENSON_ARCE),
+        DitherKind::ShiauFan1 => Some(&SHIAU_FAN1),
+        DitherKind::ShiauFan2 => Some(&SHIAU_FAN2),
         _ => None,
     }
+}
+
+/// How uncertain a pixel's choice is: `√d₁ / (√d₁ + √d₂)` for its distances to the
+/// nearest and second-nearest colour, 0 (certain) to ½ (a tie). png2c64's Ostromoukhov
+/// scales the kernel by `0.6 + 0.8 ×` this, so uncertain pixels diffuse more.
+fn uncertainty(d1: f32, d2: f32) -> f32 {
+    let (a, b) = (d1.sqrt(), d2.sqrt());
+    if a + b > 1e-6 { a / (a + b) } else { 0.0 }
+}
+
+/// Zhou–Fang threshold modulation: the choice between the two nearest colours moves
+/// from ½ by `(blue noise − ½) ×` this.
+pub const ZHOU_FANG_MODULATION: f32 = 0.5;
+
+/// The 16 history weights of Riemersma's method (`16^(i/15)` rounded, oldest first),
+/// applied over the largest. The history holds each pixel's error against its own
+/// colour (not against colour plus received error), so the sum is a weighted moving
+/// sum that keeps the walk's recent error near zero, as in Riemersma's reference code.
+const RIEMERSMA_WEIGHTS: [f32; 16] = [
+    1.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 5.0, 6.0, 8.0, 9.0, 11.0, 13.0, 16.0,
+];
+
+/// Point `d` of the Hilbert curve filling an `n × n` square (`n` a power of two).
+fn hilbert(n: usize, d: usize) -> (usize, usize) {
+    let (mut x, mut y, mut t) = (0, 0, d);
+    let mut s = 1;
+    while s < n {
+        let rx = 1 & (t / 2);
+        let ry = 1 & (t ^ rx);
+        if ry == 0 {
+            if rx == 1 {
+                x = s - 1 - x;
+                y = s - 1 - y;
+            }
+            std::mem::swap(&mut x, &mut y);
+        }
+        x += s * rx;
+        y += s * ry;
+        t /= 4;
+        s *= 2;
+    }
+    (x, y)
 }
 
 /// What one pass produced.
@@ -152,12 +310,70 @@ pub fn pass(
     let mut received = vec![[0.0f32; 3]; w * h];
     let mut error = 0.0f32;
     let mut seen = 0.0f32;
+    // Riemersma pixels walk a Hilbert curve first, carrying their own error history;
+    // they neither send error to nor receive it from the raster walk.
+    if input.px.iter().any(|q| q.kind == DitherKind::Riemersma) {
+        let n = w.max(h).next_power_of_two();
+        let mut history = [[0.0f32; 3]; 16];
+        for d in 0..n * n {
+            let (x, y) = hilbert(n, d);
+            if x >= w || y >= h {
+                continue;
+            }
+            let idx = y * w + x;
+            let q: &Px = &input.px[idx];
+            if q.kind != DitherKind::Riemersma {
+                continue;
+            }
+            let cell = cell_of(x, y);
+            let set = &full[cell];
+            let colours = tables.colours(q.metric.space());
+            if is_locked(cell) || q.weight <= 0.0 {
+                let choice = if is_locked(cell) {
+                    locked.expect("checked").previous[idx]
+                } else {
+                    bg.filter(|b| set.contains(b))
+                        .unwrap_or_else(|| ordered::nearest(q.metric, q.coords, set, colours))
+                };
+                out[idx] = choice;
+                let d = q.weight * q.metric.distance(q.coords, colours[choice.as_usize()]);
+                error += d;
+                seen += d;
+                continue;
+            }
+            let mut e = [0.0f32; 3];
+            for (h, wt) in history.iter().zip(RIEMERSMA_WEIGHTS) {
+                for k in 0..3 {
+                    e[k] += h[k] * wt / 16.0;
+                }
+            }
+            let e = e.map(|v| v * q.adapt);
+            let mut target = add(q.coords, e);
+            if q.cell_clamp && !accepts(q.metric, target, full_sets[cell], tables) {
+                target = q.coords;
+            } else {
+                received[idx] = e;
+            }
+            let (mix, k) = super::mix::mix_colours(q, set, colours);
+            let choice = ordered::nearest(q.metric, target, &mix[..k], colours);
+            out[idx] = choice;
+            let c = colours[choice.as_usize()];
+            let d = q.weight * q.metric.distance(q.coords, c);
+            error += d;
+            seen += d;
+            history.rotate_left(1);
+            history[15] = [0, 1, 2].map(|k| (q.coords[k] - c[k]) * q.strength);
+        }
+    }
     for y in 0..h {
         let reverse = y % 2 == 1;
         for i in 0..w {
             let x = if reverse { w - 1 - i } else { i };
             let idx = y * w + x;
             let q: &Px = &input.px[idx];
+            if q.kind == DitherKind::Riemersma {
+                continue;
+            }
             let cell = cell_of(x, y);
             let set = &full[cell];
             let colours = tables.colours(q.metric.space());
@@ -228,6 +444,25 @@ pub fn pass(
                             ),
                         }
                     }
+                    DitherFamily::Diffusion if q.kind == DitherKind::ZhouFang => {
+                        let (c1, c2) = ordered::nearest_two(q.metric, target, mix, colours);
+                        let t = uncertainty(
+                            q.metric.distance(target, colours[c1.as_usize()]),
+                            q.metric.distance(target, colours[c2.as_usize()]),
+                        );
+                        let bn = ordered::threshold(
+                            DitherKind::BlueNoise,
+                            crate::layer::Orientation::Auto,
+                            x as i64,
+                            y as i64,
+                        )
+                        .expect("blue noise has thresholds");
+                        if t > 0.5 + (bn - 0.5) * ZHOU_FANG_MODULATION {
+                            c2
+                        } else {
+                            c1
+                        }
+                    }
                     DitherFamily::Diffusion => ordered::nearest(q.metric, target, mix, colours),
                     _ => ordered::nearest(q.metric, target, set, colours),
                 }
@@ -246,7 +481,18 @@ pub fn pass(
             }
             let c = colours[choice.as_usize()];
             let e = [target[0] - c[0], target[1] - c[1], target[2] - c[2]];
-            let scale = q.strength / k.divisor;
+            // Ostromoukhov and Zhou–Fang diffuse more where the choice was uncertain.
+            let variable = if matches!(q.kind, DitherKind::Ostromoukhov | DitherKind::ZhouFang) {
+                let (c1, c2) = ordered::nearest_two(q.metric, target, mix, colours);
+                0.6 + 0.8
+                    * uncertainty(
+                        q.metric.distance(target, colours[c1.as_usize()]),
+                        q.metric.distance(target, colours[c2.as_usize()]),
+                    )
+            } else {
+                1.0
+            };
+            let scale = q.strength * variable / k.divisor;
             for &(dx, dy, wt) in k.taps {
                 let dx = if reverse {
                     -i64::from(dx)
@@ -262,6 +508,7 @@ pub fn pass(
                 let r = &input.px[n];
                 if r.metric != q.metric
                     || r.kind.family() != DitherFamily::Diffusion
+                    || r.kind == DitherKind::Riemersma
                     || r.weight <= 0.0
                 {
                     continue;
@@ -292,6 +539,68 @@ pub fn pass(
         error,
         seen,
     }
+}
+
+/// What every diffusion pixel would become in a serpentine diffusion of the whole frame
+/// against all 16 colours, with no cells (`None` for other pixels): the colours its
+/// dither wants, which the cell-set search keeps (png2c64's global-FS palette
+/// coherence). Each pixel uses its own kernel (Riemersma uses Floyd–Steinberg here) and
+/// strength; error flows only between diffusion pixels of the same metric.
+pub(crate) fn unconstrained(
+    px: &[Px],
+    tables: &MetricTables,
+    w: usize,
+    h: usize,
+) -> Vec<Option<ColourIndex>> {
+    let mut out = vec![None; w * h];
+    if !px
+        .iter()
+        .any(|q| q.kind.family() == DitherFamily::Diffusion)
+    {
+        return out;
+    }
+    let mut received = vec![[0.0f32; 3]; w * h];
+    for y in 0..h {
+        let reverse = y % 2 == 1;
+        for i in 0..w {
+            let x = if reverse { w - 1 - i } else { i };
+            let idx = y * w + x;
+            let q = &px[idx];
+            if q.kind.family() != DitherFamily::Diffusion || q.weight <= 0.0 {
+                continue;
+            }
+            let colours = tables.colours(q.metric.space());
+            let e = received[idx];
+            let target = add(q.coords, [e[0] * q.adapt, e[1] * q.adapt, e[2] * q.adapt]);
+            let d = tables.distances(q.metric, target);
+            let best = (0..16)
+                .min_by(|&a, &b| d[a].total_cmp(&d[b]))
+                .expect("16 colours");
+            out[idx] = Some(ColourIndex::ALL[best]);
+            let k = kernel(q.kind).unwrap_or(&FLOYD_STEINBERG);
+            let c = colours[best];
+            let err = [target[0] - c[0], target[1] - c[1], target[2] - c[2]];
+            let scale = q.strength / k.divisor;
+            for &(dx, dy, wt) in k.taps {
+                let dx = if reverse {
+                    -i64::from(dx)
+                } else {
+                    i64::from(dx)
+                };
+                let (nx, ny) = (x as i64 + dx, y as i64 + i64::from(dy));
+                if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 {
+                    continue;
+                }
+                let n = ny as usize * w + nx as usize;
+                let r = &px[n];
+                if r.metric != q.metric || r.kind.family() != DitherFamily::Diffusion {
+                    continue;
+                }
+                received[n] = add(received[n], err.map(|v| v * scale * f32::from(wt)));
+            }
+        }
+    }
+    out
 }
 
 /// Where each layer's layer-locked patterns are anchored: its top-left corner in whole
@@ -381,19 +690,66 @@ mod tests {
             .collect()
     }
 
-    const KERNELS: [DitherKind; 4] = [
+    /// Every diffusion method with a kernel.
+    const KERNELS: [DitherKind; 16] = [
         DitherKind::FloydSteinberg,
         DitherKind::Atkinson,
         DitherKind::JarvisJudiceNinke,
         DitherKind::Sierra,
+        DitherKind::FalseFs,
+        DitherKind::FsWide,
+        DitherKind::LineFs,
+        DitherKind::Stucki,
+        DitherKind::Burkes,
+        DitherKind::Sierra2,
+        DitherKind::SierraLite,
+        DitherKind::StevensonArce,
+        DitherKind::ShiauFan1,
+        DitherKind::ShiauFan2,
+        DitherKind::Ostromoukhov,
+        DitherKind::ZhouFang,
+    ];
+
+    /// Every diffusion method: the kernels and Riemersma.
+    const DIFFUSERS: [DitherKind; 17] = [
+        DitherKind::FloydSteinberg,
+        DitherKind::Atkinson,
+        DitherKind::JarvisJudiceNinke,
+        DitherKind::Sierra,
+        DitherKind::FalseFs,
+        DitherKind::FsWide,
+        DitherKind::LineFs,
+        DitherKind::Stucki,
+        DitherKind::Burkes,
+        DitherKind::Sierra2,
+        DitherKind::SierraLite,
+        DitherKind::StevensonArce,
+        DitherKind::ShiauFan1,
+        DitherKind::ShiauFan2,
+        DitherKind::Ostromoukhov,
+        DitherKind::ZhouFang,
+        DitherKind::Riemersma,
     ];
 
     #[test]
     fn kernel_weights_sum_to_their_divisor_or_less() {
+        for kind in DitherKind::ALL {
+            let has = kernel(kind).is_some();
+            let diffusion = kind.family() == DitherFamily::Diffusion;
+            assert_eq!(has, diffusion && kind != DitherKind::Riemersma, "{kind:?}");
+            assert_eq!(KERNELS.contains(&kind), has, "{kind:?}");
+            assert_eq!(DIFFUSERS.contains(&kind), diffusion, "{kind:?}");
+        }
         for kind in KERNELS {
             let k = kernel(kind).unwrap();
             let sum: u32 = k.taps.iter().map(|t| u32::from(t.2)).sum();
             assert!(sum as f32 <= k.divisor, "{kind:?}");
+            // Only Atkinson keeps some error back.
+            assert_eq!(
+                sum as f32 == k.divisor,
+                kind != DitherKind::Atkinson,
+                "{kind:?}"
+            );
             assert!(
                 k.taps.iter().all(|&(dx, dy, _)| dy > 0 || dx > 0),
                 "taps only ahead"
@@ -406,9 +762,9 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(12))]
         /// Clamped diffusion never leaks: every cell's output stays within its set.
         #[test]
-        fn clamped_diffusion_never_leaks(k in 0usize..4, salt in 0usize..15, mc in any::<bool>(), seed in 0u32..50) {
+        fn clamped_diffusion_never_leaks(k in 0usize..17, salt in 0usize..15, mc in any::<bool>(), seed in 0u32..50) {
             let mode = if mc { Mode::MulticolorBitmap } else { Mode::HiresBitmap };
-            let (input, t) = gradient_input(mode, KERNELS[k], 1.0, seed);
+            let (input, t) = gradient_input(mode, DIFFUSERS[k], 1.0, seed);
             let s = sets(&input, salt);
             let bg = mc.then_some(ColourIndex::BLACK);
             let r = pass(&input, &t, &s, bg, &[], None);
@@ -427,7 +783,7 @@ mod tests {
         // A flat mid grey with only black and white available: nearest gives one colour,
         // diffusion approaches the grey on average.
         let px = vec![[0.18f32, 0.18, 0.18, 1.0]; 320 * 200];
-        for kind in KERNELS {
+        for kind in DIFFUSERS {
             let mut layer = Layer::new(
                 "g",
                 Arc::new(SourceImage::from_linear(320, 200, px.clone()).unwrap()),
@@ -523,11 +879,83 @@ mod tests {
 
     #[test]
     fn the_pass_is_deterministic() {
-        let (input, t) = gradient_input(Mode::HiresBitmap, DitherKind::Sierra, 0.8, 1);
-        let s = sets(&input, 4);
-        assert_eq!(
-            pass(&input, &t, &s, None, &[], None),
-            pass(&input, &t, &s, None, &[], None)
-        );
+        for kind in [
+            DitherKind::Sierra,
+            DitherKind::ZhouFang,
+            DitherKind::Riemersma,
+        ] {
+            let (input, t) = gradient_input(Mode::HiresBitmap, kind, 0.8, 1);
+            let s = sets(&input, 4);
+            assert_eq!(
+                pass(&input, &t, &s, None, &[], None),
+                pass(&input, &t, &s, None, &[], None),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_hilbert_curve_visits_every_cell_once_in_steps_of_one() {
+        for n in [1, 2, 8, 256] {
+            let mut seen = vec![false; n * n];
+            let mut last: Option<(usize, usize)> = None;
+            for d in 0..n * n {
+                let (x, y) = hilbert(n, d);
+                assert!(!seen[y * n + x], "{n}: ({x}, {y}) twice");
+                seen[y * n + x] = true;
+                if let Some((lx, ly)) = last {
+                    assert_eq!(lx.abs_diff(x) + ly.abs_diff(y), 1, "{n}: jump at {d}");
+                }
+                last = Some((x, y));
+            }
+        }
+    }
+
+    #[test]
+    fn riemersma_and_raster_diffusion_do_not_trade_error() {
+        // Left half Riemersma, right half Floyd–Steinberg, each against its own grey:
+        // a half's output is the same as when the other half uses the other method.
+        let solve = |left: DitherKind, right: DitherKind| {
+            let px = vec![[0.18f32, 0.18, 0.18, 1.0]; 160 * 200];
+            let mk = |kind| {
+                let mut l = Layer::new(
+                    "g",
+                    Arc::new(SourceImage::from_linear(160, 200, px.clone()).unwrap()),
+                );
+                l.set_recipe(Recipe::with_method(kind, 1.0).unwrap());
+                l
+            };
+            let mut a = mk(left);
+            let mut b = mk(right);
+            a.set_transform(crate::layer::Transform::default());
+            b.set_transform(
+                crate::layer::Transform::new(
+                    crate::geom::Vec2::new(160.0, 0.0),
+                    crate::geom::Vec2::new(1.0, 1.0),
+                    false,
+                    false,
+                )
+                .unwrap(),
+            );
+            let mut c = Compositor::new(SuperGrid::new(Mode::HiresBitmap, 1).unwrap());
+            c.update(&[a, b], &[]);
+            let t = MetricTables::new(&Palette::pepto_pal());
+            let input = Input::new(c.frame(), &t, InputOptions::default());
+            let bw: ColourSet = [ColourIndex::BLACK, ColourIndex::WHITE]
+                .into_iter()
+                .collect();
+            pass(&input, &t, &vec![bw; 1000], None, &[], None).out
+        };
+        // Each half equals the same half next to a half that does not diffuse at all.
+        let mixed = solve(DitherKind::Riemersma, DitherKind::FloydSteinberg);
+        let r_alone = solve(DitherKind::Riemersma, DitherKind::None);
+        let fs_alone = solve(DitherKind::None, DitherKind::FloydSteinberg);
+        for y in 0..200 {
+            for x in 0..320 {
+                let i = y * 320 + x;
+                let want = if x < 160 { r_alone[i] } else { fs_alone[i] };
+                assert_eq!(mixed[i], want, "({x}, {y})");
+            }
+        }
     }
 }

@@ -277,6 +277,18 @@ As built in #114, part 1 (2026-10-12): every ordered, noise and effect method of
 - **Dither-aware set search.** As in png2c64, a threshold pixel's OKLab L is nudged by `(threshold − ½) × strength × 0.15` before the cell-set search scores it (`Px::search`). This uses the screen-locked pattern position. Without it, a cell in a smooth ramp keeps only the colour its pixels are nearest to, and the pattern has nothing to mix with. It lowered the blurred error on every golden fixture.
 - **Golden.** `methods::gradient_with_every_method` renders `gradient` with every kind (`fixtures/gradient/expected_m-<id>.png`).
 
+As built in #114, part 2 (2026-10-12): the diffusion kernels of §3.
+
+- **Kernels.** 13 more diffusion kinds, 17 in all:
+  - `false-fs`, `fs-wide`, `line-fs` (png2c64's), `stucki`, `burkes`, `sierra2`, `sierra-lite`, `stevenson-arce`, `shiau-fan1`/`shiau-fan2`;
+  - `ostromoukhov`: png2c64's, Floyd–Steinberg weights × `0.6 + 0.8 × uncertainty`;
+  - `zhou-fang`: the same, plus the choice between the two nearest colours thresholded at `½ + (blue noise − ½) × 0.5`;
+  - `riemersma`.
+
+  `DitherKind` has 52 kinds: 1 none, 17 diffusion, 27 ordered, 4 noise, 3 effects.
+- **Riemersma** walks a Hilbert curve over the target before the raster walk. It keeps Riemersma's 16-sample history (weights `16^(i/15)` over 16, each sample the pixel's error against its own colour) and is clamped at cells like the others. Riemersma pixels neither send error to the raster walk nor receive it.
+- **Diffusion-aware set search.** As png2c64 does with its global Floyd–Steinberg pass, a diffusion pixel is searched as the colour an unconstrained diffusion of the whole frame (all 16 colours, its own kernel) gives it. A cell then keeps the colours its dither mixes; before, a cell in a ramp kept only its nearest colour and the diffused error had nowhere to go. Refinement still re-picks from colour plus received error.
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.

@@ -107,6 +107,35 @@ pub enum DitherKind {
     Radial,
     /// Effect, png2c64's smooth hash noise (organic clumps).
     ValueNoise,
+    /// Error diffusion, "false" Floyd–Steinberg 3/3/2: lighter and faster.
+    FalseFs,
+    /// Error diffusion, png2c64's Floyd–Steinberg for 2:1 pixels (5/3/6/2).
+    FsWide,
+    /// Error diffusion, png2c64's line-biased Floyd–Steinberg: all error goes down.
+    LineFs,
+    /// Error diffusion, Stucki.
+    Stucki,
+    /// Error diffusion, Burkes.
+    Burkes,
+    /// Error diffusion, two-row Sierra.
+    Sierra2,
+    /// Error diffusion, Sierra Lite.
+    SierraLite,
+    /// Error diffusion, Stevenson–Arce (hexagonal grid weights).
+    StevensonArce,
+    /// Error diffusion, Shiau–Fan (four taps): fewer worms than Floyd–Steinberg.
+    ShiauFan1,
+    /// Error diffusion, Shiau–Fan (five taps).
+    ShiauFan2,
+    /// Error diffusion, png2c64's Ostromoukhov: Floyd–Steinberg weights scaled by how
+    /// uncertain the pixel's choice was.
+    Ostromoukhov,
+    /// Error diffusion, Zhou–Fang: Ostromoukhov plus threshold modulation by the
+    /// blue-noise tile, which removes the remaining worms.
+    ZhouFang,
+    /// Error diffusion along a Hilbert curve with a 16-sample history (Riemersma): no
+    /// directional artefacts.
+    Riemersma,
 }
 
 /// The UI's grouping of [`DitherKind`]s (UX §6, group 4).
@@ -139,7 +168,7 @@ impl DitherFamily {
 impl DitherKind {
     /// Every kind: E5's nine first (their order is part of the attribute map's debug
     /// colours), then the rest by family.
-    pub const ALL: [Self; 39] = [
+    pub const ALL: [Self; 52] = [
         Self::None,
         Self::Bayer2,
         Self::Bayer4,
@@ -179,15 +208,42 @@ impl DitherKind {
         Self::Crosshatch,
         Self::Radial,
         Self::ValueNoise,
+        Self::FalseFs,
+        Self::FsWide,
+        Self::LineFs,
+        Self::Stucki,
+        Self::Burkes,
+        Self::Sierra2,
+        Self::SierraLite,
+        Self::StevensonArce,
+        Self::ShiauFan1,
+        Self::ShiauFan2,
+        Self::Ostromoukhov,
+        Self::ZhouFang,
+        Self::Riemersma,
     ];
 
     /// The family this kind belongs to.
     pub const fn family(self) -> DitherFamily {
         match self {
             Self::None => DitherFamily::None,
-            Self::FloydSteinberg | Self::Atkinson | Self::JarvisJudiceNinke | Self::Sierra => {
-                DitherFamily::Diffusion
-            }
+            Self::FloydSteinberg
+            | Self::Atkinson
+            | Self::JarvisJudiceNinke
+            | Self::Sierra
+            | Self::FalseFs
+            | Self::FsWide
+            | Self::LineFs
+            | Self::Stucki
+            | Self::Burkes
+            | Self::Sierra2
+            | Self::SierraLite
+            | Self::StevensonArce
+            | Self::ShiauFan1
+            | Self::ShiauFan2
+            | Self::Ostromoukhov
+            | Self::ZhouFang
+            | Self::Riemersma => DitherFamily::Diffusion,
             Self::BlueNoise | Self::Ign | Self::R2 | Self::WhiteNoise => DitherFamily::Noise,
             Self::Crosshatch | Self::Radial | Self::ValueNoise => DitherFamily::Effects,
             Self::Bayer2
@@ -731,6 +787,13 @@ mod tests {
             ("r2-sequence", DitherKind::R2),
             ("white-noise", DitherKind::WhiteNoise),
             ("value-noise", DitherKind::ValueNoise),
+            ("false-fs", DitherKind::FalseFs),
+            ("fs-wide", DitherKind::FsWide),
+            ("sierra-lite", DitherKind::SierraLite),
+            ("stevenson-arce", DitherKind::StevensonArce),
+            ("shiau-fan1", DitherKind::ShiauFan1),
+            ("zhou-fang", DitherKind::ZhouFang),
+            ("riemersma", DitherKind::Riemersma),
         ] {
             let m: Method = toml::from_str(&format!("kind = \"{id}\"")).unwrap();
             assert_eq!(m.kind, want, "{id}");
