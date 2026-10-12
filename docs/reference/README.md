@@ -6,6 +6,7 @@ The hardware truth and byte layouts Convert64 is built and tested against. These
 |---|---|
 | [vic-ii-constraints.md](vic-ii-constraints.md) | Palette (Pepto/Colodore values, luminance groups), every display mode's geometry and colour rules, memory alignment, VIC banks, char-ROM shadow, validator rules |
 | [file-formats.md](file-formats.md) | Byte layouts for Koala, Art Studio, Doodle, FLI, raw bitmap sets, sprite blocks, SpritePad `.spd`, CharPad `.ctm` header and export bins, PRG, and the assembler include syntax we emit for |
+| [cli.md](cli.md) | The `convert64` command line: commands, options, exit codes and the `--json` report |
 | [project-file.md](project-file.md) | The `.convert64` project file: schema version, layers, linked or embedded sources, masks, regions, steering, solve options |
 
 When the solver, validator or a format writer disagrees with these files, these files win until a VICE screenshot or real hardware proves them wrong — then fix the file in the same PR.
