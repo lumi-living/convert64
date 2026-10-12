@@ -5,11 +5,13 @@
 //! - readers and writers for Koala Painter (`.kla`, `.koa`) and Art Studio (`.art`,
 //!   `.aas`) pictures ([`BitmapFormat`]);
 //! - a self-displaying PRG for them ([`prg`]);
-//! - the raw bitmap set, headerless `.bin` files plus a JSON manifest ([`raw`]).
+//! - the raw bitmap set, headerless `.bin` files plus a JSON manifest ([`raw`]);
+//! - a palette-exact PNG preview at integer zoom ([`png`]).
 //!
 //! Readers and writers take and return bytes; the caller does the file I/O.
 
 mod bitmap_files;
+pub mod png;
 pub mod prg;
 pub mod raw;
 
