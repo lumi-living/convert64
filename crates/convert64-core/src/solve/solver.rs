@@ -220,7 +220,8 @@ impl Solver {
                 .map(|i| {
                     let cell = input.cell_at(i);
                     ctx.locked_set(cell).unwrap_or_else(|| {
-                        let pick = moved.best_set(
+                        let pick = moved.pick_set(
+                            t,
                             cell,
                             cand.bg,
                             &ctx.steering.constraints(cell),
@@ -228,13 +229,8 @@ impl Solver {
                         );
                         match opts.hysteresis {
                             Some(ratio) if pick.set != sets[i] => {
-                                let current = super::cell::score_set(
-                                    moved.dist(i),
-                                    moved.per_cell(),
-                                    cand.bg,
-                                    sets[i],
-                                    opts.luma_pair_bias,
-                                );
+                                let current =
+                                    moved.set_score(t, i, cand.bg, sets[i], opts.luma_pair_bias);
                                 if pick.score < ratio * current {
                                     pick.set
                                 } else {
@@ -324,6 +320,37 @@ impl Solver {
                 .then(bg_key(a.bg).cmp(&bg_key(b.bg)))
         });
         found.truncate(usize::from(opts.finalists.max(1)));
+        // Cells scored by `blur` or `ssim` re-pick their sets for the finalists only
+        // (the background search stays on squared distances, #120).
+        if input
+            .cell_metric
+            .iter()
+            .any(|m| *m != crate::layer::CellMetric::Mse)
+        {
+            for cand in &mut found {
+                let n = cand.sets.len();
+                let idx: Vec<usize> = (0..n).collect();
+                let repicked = crate::par::map(&idx, |&i| {
+                    let cell = input.cell_at(i);
+                    if input.cell_metric[i] == crate::layer::CellMetric::Mse
+                        || ctx.locked_set(cell).is_some()
+                    {
+                        cand.sets[i]
+                    } else {
+                        input
+                            .pick_set(
+                                &self.tables,
+                                cell,
+                                cand.bg,
+                                &ctx.steering.constraints(cell),
+                                opts.luma_pair_bias,
+                            )
+                            .set
+                    }
+                });
+                cand.sets = repicked;
+            }
+        }
         let dithered = crate::par::map(&found, |c| self.refine(input, c, &ctx, opts));
         let (winner, (result, sets, refined, rounds)) = found
             .iter()
@@ -500,6 +527,13 @@ mod tests {
             (Mode::HiresBitmap, DitherKind::Riemersma),
         ] {
             let mut f = frame(mode, kind);
+            if kind == DitherKind::Yliluoma2 {
+                // The blur cell metric too.
+                let r = Recipe::with_method(kind, 0.8)
+                    .unwrap()
+                    .with_cell_metric(crate::layer::CellMetric::Blur);
+                f = frame_with(mode, r, true);
+            }
             if kind == DitherKind::BlueNoise {
                 // Pre-smoothing too.
                 let r = Recipe::with_method(kind, 0.8).unwrap().with_smooth(true);

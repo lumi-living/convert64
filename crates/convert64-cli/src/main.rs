@@ -51,9 +51,13 @@ enum Command {
         /// Target mode.
         #[arg(long, value_enum, default_value = "mc")]
         mode: ModeArg,
-        /// Colour metric: oklab, cielab, pepto-yuv or rgb.
+        /// Colour metric: oklab, cielab, pepto-yuv or rgb. As in png2c64, mse, blur or
+        /// ssim set the cell metric instead (see --cell-metric).
         #[arg(long, default_value = "oklab")]
         metric: String,
+        /// How the cell-set search scores sets: mse (default), blur or ssim.
+        #[arg(long)]
+        cell_metric: Option<String>,
         /// Dither method: any id in docs/reference/dither-methods.md, e.g. none, bayer4,
         /// checker, halftone8, line-h4, blue-noise, ign, fs, atkinson (png2c64's names
         /// work too).
@@ -193,6 +197,7 @@ fn main() -> ExitCode {
             input,
             mode,
             metric,
+            cell_metric,
             dither,
             strength,
             bg,
@@ -212,6 +217,7 @@ fn main() -> ExitCode {
             let opts = ConvertOptions {
                 mode,
                 metric,
+                cell_metric,
                 dither,
                 strength,
                 bg,
@@ -318,6 +324,7 @@ fn run_recipe(
 struct ConvertOptions {
     mode: ModeArg,
     metric: String,
+    cell_metric: Option<String>,
     dither: String,
     strength: f32,
     bg: String,
@@ -347,8 +354,8 @@ fn run_convert(
 ) -> Result<(), String> {
     use convert64_core::geom::Vec2;
     use convert64_core::layer::{
-        Adjustments, DitherKind, Gamma, Layer, Method, Metric, RangeMatch, Recipe, Transform,
-        suggest_range_match,
+        Adjustments, CellMetric, DitherKind, Gamma, Layer, Method, Metric, RangeMatch, Recipe,
+        Transform, suggest_range_match,
     };
     use convert64_core::mode::Mode;
     use convert64_core::solve::{Background, SolveOptions, Solver, Steering};
@@ -359,7 +366,17 @@ fn run_convert(
         ModeArg::Hires => Mode::HiresBitmap,
     };
     let kind: DitherKind = named("dither method", &o.dither)?;
-    let metric: Metric = named("metric", &o.metric)?;
+    // png2c64's --metric names the cell metric; ours names the colour metric, and
+    // accepts png2c64's names too.
+    let (metric, png2c64_cell): (Metric, Option<CellMetric>) =
+        match named::<CellMetric>("cell metric", &o.metric) {
+            Ok(c) => (Metric::default(), Some(c)),
+            Err(_) => (named("metric", &o.metric)?, None),
+        };
+    let cell_metric = match &o.cell_metric {
+        Some(name) => named("cell metric", name)?,
+        None => png2c64_cell.unwrap_or_default(),
+    };
     let background = match o.bg.as_str() {
         "auto" => Background::Auto,
         n => Background::Fixed(
@@ -384,7 +401,7 @@ fn run_convert(
     })
     .and_then(|r| r.with_adaptive(o.adaptive))
     .and_then(|r| r.with_mix_levels(o.mix_levels))
-    .map(|r| r.with_smooth(o.smooth))
+    .map(|r| r.with_smooth(o.smooth).with_cell_metric(cell_metric))
     .map_err(|e| e.to_string())?;
     let palette = Palette::default();
     let adjustments = Adjustments {

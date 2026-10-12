@@ -256,3 +256,41 @@ fn convert_accepts_every_method_id_of_the_reference() {
         );
     }
 }
+
+#[test]
+fn cell_metrics_from_the_command_line() {
+    let dir = temp("convert-cell-metric");
+    let png = source(&dir);
+    let out = dir.join("cm.kla");
+    for args in [
+        ["--cell-metric", "blur"],
+        ["--cell-metric", "ssim"],
+        ["--metric", "blur"],
+        ["--metric", "cielab"],
+    ] {
+        let r = convert(&[
+            "convert",
+            png.to_str().unwrap(),
+            "--dither",
+            "bayer4",
+            args[0],
+            args[1],
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+        assert!(
+            r.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&r.stderr)
+        );
+    }
+    let bad = convert(&[
+        "convert",
+        png.to_str().unwrap(),
+        "--cell-metric",
+        "psnr",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(bad.status.code(), Some(2));
+}
