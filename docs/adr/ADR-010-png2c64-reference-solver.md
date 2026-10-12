@@ -15,7 +15,7 @@ png2c64 is MIT-licensed and its source was in hand (#181).
 - **Port png2c64's bitmap pipeline faithfully** as `convert64_core::solve::png2c64_ref`: colour conversions, preprocessing, bicubic scaling, the cell search with its global Floyd–Steinberg pass, and every dither. Odd choices are ported too. Attribution: `THIRD_PARTY.md`.
 - **Prove it with a parity test in CI**: on png2c64's 30 ids on the test card and the portrait, and on all six fixtures, at least 99 % of pixels must be identical to png2c64's own renders (`docs/reference/png2c64-reference.md`). The reference is png2c64 built with strict IEEE arithmetic, which a portable Rust port can match bit for bit; the test reaches 100 % on 65 of the 66 cases.
 - **Make it the default solver for the bitmap modes** (`SolverKind::Reference`). Convert64's own solver stays as `SolverKind::Native` (project `solve.solver`, CLI `--solver native`), with its goldens. The reference solves the compositor's frame; layers, masks, feathering and regions stay upstream and reach it per pixel through the attribute map.
-- **Diverge only by decision.** Our extras become named options on the reference path, off by default. A human judges each on the sheet before it can become a default. Until a frame's features are supported on the reference path, it falls back to the native solver, and `Solution::fallback` says why. In this first step that covers steering, the interactive fast path, methods png2c64 lacks, non-OKLab metrics and the native recipe knobs.
+- **Diverge only by decision.** Our extras become named options on the reference path, off by default. A human judges each on the sheet before it can become a default. Our extras that png2c64 has no notion of are hooks on the reference path, inactive by default: pins, locks, allow/deny, the recipes' allowed colours, per-pixel recipes from the attribute map, and the interactive fast path. A frame that needs something the reference path does not have falls back to the native solver, and `Solution::fallback` says why: methods png2c64 lacks, non-OKLab metrics, Force fit mode, and the native solver's own knobs.
 
 ## Options considered
 
@@ -55,5 +55,5 @@ Option B gives up the native solver's refinements as defaults (cell clamping, mi
 ## Action items
 - [x] Port and parity test (#182–#185)
 - [x] Reference as the default; native selectable, its goldens kept
-- [ ] Steering, interactive mode and allow/deny as hooks on the reference path (#181 step 6)
+- [x] Steering, interactive mode and allow/deny as hooks on the reference path (#181 step 6)
 - [ ] Divergences as named options with sheet rows (#181 step 7)

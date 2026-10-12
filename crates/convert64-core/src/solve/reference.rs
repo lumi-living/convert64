@@ -7,9 +7,19 @@
 //! its png2c64 method, strength, error clamp, `adaptive` and pattern anchor; with one
 //! recipe for the whole frame the result is png2c64's. Frames the reference cannot
 //! solve yet fall back to the native solver ([`unsupported`] says why).
+//!
+//! **Hooks** (#181 step 6), each inactive by default so the output stays png2c64's:
+//! - pins, allow/deny and the recipes' allowed colours constrain a cell's search
+//!   ([`CellRule`]); a free cell is searched exactly as png2c64 searches it;
+//! - locked cells, given a previous solution, are copied through untouched, the
+//!   background kept;
+//! - the interactive fast path locks every clean cell and re-runs the ported search on
+//!   the dirty ones, with the previous background;
+//! - the attribute map gives each pixel its own method, strength (alpha and feather
+//!   included) and pattern anchor, and regions override it, upstream in the compositor.
 
 use super::png2c64_ref::dither::{Method as RefMethod, PxSettings};
-use super::png2c64_ref::quantize::{Hooks, Mode as RefMode, Screen};
+use super::png2c64_ref::quantize::{Cell, CellRule, Hooks, Mode as RefMode, Screen};
 use super::png2c64_ref::{Image, colour, convert_px, preprocess};
 use super::report::{CellReport, ClashReport, Dropped};
 use super::solver::{Background, Solution, SolveMode, SolveOptions, SolverKind};
@@ -88,9 +98,6 @@ fn recipe_unsupported(r: &Recipe) -> Option<String> {
     if r.fit_mode() != FitMode::Adaptive {
         return Some("fit mode Force".to_owned());
     }
-    if r.allowed() != ColourSet::ALL {
-        return Some("a recipe's allowed colours".to_owned());
-    }
     // The native solver's own knobs: a recipe that changes one asks for native
     // behaviour (the reference has opt-in versions of its own).
     let d = Recipe::default();
@@ -113,19 +120,15 @@ fn recipe_unsupported(r: &Recipe) -> Option<String> {
 
 /// Why `frame` must be solved by the native solver although the reference was asked
 /// for, or `None` if the reference can solve it.
-pub(crate) fn unsupported(
-    frame: &TargetFrame,
-    steering: &Steering,
-    opts: &SolveOptions,
-) -> Option<String> {
+pub(crate) fn unsupported(frame: &TargetFrame, opts: &SolveOptions) -> Option<String> {
+    if opts.luma_pair_bias != 0.0 {
+        return Some("solve option `luma_pair_bias` (native solver only)".to_owned());
+    }
+    if opts.hysteresis.is_some() {
+        return Some("solve option `hysteresis` (native solver only)".to_owned());
+    }
     if ref_mode(frame.grid().target()).is_none() {
         return Some(format!("mode {:?}", frame.grid().target()));
-    }
-    if !matches!(opts.mode, SolveMode::Full) {
-        return Some("interactive fast path".to_owned());
-    }
-    if !steering.is_empty() {
-        return Some("pins, locks or allow/deny".to_owned());
     }
     let attrs = frame.attributes();
     let default_recipe = Recipe::default();
@@ -143,8 +146,16 @@ pub(crate) fn unsupported(
     None
 }
 
-/// Solves `frame` on the reference path. Call only when [`unsupported`] is `None`.
-pub(crate) fn solve(frame: &TargetFrame, palette: &Palette, opts: &SolveOptions) -> Solution {
+/// Solves `frame` on the reference path, steered by `steering`; locked cells (and, on the
+/// interactive fast path, every clean cell) are copied from `previous`. Call only when
+/// [`unsupported`] is `None`.
+pub(crate) fn solve(
+    frame: &TargetFrame,
+    palette: &Palette,
+    steering: &Steering,
+    previous: Option<&Solution>,
+    opts: &SolveOptions,
+) -> Solution {
     let grid = frame.grid();
     let target = grid.target();
     let mode = ref_mode(target).expect("a bitmap mode");
@@ -159,7 +170,22 @@ pub(crate) fn solve(frame: &TargetFrame, palette: &Palette, opts: &SolveOptions)
     );
     let attrs = frame.attributes();
     let default_recipe = Recipe::default();
-    let px: Vec<PxSettings> = attrs
+    let (cols, rows) = mode.cells();
+    let (cw, ch) = mode.cell();
+    let cell_of = |i: usize| ((i % w) / cw) + ((i / w) / ch) * cols;
+    // Cells copied from the previous solution: locked ones, and on the interactive fast
+    // path every clean one.
+    let frozen: Vec<bool> = match previous {
+        None => vec![false; cols * rows],
+        Some(_) => (0..cols * rows)
+            .map(|i| {
+                let cell = CellPos::new((i % cols) as u16, (i / cols) as u16);
+                steering.locks().contains(cell)
+                    || matches!(opts.mode, SolveMode::Interactive { dirty } if !dirty.contains(cell))
+            })
+            .collect(),
+    };
+    let mut px: Vec<PxSettings> = attrs
         .pixels()
         .iter()
         .map(|a| {
@@ -186,11 +212,33 @@ pub(crate) fn solve(frame: &TargetFrame, palette: &Palette, opts: &SolveOptions)
             }
         })
         .collect();
+    // Frozen pixels neither take nor pass on diffused error.
+    for (i, s) in px.iter_mut().enumerate() {
+        if frozen[cell_of(i)] {
+            s.method = RefMethod::None;
+        }
+    }
+    let fixed: Vec<Option<Cell>> = match previous {
+        Some(prev) if frozen.contains(&true) => {
+            let out = prev.image.to_indexed();
+            (0..cols * rows)
+                .map(|i| frozen[i].then(|| previous_cell(prev, out.pixels(), mode, i)))
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    // Locked cells may show the previous background, and a drag keeps it (as native).
+    let keep_bg = previous
+        .and_then(|p| p.background)
+        .filter(|_| !fixed.is_empty() || matches!(opts.mode, SolveMode::Interactive { .. }));
     let hooks = Hooks {
-        background: match opts.background {
-            Background::Fixed(b) if mode == RefMode::Multicolor => Some(b.get()),
-            _ => None,
+        background: match (keep_bg, opts.background) {
+            _ if mode != RefMode::Multicolor => None,
+            (Some(b), _) | (None, Background::Fixed(b)) => Some(b.get()),
+            (None, Background::Auto) => None,
         },
+        rules: rules(frame, steering, mode),
+        fixed,
     };
     let pal = colour::palette_of(palette);
     let screen = convert_px(&image, &pal, mode, &px, true, &hooks);
@@ -313,4 +361,80 @@ fn report(
         })
         .collect();
     ClashReport { cells }
+}
+
+/// Each cell's search constraints: steering's (pins, allow, deny) with the allowed
+/// colours of every covered pixel's recipe; empty when nothing constrains any cell.
+fn rules(frame: &TargetFrame, steering: &Steering, mode: RefMode) -> Vec<CellRule> {
+    let attrs = frame.attributes();
+    let (w, _) = mode.screen();
+    let (cw, ch) = mode.cell();
+    let (cols, rows) = mode.cells();
+    let out: Vec<CellRule> = (0..cols * rows)
+        .map(|i| {
+            let (gx, gy) = (i % cols, i / cols);
+            let c = steering.constraints(CellPos::new(gx as u16, gy as u16));
+            let mut candidates = c.candidates;
+            for y in gy * ch..(gy + 1) * ch {
+                for x in gx * cw..(gx + 1) * cw {
+                    let k = y * w + x;
+                    if frame.coverage()[k] > 0.0
+                        && let Some(r) = attrs.recipe(attrs.pixels()[k].source)
+                    {
+                        candidates = candidates.intersection(r.allowed());
+                    }
+                }
+            }
+            CellRule {
+                candidates: candidates.bits(),
+                required: c.required.bits(),
+            }
+        })
+        .collect();
+    if out.iter().all(|r| *r == CellRule::FREE) {
+        Vec::new()
+    } else {
+        out
+    }
+}
+
+/// Cell `i` of a previous solution as the port's [`Cell`]: its colours by slot
+/// (multicolor: the background, then its own colours ascending, padded with the
+/// background) and each pixel's slot.
+fn previous_cell(prev: &Solution, out: &[ColourIndex], mode: RefMode, i: usize) -> Cell {
+    let (w, _) = mode.screen();
+    let (cw, ch) = mode.cell();
+    let cols = mode.cells().0;
+    let own: Vec<u8> = prev.sets[i].iter().map(ColourIndex::get).collect();
+    let colors: Vec<u8> = match (mode, prev.background) {
+        (RefMode::Multicolor, Some(bg)) => {
+            let mut c = vec![bg.get()];
+            c.extend(own.iter().copied().filter(|&v| v != bg.get()));
+            while c.len() < 4 {
+                c.push(bg.get());
+            }
+            c
+        }
+        _ => {
+            let mut c = own;
+            let first = c.first().copied().unwrap_or(0);
+            while c.len() < 2 {
+                c.push(first);
+            }
+            c
+        }
+    };
+    let (gx, gy) = (i % cols, i / cols);
+    let px = (0..ch)
+        .flat_map(|dy| (0..cw).map(move |dx| (gx * cw + dx, gy * ch + dy)))
+        .map(|(x, y)| {
+            let v = out[y * w + x].get();
+            colors.iter().position(|&c| c == v).unwrap_or(0) as u8
+        })
+        .collect();
+    Cell {
+        colors,
+        px,
+        error: 0.0,
+    }
 }
