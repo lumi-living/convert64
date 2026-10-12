@@ -3,6 +3,9 @@
 //! Every visible layer is resampled onto the [`SuperGrid`] (`n ×` the target grid, the
 //! 2:1 multicolor aspect included) and blended bottom to top into an f32 linear
 //! **premultiplied** RGBA [`Canvas`]. Effective alpha is PNG alpha × mask × opacity.
+//! An axis-aligned layer is resampled separably (`resample`); a rotated one is
+//! inverse-mapped through its affine transform (`affine`, #198), its rectangle the
+//! bounding box of the rotated quad.
 //!
 //! Each layer's resampled raster is cached and rebuilt only when its source,
 //! adjustments, transform, mask or the grid change; a recomposite with unchanged layers

@@ -204,6 +204,7 @@ impl SourceImage {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TransformData {
     #[serde(default)]
     translate: Vec2,
@@ -421,6 +422,32 @@ impl Transform {
             return Err(LayerError::NotFinite { what: "translate" });
         }
         Ok(Self { translate, ..moved })
+    }
+
+    /// This transform scaled to `scale` about its anchor (a source of `size`): the pivot
+    /// `translate + S · (anchor ⊙ size)` stays where it is, which is how the app's
+    /// Transform tool scales (UX §6–§7). [`Self::new`] and a plain scale change keep the
+    /// top-left corner instead.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "canvas coordinates are well within f32"
+    )]
+    pub fn scaled_about_anchor(self, scale: Vec2, size: (u32, u32)) -> Result<Self, LayerError> {
+        let t = Self::new(self.translate, scale, self.flip_h, self.flip_v)?;
+        let t = Self {
+            rotate: self.rotate,
+            anchor: self.anchor,
+            ..t
+        };
+        let (c0, c1) = (self.pivot(size), t.pivot(size));
+        let translate = Vec2::new(
+            (f64::from(self.translate.x) + c0.0 - c1.0) as f32,
+            (f64::from(self.translate.y) + c0.1 - c1.1) as f32,
+        );
+        if !translate.is_finite() {
+            return Err(LayerError::NotFinite { what: "translate" });
+        }
+        Ok(Self { translate, ..t })
     }
 
     /// Offset of the unrotated box's top-left corner, in canvas pixels.
@@ -952,6 +979,19 @@ mod tests {
             }
         }
         assert!(t.reanchored(Vec2::new(1.5, 0.0), size).is_err());
+        // Scaling about the anchor keeps the anchor's point on the canvas.
+        let pivot =
+            |t: &Transform| t.layer_to_canvas(size, Vec2::new(0.1 * 37.0, (1.0 - 0.7) * 23.0));
+        let a = t.reanchored(Vec2::new(0.1, 0.7), size).unwrap();
+        let b = a.scaled_about_anchor(Vec2::new(0.5, 3.0), size).unwrap();
+        assert_eq!(b.scale(), Vec2::new(0.5, 3.0));
+        assert!(
+            close(pivot(&a), pivot(&b)),
+            "{:?} {:?}",
+            pivot(&a),
+            pivot(&b)
+        );
+        assert!(a.scaled_about_anchor(Vec2::new(0.0, 1.0), size).is_err());
         let flat = Transform::translated(Vec2::new(4.0, 5.0)).unwrap();
         assert_eq!(
             flat.reanchored(Vec2::ZERO, size).unwrap().translate(),
@@ -1012,6 +1052,10 @@ mod tests {
         );
         assert_eq!(toml::from_str::<Transform>(&text).unwrap(), r);
         assert!(toml::from_str::<Transform>("anchor = { x = 2.0, y = 0.0 }\n").is_err());
+        assert!(
+            toml::from_str::<Transform>("rotation = 5.0\n").is_err(),
+            "a typo"
+        );
     }
 
     #[test]

@@ -1,7 +1,8 @@
 //! Separable resampling of a layer onto the super grid.
 //!
-//! Transforms are axis-aligned (translate, scale, flip), so every resample is two 1-D
-//! passes driven by per-axis weight tables ([`AxisMap`]). Per axis, a source pixel that
+//! An axis-aligned transform (translate, scale, flip; `rotate == 0`) is resampled in two
+//! 1-D passes driven by per-axis weight tables ([`AxisMap`]); a rotated one goes through
+//! `affine` instead (#198). Per axis, a source pixel that
 //! covers at least one super pixel is sampled bilinearly; a smaller one is filtered with
 //! Lanczos-3 stretched to the footprint, so downscales do not alias. Samples clamp to the
 //! layer's edge pixels; the layer's own edge is instead expressed as **coverage**, the
