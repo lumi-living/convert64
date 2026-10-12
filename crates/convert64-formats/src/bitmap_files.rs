@@ -31,14 +31,22 @@ impl BitmapFormat {
         }
     }
 
-    /// The format a file extension names, case-insensitively (`kla`, `koa`, `art`,
-    /// `aas`).
-    pub fn from_extension(ext: &str) -> Option<Self> {
-        match ext.to_ascii_lowercase().as_str() {
-            "kla" | "koa" => Some(Self::Koala),
-            "art" | "aas" => Some(Self::ArtStudio),
-            _ => None,
+    /// File extensions of the format, lowercase, the one Convert64 writes first:
+    /// `kla`, `koa` (Koala) and `art`, `aas` (Art Studio).
+    pub const fn extensions(self) -> &'static [&'static str] {
+        match self {
+            Self::Koala => &["kla", "koa"],
+            Self::ArtStudio => &["art", "aas"],
         }
+    }
+
+    /// The format a file extension names, case-insensitively (see
+    /// [`extensions`](Self::extensions)). A leading dot is allowed.
+    pub fn from_extension(ext: &str) -> Option<Self> {
+        let ext = ext.strip_prefix('.').unwrap_or(ext).to_ascii_lowercase();
+        [Self::Koala, Self::ArtStudio]
+            .into_iter()
+            .find(|f| f.extensions().contains(&ext.as_str()))
     }
 
     /// The load address files of this format normally carry: `$6000` (Koala) or `$2000`
@@ -81,7 +89,8 @@ impl BitmapFormat {
             .find(|f| f.sizes().contains(&len))
     }
 
-    /// Reads `bytes` as this format.
+    /// Reads `bytes` as this format. Any load address is accepted and kept in
+    /// [`BitmapFile::load_address`]: the layout after it does not depend on it.
     ///
     /// # Errors
     /// See [`read_koala`] and [`read_art_studio`].
@@ -208,7 +217,23 @@ impl fmt::Display for ReadError {
                     f,
                     "{format} files are {} bytes; this one is {found}",
                     sizes.join(" or ")
-                )
+                )?;
+                let bytes = |n: usize| {
+                    if n == 1 {
+                        "1 byte".to_owned()
+                    } else {
+                        format!("{n} bytes")
+                    }
+                };
+                // Truncated: shorter than every allowed size. Oversized: measured from the
+                // largest allowed size below it.
+                match expected.iter().copied().filter(|&s| s < *found).max() {
+                    None => {
+                        let min = expected.iter().copied().min().unwrap_or(0);
+                        write!(f, " (truncated: {} short)", bytes(min - found))
+                    }
+                    Some(below) => write!(f, " (oversized: {} too long)", bytes(found - below)),
+                }
             }
             Self::Model(e) => e.fmt(f),
         }
@@ -335,6 +360,30 @@ mod tests {
         assert_eq!(validate_placement(&file.placement()), Ok(()));
     }
 
+    /// Any load address reads, is kept, and is written back; `write` uses the format's
+    /// own.
+    #[test]
+    fn both_load_addresses_read_and_round_trip() {
+        for load in [0x6000, 0x2000, 0x4000] {
+            let bytes = koala_bytes(load, 0x0B);
+            let file = BitmapFormat::Koala.read(&bytes).expect("Koala");
+            assert_eq!(file.load_address, load);
+            assert_eq!(file.to_bytes().expect("writes"), bytes);
+            let written = BitmapFormat::Koala.write(&file.image).expect("writes");
+            assert_eq!(written[..2], [0x00, 0x60]);
+            assert_eq!(written[2..], bytes[2..]);
+            for padded in [false, true] {
+                let bytes = art_bytes(load, padded);
+                let file = BitmapFormat::ArtStudio.read(&bytes).expect("Art Studio");
+                assert_eq!(file.load_address, load);
+                assert_eq!(file.to_bytes().expect("writes"), bytes[..9002]);
+                let written = BitmapFormat::ArtStudio.write(&file.image).expect("writes");
+                assert_eq!(written[..2], [0x00, 0x20]);
+                assert_eq!(written[2..], bytes[2..9002]);
+            }
+        }
+    }
+
     #[test]
     fn koala_colour_ram_high_nybbles_are_dropped() {
         let mut bytes = koala_bytes(0x6000, 0);
@@ -363,13 +412,23 @@ mod tests {
         assert_eq!(err.rule_number(), Some(6));
         assert_eq!(
             err.to_string(),
-            "Koala files are 10003 bytes; this one is 10002"
+            "Koala files are 10003 bytes; this one is 10002 (truncated: 1 byte short)"
+        );
+        let err = read_koala(&[0; 10_010]).expect_err("long");
+        assert_eq!(
+            err.to_string(),
+            "Koala files are 10003 bytes; this one is 10010 (oversized: 7 bytes too long)"
         );
         let err = read_art_studio(&[0; 9003]).expect_err("odd size");
         assert_eq!(
             err.to_string(),
-            "Art Studio files are 9002 or 9009 bytes; this one is 9003"
+            "Art Studio files are 9002 or 9009 bytes; this one is 9003 (oversized: 1 byte too long)"
         );
+        let err = read_art_studio(&[0; 9010]).expect_err("odd size");
+        assert!(err.to_string().ends_with("(oversized: 1 byte too long)"));
+        let err = read_art_studio(&[]).expect_err("empty");
+        assert!(err.to_string().ends_with("(truncated: 9002 bytes short)"));
+        assert_eq!(err.rule_number(), Some(6));
     }
 
     #[test]
@@ -389,6 +448,19 @@ mod tests {
             BitmapFormat::from_extension("aas"),
             Some(BitmapFormat::ArtStudio)
         );
+        assert_eq!(
+            BitmapFormat::from_extension(".KoA"),
+            Some(BitmapFormat::Koala)
+        );
+        assert_eq!(
+            BitmapFormat::from_extension("Art"),
+            Some(BitmapFormat::ArtStudio)
+        );
+        for f in [BitmapFormat::Koala, BitmapFormat::ArtStudio] {
+            for ext in f.extensions() {
+                assert_eq!(BitmapFormat::from_extension(ext), Some(f));
+            }
+        }
         assert_eq!(BitmapFormat::from_extension("png"), None);
         assert_eq!(BitmapFormat::from_size(10_003), Some(BitmapFormat::Koala));
         assert_eq!(BitmapFormat::from_size(9009), Some(BitmapFormat::ArtStudio));
