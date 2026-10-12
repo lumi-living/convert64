@@ -78,7 +78,7 @@ fn projects(input: &Path) -> Result<Vec<PathBuf>, Fail> {
         .filter(|p| {
             p.is_file()
                 && p.extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case(convert64_cli::project::EXTENSION))
+                    .is_some_and(|e| e.eq_ignore_ascii_case(convert64_project::EXTENSION))
         })
         .collect();
     found.sort();

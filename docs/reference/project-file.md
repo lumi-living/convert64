@@ -1,6 +1,6 @@
 # The `.convert64` project file
 
-A project file is the whole document the app and the CLI share ([ADR-009](../adr/ADR-009-project-file.md)): target mode, palette, layers, regions, cell steering and solve options, as UTF-8 JSON. `convert64 recipe apply in.convert64 --save out.convert64` reads and writes one (and reads a version-1 recipe the same way). The serde types are in `crates/convert64-cli/src/project.rs`.
+A project file is the whole document the app and the CLI share ([ADR-009](../adr/ADR-009-project-file.md)): target mode, palette, layers, regions, cell steering and solve options, as UTF-8 JSON. `convert64 recipe apply in.convert64 --save out.convert64` reads and writes one (and reads a version-1 recipe the same way). The serde types are in `crates/convert64-project/src/file.rs` (`convert64_project`, #192), which the app, the CLI and the MCP server share.
 
 Unknown fields are errors, so a typo never silently does nothing. Values are checked by the same constructors the app uses: a strength of 1.5, a scale of 0 or a mask of the wrong size is an error naming the layer.
 
@@ -8,7 +8,7 @@ Unknown fields are errors, so a typo never silently does nothing. Values are che
 
 | `schema_version` | What it is | This build |
 |---|---|---|
-| (none, `"version": 1`) | The recipe file of E4 (`crates/convert64-cli/src/recipe.rs`): layers with linked sources, commands, solve options | reads it as a project: sources linked, the default palette, its commands run after loading |
+| (none, `"version": 1`) | The recipe file of E4 (`crates/convert64-project/src/recipe.rs`): layers with linked sources, commands, solve options | reads it as a project: sources linked, the default palette, its commands run after loading |
 | `2` | This document | reads and writes |
 
 A file with `schema_version` above 2 is refused with a message naming the version. A change that old readers would misread (a renamed field, a new meaning) increments `schema_version`; adding an optional field with a default does not.
@@ -139,4 +139,4 @@ Cells are `x` 0–39, `y` 0–24; colours are indices 0–15. A pin names 1–4 
 
 ## Round trip
 
-A project saved by the CLI reloads identically and solves to the same picture: load → save gives the same bytes again, and the reloaded project's solve is byte-identical (`crates/convert64-cli/tests/project.rs`). JSON is written pretty-printed with a trailing newline, fields in the order above.
+A project saved by the CLI reloads identically and solves to the same picture: load → save gives the same bytes again, and the reloaded project's solve is byte-identical (`crates/convert64-cli/tests/project.rs` on disk, `crates/convert64-project/tests/memory.rs` in memory, as the browser build loads them). JSON is written pretty-printed with a trailing newline, fields in the order above.

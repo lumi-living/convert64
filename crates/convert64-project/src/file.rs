@@ -9,9 +9,12 @@
 //! project may also list registry commands, run in order after loading, as a recipe
 //! file does; saving writes their result and no commands.
 //!
-//! Version-1 recipe files (`crate::recipe::RecipeFile`, `"version": 1`) are read too:
+//! Version-1 recipe files ([`crate::recipe::RecipeFile`], `"version": 1`) are read too:
 //! [`ProjectFile::from_recipe`] maps one onto a project, so every recipe opens and saves
 //! as a project. The schema is documented in `docs/reference/project-file.md`.
+//!
+//! Nothing here opens a file: linked sources, masks and `.vpl` palettes are read through
+//! a [`Store`], so the browser build loads projects from bytes it was handed (#192).
 //!
 //! ```json
 //! {
@@ -24,16 +27,21 @@
 //! ```
 
 use crate::base64;
-use crate::recipe::{JsonCommand, RecipeError, RecipeFile, SolveSpec};
+use crate::codec::{decode_mask, encode_mask};
+use crate::command::JsonCommand;
+use crate::error::{ProjectError, invalid};
+use crate::recipe::RecipeFile;
+use crate::store::Store;
 use convert64_core::colour::ColourSet;
-use convert64_core::layer::{Adjustments, Blend, Recipe, SourceImage, Transform};
+use convert64_core::layer::{Adjustments, Blend, Recipe, Transform};
 use convert64_core::mask::{MaskRaster, Modifiers, SourceEntry};
 use convert64_core::mode::Mode;
 use convert64_core::model::CellPos;
-use convert64_core::palette::{Palette, Rgb8, linear_to_srgb8};
+use convert64_core::palette::{Palette, Rgb8};
+use convert64_core::solve::SolveOptions;
 use convert64_core::solve::steering::{Pin, Steering};
 use serde::{Deserialize, Serialize};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 /// The project-file schema version this build reads and writes. Version 1 is the recipe
 /// file, which has `"version"` instead of `"schema_version"`.
@@ -111,8 +119,8 @@ pub enum PaletteSpec {
 }
 
 impl PaletteSpec {
-    /// The palette, reading a `.vpl` file relative to `base`.
-    pub fn resolve(&self, base: &Path) -> Result<Palette, RecipeError> {
+    /// The palette, reading a `.vpl` file relative to `base` from `store`.
+    pub fn resolve(&self, base: &Path, store: &dyn Store) -> Result<Palette, ProjectError> {
         Ok(match self {
             Self::PeptoPal => Palette::pepto_pal(),
             Self::PeptoNtsc => Palette::pepto_ntsc(),
@@ -132,8 +140,7 @@ impl PaletteSpec {
             }
             Self::Vpl(path) => {
                 let path = base.join(path);
-                let bytes = std::fs::read(&path)
-                    .map_err(|e| RecipeError::Io(path.clone(), e.to_string()))?;
+                let bytes = store.read(&path)?;
                 Palette::from_vpl(&bytes)
                     .map_err(|e| invalid(format!("{}: {e}", path.display())))?
             }
@@ -142,7 +149,7 @@ impl PaletteSpec {
 
     /// The preset or file named on a command line: `pepto`, `pepto-pal`, `pepto-ntsc`,
     /// `colodore`, or a path ending in `.vpl`.
-    pub fn from_arg(arg: &str) -> Result<Self, RecipeError> {
+    pub fn from_arg(arg: &str) -> Result<Self, ProjectError> {
         if Path::new(arg)
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("vpl"))
@@ -157,13 +164,95 @@ impl PaletteSpec {
     }
 }
 
-fn parse_hex(text: &str) -> Result<Rgb8, RecipeError> {
+fn parse_hex(text: &str) -> Result<Rgb8, ProjectError> {
     let hex = text.strip_prefix('#').unwrap_or(text);
     if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(invalid(format!("{text:?} is not a #RRGGBB colour")));
     }
     let v = u32::from_str_radix(hex, 16).map_err(invalid)?;
     Ok(Rgb8::from_hex(v))
+}
+
+/// Solve settings in a recipe or project file (the per-pixel knobs live in each layer's
+/// recipe).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SolveSpec {
+    /// The solver: `reference` (png2c64's pipeline, the default) or `native`.
+    #[serde(default)]
+    pub solver: convert64_core::solve::SolverKind,
+    /// The reference solver's named divergences from png2c64, all off by default.
+    #[serde(
+        default,
+        skip_serializing_if = "convert64_core::solve::Divergences::none"
+    )]
+    pub divergences: convert64_core::solve::Divergences,
+    /// Background: `auto` (default) or `{"fixed": n}`.
+    #[serde(default)]
+    pub background: convert64_core::solve::Background,
+    /// Refinement hysteresis ratio, e.g. 0.97; absent = off.
+    #[serde(default)]
+    pub hysteresis: Option<f32>,
+    /// Same-luma pair bias per pair (positive penalises, negative rewards).
+    #[serde(default)]
+    pub luma_pair_bias: f32,
+    /// Refinement rounds, 0–2.
+    #[serde(default = "default_refinements")]
+    pub refinements: u8,
+    /// Backgrounds carried from the search into dithering, at least 1.
+    #[serde(default = "default_finalists")]
+    pub finalists: u8,
+}
+
+fn default_refinements() -> u8 {
+    SolveOptions::default().refinements
+}
+
+fn default_finalists() -> u8 {
+    SolveOptions::default().finalists
+}
+
+impl Default for SolveSpec {
+    fn default() -> Self {
+        Self {
+            solver: convert64_core::solve::SolverKind::default(),
+            divergences: convert64_core::solve::Divergences::default(),
+            background: convert64_core::solve::Background::default(),
+            hysteresis: None,
+            luma_pair_bias: 0.0,
+            refinements: default_refinements(),
+            finalists: default_finalists(),
+        }
+    }
+}
+
+impl SolveSpec {
+    /// Checks the values a solve cannot take.
+    pub fn check(&self) -> Result<(), ProjectError> {
+        if let Some(h) = self.hysteresis
+            && !(h > 0.0 && h <= 1.0)
+        {
+            return Err(invalid(format!(
+                "solve: hysteresis must be in (0, 1], got {h}"
+            )));
+        }
+        if !self.luma_pair_bias.is_finite() {
+            return Err(invalid("solve: luma_pair_bias must be finite"));
+        }
+        if self.refinements > 2 {
+            return Err(invalid(format!(
+                "solve: refinements must be 0–2, got {}",
+                self.refinements
+            )));
+        }
+        if self.finalists == 0 || self.finalists > 16 {
+            return Err(invalid(format!(
+                "solve: finalists must be 1–16, got {}",
+                self.finalists
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// A PNG file, relative to the project file.
@@ -371,7 +460,7 @@ impl SteeringSpec {
 
     /// The steering, checking every cell is on the 40 × 25 screen and every pin names
     /// 1–4 colours.
-    pub fn to_steering(&self) -> Result<Steering, RecipeError> {
+    pub fn to_steering(&self) -> Result<Steering, ProjectError> {
         let cell = |x: u16, y: u16| {
             if x < 40 && y < 25 {
                 Ok(CellPos::new(x, y))
@@ -491,8 +580,8 @@ impl ProjectFile {
 
     /// Parses a project file, or a version-1 recipe file (migrated with
     /// [`Self::from_recipe`]).
-    pub fn parse(text: &str) -> Result<Self, RecipeError> {
-        let json = |e: serde_json::Error| RecipeError::Json(e.to_string());
+    pub fn parse(text: &str) -> Result<Self, ProjectError> {
+        let json = |e: serde_json::Error| ProjectError::Json(e.to_string());
         let v: serde_json::Value = serde_json::from_str(text).map_err(json)?;
         if let Some(n) = v.get("schema_version") {
             if n.as_u64() != Some(u64::from(SCHEMA_VERSION)) {
@@ -519,10 +608,19 @@ impl ProjectFile {
         }
     }
 
+    /// Reads and parses a project or recipe file from `store`.
+    pub fn read_from(store: &dyn Store, path: &Path) -> Result<Self, ProjectError> {
+        let bytes = store.read(path)?;
+        let text = String::from_utf8(bytes)
+            .map_err(|e| ProjectError::Io(path.to_owned(), e.to_string()))?;
+        Self::parse(&text)
+    }
+
     /// Reads and parses a project or recipe file.
-    pub fn read(path: &Path) -> Result<Self, RecipeError> {
+    #[cfg(feature = "fs")]
+    pub fn read(path: &Path) -> Result<Self, ProjectError> {
         let text = std::fs::read_to_string(path)
-            .map_err(|e| RecipeError::Io(path.to_owned(), e.to_string()))?;
+            .map_err(|e| ProjectError::Io(path.to_owned(), e.to_string()))?;
         Self::parse(&text)
     }
 
@@ -535,120 +633,21 @@ impl ProjectFile {
     }
 }
 
-pub(crate) fn invalid(e: impl std::fmt::Display) -> RecipeError {
-    RecipeError::Invalid(e.to_string())
-}
-
-/// `p` made absolute against the current directory and normalised lexically (`.` and
-/// `..` removed), without touching the file system.
-pub fn absolute(p: &Path) -> PathBuf {
-    let joined = if p.is_absolute() {
-        p.to_owned()
-    } else {
-        std::env::current_dir().unwrap_or_default().join(p)
-    };
-    let mut out = PathBuf::new();
-    for c in joined.components() {
-        match c {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !out.pop() {
-                    out.push(c);
-                }
-            }
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-/// `target` relative to the directory `dir`, `/`-separated so project files move
-/// between systems; `target` itself when they share no root (another Windows drive).
-pub fn relative(dir: &Path, target: &Path) -> PathBuf {
-    let (dir, target) = (absolute(dir), absolute(target));
-    let a: Vec<_> = dir.components().collect();
-    let b: Vec<_> = target.components().collect();
-    let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
-    if common == 0 || (common == 1 && matches!(a[0], Component::Prefix(_))) {
-        return target;
-    }
-    let parts: Vec<String> = std::iter::repeat_n("..".to_owned(), a.len() - common)
-        .chain(
-            b[common..]
-                .iter()
-                .map(|c| c.as_os_str().to_string_lossy().into_owned()),
-        )
-        .collect();
-    PathBuf::from(parts.join("/"))
-}
-
-/// Decodes PNG (or other supported image) bytes into a layer source.
-pub fn decode_source(bytes: &[u8], what: &str) -> Result<SourceImage, RecipeError> {
-    let img = image::load_from_memory(bytes)
-        .map_err(|e| invalid(format!("{what}: {e}")))?
-        .to_rgba8();
-    let (w, h) = img.dimensions();
-    SourceImage::from_srgba8(w, h, img.as_raw()).map_err(|e| invalid(format!("{what}: {e}")))
-}
-
-/// Decodes greyscale PNG bytes (any bit depth; colour becomes luma) into a mask raster.
-pub fn decode_mask(bytes: &[u8], what: &str) -> Result<MaskRaster, RecipeError> {
-    let img = image::load_from_memory(bytes)
-        .map_err(|e| invalid(format!("{what}: {e}")))?
-        .to_luma16();
-    let (w, h) = img.dimensions();
-    MaskRaster::from_u16(w, h, img.as_raw()).map_err(|e| invalid(format!("{what}: {e}")))
-}
-
-fn png_bytes(img: image::DynamicImage) -> Vec<u8> {
-    let mut out = std::io::Cursor::new(Vec::new());
-    img.write_to(&mut out, image::ImageFormat::Png)
-        .unwrap_or_else(|e| unreachable!("PNG encoding into memory: {e}"));
-    out.into_inner()
-}
-
-/// A mask raster as a 16-bit greyscale PNG (its on-disk form, ADR-008).
-pub fn encode_mask(raster: &MaskRaster) -> Vec<u8> {
-    let (w, h) = raster.size();
-    let img = image::ImageBuffer::<image::Luma<u16>, _>::from_raw(w, h, raster.to_u16())
-        .expect("sized by the raster");
-    png_bytes(image::DynamicImage::ImageLuma16(img))
-}
-
-/// A layer source as an 8-bit sRGB RGBA PNG (for sources with no original file).
-pub fn encode_source(src: &SourceImage) -> Vec<u8> {
-    let (w, h) = src.size();
-    let rgba = src
-        .pixels()
-        .iter()
-        .flat_map(|p| {
-            [
-                linear_to_srgb8(p[0]),
-                linear_to_srgb8(p[1]),
-                linear_to_srgb8(p[2]),
-                (p[3].clamp(0.0, 1.0) * 255.0).round() as u8,
-            ]
-        })
-        .collect();
-    let img = image::RgbaImage::from_raw(w, h, rgba).expect("sized by the source");
-    png_bytes(image::DynamicImage::ImageRgba8(img))
-}
-
-/// The raster for a [`RasterSpec`]: linked paths are relative to `base`; a fill is
-/// `size` large.
+/// The raster for a [`RasterSpec`]: linked paths are relative to `base`, read from
+/// `store`; a fill is `size` large.
 pub fn load_raster(
     spec: &RasterSpec,
     base: &Path,
+    store: &dyn Store,
     size: (u32, u32),
     what: &str,
-) -> Result<MaskRaster, RecipeError> {
+) -> Result<MaskRaster, ProjectError> {
     let raster = match spec {
         RasterSpec::Fill(f) => MaskRaster::filled(size.0, size.1, f.fill)
             .map_err(|e| invalid(format!("{what}: {e}")))?,
         RasterSpec::Linked(l) => {
             let path = base.join(&l.path);
-            let bytes =
-                std::fs::read(&path).map_err(|e| RecipeError::Io(path.clone(), e.to_string()))?;
+            let bytes = store.read(&path)?;
             decode_mask(&bytes, &path.display().to_string())?
         }
         RasterSpec::Embedded(e) => {
@@ -685,23 +684,7 @@ pub fn raster_spec(raster: &MaskRaster) -> RasterSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn relative_paths_walk_up_and_down() {
-        let root = absolute(Path::new("/proj"));
-        assert_eq!(
-            relative(&root.join("art"), &root.join("src/title.png")),
-            PathBuf::from("../src/title.png")
-        );
-        assert_eq!(
-            relative(&root, &root.join("a/b.png")),
-            PathBuf::from("a/b.png")
-        );
-        assert_eq!(
-            relative(&root.join("x/./y/.."), &root.join("x/c.png")),
-            PathBuf::from("c.png")
-        );
-    }
+    use crate::store::MemoryStore;
 
     #[test]
     fn palettes_by_name_and_by_colours() {
@@ -712,7 +695,12 @@ mod tests {
             ("colodore", "Colodore"),
         ] {
             let p = PaletteSpec::from_arg(arg).unwrap();
-            assert_eq!(p.resolve(Path::new(".")).unwrap().name(), name);
+            assert_eq!(
+                p.resolve(Path::new("."), &MemoryStore::new())
+                    .unwrap()
+                    .name(),
+                name
+            );
         }
         assert!(PaletteSpec::from_arg("vice").is_err());
         assert_eq!(
@@ -729,13 +717,13 @@ mod tests {
         );
         let p = serde_json::from_str::<PaletteSpec>(&json)
             .unwrap()
-            .resolve(Path::new("."))
+            .resolve(Path::new("."), &MemoryStore::new())
             .unwrap();
         assert_eq!(p.rgb_table(), pepto.rgb_table());
         let short = PaletteSpec::Custom(vec!["#000000".into()]);
-        assert!(short.resolve(Path::new(".")).is_err());
+        assert!(short.resolve(Path::new("."), &MemoryStore::new()).is_err());
         let bad = PaletteSpec::Custom(vec!["#00000G".into(); 16]);
-        assert!(bad.resolve(Path::new(".")).is_err());
+        assert!(bad.resolve(Path::new("."), &MemoryStore::new()).is_err());
     }
 
     #[test]
