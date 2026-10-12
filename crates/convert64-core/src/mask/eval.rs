@@ -32,18 +32,7 @@ pub(crate) fn apply_modifiers_with(
     m: &Modifiers,
     full_res: bool,
 ) {
-    let levels = m.levels();
-    let identity_levels = levels == crate::layer::Levels::IDENTITY;
-    if m.invert() || !identity_levels {
-        for v in values.iter_mut() {
-            if m.invert() {
-                *v = 1.0 - *v;
-            }
-            if !identity_levels {
-                *v = levels.eval(*v);
-            }
-        }
-    }
+    point_ops(values, m);
     if m.snap() != SnapToCells::Off {
         snap(values, rect, grid, m.snap());
     }
@@ -56,6 +45,30 @@ pub(crate) fn apply_modifiers_with(
             blur(values, w, h, sigma);
         }
     }
+}
+
+/// Invert then levels, value by value: the modifiers that need no neighbours.
+pub(crate) fn point_ops(values: &mut [f32], m: &Modifiers) {
+    let levels = m.levels();
+    let identity_levels = levels == crate::layer::Levels::IDENTITY;
+    if m.invert() || !identity_levels {
+        for v in values.iter_mut() {
+            if m.invert() {
+                *v = 1.0 - *v;
+            }
+            if !identity_levels {
+                *v = levels.eval(*v);
+            }
+        }
+    }
+}
+
+/// When `m` ends in a feather blurred at half resolution with no snap before it, the
+/// feather's σ in super pixels: then [`point_ops`], [`down_row`] and [`blur_and_up`]
+/// apply `m`, and the full-resolution mask is only ever read two rows at a time (#139).
+pub(crate) fn half_res_sigma(m: &Modifiers, grid: SuperGrid, full_res: bool) -> Option<f32> {
+    let half = m.snap() == SnapToCells::Off && m.feather() > 0.0 && half_res(m.feather());
+    (half && !full_res).then(|| m.feather() * f32::from(grid.n()))
 }
 
 /// Makes every target cell uniform: Expand takes the cell's maximum, Contract its
@@ -137,47 +150,62 @@ fn blur_half_res(values: &mut [f32], w: usize, h: usize, sigma: f32) {
 
 /// [`blur_half_res`] with `half` (`⌈w/2⌉ × ⌈h/2⌉`) as scratch.
 fn blur_half_res_in(values: &mut [f32], w: usize, h: usize, sigma: f32, half: &mut [f32]) {
-    let (hw, hh) = (w.div_ceil(2), h.div_ceil(2));
+    let hw = w.div_ceil(2);
     {
         let src: &[f32] = values;
         let mut rows: Vec<(usize, &mut [f32])> = half.chunks_mut(hw).enumerate().collect();
         crate::par::for_each(&mut rows, |(y, out)| {
             let r0 = &src[2 * *y * w..][..w];
             let r1 = (2 * *y + 1 < h).then(|| &src[(2 * *y + 1) * w..][..w]);
-            // The mean of the up to four pixels, summed in the order (0, 0), (1, 0),
-            // (0, 1), (1, 1). Full 2 × 2 blocks first, branch-free so it vectorises.
-            let full = if r1.is_some() { w / 2 } else { 0 };
-            if let Some(r1) = r1 {
-                let pairs = r0.as_chunks::<2>().0.iter().zip(r1.as_chunks::<2>().0);
-                for (o, (a, b)) in out[..full].iter_mut().zip(pairs) {
-                    let mut sum = 0.0f32 + a[0];
-                    sum += a[1];
-                    sum += b[0];
-                    sum += b[1];
-                    *o = sum / 4.0;
-                }
-            }
-            for (x, o) in out.iter_mut().enumerate().skip(full) {
-                let sx = 2 * x;
-                let right = sx + 1 < w;
-                let mut sum = 0.0f32 + r0[sx];
-                let mut n = 1.0f32;
-                if right {
-                    sum += r0[sx + 1];
-                    n += 1.0;
-                }
-                if let Some(r1) = r1 {
-                    sum += r1[sx];
-                    n += 1.0;
-                    if right {
-                        sum += r1[sx + 1];
-                        n += 1.0;
-                    }
-                }
-                *o = sum / n;
-            }
+            down_row(r0, r1, out);
         });
     }
+    blur_and_up(values, w, h, sigma, half);
+}
+
+/// One half-resolution row: the mean of each 2 × 2 block of full-resolution rows `r0`
+/// and `r1` (`r0` alone at an odd bottom edge), summed in the order (0, 0), (1, 0),
+/// (0, 1), (1, 1).
+pub(crate) fn down_row(r0: &[f32], r1: Option<&[f32]>, out: &mut [f32]) {
+    let w = r0.len();
+    // Full 2 × 2 blocks first, branch-free so it vectorises.
+    let full = if r1.is_some() { w / 2 } else { 0 };
+    if let Some(r1) = r1 {
+        let pairs = r0.as_chunks::<2>().0.iter().zip(r1.as_chunks::<2>().0);
+        for (o, (a, b)) in out[..full].iter_mut().zip(pairs) {
+            let mut sum = 0.0f32 + a[0];
+            sum += a[1];
+            sum += b[0];
+            sum += b[1];
+            *o = sum / 4.0;
+        }
+    }
+    for (x, o) in out.iter_mut().enumerate().skip(full) {
+        let sx = 2 * x;
+        let right = sx + 1 < w;
+        let mut sum = 0.0f32 + r0[sx];
+        let mut n = 1.0f32;
+        if right {
+            sum += r0[sx + 1];
+            n += 1.0;
+        }
+        if let Some(r1) = r1 {
+            sum += r1[sx];
+            n += 1.0;
+            if right {
+                sum += r1[sx + 1];
+                n += 1.0;
+            }
+        }
+        *o = sum / n;
+    }
+}
+
+/// The rest of the half-resolution feather once `half` (`⌈w/2⌉ × ⌈h/2⌉`) holds the
+/// mask's 2 × 2 means: blur it with σ/2, then interpolate it bilinearly back up into
+/// `values` (`w × h`), every value of which it writes.
+pub(crate) fn blur_and_up(values: &mut [f32], w: usize, h: usize, sigma: f32, half: &mut [f32]) {
+    let (hw, hh) = (w.div_ceil(2), h.div_ceil(2));
     blur(half, hw, hh, sigma / 2.0);
     let half: &[f32] = half;
     let cols: Vec<(usize, usize, f32, f32)> = (0..w)
@@ -196,12 +224,15 @@ fn blur_half_res_in(values: &mut [f32], w: usize, h: usize, sigma: f32, half: &m
     // A row of horizontally interpolated half-res row `j`.
     let interpolate = |j: usize, out: &mut [f32]| {
         let a = &half[j * hw..][..hw];
-        for (x, o) in out.iter_mut().enumerate() {
-            if pairs.contains(&(x / 2)) {
-                continue;
-            }
+        // The columns outside the pairs: a few at each edge (#139: visit only those).
+        let edges = if pairs.is_empty() {
+            [0..w, 0..0]
+        } else {
+            [0..2 * pairs.start, 2 * pairs.end..w]
+        };
+        for x in edges.into_iter().flatten() {
             let (x0, x1, sx, tx) = cols[x];
-            *o = a[x0] * sx + a[x1] * tx;
+            out[x] = a[x0] * sx + a[x1] * tx;
         }
         if !pairs.is_empty() {
             let inner = &mut out[2 * pairs.start..2 * pairs.end];
@@ -329,8 +360,53 @@ fn box_lanes(src: &[f32], stride: usize, lanes: usize, n: usize, r: usize, out: 
     scratch::with(span * lanes + lanes, |ring| {
         ring.fill(0.0);
         let (ring, acc) = ring.split_at_mut(span * lanes);
-        box_lanes_in(src, stride, lanes, n, r, out, ring, acc);
+        match lanes {
+            ROW_GROUP => box_lanes_fixed::<ROW_GROUP>(src, stride, n, r, out, ring),
+            COL_STRIP => box_lanes_fixed::<COL_STRIP>(src, stride, n, r, out, ring),
+            _ => box_lanes_in(src, stride, lanes, n, r, out, ring, acc),
+        }
     });
+}
+
+/// [`box_lanes_in`] for `L` lanes, a constant, so the running sums stay in registers and
+/// the loops are unrolled (#139). The same operations in the same order.
+fn box_lanes_fixed<const L: usize>(
+    src: &[f32],
+    stride: usize,
+    n: usize,
+    r: usize,
+    out: &mut [f32],
+    ring: &mut [f64],
+) {
+    let inv = 1.0 / (2 * r + 1) as f64;
+    let span = 2 * r + 1;
+    let mut acc = [0.0f64; L];
+    let mut slot = 0;
+    for k in 0..n + 2 * r {
+        let line = src[clamp_idx(k as isize - r as isize, n) * stride..]
+            .first_chunk::<L>()
+            .expect("a whole line");
+        let p = k + 1;
+        slot = if slot + 1 == span { 0 } else { slot + 1 };
+        let prefix = ring[slot * L..]
+            .first_chunk_mut::<L>()
+            .expect("a whole ring slot");
+        if p >= span {
+            let out = out[(p - span) * L..]
+                .first_chunk_mut::<L>()
+                .expect("a whole line");
+            for (((a, old), &v), o) in acc.iter_mut().zip(prefix).zip(line).zip(out) {
+                *a += f64::from(v);
+                *o = ((*a - *old) * inv) as f32;
+                *old = *a;
+            }
+        } else {
+            for ((a, old), &v) in acc.iter_mut().zip(prefix).zip(line) {
+                *a += f64::from(v);
+                *old = *a;
+            }
+        }
+    }
 }
 
 /// [`box_lanes`] with zeroed scratch: `ring` (`(2r + 1) × lanes`) and `acc` (`lanes`).
@@ -384,6 +460,16 @@ fn box_rows(values: &mut [f32], w: usize, _h: usize, r: usize) {
     let mut groups: Vec<&mut [f32]> = values.chunks_mut(w * ROW_GROUP).collect();
     crate::par::for_each(&mut groups, |rows| {
         let g = rows.len() / w;
+        // A whole group is transposed in tiles (#139); the last one may be shorter.
+        if g == ROW_GROUP {
+            scratch::with(2 * w * g, |t| {
+                let (t, out) = t.split_at_mut(w * g);
+                transpose_in::<ROW_GROUP>(rows, w, t);
+                box_lanes(t, g, g, w, r, out);
+                transpose_out::<ROW_GROUP>(out, w, rows);
+            });
+            return;
+        }
         scratch::with(2 * w * g, |t| {
             let (t, out) = t.split_at_mut(w * g);
             for (x, lanes) in t.chunks_exact_mut(g).enumerate() {
@@ -399,6 +485,61 @@ fn box_rows(values: &mut [f32], w: usize, _h: usize, r: usize) {
             }
         });
     });
+}
+
+/// `t[x × L + j] = rows[j × w + x]` for `L` rows of `w`, in 4 × 4 tiles, which the
+/// compiler turns into vector shuffles (#139).
+fn transpose_in<const L: usize>(rows: &[f32], w: usize, t: &mut [f32]) {
+    const { assert!(L.is_multiple_of(4), "whole tiles of rows") };
+    let x4 = w / 4 * 4;
+    for jb in (0..L).step_by(4) {
+        let src: [&[f32]; 4] = std::array::from_fn(|i| &rows[(jb + i) * w..][..w]);
+        for x in (0..x4).step_by(4) {
+            let tile: [[f32; 4]; 4] =
+                std::array::from_fn(|i| *src[i][x..].first_chunk::<4>().expect("4 values"));
+            for c in 0..4 {
+                let dst = t[(x + c) * L + jb..]
+                    .first_chunk_mut::<4>()
+                    .expect("4 lanes");
+                *dst = [tile[0][c], tile[1][c], tile[2][c], tile[3][c]];
+            }
+        }
+        for x in x4..w {
+            for (i, s) in src.iter().enumerate() {
+                t[x * L + jb + i] = s[x];
+            }
+        }
+    }
+}
+
+/// The inverse of [`transpose_in`]: `rows[j × w + x] = t[x × L + j]`.
+fn transpose_out<const L: usize>(t: &[f32], w: usize, rows: &mut [f32]) {
+    const { assert!(L.is_multiple_of(4), "whole tiles of rows") };
+    let x4 = w / 4 * 4;
+    for (jb, block) in rows
+        .chunks_exact_mut(4 * w)
+        .enumerate()
+        .map(|(b, r)| (4 * b, r))
+    {
+        let (r0, rest) = block.split_at_mut(w);
+        let (r1, rest) = rest.split_at_mut(w);
+        let (r2, r3) = rest.split_at_mut(w);
+        let mut dst = [r0, r1, r2, r3];
+        for x in (0..x4).step_by(4) {
+            let tile: [[f32; 4]; 4] = std::array::from_fn(|c| {
+                *t[(x + c) * L + jb..].first_chunk::<4>().expect("4 lanes")
+            });
+            for (i, d) in dst.iter_mut().enumerate() {
+                *d[x..].first_chunk_mut::<4>().expect("4 values") =
+                    [tile[0][i], tile[1][i], tile[2][i], tile[3][i]];
+            }
+        }
+        for x in x4..w {
+            for (i, d) in dst.iter_mut().enumerate() {
+                d[x] = t[x * L + jb + i];
+            }
+        }
+    }
 }
 
 fn box_cols(values: &mut [f32], w: usize, h: usize, r: usize) {

@@ -22,6 +22,17 @@
 //!   rows whose horizontal pass stays in cache. A rebuilt layer reuses the buffers it
 //!   replaced, and parallel tasks take their scratch from per-thread pools
 //!   (`crate::scratch`), so a drag does not page in fresh memory.
+//!
+//! The single-threaded cold path (#139), again without changing the output:
+//! - The vertical pass splits each resampled colour row into the planes as it writes it,
+//!   with the coverage and the clamps in the same loop; where both coverages are 1 the
+//!   scale is skipped (`v × 1 = v`). Bilinear outputs take their two taps from a table.
+//! - A feather blurred at half resolution with no snap reduces the resampled mask rows
+//!   to half resolution as they are made, so the full-resolution mask is not stored
+//!   before the feather writes it.
+//! - The box blur keeps its running sums in registers, and a group of rows is transposed
+//!   in 4 × 4 tiles. Gradients and mask extents are computed a row at a time in loops
+//!   that vectorise, and identity adjustments premultiply the source without copying it.
 
 mod attr;
 mod blend;
@@ -121,9 +132,31 @@ struct LayerRaster {
 type Extents = Arc<Vec<(u32, u32)>>;
 
 /// The first and one past the last index in `row` where `on` holds, or `(0, 0)`.
+///
+/// Tests 16 values at a time without an early exit, so the test vectorises; a masked
+/// layer's rows can start and end with long zero runs (#139).
 fn extent_of<T>(row: &[T], on: impl Fn(&T) -> bool) -> (u32, u32) {
-    let first = row.iter().position(&on);
-    let last = row.iter().rposition(&on);
+    const C: usize = 16;
+    let (chunks, tail) = row.as_chunks::<C>();
+    let any = |c: &[T; C]| c.iter().fold(false, |a, x| a | on(x));
+    let in_chunk = |i: usize| i * C;
+    let first = chunks
+        .iter()
+        .position(any)
+        .map(|i| in_chunk(i) + chunks[i].iter().position(&on).expect("found above"))
+        .or_else(|| {
+            tail.iter()
+                .position(&on)
+                .map(|p| in_chunk(chunks.len()) + p)
+        });
+    let last = tail
+        .iter()
+        .rposition(&on)
+        .map(|p| in_chunk(chunks.len()) + p)
+        .or_else(|| {
+            let i = chunks.iter().rposition(any)?;
+            Some(in_chunk(i) + chunks[i].iter().rposition(&on).expect("found above"))
+        });
     match (first, last) {
         (Some(a), Some(b)) => (
             u32::try_from(a).expect("row fits u32"),
@@ -192,13 +225,14 @@ struct Spare {
     values: Vec<f32>,
 }
 
-/// The adjusted pixels premultiplied, with the adjusted buffer they came from.
-type Premultiplied = (Arc<[[f32; 4]]>, Vec<[f32; 4]>);
+/// The adjusted pixels premultiplied, with the source and adjustments they came from.
+type Premultiplied = (Arc<SourceImage>, Adjustments, Vec<[f32; 4]>);
 
 #[derive(Debug, Default)]
 struct LayerCache {
     adjust: AdjustCache,
-    /// The adjusted pixels premultiplied, keyed by the adjusted buffer's identity.
+    /// The adjusted pixels premultiplied, keyed by the source's identity and the
+    /// adjustments.
     premul: Option<Premultiplied>,
     /// The mask's layer-space values when it has sources.
     values: Option<LayerValues>,
@@ -257,9 +291,19 @@ impl LayerCache {
         let mut values = std::mem::take(&mut self.spare.values);
         self.update_mask_source(m, layer.source());
         let src = self.mask_source(m);
-        resample_mask(src, layer.source().size().0, &mx, &my, &mut values);
         let rect = raster.rect;
-        crate::mask::eval::apply_modifiers_with(&mut values, rect, grid, &modifiers, full_res);
+        let sw = layer.source().size().0;
+        evaluate_mask(
+            src,
+            sw,
+            &mx,
+            &my,
+            rect,
+            grid,
+            &modifiers,
+            full_res,
+            &mut values,
+        );
         self.set_mask(modifiers, raster, values);
         (false, true)
     }
@@ -344,13 +388,21 @@ impl LayerCache {
             };
             return (raster, None);
         }
-        let adjusted = self.adjust.get(src, layer.adjustments());
-        if !matches!(&self.premul, Some((a, _)) if Arc::ptr_eq(a, &adjusted)) {
-            let premul = adjusted
-                .iter()
-                .map(|p| [p[0] * p[3], p[1] * p[3], p[2] * p[3], p[3]])
-                .collect();
-            self.premul = Some((Arc::clone(&adjusted), premul));
+        let adj = layer.adjustments();
+        if !matches!(&self.premul, Some((s, a, _)) if Arc::ptr_eq(s, src) && a == adj) {
+            let premultiply = |px: &[[f32; 4]]| {
+                px.iter()
+                    .map(|p| [p[0] * p[3], p[1] * p[3], p[2] * p[3], p[3]])
+                    .collect()
+            };
+            // Identity adjustments premultiply the source itself, without the adjust
+            // cache's copy of it (#139).
+            let premul = if adj.is_identity() {
+                premultiply(src.pixels())
+            } else {
+                premultiply(&self.adjust.get(src, adj))
+            };
+            self.premul = Some((Arc::clone(src), adj.clone(), premul));
         }
         let mut rgba = std::mem::take(&mut self.spare.rgba);
         let mut values = std::mem::take(&mut self.spare.values);
@@ -359,37 +411,28 @@ impl LayerCache {
             self.update_mask_source(m, src);
         }
         let mask_src = mask.map(|m| self.mask_source(m));
-        let (_, premul) = self.premul.as_ref().expect("filled above");
+        let (_, _, premul) = self.premul.as_ref().expect("filled above");
         debug_assert_eq!(sh as usize * sw as usize, premul.len());
         // The colour and the mask are independent: resample them side by side.
         let (extent, values) = crate::par::join(
             || {
                 let mut extent = Vec::new();
-                resample_planes(premul, sw, &mx, &my, &mut rgba, &mut extent, |y, row| {
-                    let cy = my.cov[y];
-                    for (p, cx) in row.iter_mut().zip(&mx.cov) {
-                        let k = cx * cy;
-                        // Lanczos can ring slightly negative; alpha stays in 0..=1 and
-                        // colour ≥ 0.
-                        p[3] = (p[3] * k).clamp(0.0, 1.0);
-                        for c in &mut p[..3] {
-                            *c = (*c * k).max(0.0);
-                        }
-                    }
-                    extent_of(row, |p| *p != [0.0; 4])
-                });
+                resample_planes(premul, sw, &mx, &my, &mut rgba, &mut extent);
                 extent
             },
             || {
                 let (m, mask_src) = mask.zip(mask_src)?;
-                resample_mask(mask_src, sw, &mx, &my, &mut values);
                 let modifiers = m.modifiers();
-                crate::mask::eval::apply_modifiers_with(
-                    &mut values,
+                evaluate_mask(
+                    mask_src,
+                    sw,
+                    &mx,
+                    &my,
                     rect,
                     grid,
                     &modifiers,
                     full_res,
+                    &mut values,
                 );
                 Some(values)
             },
@@ -413,6 +456,53 @@ fn axis_maps(layer: &Layer, grid: SuperGrid) -> (AxisMap, AxisMap, PxRect) {
     let my = AxisMap::new(sh, t.translate().y, t.scale().y, t.flip_v(), step.y, gh);
     let rect = PxRect::new(mx.out0, my.out0, mx.out0 + mx.len(), my.out0 + my.len());
     (mx, my, rect)
+}
+
+/// Resamples a mask's layer-space values (`sw` wide) onto `rect` of `grid` into `out`
+/// and applies `modifiers`. A feather blurred at half resolution with no snap before it
+/// reduces the resampled rows to half resolution as they are made
+/// ([`resample::resample_half`]), so the full-resolution mask is never stored before
+/// the feather writes it (#139); the values are the same either way.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the resampling maps and the modifiers"
+)]
+fn evaluate_mask(
+    values: &[f32],
+    sw: u32,
+    mx: &AxisMap,
+    my: &AxisMap,
+    rect: PxRect,
+    grid: SuperGrid,
+    modifiers: &Modifiers,
+    full_res: bool,
+    out: &mut Vec<f32>,
+) {
+    use crate::mask::eval;
+    let Some(sigma) = eval::half_res_sigma(modifiers, grid, full_res) else {
+        resample_mask(values, sw, mx, my, out);
+        eval::apply_modifiers_with(out, rect, grid, modifiers, full_res);
+        return;
+    };
+    let (w, h) = (rect.width() as usize, rect.height() as usize);
+    resample::sized(out, w * h, 0.0);
+    scratch::with(w.div_ceil(2) * h.div_ceil(2), |half| {
+        resample::resample_half(
+            values,
+            sw,
+            mx,
+            my,
+            half,
+            |row| {
+                for x in &mut *row {
+                    *x = x.clamp(0.0, 1.0);
+                }
+                eval::point_ops(row, modifiers);
+            },
+            eval::down_row,
+        );
+        eval::blur_and_up(out, w, h, sigma, half);
+    });
 }
 
 /// Resamples a mask's layer-space values (`sw` wide) into `out`, clamped to `0..=1`.
@@ -1200,6 +1290,30 @@ mod tests {
         let mut l = layer;
         l.set_transform(Transform::translated(Vec2::new(x, y)).unwrap());
         l
+    }
+
+    #[test]
+    fn extent_of_matches_a_plain_scan() {
+        for len in [0, 1, 15, 16, 17, 33, 64, 100] {
+            for (a, b) in [
+                (None, None),
+                (Some(0), Some(0)),
+                (Some(3), Some(40)),
+                (Some(31), Some(32)),
+                (Some(99), Some(99)),
+            ] {
+                let mut row = vec![0.0f32; len];
+                for i in [a, b].into_iter().flatten().filter(|&i| i < len) {
+                    row[i] = 0.5;
+                }
+                let on = |m: &f32| *m > 0.0;
+                let want = match (row.iter().position(on), row.iter().rposition(on)) {
+                    (Some(i), Some(j)) => (i as u32, j as u32 + 1),
+                    _ => (0, 0),
+                };
+                assert_eq!(extent_of(&row, on), want, "{len} {a:?} {b:?}");
+            }
+        }
     }
 
     #[test]
