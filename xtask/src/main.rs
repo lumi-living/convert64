@@ -11,11 +11,14 @@
 //!   compare the capture with it (local only).
 //! - `dither-sheet [--input <png> --out <dir>] [--mode mc|hires] [--reason "..."]`: render
 //!   every dither method and the comparison sheets (`docs/reference/dither-previews/`).
+//! - `png2c64-previews --png2c64 <path>`: regenerate png2c64's own renders and contact
+//!   sheets in `docs/reference/dither-previews/`, the parity test's reference.
 
 mod baselines;
 mod bluenoise;
 mod font;
 mod goldens;
+mod previews;
 mod sheet;
 mod vice;
 mod vice_exports;
@@ -50,6 +53,18 @@ enum Command {
         /// Only these fixtures (default: all).
         #[arg(long)]
         only: Vec<String>,
+    },
+    /// Regenerate png2c64's renders of its 30 dither methods and its contact sheets.
+    ///
+    /// Runs png2c64 on the dither-preview test card (strength 1.0) and on
+    /// `fixtures/portrait/source.png` (png2c64's defaults) for every method id, writes
+    /// `docs/reference/dither-previews/png2c64-card/`, `png2c64-portrait/` and the three
+    /// sheets, and lists the renders that changed. Use the reference build
+    /// (`docs/reference/png2c64-reference.md`): the parity test compares with these.
+    Png2c64Previews {
+        /// The png2c64 binary.
+        #[arg(long)]
+        png2c64: PathBuf,
     },
     /// Show every png2c64 baseline and every export of our own solves in VICE and
     /// compare each capture with the picture.
@@ -150,6 +165,7 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::BlueNoise => bluenoise::run(&repo_root()),
         Command::Png2c64Baselines { png2c64, only } => baselines::run(&png2c64, &only),
+        Command::Png2c64Previews { png2c64 } => previews::run(&png2c64),
         Command::ViceCheck {
             x64sc,
             only,

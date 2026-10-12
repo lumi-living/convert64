@@ -38,15 +38,24 @@ picture.
 | `testcard.png` | 320×200 synthetic input: grey ramp, colour ramp, radial blob, mixed ramp |
 | `sheet-card.png` | all 30 methods on the test card (dither strength 1.0) |
 | `sheet-zoom.png` | the grey ramp mid-tones of each method at 4× — pattern structure |
-| `sheet-portrait.png` | all 30 methods on `fixtures/portrait/source.png` (png2c64 defaults, strength 0.7) |
+| `sheet-portrait.png` | all 30 methods on `fixtures/portrait/source.png` (png2c64's defaults: strength 1.0) |
 | `png2c64-card/`, `png2c64-portrait/` | the individual 320×200 renders |
 
-Generated with png2c64 1.0.0 (commit from 2026-10-11) built with clang 18:
+These renders are the reference of the parity test (#181,
+`crates/convert64-core/tests/png2c64_parity.rs`). They come from png2c64 commit
+`1265329a` built with strict IEEE arithmetic, the reference build of
+[`png2c64-reference.md`](../png2c64-reference.md), and are regenerated, sheets included,
+with `cargo xtask png2c64-previews --png2c64 <path>`, which runs:
 
 ```
-png2c64 --mode multicolor --palette pepto --dither <method> --dither-strength 1.0 testcard.png card/<method>.png
-png2c64 --mode multicolor --palette pepto --dither <method> portrait.png portrait/<method>.png
+png2c64 --mode multicolor --palette pepto --dither <method> --dither-strength 1.0 card.png <out>
+png2c64 --mode multicolor --palette pepto --dither <method> portrait.png <out>
 ```
+
+The portrait uses png2c64's defaults; its code's default strength is 1.0, although its
+`--help` says 0.7. #113 first rendered these with an unrecorded clang 18 build; #181
+re-rendered them with the reference build, which changed nine (the diffusion methods and
+`none` on the portrait, `ostromoukhov` on the card) and left 51 byte-identical.
 
 Observations worth carrying into E5:
 - `radial`, `crosshatch` and `value-noise` are artistic effects, not quantisation aids; keep them, but group them as *Effects* in the recipe, not alongside Bayer.
