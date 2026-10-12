@@ -66,6 +66,8 @@ The "Revisit when" above came due: the app (E8) needs to load projects in its wa
 
 File bytes, CLI behaviour and the schema are unchanged; `schema_version` stays 2.
 
+**#193 (2026-10-13):** "the target mode, palette and solve options live beside it in the session" no longer holds. The core's `Project` now also holds `target`, `palette` and `solve` (`convert64_core::document::SolveSettings`, the file's `solve` object), so the registry's `mode_set`, `palette_set`, `background_pin` and `solve_set` commands can change them and undo them. The file already held all three, so its format is unchanged (no `schema_version` bump). A palette is saved as it was given (preset name, colours or `.vpl` path); one the session was never given by name is saved as its preset name if it equals one, else as 16 colours. The supersample factor stays the session's.
+
 ## Action items
 - [x] #163: `convert64_cli::project`, `Session::save`, `recipe apply --save/--embed/--link`, round-trip and migration tests, `docs/reference/project-file.md`
 - [ ] #164: `convert64 convert` reads projects

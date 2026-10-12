@@ -39,7 +39,7 @@ A file with `schema_version` above 2 is refused with a message naming the versio
 | `regions` | no | none | Recipe overrides over part of the canvas; see [Regions](#regions) |
 | `steering` | no | none | Pins, locks, allow and deny lists; see [Steering](#steering) |
 | `solve` | no | defaults | See [Solve options](#solve-options) |
-| `commands` | no | none | Registry commands run in order after loading, as in a recipe file (`convert64 commands` lists them). A saved project has none: their result is in the layers, masks and steering. |
+| `commands` | no | none | Registry commands run in order after loading, as in a recipe file (`convert64 commands` lists them; since #193 they cover every field above: layers, adjustments, recipes, `target` (`mode_set`), `palette` (`palette_set`), `solve.background` (`background_pin`) and the other solve options (`solve_set`)). A saved project has none: their result is in the fields. |
 
 ## Palette
 

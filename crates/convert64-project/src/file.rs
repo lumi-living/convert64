@@ -38,7 +38,6 @@ use convert64_core::mask::{MaskRaster, Modifiers, SourceEntry};
 use convert64_core::mode::Mode;
 use convert64_core::model::CellPos;
 use convert64_core::palette::{Palette, Rgb8};
-use convert64_core::solve::SolveOptions;
 use convert64_core::solve::steering::{Pin, Steering};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -174,86 +173,11 @@ fn parse_hex(text: &str) -> Result<Rgb8, ProjectError> {
 }
 
 /// Solve settings in a recipe or project file (the per-pixel knobs live in each layer's
-/// recipe).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SolveSpec {
-    /// The solver: `reference` (png2c64's pipeline, the default) or `native`.
-    #[serde(default)]
-    pub solver: convert64_core::solve::SolverKind,
-    /// The reference solver's named divergences from png2c64, all off by default.
-    #[serde(
-        default,
-        skip_serializing_if = "convert64_core::solve::Divergences::none"
-    )]
-    pub divergences: convert64_core::solve::Divergences,
-    /// Background: `auto` (default) or `{"fixed": n}`.
-    #[serde(default)]
-    pub background: convert64_core::solve::Background,
-    /// Refinement hysteresis ratio, e.g. 0.97; absent = off.
-    #[serde(default)]
-    pub hysteresis: Option<f32>,
-    /// Same-luma pair bias per pair (positive penalises, negative rewards).
-    #[serde(default)]
-    pub luma_pair_bias: f32,
-    /// Refinement rounds, 0–2.
-    #[serde(default = "default_refinements")]
-    pub refinements: u8,
-    /// Backgrounds carried from the search into dithering, at least 1.
-    #[serde(default = "default_finalists")]
-    pub finalists: u8,
-}
-
-fn default_refinements() -> u8 {
-    SolveOptions::default().refinements
-}
-
-fn default_finalists() -> u8 {
-    SolveOptions::default().finalists
-}
-
-impl Default for SolveSpec {
-    fn default() -> Self {
-        Self {
-            solver: convert64_core::solve::SolverKind::default(),
-            divergences: convert64_core::solve::Divergences::default(),
-            background: convert64_core::solve::Background::default(),
-            hysteresis: None,
-            luma_pair_bias: 0.0,
-            refinements: default_refinements(),
-            finalists: default_finalists(),
-        }
-    }
-}
-
-impl SolveSpec {
-    /// Checks the values a solve cannot take.
-    pub fn check(&self) -> Result<(), ProjectError> {
-        if let Some(h) = self.hysteresis
-            && !(h > 0.0 && h <= 1.0)
-        {
-            return Err(invalid(format!(
-                "solve: hysteresis must be in (0, 1], got {h}"
-            )));
-        }
-        if !self.luma_pair_bias.is_finite() {
-            return Err(invalid("solve: luma_pair_bias must be finite"));
-        }
-        if self.refinements > 2 {
-            return Err(invalid(format!(
-                "solve: refinements must be 0–2, got {}",
-                self.refinements
-            )));
-        }
-        if self.finalists == 0 || self.finalists > 16 {
-            return Err(invalid(format!(
-                "solve: finalists must be 1–16, got {}",
-                self.finalists
-            )));
-        }
-        Ok(())
-    }
-}
+/// recipe). Since #193 the core's document holds them ([`SolveSettings`]), so the
+/// `solve_set` and `background_pin` commands can change them; the file form is the same.
+///
+/// [`SolveSettings`]: convert64_core::document::SolveSettings
+pub type SolveSpec = convert64_core::document::SolveSettings;
 
 /// A PNG file, relative to the project file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
