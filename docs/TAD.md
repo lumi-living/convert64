@@ -329,6 +329,22 @@ As built in #115 (2026-10-12): the palette-aware methods of §4 (`solve::aware`)
 - **`pair`** takes the two set colours whose even mix is nearest. A same-luma pair scores `pair_bias − 0.002` lower (the solve's signed bias). The pair is used only if it beats the nearest colour alone, and below strength ½ the nearest colour is kept. The weave alternates by scanline on multicolor (PAL's delay line blends successive lines) and is a checker on hi-res.
 - **Ranking.** Finalists are ranked by the colour each pattern averages to, like mix levels.
 
+As built in #120 (2026-10-12): cell metrics for the set search (`solve::cellscore`, recipe `cell_metric`, CLI `--cell-metric`; `--metric mse|blur|ssim` is accepted as png2c64 spells it).
+
+- **`mse`** (the default) is the squared-distance search as before.
+- **`blur`** renders the cell with each pixel's nearest set colour, blurs it with a 3 × 3 binomial (taking the target outside the cell), and compares it with the target blurred the same way.
+- **`ssim`** adds `0.05 × pixels × (1 − SSIM)` on lightness (Wang et al., K₁ 0.01, K₂ 0.03) to the squared distances, png2c64's hybrid.
+- **Cost.** Scoring all 455 sets × 16 backgrounds this way is far slower than the min-and-sum search.
+  - The background search stays on `mse`.
+  - Only the finalists' cells re-pick, among the `mse` winner's colours and the cell's five most wanted colours: at most 56 multicolor sets or 28 hi-res pairs.
+  - Refinement re-picks with the same metric.
+- **Timings.** Full solve, release, local M-series, median of 5, single-threaded / `parallel`:
+
+| Case | `mse` | `blur` | `ssim` |
+|---|---|---|---|
+| `title` multicolor, Bayer 2 | 57.0 / 10.9 ms | 86.1 / 20.0 ms | 79.6 / 18.5 ms |
+| `lineart` hi-res, none | 7.3 / 7.4 ms | 34.8 / 23.1 ms | 25.3 / 17.7 ms |
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.

@@ -7,7 +7,9 @@ use super::metric::{Metric, MetricTables};
 use crate::colour::{ColourIndex, ColourSet};
 use crate::composite::{AttrSource, TargetFrame};
 use crate::geom::SuperGrid;
-use crate::layer::{CustomMatrix, DitherKind, FitMode, Orientation, PatternPhase, Recipe};
+use crate::layer::{
+    CellMetric, CustomMatrix, DitherKind, FitMode, Orientation, PatternPhase, Recipe,
+};
 use crate::model::CellPos;
 
 /// One target pixel as the solver sees it.
@@ -97,6 +99,11 @@ pub struct Input {
     pub(crate) customs: Vec<CustomMatrix>,
     /// The solve's signed same-luma pair bias (`pair` dithering reads it).
     pub(crate) pair_bias: f32,
+    /// Per cell, the metric its set is scored by: the first covered pixel's recipe's
+    /// non-default one, else squared distance.
+    pub(crate) cell_metric: Vec<CellMetric>,
+    /// The target blurred for the `blur` cell metric (empty when no cell uses it).
+    pub(crate) blurred: Vec<[f32; 3]>,
 }
 
 /// How much more a Force pixel counts than an Adaptive one in the cell-set search
@@ -202,7 +209,8 @@ impl Input {
         let intended = intended_colours(&px, tables);
         let dist = build_dist(&px, tables, w, (cw, ch), (cx, cy), &intended, only);
         let mut allowed = vec![ColourSet::ALL; cx * cy];
-        for (ci, set) in allowed.iter_mut().enumerate() {
+        let mut cell_metric = vec![CellMetric::Mse; cx * cy];
+        for (ci, (set, metric)) in allowed.iter_mut().zip(&mut cell_metric).enumerate() {
             let (gx, gy) = (ci % cx, ci / cx);
             for (x, y) in cell_pixels(gx, gy, cw, ch) {
                 let a = attrs.pixels()[y * w + x];
@@ -210,10 +218,13 @@ impl Input {
                     && let Some(r) = attrs.recipe(a.source)
                 {
                     *set = set.intersection(r.allowed());
+                    if *metric == CellMetric::Mse {
+                        *metric = r.cell_metric();
+                    }
                 }
             }
         }
-        Self {
+        let mut input = Self {
             grid,
             size: (w, h),
             cells: (cx, cy),
@@ -224,7 +235,13 @@ impl Input {
             intended,
             customs,
             pair_bias: 0.0,
+            cell_metric,
+            blurred: Vec::new(),
+        };
+        if input.cell_metric.contains(&CellMetric::Blur) {
+            input.blurred = super::cellscore::blurred_target(&input);
         }
+        input
     }
 
     /// The same input with every pixel's colour moved by the error it received in a
@@ -263,6 +280,8 @@ impl Input {
             intended: self.intended.clone(),
             customs: self.customs.clone(),
             pair_bias: self.pair_bias,
+            cell_metric: self.cell_metric.clone(),
+            blurred: self.blurred.clone(),
         }
     }
 
@@ -307,6 +326,53 @@ impl Input {
             required: extra.required,
         };
         search(self.dist(i), self.per_cell(), bg, self.k(), &c, bias)
+    }
+
+    /// The best set for `cell` under its cell metric: [`Self::best_set`], then for the
+    /// `blur` and `ssim` metrics a re-pick among a short list ([`super::cellscore`]).
+    pub(crate) fn pick_set(
+        &self,
+        tables: &MetricTables,
+        cell: CellPos,
+        bg: Option<ColourIndex>,
+        extra: &Constraints,
+        bias: f32,
+    ) -> CellChoice {
+        let mse = self.best_set(cell, bg, extra, bias);
+        let i = self.index(cell);
+        match self.cell_metric[i] {
+            CellMetric::Mse => mse,
+            metric => {
+                let c = Constraints {
+                    candidates: extra.candidates.intersection(self.allowed[i]),
+                    required: extra.required,
+                };
+                super::cellscore::repick(self, tables, i, bg, &c, bias, metric, mse)
+            }
+        }
+    }
+
+    /// Cell `i`'s score with `set` under its cell metric (what [`Self::pick_set`]
+    /// minimises).
+    pub(crate) fn set_score(
+        &self,
+        tables: &MetricTables,
+        i: usize,
+        bg: Option<ColourIndex>,
+        set: ColourSet,
+        bias: f32,
+    ) -> f32 {
+        match self.cell_metric[i] {
+            CellMetric::Mse => super::cell::score_set(self.dist(i), self.per_cell(), bg, set, bias),
+            metric => super::cellscore::score(
+                self,
+                tables,
+                i,
+                bg.map_or(set, |b| set.with(b)),
+                metric,
+                bias,
+            ),
+        }
     }
 
     /// Weighted wanted colours of `cell`: each covered pixel's nearest of the 16, summed

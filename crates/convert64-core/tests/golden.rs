@@ -466,6 +466,33 @@ mod aware {
     }
 }
 
+/// #120: the `blur` and `ssim` cell metrics on `title`, with the baseline recipe.
+mod cell_metrics {
+    use super::{BitmapFormat, SolveOptions, baseline_recipe, check_variant};
+    use convert64_core::layer::CellMetric;
+
+    fn title(metric: CellMetric, variant: &str) {
+        let r = baseline_recipe(BitmapFormat::Koala).with_cell_metric(metric);
+        check_variant(
+            "title",
+            BitmapFormat::Koala,
+            variant,
+            r,
+            &SolveOptions::default(),
+        );
+    }
+
+    #[test]
+    fn title_blur() {
+        title(CellMetric::Blur, "cell-blur");
+    }
+
+    #[test]
+    fn title_ssim() {
+        title(CellMetric::Ssim, "cell-ssim");
+    }
+}
+
 /// #142: mix levels, pre-smoothing and the gradient swatches.
 mod flat_areas {
     use super::{

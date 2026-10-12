@@ -5,6 +5,7 @@
 
 pub mod aware;
 pub mod cell;
+pub mod cellscore;
 pub mod dither;
 pub mod input;
 pub mod metric;

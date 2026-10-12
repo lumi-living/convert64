@@ -412,6 +412,22 @@ impl From<CustomMatrix> for Vec<u16> {
     }
 }
 
+/// How the cell-set search scores a candidate set (`docs/reference/dither-methods.md`
+/// §6, #120). The dither method then places the pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CellMetric {
+    /// Sum of squared metric distances to each pixel's nearest set colour.
+    #[default]
+    Mse,
+    /// The same after a small blur of both the target and the cell rendered with the
+    /// set (Pappas–Neuhoff): the eye at viewing distance.
+    Blur,
+    /// Squared distances plus structural dissimilarity (Wang et al.'s SSIM on
+    /// lightness) over the cell, png2c64's hybrid.
+    Ssim,
+}
+
 /// Whether an ordered or noise pattern is anchored to the screen or moves with the layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -502,6 +518,8 @@ struct RecipeData {
     mix_levels: u8,
     #[serde(default)]
     smooth: bool,
+    #[serde(default)]
+    cell_metric: CellMetric,
 }
 
 const fn all_colours() -> ColourSet {
@@ -546,6 +564,7 @@ pub struct Recipe {
     adaptive: f32,
     mix_levels: u8,
     smooth: bool,
+    cell_metric: CellMetric,
 }
 
 impl TryFrom<RecipeData> for Recipe {
@@ -558,7 +577,7 @@ impl TryFrom<RecipeData> for Recipe {
         .with_max_luma_diff(d.max_luma_diff)?
         .with_adaptive(d.adaptive)?
         .with_mix_levels(d.mix_levels)
-        .map(|r| r.with_smooth(d.smooth))
+        .map(|r| r.with_smooth(d.smooth).with_cell_metric(d.cell_metric))
     }
 }
 
@@ -577,6 +596,7 @@ impl Default for Recipe {
             adaptive: 0.0,
             mix_levels: DEFAULT_MIX_LEVELS,
             smooth: false,
+            cell_metric: CellMetric::Mse,
         }
     }
 }
@@ -609,6 +629,7 @@ impl Recipe {
             adaptive: 0.0,
             mix_levels: DEFAULT_MIX_LEVELS,
             smooth: false,
+            cell_metric: CellMetric::Mse,
         })
     }
 
@@ -667,6 +688,17 @@ impl Recipe {
     pub const fn with_smooth(mut self, smooth: bool) -> Self {
         self.smooth = smooth;
         self
+    }
+
+    /// This recipe with the cell-set search scored by `metric` (see [`CellMetric`]).
+    pub const fn with_cell_metric(mut self, metric: CellMetric) -> Self {
+        self.cell_metric = metric;
+        self
+    }
+
+    /// The cell-set search's score (see [`CellMetric`]).
+    pub const fn cell_metric(&self) -> CellMetric {
+        self.cell_metric
     }
 
     /// Mix-ratio levels (see [`Self::with_mix_levels`]).
@@ -882,6 +914,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!((r.mix_levels(), r.smooth()), (8, true));
+        assert_eq!(r.cell_metric(), CellMetric::Mse);
+        let b: Recipe =
+            toml::from_str("strength = 0.7\ncell_metric = \"ssim\"\n[method]\nkind = \"bayer2\"\n")
+                .unwrap();
+        assert_eq!(b.cell_metric(), CellMetric::Ssim);
         assert!(
             toml::from_str::<Recipe>(
                 "strength = 0.7\nmix_levels = 17\n[method]\nkind = \"bayer2\"\n"
