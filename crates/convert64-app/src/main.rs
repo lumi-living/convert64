@@ -16,10 +16,33 @@ struct App {
         reason = "placeholder; read once E2 wires in the core Project"
     )]
     project: Project,
+    /// Solves off the frame: a worker thread natively, a stage per frame in wasm (#194).
+    scheduler: convert64_app::scheduler::Scheduler,
+    /// The newest solve result, drawn every frame (once E8 wires in the preview).
+    result: Option<convert64_app::scheduler::SolveResult>,
+}
+
+impl App {
+    /// The app, with the scheduler asking `ctx` for a repaint when a result is ready.
+    fn new(ctx: &egui::Context) -> Self {
+        let mut app = Self::default();
+        let ctx = ctx.clone();
+        app.scheduler
+            .set_waker(std::sync::Arc::new(move || ctx.request_repaint()));
+        app
+    }
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // This frame's share of the solve work (wasm); never blocks on a solve.
+        if self.scheduler.tick() {
+            ui.ctx().request_repaint();
+        }
+        if let Some(result) = self.scheduler.poll() {
+            self.result = Some(result);
+        }
+
         egui::Panel::top("menu_bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -44,7 +67,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Convert64",
         native_options,
-        Box::new(|_cc| Ok(Box::new(App::default()))),
+        Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))),
     )
 }
 
@@ -74,7 +97,7 @@ fn main() {
             .start(
                 canvas,
                 eframe::WebOptions::default(),
-                Box::new(|_cc| Ok(Box::new(App::default()))),
+                Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))),
             )
             .await;
 
