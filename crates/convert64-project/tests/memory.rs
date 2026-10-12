@@ -119,3 +119,71 @@ fn missing_files_name_themselves() {
     let s: &dyn Store = &MemoryStore::new();
     assert!(s.read(Path::new("x")).is_err());
 }
+
+/// Document-setting commands (#193) reach the compositor and the solver: a new mode is
+/// a new grid, a new palette a new solver, and undo brings both back. Palettes save as
+/// they were given.
+#[test]
+fn settings_commands_rebuild_what_they_change_and_save_as_given() {
+    use convert64_core::solve::Background;
+    use convert64_core::{ColourIndex, Mode};
+    use convert64_project::PaletteSpec;
+
+    let store = store();
+    let mut s = open(&store, "proj/recipe.json");
+    let run = |s: &mut Session, json: &str| {
+        s.run(serde_json::from_str(json).unwrap()).unwrap();
+    };
+    let multicolor = s.solve(true).image.clone();
+    run(&mut s, r#"{"command":"mode_set","mode":"hires-bitmap"}"#);
+    assert_eq!(s.target(), Mode::HiresBitmap);
+    assert_eq!(s.solve(false).image.mode(), Mode::HiresBitmap);
+    s.editor_mut().undo().unwrap();
+    assert_eq!(s.solve(false).image, multicolor);
+
+    run(&mut s, r#"{"command":"palette_set","palette":"colodore"}"#);
+    assert_eq!(s.palette().name(), "Colodore");
+    let colours: Vec<String> = (0..16u8)
+        .map(|i| format!("#{:02x}{:02x}{:02x}", i * 16, i, 255 - i))
+        .collect();
+    let custom = serde_json::json!({ "command": "palette_set", "palette": { "custom": colours } });
+    run(&mut s, &custom.to_string());
+    run(
+        &mut s,
+        r#"{"command":"background_pin","background":{"fixed":6}}"#,
+    );
+    run(
+        &mut s,
+        r#"{"command":"solve_set","refinements":1,"hysteresis":0.97}"#,
+    );
+    assert_eq!(s.solve(false).background, Some(ColourIndex::BLUE));
+
+    s.save_to_store(Path::new("proj/settings.convert64"), Embed::Keep)
+        .unwrap();
+    let file =
+        ProjectFile::read_from(store.as_ref(), Path::new("proj/settings.convert64")).unwrap();
+    assert_eq!(file.palette, PaletteSpec::Custom(colours), "as given");
+    assert_eq!(file.solve.background, Background::Fixed(ColourIndex::BLUE));
+    assert_eq!(file.solve.refinements, 1);
+    assert_eq!(file.solve.hysteresis, Some(0.97));
+
+    // Undoing the custom palette and what followed saves the preset's name again.
+    for _ in 0..3 {
+        s.editor_mut().undo().unwrap();
+    }
+    s.save_to_store(Path::new("proj/undone.convert64"), Embed::Keep)
+        .unwrap();
+    let undone =
+        ProjectFile::read_from(store.as_ref(), Path::new("proj/undone.convert64")).unwrap();
+    assert_eq!(undone.palette, PaletteSpec::Colodore);
+    assert_eq!(
+        undone.solve.background,
+        Background::Fixed(ColourIndex::BLACK)
+    );
+    assert_eq!(undone.solve.refinements, 2);
+    assert_ne!(
+        s.solve(false).background,
+        Some(ColourIndex::BLUE),
+        "the solve follows the undo"
+    );
+}
