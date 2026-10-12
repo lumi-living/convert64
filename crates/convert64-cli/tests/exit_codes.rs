@@ -278,3 +278,103 @@ fn every_command_has_a_json_report() {
         assert!(v["files_written"].is_array());
     }
 }
+
+#[test]
+fn raw_sets_hold_the_same_picture() {
+    let dir = temp("convert-raw");
+    source(&dir);
+    std::fs::create_dir_all(dir.join("build")).unwrap();
+    let r = convert64(
+        &dir,
+        &args(&[
+            "convert",
+            "in.png",
+            "-o",
+            "build/t.kla",
+            "-o",
+            "build/t.json",
+            "--json",
+        ]),
+    );
+    ok(&r);
+    let v = json(&r);
+    let written: Vec<String> = v["files_written"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f.as_str().unwrap().replace('\\', "/"))
+        .collect();
+    assert_eq!(
+        written,
+        [
+            "build/t.kla",
+            "build/t.bitmap.bin",
+            "build/t.screen.bin",
+            "build/t.colour.bin",
+            "build/t.bg.bin",
+            "build/t.json"
+        ]
+    );
+    let read = |name: &str| {
+        let b = dir.join("build");
+        convert64_formats::raw::read(
+            &std::fs::read(b.join(format!("{name}.json"))).unwrap(),
+            |f| std::fs::read(b.join(f)).ok(),
+        )
+        .unwrap()
+    };
+    let kla = convert64_formats::BitmapFormat::Koala
+        .read(&std::fs::read(dir.join("build/t.kla")).unwrap())
+        .unwrap();
+    let set = read("t");
+    assert_eq!(set.image, kla.image);
+    assert_eq!(set.palette.name(), "Pepto (PAL)");
+
+    // --format raw names the set by the path's file name; hi-res sets have no Colour RAM.
+    ok(&convert64(
+        &dir,
+        &args(&[
+            "convert", "in.png", "--mode", "hires", "--format", "raw", "-o", "build/h",
+        ]),
+    ));
+    assert!(dir.join("build/h.bitmap.bin").exists());
+    assert!(!dir.join("build/h.colour.bin").exists());
+    assert_eq!(
+        read("h").image.mode(),
+        convert64_core::mode::Mode::HiresBitmap
+    );
+}
+
+#[test]
+fn png_previews_show_the_solved_picture_in_palette_colours() {
+    let dir = temp("convert-png");
+    source(&dir);
+    ok(&convert64(
+        &dir,
+        &args(&[
+            "convert", "in.png", "-o", "out.kla", "-o", "out.png", "--zoom", "2",
+        ]),
+    ));
+    let png = image::open(dir.join("out.png")).unwrap().to_rgb8();
+    assert_eq!(png.dimensions(), (640, 400));
+    // Every pixel is the Pepto colour of the solved picture's pixel there.
+    let kla = convert64_formats::BitmapFormat::Koala
+        .read(&std::fs::read(dir.join("out.kla")).unwrap())
+        .unwrap();
+    let indexed = kla.image.to_indexed();
+    let palette = convert64_core::Palette::default();
+    for (x, y) in [(0u32, 0u32), (37, 11), (319, 199), (160, 100)] {
+        let c = indexed.pixel((x / 2) as u16, y as u16);
+        let rgb = palette.rgb(c);
+        assert_eq!(
+            png.get_pixel(x * 2, y * 2).0,
+            [rgb.r, rgb.g, rgb.b],
+            "({x}, {y})"
+        );
+    }
+    let r = convert64(
+        &dir,
+        &args(&["convert", "in.png", "-o", "out.png", "--zoom", "9"]),
+    );
+    assert_eq!(r.status.code(), Some(2));
+}
