@@ -47,6 +47,8 @@ eframe = { version = "0.36.2", default-features = false, features = [
     "x11",
 ] }
 egui = "0.36.2"
+# Material Symbols icon font (ADR-007): the Outlined cut only, not the default Filled.
+egui_material_icons = { version = "0.8.0", default-features = false, features = ["outline"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

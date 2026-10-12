@@ -726,6 +726,7 @@ dependencies = [
  "convert64-project",
  "eframe",
  "egui",
+ "egui_material_icons",
 ]
 
 [[package]]
@@ -1049,6 +1050,15 @@ dependencies = [
  "log",
  "profiling",
  "winit",
+]
+
+[[package]]
+name = "egui_material_icons"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cee0067630964844d829cc80f9b9744fdf0443b2eea1e66a0934ccc1af14eb82"
+dependencies = [
+ "egui",
 ]
 
 [[package]]
@@ -4229,6 +4239,7 @@ dependencies = [
  "convert64-core",
  "convert64-formats",
  "image",
+ "serde_json",
 ]
 
 [[package]]
