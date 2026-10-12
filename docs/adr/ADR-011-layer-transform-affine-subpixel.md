@@ -120,8 +120,10 @@ details §3–§5 left open. The Decision section above is kept as written.
 6. **Masks** go through the same affine map and the same kernel, then their modifiers
    as before (ADR-008). Like the separable path, the mask carries no coverage: outside
    the quad it continues its edge values, and the colour's coverage hides it. The
-   fused half-resolution feather of #139 stays on the separable path. A rotated mask
-   is resampled at full resolution, then blurred at half resolution as usual.
+   separable path averages each 2 × 2 block of samples before a half-resolution
+   feather (#139). Under such a feather (σ ≥ 4 target px) a rotated mask is instead
+   sampled once per block, at its centre: a quarter of the samples, within 0.006 of
+   the full-resolution reference at σ = 4 and below one 8-bit step from σ = 6.
 7. **Extents and dirty region.** A rotated layer's raster rectangle is the bounding
    box of its rotated quad on the super grid. The compositor's existing union of old
    and new rectangles therefore gives §5's dirty region with no further change, and a
