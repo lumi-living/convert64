@@ -219,19 +219,79 @@ pub(crate) fn resample<T: Px>(src: &[T], sw: u32, mx: &AxisMap, my: &AxisMap) ->
 }
 
 /// Output rows resampled per task.
-const CHUNK_ROWS: usize = 16;
+const CHUNK_ROWS: usize = 32;
 
-/// The horizontal pass of one chunk: source rows `r0..=r1` resampled through `mx`.
-fn horizontal<T: Px>(src: &[T], sw: usize, mx: &AxisMap, r0: u32, tmp: &mut [T]) {
+/// An output's taps when it has at most two (every bilinear output): source pixels and
+/// weights. A one-tap output has a second tap of weight 0 on the same pixel, which adds
+/// a zero to its finite sum and so leaves it unchanged (#139).
+#[derive(Clone, Copy, Debug)]
+struct Pair {
+    j: [u32; 2],
+    w: [f32; 2],
+}
+
+impl AxisMap {
+    /// Every output's taps as a [`Pair`], or `None` when an output has more than two
+    /// (a Lanczos downscale).
+    fn pairs(&self) -> Option<Vec<Pair>> {
+        self.start
+            .windows(2)
+            .map(|s| {
+                let (a, b) = (s[0] as usize, s[1] as usize);
+                match b - a {
+                    1 => Some(Pair {
+                        j: [self.src[a]; 2],
+                        w: [self.w[a], 0.0],
+                    }),
+                    2 => Some(Pair {
+                        j: [self.src[a], self.src[a + 1]],
+                        w: [self.w[a], self.w[a + 1]],
+                    }),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+}
+
+/// Output `k` of `line` through `mx`: `0 + w0·v0 + w1·v1 …` in tap order.
+#[inline(always)]
+fn tap_sum<T: Px>(line: &[T], mx: &AxisMap, k: usize) -> T {
+    let mut acc = T::ZERO;
+    for (j, w) in mx.taps(k) {
+        acc.madd(w, line[j as usize]);
+    }
+    acc
+}
+
+/// The horizontal pass of one chunk: source rows from `r0` resampled through `mx`, one
+/// output row per `ow` values of `tmp`.
+fn horizontal<T: Px>(
+    src: &[T],
+    sw: usize,
+    mx: &AxisMap,
+    pairs: Option<&[Pair]>,
+    r0: u32,
+    tmp: &mut [T],
+) {
     let ow = mx.len() as usize;
     for (r, row) in tmp.chunks_mut(ow).enumerate() {
         let line = &src[(r0 as usize + r) * sw..][..sw];
-        for (k, out) in row.iter_mut().enumerate() {
-            let mut acc = T::ZERO;
-            for (j, w) in mx.taps(k) {
-                acc.madd(w, line[j as usize]);
+        match pairs {
+            // The common case on its own, so the loop has no per-output tap count.
+            Some(p) => {
+                for (out, &Pair { j, w }) in row.iter_mut().zip(p) {
+                    let mut acc = T::ZERO;
+                    acc.madd(w[0], line[j[0] as usize]);
+                    acc.madd(w[1], line[j[1] as usize]);
+                    *out = acc;
+                }
             }
-            *out = acc;
+            None => {
+                for (k, out) in row.iter_mut().enumerate() {
+                    *out = tap_sum(line, mx, k);
+                }
+            }
         }
     }
 }
@@ -271,9 +331,110 @@ fn vertical<T: Px>(tmp: &[T], r0: u32, my: &AxisMap, k: usize, row: &mut [T]) {
     }
 }
 
+/// [`vertical`] for interleaved colour, split into the planes `out` as it is written,
+/// each pixel scaled by its coverage (`cov[x] × my.cov[k]`), colour clamped at 0 and
+/// alpha to `0..=1`. `inner` is where `cov` is 1: on a row whose own coverage is 1
+/// too, the scale there is 1 and is skipped, since `v × 1 = v` (#139).
+#[inline(always)]
+fn vertical_split(
+    tmp: &[[f32; 4]],
+    r0: u32,
+    my: &AxisMap,
+    k: usize,
+    out: [&mut [f32]; 4],
+    cov: &[f32],
+    inner: std::ops::Range<usize>,
+) {
+    let ow = cov.len();
+    let cy = my.cov[k];
+    let inner = if cy == 1.0 { inner } else { 0..0 };
+    let line = |j: u32| &tmp[(j - r0) as usize * ow..][..ow];
+    // Each arm sums the taps at `x` as `0 + w0·v0 (+ w1·v1 …)`, in tap order.
+    let mut taps = my.taps(k);
+    match (taps.next(), taps.next(), taps.next()) {
+        (Some((j0, w0)), None, _) => {
+            let l0 = line(j0);
+            split_row(
+                |x| {
+                    let mut acc = [0.0f32; 4];
+                    acc.madd(w0, l0[x]);
+                    acc
+                },
+                out,
+                cov,
+                cy,
+                inner,
+            );
+        }
+        (Some((j0, w0)), Some((j1, w1)), None) => {
+            let (l0, l1) = (line(j0), line(j1));
+            split_row(
+                |x| {
+                    let mut acc = [0.0f32; 4];
+                    acc.madd(w0, l0[x]);
+                    acc.madd(w1, l1[x]);
+                    acc
+                },
+                out,
+                cov,
+                cy,
+                inner,
+            );
+        }
+        _ => split_row(
+            |x| {
+                let mut acc = [0.0f32; 4];
+                for (j, w) in my.taps(k) {
+                    acc.madd(w, line(j)[x]);
+                }
+                acc
+            },
+            out,
+            cov,
+            cy,
+            inner,
+        ),
+    }
+}
+
+/// The body of [`vertical_split`] for one way of summing the taps.
+#[inline(always)]
+fn split_row(
+    sum: impl Fn(usize) -> [f32; 4],
+    out: [&mut [f32]; 4],
+    cov: &[f32],
+    cy: f32,
+    inner: std::ops::Range<usize>,
+) {
+    let ow = cov.len();
+    let [r, g, b, a] = out;
+    let (r, g, b, a) = (&mut r[..ow], &mut g[..ow], &mut b[..ow], &mut a[..ow]);
+    for x in (0..inner.start).chain(inner.end.max(inner.start)..ow) {
+        let v = sum(x);
+        let s = cov[x] * cy;
+        r[x] = (v[0] * s).max(0.0);
+        g[x] = (v[1] * s).max(0.0);
+        b[x] = (v[2] * s).max(0.0);
+        a[x] = (v[3] * s).clamp(0.0, 1.0);
+    }
+    let (r, g, b, a) = (
+        &mut r[inner.clone()],
+        &mut g[inner.clone()],
+        &mut b[inner.clone()],
+        &mut a[inner.clone()],
+    );
+    for (i, x) in inner.enumerate() {
+        let v = sum(x);
+        r[i] = v[0].max(0.0);
+        g[i] = v[1].max(0.0);
+        b[i] = v[2].max(0.0);
+        a[i] = v[3].clamp(0.0, 1.0);
+    }
+}
+
 /// Grows or shrinks `v` to `len`, keeping what it holds: the callers write every
 /// element, so a reused buffer is not cleared first.
-fn sized<T: Copy>(v: &mut Vec<T>, len: usize, zero: T) {
+pub(crate) fn sized<T: Copy>(v: &mut Vec<T>, len: usize, zero: T) {
     if v.len() != len {
         v.clear();
         v.resize(len, zero);
@@ -301,15 +462,70 @@ pub(crate) fn resample_into<T: Px>(
     if ow == 0 || oh == 0 {
         return;
     }
+    let pairs = mx.pairs();
+    let pairs = pairs.as_deref();
     let mut chunks: Vec<_> = out.chunks_mut(ow * CHUNK_ROWS).enumerate().collect();
     crate::par::for_each(&mut chunks, |(c, rows)| {
         let k0 = *c * CHUNK_ROWS;
         let (r0, r1) = my.src_range_of(k0, k0 + rows.len() / ow);
         scratch::with((r1 - r0 + 1) as usize * ow, |tmp| {
-            horizontal(src, sw as usize, mx, r0, tmp);
+            horizontal(src, sw as usize, mx, pairs, r0, tmp);
             for (i, row) in rows.chunks_mut(ow).enumerate() {
                 vertical(tmp, r0, my, k0 + i, row);
                 finish(k0 + i, row);
+            }
+        });
+    });
+}
+
+/// [`resample_into`] for a mask, reduced at once to half resolution: `finish` runs on
+/// each full-resolution row, then `down` turns each pair of rows (the last one alone
+/// when the height is odd) into a row of `half` (`⌈w/2⌉` wide). The full-resolution rows
+/// are only ever in scratch, two at a time (#139); the arithmetic is unchanged.
+pub(crate) fn resample_half(
+    src: &[f32],
+    sw: u32,
+    mx: &AxisMap,
+    my: &AxisMap,
+    half: &mut [f32],
+    finish: impl Fn(&mut [f32]) + Send + Sync,
+    down: impl Fn(&[f32], Option<&[f32]>, &mut [f32]) + Send + Sync,
+) {
+    const {
+        assert!(
+            CHUNK_ROWS.is_multiple_of(2),
+            "pairs of rows stay in one chunk"
+        )
+    };
+    let (ow, oh) = (mx.len() as usize, my.len() as usize);
+    if ow == 0 || oh == 0 {
+        return;
+    }
+    let hw = ow.div_ceil(2);
+    let pairs = mx.pairs();
+    let pairs = pairs.as_deref();
+    let mut chunks: Vec<_> = half.chunks_mut(hw * CHUNK_ROWS / 2).enumerate().collect();
+    crate::par::for_each(&mut chunks, |(c, out)| {
+        let k0 = *c * CHUNK_ROWS;
+        let k1 = (k0 + CHUNK_ROWS).min(oh);
+        let (r0, r1) = my.src_range_of(k0, k1);
+        scratch::with((r1 - r0 + 1) as usize * ow + 2 * ow, |tmp| {
+            let (tmp, rows) = tmp.split_at_mut(tmp.len() - 2 * ow);
+            horizontal(src, sw as usize, mx, pairs, r0, tmp);
+            let tmp: &[f32] = tmp;
+            let (a, b) = rows.split_at_mut(ow);
+            for (i, out) in out.chunks_mut(hw).enumerate() {
+                let k = k0 + 2 * i;
+                vertical(tmp, r0, my, k, a);
+                finish(a);
+                let second = if k + 1 < oh {
+                    vertical(tmp, r0, my, k + 1, b);
+                    finish(b);
+                    Some(&*b)
+                } else {
+                    None
+                };
+                down(a, second, out);
             }
         });
     });
@@ -343,51 +559,75 @@ impl Planes {
     }
 }
 
-/// [`resample_into`] for colour, into planes: `finish` runs on each row interleaved,
-/// then the row is split into the planes; what `finish` returns goes to `extra`, one per
-/// row.
-pub(crate) fn resample_planes<X: Copy + Default + Send>(
+/// Resamples premultiplied colour (`sw` wide) through `mx` and `my` into planes, scaled
+/// by coverage (`mx.cov × my.cov`): alpha clamped to `0..=1` and colour to `≥ 0`, since
+/// Lanczos can ring slightly negative. `extent` gets, per output row, the columns outside
+/// which the row is all zero.
+///
+/// Chunked like [`resample_into`]. The horizontal pass works on interleaved pixels; the
+/// vertical pass splits each output row into the planes as it writes it, with the
+/// coverage and the clamps in the same loop, which vectorises across pixels (#139).
+/// Each value gets the same operations in the same order as before.
+pub(crate) fn resample_planes(
     src: &[[f32; 4]],
     sw: u32,
     mx: &AxisMap,
     my: &AxisMap,
     out: &mut Planes,
-    extra: &mut Vec<X>,
-    finish: impl Fn(usize, &mut [[f32; 4]]) -> X + Send + Sync,
+    extent: &mut Vec<(u32, u32)>,
 ) {
     let (ow, oh) = (mx.len() as usize, my.len() as usize);
     out.sized(ow * oh);
-    extra.clear();
-    extra.resize(oh, X::default());
+    extent.clear();
+    extent.resize(oh, (0, 0));
     if ow == 0 || oh == 0 {
         return;
     }
+    let pairs = mx.pairs();
+    let pairs = pairs.as_deref();
+    // Where the column coverage is 1: all but a column or two at each edge.
+    let inner = match (
+        mx.cov.iter().position(|&c| c == 1.0),
+        mx.cov.iter().rposition(|&c| c == 1.0),
+    ) {
+        (Some(c0), Some(c1)) if mx.cov[c0..=c1].iter().all(|&c| c == 1.0) => c0..c1 + 1,
+        _ => 0..0,
+    };
     let n = ow * CHUNK_ROWS;
     let Planes { r, g, b, a } = out;
     let mut chunks: Vec<_> = r
         .chunks_mut(n)
         .zip(g.chunks_mut(n))
         .zip(b.chunks_mut(n).zip(a.chunks_mut(n)))
-        .zip(extra.chunks_mut(CHUNK_ROWS))
+        .zip(extent.chunks_mut(CHUNK_ROWS))
         .enumerate()
         .collect();
-    crate::par::for_each(&mut chunks, |(c, (((r, g), (b, a)), extra))| {
+    crate::par::for_each(&mut chunks, |(c, (((r, g), (b, a)), extent))| {
         let k0 = *c * CHUNK_ROWS;
-        let (r0, r1) = my.src_range_of(k0, k0 + extra.len());
-        scratch::with((r1 - r0 + 1) as usize * ow + ow, |tmp| {
-            let (tmp, row) = tmp.split_at_mut(tmp.len() - ow);
-            horizontal(src, sw as usize, mx, r0, tmp);
-            for (i, x) in extra.iter_mut().enumerate() {
-                vertical(tmp, r0, my, k0 + i, row);
-                *x = finish(k0 + i, row);
-                let o = i * ow;
-                let planes = r[o..o + ow]
-                    .iter_mut()
-                    .zip(&mut g[o..o + ow])
-                    .zip(b[o..o + ow].iter_mut().zip(&mut a[o..o + ow]));
-                for (((r, g), (b, a)), p) in planes.zip(&*row) {
-                    [*r, *g, *b, *a] = *p;
-                }
+        let (r0, r1) = my.src_range_of(k0, k0 + extent.len());
+        let plane = (r1 - r0 + 1) as usize * ow;
+        scratch::with(plane, |tmp: &mut [[f32; 4]]| {
+            horizontal(src, sw as usize, mx, pairs, r0, tmp);
+            let tmp: &[[f32; 4]] = tmp;
+            for (i, e) in extent.iter_mut().enumerate() {
+                let k = k0 + i;
+                let o = i * ow..(i + 1) * ow;
+                let (r, g, b, a) = (
+                    &mut r[o.clone()],
+                    &mut g[o.clone()],
+                    &mut b[o.clone()],
+                    &mut a[o],
+                );
+                let planes = [&mut *r, &mut *g, &mut *b, &mut *a];
+                vertical_split(tmp, r0, my, k, planes, &mx.cov, inner.clone());
+                let on = |x: &usize| r[*x] != 0.0 || g[*x] != 0.0 || b[*x] != 0.0 || a[*x] != 0.0;
+                *e = match ((0..ow).find(on), (0..ow).rfind(on)) {
+                    (Some(x0), Some(x1)) => (
+                        u32::try_from(x0).expect("row fits u32"),
+                        u32::try_from(x1 + 1).expect("row fits u32"),
+                    ),
+                    _ => (0, 0),
+                };
             }
         });
     });
@@ -469,6 +709,146 @@ mod tests {
         for p in out {
             for (a, b) in p.iter().zip([0.5, 0.25, 1.0, 1.0]) {
                 assert!((a - b).abs() < 1e-5);
+            }
+        }
+    }
+
+    /// The resample as written before #139, one output at a time: each output's taps in
+    /// order, horizontally then vertically, from `0`.
+    fn reference<T: Px>(src: &[T], sw: u32, mx: &AxisMap, my: &AxisMap) -> Vec<T> {
+        let (ow, oh) = (mx.len() as usize, my.len() as usize);
+        let rows: Vec<Vec<T>> = src
+            .chunks(sw as usize)
+            .map(|line| {
+                (0..ow)
+                    .map(|k| {
+                        let mut acc = T::ZERO;
+                        for (j, w) in mx.taps(k) {
+                            acc.madd(w, line[j as usize]);
+                        }
+                        acc
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut out = vec![T::ZERO; ow * oh];
+        for (k, row) in out.chunks_mut(ow.max(1)).enumerate() {
+            for (j, w) in my.taps(k) {
+                for (o, v) in row.iter_mut().zip(&rows[j as usize]) {
+                    o.madd(w, *v);
+                }
+            }
+        }
+        out
+    }
+
+    /// Placements covering bilinear and Lanczos axes, flips, sub-pixel offsets, the grid
+    /// edges and one-tap outputs: `(src len, translate, scale, flip, step, out len)`.
+    fn axes() -> Vec<(u32, f32, f32, bool, f32, u32)> {
+        vec![
+            (37, 3.3, 1.0, false, 0.25, 400),
+            (37, -2.6, 1.7, true, 0.25, 100),
+            (40, 0.0, 1.0, false, 1.0, 320),
+            (90, 10.1, 0.37, false, 1.0, 320),
+            (90, 1.9, 0.37, true, 0.5, 60),
+            (23, 5.0, 3.0, false, 0.125, 2000),
+        ]
+    }
+
+    /// A deterministic source with negative colour, zeros and partial alpha.
+    fn source(w: u32, h: u32) -> Vec<[f32; 4]> {
+        let mut s = 0x9e37_79b9_u32;
+        let mut next = move || {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            ((s >> 8) as f32 / (1u32 << 24) as f32, s)
+        };
+        (0..w * h)
+            .map(|_| {
+                let (v, bits) = next();
+                let a = match bits % 5 {
+                    0 => 0.0,
+                    1 => 1.0,
+                    _ => v,
+                };
+                let b = if bits % 7 == 0 { 0.0 } else { next().0 * a };
+                [next().0 * a - 0.05, next().0 * a, b, a]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn colour_planes_match_the_reference_bit_for_bit() {
+        for (sx, tx, kx, fx, step_x, gx) in axes() {
+            for (sy, ty, ky, fy, step_y, gy) in axes() {
+                let mx = AxisMap::new(sx, tx, kx, fx, step_x, gx);
+                let my = AxisMap::new(sy, ty, ky, fy, step_y, gy);
+                let src = source(sx, sy);
+                let mut want = reference(&src, sx, &mx, &my);
+                let ow = mx.len() as usize;
+                for (k, row) in want.chunks_mut(ow.max(1)).enumerate() {
+                    for (p, cx) in row.iter_mut().zip(&mx.cov) {
+                        let s = cx * my.cov[k];
+                        p[3] = (p[3] * s).clamp(0.0, 1.0);
+                        for c in &mut p[..3] {
+                            *c = (*c * s).max(0.0);
+                        }
+                    }
+                }
+                let (mut got, mut extent) = (Planes::default(), Vec::new());
+                resample_planes(&src, sx, &mx, &my, &mut got, &mut extent);
+                assert_eq!(extent.len(), my.len() as usize);
+                for (i, p) in want.iter().enumerate() {
+                    let q = [got.r[i], got.g[i], got.b[i], got.a[i]];
+                    assert!(
+                        p.iter().zip(q).all(|(a, b)| a.to_bits() == b.to_bits()),
+                        "{sx} {tx} {kx} × {sy} {ty} {ky}: {i}: {p:?} {q:?}"
+                    );
+                }
+                for (row, e) in want.chunks(ow.max(1)).zip(&extent) {
+                    let on = |p: &[f32; 4]| *p != [0.0; 4];
+                    let naive = match (row.iter().position(on), row.iter().rposition(on)) {
+                        (Some(a), Some(b)) => (a as u32, b as u32 + 1),
+                        _ => (0, 0),
+                    };
+                    assert_eq!(*e, naive);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn half_resolution_mask_matches_resample_then_reduce() {
+        for (sx, tx, kx, fx, step_x, gx) in axes() {
+            for (sy, ty, ky, fy, step_y, gy) in axes() {
+                let mx = AxisMap::new(sx, tx, kx, fx, step_x, gx);
+                let my = AxisMap::new(sy, ty, ky, fy, step_y, gy);
+                let src: Vec<f32> = source(sx, sy).iter().map(|p| p[0] + p[3]).collect();
+                let (ow, oh) = (mx.len() as usize, my.len() as usize);
+                let finish = |row: &mut [f32]| {
+                    for x in row {
+                        *x = x.clamp(0.0, 1.0);
+                    }
+                };
+                let mut full = reference(&src, sx, &mx, &my);
+                full.chunks_mut(ow.max(1)).for_each(finish);
+                let hw = ow.div_ceil(2);
+                let mut want = vec![0.0; hw * oh.div_ceil(2)];
+                let mut got = vec![f32::NAN; want.len()];
+                let down = crate::mask::eval::down_row;
+                for (y, out) in want.chunks_mut(hw.max(1)).enumerate() {
+                    let r0 = &full[2 * y * ow..][..ow];
+                    let r1 = (2 * y + 1 < oh).then(|| &full[(2 * y + 1) * ow..][..ow]);
+                    down(r0, r1, out);
+                }
+                resample_half(&src, sx, &mx, &my, &mut got, finish, down);
+                assert!(
+                    want.iter()
+                        .zip(&got)
+                        .all(|(a, b)| a.to_bits() == b.to_bits()),
+                    "{sx} {tx} {kx} × {sy} {ty} {ky}"
+                );
             }
         }
     }

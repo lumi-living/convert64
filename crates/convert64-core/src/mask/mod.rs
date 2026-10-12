@@ -13,7 +13,7 @@ pub use eval::HALF_RES_FEATHER;
 pub use paint::PaintMode;
 pub use source::{Combine, Gradient, GradientKind, Key, KeyChannel, MaskSource, SourceEntry};
 
-use crate::geom::{PxRect, Vec2};
+use crate::geom::PxRect;
 use crate::layer::{Levels, SourceImage};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -470,17 +470,22 @@ impl Mask {
         let w = self.raster.width as usize;
         let mut out = self.raster.data.clone();
         let mut rows: Vec<(usize, &mut [f32])> = out.chunks_mut(w).enumerate().collect();
+        // Source by source over a whole row, so the gradient and the combine are each
+        // one loop that vectorises (#139); every pixel still takes the sources in order.
         crate::par::for_each(&mut rows, |(y, row)| {
-            for (x, v) in row.iter_mut().enumerate() {
-                let p = Vec2::new(x as f32 + 0.5, *y as f32 + 0.5);
+            crate::scratch::with(w, |s: &mut [f32]| {
                 for e in &self.sources {
-                    let s = match &e.source {
-                        MaskSource::Gradient(g) => g.value(p),
-                        MaskSource::Key(k) => k.value(source.pixels()[*y * w + x]),
-                    };
-                    *v = e.combine.apply(*v, s);
+                    match &e.source {
+                        MaskSource::Gradient(g) => g.row(*y as f32 + 0.5, s),
+                        MaskSource::Key(k) => {
+                            for (s, p) in s.iter_mut().zip(&source.pixels()[*y * w..][..w]) {
+                                *s = k.value(*p);
+                            }
+                        }
+                    }
+                    e.combine.apply_row(row, s);
                 }
-            }
+            });
         });
         Cow::Owned(out)
     }

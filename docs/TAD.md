@@ -146,6 +146,13 @@ As built in E4 (2026-10-11): the compositor and attribute map ([ADR-002](adr/ADR
   - A rebuilt layer reuses the buffers it replaced.
   - Parallel tasks take scratch buffers from per-thread pools (`convert64-core::scratch`), so a drag pages in no fresh memory. On the 3-core CI runner, fresh pages and allocator churn had made the parallel nudge slower than the sequential one.
   - A pure translation still resamples and re-feathers the mask. Reusing the shifted mask would not be bit-identical: f32 rounding of the translated taps differs, and the blur clamps at the clipped edge.
+- **Performance (#139): the single-threaded cold composite**, the wasm build's first frame after load. Again nothing changes the output. Besides the checks above, new tests compare the colour resample, the half-resolution mask path, gradient rows and mask extents with the previous code bit for bit. Where the time went, hi-res on the benchmark scene, profiled locally:
+  - **Colour resample** 14.3 → 8.8 ms. Bilinear outputs take their two taps from a table. The vertical pass splits each row into the planes as it writes it, with the coverage and the clamps in the same vectorised loop; the coverage scale is skipped where both coverages are 1. Chunks are 32 rows.
+  - **Mask resample and feather** 18.1 → 9.6 ms. A half-resolution feather with no snap reduces the resampled rows to half resolution as they are made, so the full-resolution mask is no longer stored and read back before the feather writes it. The box blur keeps its running sums in registers, a group of 16 rows is transposed in 4 × 4 tiles, and the upsample only visits the edge columns outside its vectorised pairs.
+  - **Mask sources, extents and premultiplying** 2.8 → 1.0 ms. Gradients and combines run a row at a time, and mask extents are scanned 16 values at a time, in loops that vectorise. Identity adjustments premultiply the source without the adjust cache's copy of it.
+  - **The blend** stays at 7.5 ms, now over a quarter of the 26.9 ms total (was 42.7 ms). The blend and the colour resample are close to their arithmetic floor for bit-identical output.
+  - **Not done: resampling on decode.** The resampled raster depends on the transform and the super grid, so resampling at load would only move the same work from the first composite into the load, and the first frame would come no sooner. Doing it outside the compositor would also take it out of the benchmark's timed region without making anything faster.
+  - **Not done: a quarter-resolution feather.** From σ = 32 super px (8 target px at 4×) it would save about a tenth of the hi-res cold composite. Its error on hard edges stays below one 8-bit step, but on `portrait-over-title` with the feather raised to 8 target px the mask error is 0.0066 (half resolution: 0.0022), and two attribute pixels change source inside the feather. That fails #98's bar, so it was not kept.
 - **Front-ends.** `convert64-cli` is also a library, holding the recipe-file JSON and `Session`. `convert64 recipe apply` and `convert64-mcp` run the same `Session`.
 
 **Deviations from ADR-002, ADR-008 and this document**
@@ -160,7 +167,7 @@ As built in E4 (2026-10-11): the compositor and attribute map ([ADR-002](adr/ADR
 - **The MCP server** is a small synchronous JSON-RPC implementation on `serde_json` rather than `rmcp`, because `rmcp` needs `tokio`, which is not listed above. Moving to `rmcp` changes the transport only.
 - **Regions live in canvas space**, not on the composite's super grid. They stay put when layers move and survive a mode switch.
 
-**Benchmark (#87, #98)**
+**Benchmark (#87, #98, #139)**
 - **Scene:** 10 full-canvas masked layers, σ = 8 feather, all blend modes, 4×.
 - **Command:**
   ```
@@ -187,6 +194,25 @@ As built in E4 (2026-10-11): the compositor and attribute map ([ADR-002](adr/ADR
   | feather slider | 4.15 [2.38–6.51] / 7.27 [5.62–7.65] ms | 5.72 [4.69–9.01] / 13.2 [9.23–16.1] ms |
 
   These meet #98's budgets: nudge ≤ 10 / 12 ms with `parallel`, cold composite ≤ 60 ms with `parallel`, and single-threaded warm ≤ 12 / 16 ms. The single-threaded hi-res warm recomposite went over in one run of three (18.8 ms), on a host where every row was slow.
+- **#139** adds a budget of ≤ 60 ms for the single-threaded cold composite, the wasm build's first frame after load. Measured on the same runner class, 2026-10-12; each batch of runs was started at once. Each figure is the median of the run medians, with their range in brackets, multicolor / hi-res.
+  - **Before #139:** `main` (bc7fb50), five runs.
+
+    | case | `parallel` | single-threaded |
+    |---|---|---|
+    | cold composite | 30.6 [16.2–64.9] / 34.4 [29.8–41.5] ms | 50.8 [41.2–64.7] / 105 [77.9–122] ms |
+    | warm recomposite | 3.25 [3.03–5.04] / 6.62 [6.01–9.56] ms | 6.47 [6.18–9.24] / 13.5 [11.3–18.7] ms |
+    | nudge one layer | 4.27 [3.47–5.42] / 8.89 [7.23–11.7] ms | 7.77 [6.97–9.24] / 17.8 [15.1–28.2] ms |
+    | feather slider | 2.43 [2.10–3.63] / 6.52 [4.96–7.58] ms | 5.43 [4.55–9.43] / 10.8 [9.34–13.8] ms |
+  - **After #139:** ten runs, five of the final code and five of a version that differed only in how a growing buffer is allocated, which measured the same.
+
+    | case | `parallel` | single-threaded |
+    |---|---|---|
+    | cold composite | 14.1 [10.9–87.3] / 31.2 [21.1–64.0] ms | 32.5 [22.4–49.3] / 63.3 [47.9–87.6] ms |
+    | warm recomposite | 4.52 [2.81–16.7] / 7.46 [5.77–12.5] ms | 7.86 [5.53–10.7] / 14.3 [10.2–21.7] ms |
+    | nudge one layer | 4.64 [2.91–16.6] / 7.96 [6.20–20.2] ms | 7.66 [6.19–13.4] / 17.3 [10.8–21.2] ms |
+    | feather slider | 2.11 [1.74–7.27] / 5.35 [3.51–11.0] ms | 4.77 [3.53–6.16] / 11.2 [6.78–14.7] ms |
+
+  The single-threaded cold composite falls from 105 to 63 ms hi-res and from 51 to 33 ms multicolor. Multicolor meets the 60 ms budget in every run. Hi-res does not: it was within it in 4 runs of 10 (47.9–56.3 ms) and over it in 6 (62.6–87.6 ms), so #139's target is not met for hi-res. The warm recomposite is unchanged, and the nudge and the feather slider, which rebuild one layer, gain little; the differences in those rows are the hosts'.
 - **Builds.** `convert64-cli` and `convert64-mcp` build the core with `parallel`. The app does not, because it also targets wasm.
 
 As built in E5 (2026-10-12): the bitmap solver (§3.1, §3.4–§3.5), in `convert64-core::solve` (#126–#136; #5 tracks them). The full dither scope in [reference/dither-methods.md](reference/dither-methods.md) continues in #114–#116 and #120.

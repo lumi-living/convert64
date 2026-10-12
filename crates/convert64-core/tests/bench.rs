@@ -13,7 +13,9 @@
 //! the budget that applies to it in this build (sequential or parallel):
 //!
 //! - **cold composite**: a new compositor composites the scene: every layer resampled,
-//!   every mask evaluated and feathered, everything blended. #98: ≤ 60 ms (parallel).
+//!   every mask evaluated and feathered, everything blended. #98: ≤ 60 ms (parallel);
+//!   #139: ≤ 60 ms single-threaded too (the wasm and app path: the first frame after
+//!   load on the web).
 //! - **warm recomposite**: everything re-blended and re-filtered with every layer cached,
 //!   what a blend or opacity slider on the bottom layer costs. E4 (#4): ≤ 10 ms
 //!   (parallel); #98: ≤ 12 ms multicolor / ≤ 16 ms hi-res single-threaded (the wasm and
@@ -43,6 +45,7 @@ const PARALLEL: bool = cfg!(feature = "parallel");
 fn budget(case: &str) -> Option<([f64; 2], &'static str)> {
     match (case, PARALLEL) {
         ("cold composite", true) => Some(([60.0, 60.0], "#98")),
+        ("cold composite", false) => Some(([60.0, 60.0], "#139")),
         ("warm recomposite", true) => Some(([10.0, 10.0], "E4")),
         ("warm recomposite", false) => Some(([12.0, 16.0], "#98")),
         ("nudge one layer", true) => Some(([10.0, 12.0], "#98")),
