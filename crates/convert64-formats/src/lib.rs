@@ -5,6 +5,7 @@
 //! - readers and writers for Koala Painter (`.kla`, `.koa`) and Art Studio (`.art`,
 //!   `.aas`) pictures ([`BitmapFormat`]);
 //! - a self-displaying PRG for them ([`prg`]);
+//! - which bit pair each cell colour takes when they are written ([`bitpairs`]);
 //! - the raw bitmap set, headerless `.bin` files plus a JSON manifest ([`raw`]);
 //! - assembler source for KickAssembler, ACME, 64tass and ca65, and C headers ([`asm`]);
 //! - a palette-exact PNG preview at integer zoom ([`png`]).
@@ -13,6 +14,7 @@
 
 pub mod asm;
 mod bitmap_files;
+pub mod bitpairs;
 pub mod png;
 pub mod prg;
 pub mod raw;

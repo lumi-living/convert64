@@ -40,6 +40,25 @@ Total          9002 (9009 padded)
 - Art Studio: 9002 bytes, never padded.
 - Each format refuses a picture of the other mode (`WriteError`) rather than writing a file a viewer would misread.
 
+**Bit pairs** (`BitmapFormat::write_with(image, BitpairPolicy)`, `convert64_formats::bitpairs`, #124). Which of a cell's colours sits on which bit pattern is free: multicolor bit pairs `01` (Screen RAM high nybble), `10` (low nybble) and `11` (Colour RAM) can be permuted, and a hi-res cell's two colours can swap nybbles (its bitmap bits inverted). `write` keeps the image's own assignment; `write_with` first reassigns every cell, rewriting Screen RAM, Colour RAM and the bitmap together, so the file shows exactly the same picture:
+
+| Policy (id) | Assignment |
+|---|---|
+| `Stable` (`stable`, the default) | as png2prg: each colour keeps the slot it had in the cell to the left, else the cell above, else the slot it has used most so far, else the first free one. Unused slots repeat the left (else above) neighbour's value. |
+| `Frequency` (`frequency`) | per cell, most used colour first (ties: lower index) on `01`, `10`, `11` (hi-res: bit 0, then 1); unused slots black. |
+| `BruteForcePacked` (`packed`) | `Stable`, then two passes trying every assignment of every cell (unused slots: a neighbour's value or black), keeping the one an adaptive order-1 model of Screen and Colour RAM codes shortest; the result is kept only if the size estimate below is smaller than `Stable`'s. |
+
+The size estimate (`bitpairs::packed_size_estimate`) is the length of Screen RAM followed by Colour RAM compressed as one fixed-Huffman DEFLATE block after a greedy LZ77 parse (`bitpairs::deflate_fixed_size`), computed without a compression crate. On the six png2c64 baselines, in bytes (`crates/convert64-formats/tests/bitpairs.rs` asserts `Stable` < `Frequency` and `packed` ≤ `Stable`; `tests/snapshots/bitpairs__bitpair_policies.snap` holds each file's fingerprint):
+
+| Fixture | as png2c64 wrote it | `stable` | `frequency` | `packed` |
+|---|---|---|---|---|
+| portrait | 374 | 313 | 460 | 308 |
+| terrain | 591 | 430 | 891 | 408 |
+| title | 565 | 384 | 713 | 356 |
+| gradient | 259 | 222 | 312 | 222 |
+| photo | 960 | 864 | 1327 | 852 |
+| lineart | 420 | 471 | 481 | 460 |
+
 Round trips, tested in `crates/convert64-formats/tests/bitmap_roundtrip.rs` (#158): every fixture solved in both modes writes, reads back as the same `BitmapImage` under each extension and at both load addresses, and validates; every committed png2c64 baseline reads and writes back byte for byte.
 
 ### Advanced Art Studio (`.ocp`, `.mpic`) — multicolor bitmap
