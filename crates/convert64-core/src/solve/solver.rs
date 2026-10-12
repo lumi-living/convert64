@@ -33,6 +33,18 @@ pub enum Background {
     Fixed(ColourIndex),
 }
 
+/// Which solver solves a bitmap frame (#181).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SolverKind {
+    /// png2c64's pipeline, ported (`png2c64_ref`; the default). Frames it cannot solve
+    /// yet fall back to the native solver ([`Solution::fallback`] says why).
+    #[default]
+    Reference,
+    /// Convert64's own solver (E5, #157): background search, dither and refinement.
+    Native,
+}
+
 /// How much work a solve does (UX §7).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SolveMode {
@@ -52,6 +64,8 @@ pub enum SolveMode {
 /// Options of a solve.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SolveOptions {
+    /// Which solver (the reference by default).
+    pub solver: SolverKind,
     /// Full search or the interactive fast path.
     pub mode: SolveMode,
     /// Background choice.
@@ -77,6 +91,7 @@ pub struct SolveOptions {
 impl Default for SolveOptions {
     fn default() -> Self {
         Self {
+            solver: SolverKind::Reference,
             mode: SolveMode::Full,
             background: Background::Auto,
             luma_pair_bias: 0.0,
@@ -107,6 +122,10 @@ pub struct Solution {
     pub rounds: Vec<Vec<ColourSet>>,
     /// Wanted vs chosen vs dropped colours per cell.
     pub report: ClashReport,
+    /// The solver that made it.
+    pub solver: SolverKind,
+    /// Why the native solver made it although the reference was asked for.
+    pub fallback: Option<String>,
 }
 
 /// The solver for one palette. Its metric tables belong to that palette: the preview
@@ -164,6 +183,13 @@ impl Solver {
         previous: Option<&Solution>,
         opts: &SolveOptions,
     ) -> Solution {
+        let fallback = match opts.solver {
+            SolverKind::Native => None,
+            SolverKind::Reference => match super::reference::unsupported(frame, steering, opts) {
+                None => return super::reference::solve(frame, self.palette(), opts),
+                why => why,
+            },
+        };
         // The fast path needs tables only for the cells it re-solves.
         let only = match (opts.mode, previous) {
             (SolveMode::Interactive { dirty }, Some(_)) => Some(dirty),
@@ -171,7 +197,10 @@ impl Solver {
         };
         let mut input = Input::new_for(frame, &self.tables, opts.input, only);
         input.pair_bias = opts.luma_pair_bias;
-        self.solve_input(&input, steering, previous, opts)
+        Solution {
+            fallback,
+            ..self.solve_input(&input, steering, previous, opts)
+        }
     }
 
     /// The best sets for one background. Locked cells keep their previous colours.
@@ -389,6 +418,8 @@ impl Solver {
             refined,
             rounds,
             report,
+            solver: SolverKind::Native,
+            fallback: None,
         }
     }
 }
@@ -461,6 +492,95 @@ mod tests {
         c.frame().clone()
     }
 
+    /// The reference path on a frame is png2c64's port run on the frame's colours
+    /// (after png2c64's preprocessing round trip), bit for bit, in both modes and for
+    /// ordered, diffusion and `none` recipes.
+    #[test]
+    fn the_reference_path_is_the_port_on_the_frame() {
+        use super::super::png2c64_ref::dither::{PxSettings, Settings};
+        use super::super::png2c64_ref::quantize::Mode as RefMode;
+        use super::super::png2c64_ref::{Image, colour, convert, preprocess};
+        let s = Solver::new(&Palette::pepto_pal());
+        for (mode, rm) in [
+            (Mode::MulticolorBitmap, RefMode::Multicolor),
+            (Mode::HiresBitmap, RefMode::Hires),
+        ] {
+            for kind in [
+                DitherKind::None,
+                DitherKind::Bayer4,
+                DitherKind::FloydSteinberg,
+                DitherKind::Ostromoukhov,
+            ] {
+                let f = frame(mode, kind);
+                let sol = s.solve(&f, &Steering::new(), None, &SolveOptions::default());
+                assert_eq!(sol.solver, SolverKind::Reference, "{mode} {kind:?}");
+                assert_eq!(sol.fallback, None);
+                let (w, h) = rm.screen();
+                let mut im = Image::new(w, h, f.colour().to_vec());
+                preprocess::apply(
+                    &mut im,
+                    &preprocess::Settings {
+                        gamma: 1.0,
+                        ..preprocess::Settings::default()
+                    },
+                );
+                let settings = Settings {
+                    method: super::super::reference::ref_method(kind).unwrap(),
+                    strength: f.attributes().pixels()[0].strength,
+                    ..Settings::default()
+                };
+                assert_eq!(
+                    PxSettings::from(&settings).strength,
+                    f.attributes().pixels()[w * h / 2].strength
+                );
+                let port = convert(
+                    &im,
+                    &colour::palette_of(&Palette::pepto_pal()),
+                    rm,
+                    &settings,
+                );
+                let ours: Vec<u8> = sol
+                    .image
+                    .to_indexed()
+                    .pixels()
+                    .iter()
+                    .map(|c| c.get())
+                    .collect();
+                assert_eq!(ours, port.indices(), "{mode} {kind:?}");
+                assert_eq!(validate(&sol.image.to_indexed()), Ok(()));
+            }
+        }
+    }
+
+    #[test]
+    fn frames_the_reference_cannot_solve_fall_back_to_native() {
+        let s = Solver::new(&Palette::pepto_pal());
+        let f = frame(Mode::MulticolorBitmap, DitherKind::Yliluoma1);
+        let sol = s.solve(&f, &Steering::new(), None, &SolveOptions::default());
+        assert_eq!(sol.solver, SolverKind::Native);
+        assert!(
+            sol.fallback
+                .as_deref()
+                .is_some_and(|w| w.contains("png2c64"))
+        );
+        let mut steering = Steering::new();
+        steering.set_lock(crate::model::CellPos::new(0, 0), true);
+        let f = frame(Mode::MulticolorBitmap, DitherKind::Bayer4);
+        let sol = s.solve(&f, &steering, None, &SolveOptions::default());
+        assert_eq!(sol.solver, SolverKind::Native);
+        let knob = frame_with(
+            Mode::MulticolorBitmap,
+            Recipe::with_method(DitherKind::Bayer4, 1.0)
+                .unwrap()
+                .with_max_luma_diff(0)
+                .unwrap(),
+            false,
+        );
+        let sol = s.solve(&knob, &Steering::new(), None, &SolveOptions::default());
+        assert_eq!(sol.solver, SolverKind::Native);
+        assert!(sol.fallback.unwrap().contains("max_luma_diff"));
+    }
+
     #[test]
     fn solutions_validate_in_both_modes() {
         let s = Solver::new(&Palette::pepto_pal());
@@ -485,9 +605,33 @@ mod tests {
 
     #[test]
     fn a_fixed_background_is_honoured_and_auto_is_no_worse() {
+        // Native: refinement keeps the best final error. The reference picks the
+        // background by its search error, as png2c64 does, so "no worse" is not its
+        // promise.
         let s = Solver::new(&Palette::pepto_pal());
         let f = frame(Mode::MulticolorBitmap, DitherKind::None);
+        let native = SolveOptions {
+            solver: SolverKind::Native,
+            ..SolveOptions::default()
+        };
         let fixed = s.solve(
+            &f,
+            &Steering::new(),
+            None,
+            &SolveOptions {
+                background: Background::Fixed(ColourIndex::YELLOW),
+                ..native.clone()
+            },
+        );
+        assert_eq!(fixed.background, Some(ColourIndex::YELLOW));
+        let auto = s.solve(&f, &Steering::new(), None, &native);
+        assert!(
+            auto.error <= fixed.error,
+            "{} > {}",
+            auto.error,
+            fixed.error
+        );
+        let reference = s.solve(
             &f,
             &Steering::new(),
             None,
@@ -496,14 +640,8 @@ mod tests {
                 ..SolveOptions::default()
             },
         );
-        assert_eq!(fixed.background, Some(ColourIndex::YELLOW));
-        let auto = s.solve(&f, &Steering::new(), None, &SolveOptions::default());
-        assert!(
-            auto.error <= fixed.error,
-            "{} > {}",
-            auto.error,
-            fixed.error
-        );
+        assert_eq!(reference.solver, SolverKind::Reference);
+        assert_eq!(reference.background, Some(ColourIndex::YELLOW));
     }
 
     #[test]
@@ -840,6 +978,20 @@ mod tests {
         )
     }
 
+    /// The native solver: what the recipe knobs below (`max_luma_diff`, `cell_clamp`)
+    /// act on; the reference path has its own, opt-in versions (#181).
+    fn solve_native(f: &TargetFrame) -> Solution {
+        Solver::new(&Palette::pepto_pal()).solve(
+            f,
+            &Steering::new(),
+            None,
+            &SolveOptions {
+                solver: SolverKind::Native,
+                ..SolveOptions::default()
+            },
+        )
+    }
+
     /// Adjacent pixel pairs that want the same colour of their cell but came out more
     /// than `limit` luma levels apart: cross-luma speckle.
     fn speckle(sol: &Solution, f: &TargetFrame, limit: u8) -> usize {
@@ -1032,7 +1184,7 @@ mod tests {
                 let free = Recipe::with_method(kind, 1.0).unwrap();
                 let safe = free.with_max_luma_diff(0).unwrap();
                 let (ff, fs) = (frame_with(mode, free, false), frame_with(mode, safe, false));
-                let (a, b) = (solve_default(&ff), solve_default(&fs));
+                let (a, b) = (solve_native(&ff), solve_native(&fs));
                 assert!(
                     speckle(&a, &ff, 0) > 0,
                     "{mode} {kind:?}: the free dither speckles"
@@ -1050,8 +1202,8 @@ mod tests {
             let on = Recipe::with_method(DitherKind::FloydSteinberg, 1.0).unwrap();
             let off = on.with_cell_clamp(false);
             let (a, b) = (
-                solve_default(&frame_with(mode, on, false)),
-                solve_default(&frame_with(mode, off, false)),
+                solve_native(&frame_with(mode, on, false)),
+                solve_native(&frame_with(mode, off, false)),
             );
             assert_ne!(a.image, b.image, "{mode}");
             assert_eq!(validate(&b.image.to_indexed()), Ok(()), "{mode}");

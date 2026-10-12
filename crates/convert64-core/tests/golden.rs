@@ -41,7 +41,7 @@ use convert64_core::layer::{
 };
 use convert64_core::model::IndexedBitmap;
 use convert64_core::palette::{LinearRgb, Rgb8, linear_to_srgb8, oklab_of, srgb8_to_linear};
-use convert64_core::solve::{SolveOptions, Solver, Steering};
+use convert64_core::solve::{SolveOptions, Solver, SolverKind, Steering};
 use convert64_core::validate;
 use convert64_core::{Compositor, SuperGrid};
 use convert64_formats::prg::{LOAD_ADDRESS, PAYLOAD_ADDRESS, PAYLOAD_OFFSET, SYS_ADDRESS};
@@ -192,6 +192,16 @@ fn check_prg(name: &str, format: BitmapFormat) {
 
 // ---------------------------------------------------------------------------------------
 // Solver: perceptual.
+
+/// The native solver (E5, #157). The default is the reference solver (#181), whose bar
+/// is the png2c64 parity test; the native solver keeps its goldens here, and the variant
+/// tests below exercise its knobs.
+fn native() -> SolveOptions {
+    SolveOptions {
+        solver: SolverKind::Native,
+        ..SolveOptions::default()
+    }
+}
 
 /// The recipe closest to the png2c64 baseline settings (`fixtures/README.md`):
 /// png2c64 ran `--dither checker --dither-strength 0.7` for the multicolor fixtures (our
@@ -386,7 +396,7 @@ mod methods {
             background: Background::Fixed(ColourIndex::BLACK),
             refinements: 0,
             finalists: 1,
-            ..SolveOptions::default()
+            ..super::native()
         };
         // Every method is solved and its candidate written before any failure is
         // reported, so one `regen-goldens` run picks them all up.
@@ -417,7 +427,7 @@ mod methods {
 /// png2c64's strength (0.7), next to Ostromoukhov and checker for comparison. The
 /// harness prints each one's per-pixel and blurred OKLab MSE against the source.
 mod aware {
-    use super::{BitmapFormat, DitherKind, Recipe, SolveOptions, check_variant};
+    use super::{BitmapFormat, DitherKind, Recipe, check_variant};
 
     fn portrait(kind: DitherKind, variant: &str) {
         let r = Recipe::with_method(kind, 0.7).expect("recipe");
@@ -426,7 +436,7 @@ mod aware {
             BitmapFormat::Koala,
             variant,
             r,
-            &SolveOptions::default(),
+            &super::native(),
         );
     }
 
@@ -473,18 +483,12 @@ mod aware {
 
 /// #120: the `blur` and `ssim` cell metrics on `title`, with the baseline recipe.
 mod cell_metrics {
-    use super::{BitmapFormat, SolveOptions, baseline_recipe, check_variant};
+    use super::{BitmapFormat, baseline_recipe, check_variant};
     use convert64_core::layer::CellMetric;
 
     fn title(metric: CellMetric, variant: &str) {
         let r = baseline_recipe(BitmapFormat::Koala).with_cell_metric(metric);
-        check_variant(
-            "title",
-            BitmapFormat::Koala,
-            variant,
-            r,
-            &SolveOptions::default(),
-        );
+        check_variant("title", BitmapFormat::Koala, variant, r, &super::native());
     }
 
     #[test]
@@ -501,9 +505,7 @@ mod cell_metrics {
 /// #156: png2c64's ordered semantics, the chroma guard and bridging colours, on the
 /// dither-preview test card, and E5's semantics kept reproducible.
 mod ordered_semantics {
-    use super::{
-        BitmapFormat, DitherKind, Gamma, Recipe, SolveOptions, check_variant, solved_with,
-    };
+    use super::{BitmapFormat, DitherKind, Gamma, Recipe, check_variant, solved_with};
     use convert64_core::ColourIndex;
     use convert64_core::layer::OrderedSemantics;
 
@@ -514,7 +516,7 @@ mod ordered_semantics {
             BitmapFormat::Koala,
             &format!("card-{}", kind.id()),
             Recipe::with_method(kind, 1.0).expect("recipe"),
-            &SolveOptions::default(),
+            &super::native(),
             Gamma::PNG2C64,
         )
     }
@@ -588,7 +590,7 @@ mod ordered_semantics {
             BitmapFormat::Koala,
             "legacy",
             r,
-            &SolveOptions::default(),
+            &super::native(),
         );
     }
 }
@@ -596,8 +598,7 @@ mod ordered_semantics {
 /// #142: mix levels, pre-smoothing and the gradient swatches.
 mod flat_areas {
     use super::{
-        BitmapFormat, DitherKind, Gamma, Recipe, SolveOptions, baseline_recipe, check_variant,
-        solved_with,
+        BitmapFormat, DitherKind, Gamma, Recipe, baseline_recipe, check_variant, solved_with,
     };
     use convert64_core::colour::ColourIndex;
 
@@ -612,7 +613,7 @@ mod flat_areas {
             BitmapFormat::Koala,
             "raw",
             baseline_recipe(BitmapFormat::Koala),
-            &SolveOptions::default(),
+            &super::native(),
             Gamma::IDENTITY,
         );
         for y in 152..200 {
@@ -641,7 +642,7 @@ mod flat_areas {
             BitmapFormat::Koala,
             "levels0",
             r,
-            &SolveOptions::default(),
+            &super::native(),
         );
     }
 
@@ -657,7 +658,7 @@ mod flat_areas {
             BitmapFormat::Koala,
             "smooth",
             r,
-            &SolveOptions::default(),
+            &super::native(),
         );
     }
 }
@@ -676,7 +677,7 @@ mod knobs {
             BitmapFormat::Koala,
             "fs-clamped",
             fs(),
-            &SolveOptions::default(),
+            &super::native(),
         );
     }
 
@@ -687,7 +688,7 @@ mod knobs {
             BitmapFormat::Koala,
             "fs-unclamped",
             fs().with_cell_clamp(false),
-            &SolveOptions::default(),
+            &super::native(),
         );
     }
 
@@ -702,7 +703,7 @@ mod knobs {
             BitmapFormat::Koala,
             "luma0",
             r,
-            &SolveOptions::default(),
+            &super::native(),
         );
         assert_eq!(s.solution.report.summary().luma_crossings, 0);
     }
@@ -715,7 +716,7 @@ mod knobs {
             BitmapFormat::Koala,
             "adaptive",
             r,
-            &SolveOptions::default(),
+            &super::native(),
         );
     }
 
@@ -723,7 +724,7 @@ mod knobs {
     fn portrait_fs_hysteresis() {
         let opts = SolveOptions {
             hysteresis: Some(0.97),
-            ..SolveOptions::default()
+            ..super::native()
         };
         check_variant("portrait", BitmapFormat::Koala, "hysteresis", fs(), &opts);
     }
@@ -917,6 +918,8 @@ fn mode_name(format: BitmapFormat) -> &'static str {
 }
 
 struct SolverScores {
+    /// Percentage of pixels identical to png2c64's baseline.
+    same_as_png2c64: f64,
     mse_vs_golden: f64,
     mse_vs_png2c64: f64,
     mse_vs_source: f64,
@@ -957,6 +960,13 @@ fn score(
     let baseline = load_png(&dir.join("baseline.png")).expect("png2c64 baseline.png");
     let source = reference(&s.frame);
     SolverScores {
+        same_as_png2c64: 100.0
+            * rendered
+                .iter()
+                .zip(&baseline)
+                .filter(|(a, b)| a == b)
+                .count() as f64
+            / rendered.len() as f64,
         mse_vs_golden: oklab_mse(&rendered, &golden),
         mse_vs_png2c64: oklab_mse(&rendered, &baseline),
         mse_vs_source: oklab_mse(&rendered, &source),
@@ -979,6 +989,10 @@ fn check_solver(name: &str, format: BitmapFormat) {
         s.png2c64_vs_source,
         s.blur_mse,
         s.png2c64_blur_mse
+    );
+    println!(
+        "{name}, {mode}: {:.3} % of pixels identical to png2c64's baseline",
+        s.same_as_png2c64
     );
     let t = thresholds(name);
     let bar = t.png2c64_mse_vs_source.unwrap_or_else(|| {
@@ -1004,15 +1018,22 @@ fn check_solver(name: &str, format: BitmapFormat) {
         "{name}: png2c64 now scores {:.6} against the source, thresholds.toml says {bar:.6}",
         s.png2c64_vs_source
     );
-    assert!(
-        s.mse_vs_golden <= s.threshold,
-        "{name}, {mode}: mse_vs_golden {:.6} exceeds {} from fixtures/{name}/thresholds.toml \
-         (mse_vs_png2c64 {:.6}). If the change is intended, run \
-         `cargo xtask regen-goldens --accept --reason \"...\" --pr N`.",
-        s.mse_vs_golden,
-        s.threshold,
-        s.mse_vs_png2c64
-    );
+    // The default solver is the reference (#181): its bar is the png2c64 parity test
+    // (tests/png2c64_parity.rs), so its scores here are reported, not gated (a golden
+    // still records it, and `regen-goldens --report` still lists a change).
+    if s.mse_vs_golden > s.threshold {
+        println!(
+            "{name}, {mode}: mse_vs_golden {:.6} exceeds {} (reported only)",
+            s.mse_vs_golden, s.threshold
+        );
+    }
+}
+
+/// The native solver on a fixture with the png2c64-like recipe, against
+/// `expected_native.png` within the fixture's `mse_vs_golden_max`: the native solver keeps
+/// its goldens and their gate (#181).
+fn check_native(name: &str, format: BitmapFormat) {
+    check_variant(name, format, "native", baseline_recipe(format), &native());
 }
 
 macro_rules! golden_cases {
@@ -1028,6 +1049,10 @@ macro_rules! golden_cases {
         mod solver {
             use convert64_formats::BitmapFormat;
             $(#[test] fn $name() { super::check_solver(stringify!($name), $format); })*
+        }
+        mod native {
+            use convert64_formats::BitmapFormat;
+            $(#[test] fn $name() { super::check_native(stringify!($name), $format); })*
         }
         /// Every fixture, for the harness self-tests.
         const ALL: &[(&str, BitmapFormat)] = &[$((stringify!($name), $format)),*];

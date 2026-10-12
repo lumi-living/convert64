@@ -13,3 +13,4 @@ One file per decision, `ADR-NNN-short-title.md`, copied from `ADR-000-template.m
 | [007](ADR-007-light-dark-theme-and-material-icons.md) | Light and dark themes; Material Symbols icon font | Accepted |
 | [008](ADR-008-layer-masks-raster-plus-parametric.md) | Layer masks: one raster plus parametric modifiers, edited in-app | Accepted |
 | [009](ADR-009-project-file.md) | The `.convert64` project file: versioned JSON in the CLI library | Accepted |
+| [010](ADR-010-png2c64-reference-solver.md) | png2c64's pipeline, ported, as the default bitmap solver | Accepted |

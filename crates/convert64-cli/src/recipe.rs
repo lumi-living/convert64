@@ -116,6 +116,9 @@ pub struct RecipeFile {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SolveSpec {
+    /// The solver: `reference` (png2c64's pipeline, the default) or `native`.
+    #[serde(default)]
+    pub solver: convert64_core::solve::SolverKind,
     /// Background: `auto` (default) or `{"fixed": n}`.
     #[serde(default)]
     pub background: convert64_core::solve::Background,
@@ -144,6 +147,7 @@ fn default_finalists() -> u8 {
 impl Default for SolveSpec {
     fn default() -> Self {
         Self {
+            solver: convert64_core::solve::SolverKind::default(),
             background: convert64_core::solve::Background::default(),
             hysteresis: None,
             luma_pair_bias: 0.0,
@@ -737,6 +741,7 @@ impl Session {
             SolveMode::Interactive { dirty: self.dirty }
         };
         let opts = SolveOptions {
+            solver: self.spec.solver,
             mode,
             background: self.spec.background,
             hysteresis: self.spec.hysteresis,

@@ -117,11 +117,35 @@ fn raw_name(path: &Path) -> Result<(PathBuf, String), Fail> {
     Ok((dir, name.to_owned()))
 }
 
+/// `--solver`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum SolverArg {
+    /// png2c64's pipeline, ported (#181).
+    Reference,
+    /// Convert64's own solver.
+    Native,
+}
+
+impl From<SolverArg> for convert64_core::solve::SolverKind {
+    fn from(s: SolverArg) -> Self {
+        match s {
+            SolverArg::Reference => Self::Reference,
+            SolverArg::Native => Self::Native,
+        }
+    }
+}
+
 /// Settings that override a project's own (or the defaults, for a PNG). Also the shape of
 /// a batch manifest's per-file settings.
 #[derive(clap::Args, Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub(crate) struct Overrides {
+    /// Solver: reference (png2c64's pipeline, the default) or native (Convert64's own).
+    /// The native solver is what the recipe knobs `--max-luma-diff`, `--no-cell-clamp`,
+    /// `--mix-levels`, `--smooth`, `--ordered-semantics` and `--no-chroma-guard` act on.
+    #[arg(long, value_enum)]
+    pub(crate) solver: Option<SolverArg>,
     /// Target mode: koala (multicolor; also mc) or hires. Default: the project's, or the
     /// output format's, or koala.
     #[arg(long, value_enum)]
@@ -210,6 +234,7 @@ impl Overrides {
     /// over the manifest's defaults over the command line's).
     pub(crate) fn or(self, base: &Self) -> Self {
         Self {
+            solver: self.solver.or(base.solver),
             mode: self.mode.or(base.mode),
             palette: self.palette.or_else(|| base.palette.clone()),
             metric: self.metric.or_else(|| base.metric.clone()),
@@ -316,6 +341,9 @@ impl Overrides {
                         })?,
                 ),
             };
+        }
+        if let Some(s) = self.solver {
+            file.solve.solver = s.into();
         }
         if let Some(h) = self.hysteresis {
             if !(h > 0.0 && h <= 1.0) {
@@ -586,6 +614,10 @@ pub(crate) fn finish_solve(
         Vec::new()
     };
     run.set("solve_error", sol.error);
+    run.set("solver", sol.solver);
+    if let Some(why) = &sol.fallback {
+        run.set("solver_fallback", why);
+    }
     run.set("summary", summary);
     run.set("worst", cells);
     if worst {

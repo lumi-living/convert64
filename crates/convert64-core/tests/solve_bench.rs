@@ -7,14 +7,17 @@
 //! ```
 //!
 //! It solves the `portrait` (multicolor) and `lineart` (hi-res) fixtures at 4× with
-//! Floyd–Steinberg and Bayer 4×4, and prints the median of several runs for the full
-//! solve and for the interactive re-solve after a 0.25 px nudge.
+//! Floyd–Steinberg and Bayer 4×4, with the reference solver (the default, #181) and the
+//! native one, and prints the median of several runs for the full solve and for the
+//! interactive re-solve after a 0.25 px nudge.
 
 use convert64_core::geom::Vec2;
 use convert64_core::layer::{DitherKind, Layer, Recipe, SourceImage, Transform};
 use convert64_core::mode::Mode;
 use convert64_core::palette::Palette;
-use convert64_core::solve::{Input, InputOptions, SolveMode, SolveOptions, Solver, Steering};
+use convert64_core::solve::{
+    Input, InputOptions, SolveMode, SolveOptions, Solver, SolverKind, Steering,
+};
 use convert64_core::{Compositor, SuperGrid};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -63,7 +66,14 @@ fn solve_timings() {
         ("portrait", Mode::MulticolorBitmap),
         ("lineart", Mode::HiresBitmap),
     ] {
-        for kind in [DitherKind::FloydSteinberg, DitherKind::Bayer4] {
+        for (kind, solver_kind) in [DitherKind::FloydSteinberg, DitherKind::Bayer4]
+            .into_iter()
+            .flat_map(|k| [(k, SolverKind::Reference), (k, SolverKind::Native)])
+        {
+            let opts = SolveOptions {
+                solver: solver_kind,
+                ..SolveOptions::default()
+            };
             let grid = SuperGrid::new(mode, 4).unwrap();
             let mut c = Compositor::new(grid);
             c.update(&[layer(name, kind, 0.0)], &[]);
@@ -72,12 +82,12 @@ fn solve_timings() {
                 (0..5)
                     .map(|_| {
                         let t = Instant::now();
-                        solver.solve(&frame, &Steering::new(), None, &SolveOptions::default());
+                        solver.solve(&frame, &Steering::new(), None, &opts);
                         t.elapsed()
                     })
                     .collect(),
             );
-            let base = solver.solve(&frame, &Steering::new(), None, &SolveOptions::default());
+            let base = solver.solve(&frame, &Steering::new(), None, &opts);
             let mut times = Vec::new();
             for i in 1..=5 {
                 let dirty = c.update(&[layer(name, kind, 0.25 * i as f32)], &[]);
@@ -88,13 +98,14 @@ fn solve_timings() {
                     Some(&base),
                     &SolveOptions {
                         mode: SolveMode::Interactive { dirty },
-                        ..SolveOptions::default()
+                        ..opts.clone()
                     },
                 );
                 times.push(t.elapsed());
             }
             println!(
-                "solve: {name} {mode} {kind:?} {threads}: full {}, interactive after a 0.25 px nudge {}",
+                "solve: {name} {mode} {kind:?} {solver_kind:?} {threads}: full {}, \
+                 interactive after a 0.25 px nudge {}",
                 ms(full),
                 ms(median(times))
             );
