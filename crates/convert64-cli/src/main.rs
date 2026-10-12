@@ -54,8 +54,9 @@ enum Command {
         /// Colour metric: oklab, cielab, pepto-yuv or rgb.
         #[arg(long, default_value = "oklab")]
         metric: String,
-        /// Dither method, e.g. none, bayer2, bayer4, bayer8, blue-noise,
-        /// floyd-steinberg, atkinson, jarvis-judice-ninke, sierra.
+        /// Dither method: any id in docs/reference/dither-methods.md, e.g. none, bayer4,
+        /// checker, halftone8, line-h4, blue-noise, ign, fs, atkinson (png2c64's names
+        /// work too).
         #[arg(long, default_value = "floyd-steinberg")]
         dither: String,
         /// Dither strength, 0–1.

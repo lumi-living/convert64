@@ -295,7 +295,19 @@ fn check_variant(
     recipe: Recipe,
     opts: &SolveOptions,
 ) -> Arc<Solved> {
-    let s = solved_with(name, format, variant, recipe, opts, Gamma::PNG2C64);
+    check_variant_from(name, format, variant, recipe, opts, Gamma::PNG2C64)
+}
+
+/// [`check_variant`] with the source preprocessed by `gamma`.
+fn check_variant_from(
+    name: &str,
+    format: BitmapFormat,
+    variant: &str,
+    recipe: Recipe,
+    opts: &SolveOptions,
+    gamma: Gamma,
+) -> Arc<Solved> {
+    let s = solved_with(name, format, variant, recipe, opts, gamma);
     assert_eq!(validate(&s.output), Ok(()), "{name}/{variant}: not legal");
     let rendered = render(&s.output, &Palette::pepto_pal());
     let file = format!("expected_{variant}.png");
@@ -318,6 +330,49 @@ fn check_variant(
 }
 
 /// Solver knobs (#123) on `portrait`.
+/// #114: the `gradient` fixture dithered with every method id, so a change to any
+/// matrix, noise function or kernel fails a test. Solved from the raw source with a
+/// fixed black background and no refinement (fast, and the pattern is what is under
+/// test), at full strength with continuous ratios (`mix_levels = 0`) so every
+/// threshold of a matrix shows. These have no png2c64 bar: effects (`radial`,
+/// `crosshatch`, `value-noise`) are not quantisers, and png2c64 has no equivalent of
+/// most ids.
+mod methods {
+    use super::{BitmapFormat, DitherKind, Gamma, Recipe, SolveOptions, check_variant_from};
+    use convert64_core::ColourIndex;
+    use convert64_core::layer::Method;
+    use convert64_core::solve::Background;
+
+    /// The method's reference id, as recipes spell it.
+    fn id(kind: DitherKind) -> String {
+        let text = toml::to_string(&Method::new(kind)).expect("method");
+        text.split('"').nth(1).expect("kind = \"id\"").to_owned()
+    }
+
+    #[test]
+    fn gradient_with_every_method() {
+        let opts = SolveOptions {
+            background: Background::Fixed(ColourIndex::BLACK),
+            refinements: 0,
+            finalists: 1,
+            ..SolveOptions::default()
+        };
+        for kind in DitherKind::ALL {
+            let r = Recipe::with_method(kind, 1.0)
+                .and_then(|r| r.with_mix_levels(0))
+                .expect("recipe");
+            check_variant_from(
+                "gradient",
+                BitmapFormat::Koala,
+                &format!("m-{}", id(kind)),
+                r,
+                &opts,
+                Gamma::IDENTITY,
+            );
+        }
+    }
+}
+
 /// #142: mix levels, pre-smoothing and the gradient swatches.
 mod flat_areas {
     use super::{

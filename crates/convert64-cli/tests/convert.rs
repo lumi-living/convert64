@@ -162,3 +162,66 @@ fn mix_levels_gamma_and_range_matching_from_the_command_line() {
         assert_eq!(r.status.code(), Some(2), "{bad:?}");
     }
 }
+
+/// Every ordered, noise and effect id of `docs/reference/dither-methods.md` §1–§2.
+const THRESHOLD_IDS: &[&str] = &[
+    "none",
+    "bayer2",
+    "bayer4",
+    "bayer8",
+    "bayer16",
+    "bayer2x2-mc",
+    "checker",
+    "h2x4",
+    "clustered4",
+    "clustered8",
+    "halftone8",
+    "dot",
+    "diamond",
+    "star",
+    "line-h2",
+    "line-h4",
+    "line-h8",
+    "line-v2",
+    "line-v4",
+    "line-v8",
+    "line-checker",
+    "diag-down",
+    "diag-up",
+    "diagonal8",
+    "crosshatch",
+    "spiral5",
+    "hex5",
+    "hex8",
+    "radial",
+    "custom",
+    "blue-noise",
+    "ign",
+    "r2",
+    "white-noise",
+    "value-noise",
+];
+
+#[test]
+fn convert_accepts_every_threshold_method_id() {
+    let dir = temp("convert-ids");
+    let png = source(&dir);
+    let out = dir.join("id.kla");
+    for id in THRESHOLD_IDS {
+        let r = convert(&[
+            "convert",
+            png.to_str().unwrap(),
+            "--dither",
+            id,
+            "--bg",
+            "0",
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+        assert!(
+            r.status.success(),
+            "{id}: {}",
+            String::from_utf8_lossy(&r.stderr)
+        );
+    }
+}
