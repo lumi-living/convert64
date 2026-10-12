@@ -4,6 +4,7 @@
 
 use super::{Shell, Tool, ViewMode, icon};
 use crate::icons;
+use crate::view::Compare;
 use egui::{Button, Ui};
 
 /// A toolbar button: an icon, a tooltip, `selected` drawn as the toggle's on state.
@@ -35,7 +36,7 @@ pub(super) fn show(shell: &mut Shell, ui: &mut Ui) {
             false,
             true,
         ) {
-            shell.zoom_in();
+            shell.zoom_step(true);
         }
         if button(
             ui,
@@ -44,7 +45,7 @@ pub(super) fn show(shell: &mut Shell, ui: &mut Ui) {
             false,
             true,
         ) {
-            shell.zoom_out();
+            shell.zoom_step(false);
         }
         button(
             ui,
@@ -64,7 +65,19 @@ pub(super) fn show(shell: &mut Shell, ui: &mut Ui) {
         ) {
             shell.view = shell.view.flipped();
         }
-        button(ui, icons::COMPARE, "Compare: hold \\ to flip", false, false);
+        let compare = format!(
+            "Compare: {} (, cycles · hold \\ to flip)",
+            shell.compare.label()
+        );
+        if button(
+            ui,
+            icons::COMPARE,
+            &compare,
+            shell.compare != Compare::Off,
+            true,
+        ) {
+            shell.compare = shell.compare.next();
+        }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let other = shell.view.flipped().label();
