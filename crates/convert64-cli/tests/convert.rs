@@ -296,3 +296,57 @@ fn cell_metrics_from_the_command_line() {
     ]);
     assert_eq!(bad.status.code(), Some(2));
 }
+
+#[test]
+fn solver_and_divergences_from_the_command_line() {
+    let dir = temp("diverge");
+    let png = source(&dir);
+    let out = dir.join("out.kla");
+    let json = |args: &[&str]| -> serde_json::Value {
+        let mut all = vec![
+            "--json",
+            "convert",
+            png.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ];
+        all.extend_from_slice(args);
+        let r = convert(&all);
+        assert!(
+            r.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&r.stderr)
+        );
+        serde_json::from_slice(&r.stdout).expect("JSON report")
+    };
+    assert_eq!(json(&[])["solver"], "reference");
+    assert_eq!(json(&["--solver", "native"])["solver"], "native");
+    let d = json(&[
+        "--diverge",
+        "chroma-guard,max-luma-diff=1",
+        "--diverge",
+        "pair-bias=0.01",
+    ]);
+    assert_eq!(d["solver"], "reference");
+    assert_eq!(d["legal"], true);
+    // A native recipe knob asks for the native solver.
+    let k = json(&["--max-luma-diff", "0"]);
+    assert_eq!(k["solver"], "native");
+    assert!(
+        k["solver_fallback"]
+            .as_str()
+            .unwrap()
+            .contains("max_luma_diff")
+    );
+    for bad in ["sparkle", "max-luma-diff=9", "mix-levels", "chroma-guard=1"] {
+        let r = convert(&[
+            "convert",
+            png.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--diverge",
+            bad,
+        ]);
+        assert_eq!(r.status.code(), Some(2), "--diverge {bad}");
+    }
+}

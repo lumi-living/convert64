@@ -72,3 +72,20 @@ least 99 % of pixels identical to png2c64's render in each case. CI runs it as i
 step (`png2c64 parity`) and prints every percentage. With the reference build all 66
 cases are 100 % except the `title` fixture at 99.997 % (2 pixels), whose baseline the
 GCC default build made.
+
+## Divergences
+
+Our extras that png2c64 does not have are named options of the reference solver
+(`solve::Divergences`; project `solve.divergences`; CLI `--diverge`), each off by
+default. With all off the solver is png2c64's and the parity test holds. Each has a row
+on the divergence sheet (`dither-previews/convert64-sheets/sheet-divergences.png`) next
+to the reference, and becomes a default only after a human has judged it there.
+
+| Option | What it does on png2c64's pipeline | From |
+|---|---|---|
+| `chroma_guard` | An ordered pixel's search and pick avoid colours that add chroma it lacks: a neutral pixel (OKLab chroma ≤ 0.02) keeps to colours within 0.03 of its chroma, a tinted one to colours within about 53° of its hue (greys always pass). Rejected colours cost +1 in the distance table. | #157 |
+| `max_luma_diff = n` | A pixel's colours other than those within `n` luma levels of its nearest colour cost +1 in the search, and diffusion picks only among the cell's colours within `n` levels of the one the pixel itself is nearest to. 0 is PAL-blend safe. | #123 |
+| `pair_bias = x` | A cell set's search score gets `x` per same-luma pair in it. | E5 |
+| `cell_clamp` | Diffused error is not passed into another cell whose colours lack the nearest colour to where it would push that pixel. png2c64 lets error flow everywhere. | E5 |
+| `mix_levels = n` | An ordered pixel's threshold is quantised to `n` levels before it biases the search, so a pair mixes at one of `n + 1` ratios. | #142 |
+| `bridging` | A cell set's search score gets, per ordered pixel, 0.01 × the squared width of the OKLab-L bracket the set gives it (½ plus the distance to the nearest end when unbracketed). | #157 |

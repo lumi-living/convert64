@@ -23,6 +23,42 @@ pub mod scale;
 #[cfg(test)]
 mod testdata;
 
+/// Our extras that png2c64 does not have, as named options on the reference path, each
+/// off by default (#181 step 7). With the default, the pipeline is png2c64's. A human
+/// judges each on the sheet (`cargo xtask dither-sheet`, the divergence rows) before it
+/// can become a default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Divergences {
+    /// #157's chroma guard: an ordered pixel's search and pick avoid colours that add
+    /// chroma the pixel lacks (a neutral pixel keeps to near-greys, a tinted one to
+    /// colours of a close hue).
+    pub chroma_guard: bool,
+    /// Dither mixes stay within this many of the nine luma levels of the pixel's nearest
+    /// colour (0: same-luma only, PAL-blend safe); `None`: unrestricted.
+    pub max_luma_diff: Option<u8>,
+    /// Added to a cell set's search score per same-luma pair in it (positive
+    /// penalises, negative rewards); 0: off.
+    pub pair_bias: f32,
+    /// Diffused error does not cross into a cell that lacks the colour it pulls
+    /// towards (E5's cell clamp); png2c64 lets it flow everywhere.
+    pub cell_clamp: bool,
+    /// An ordered pixel's threshold is quantised to this many levels (so a pair mixes
+    /// at one of `n + 1` ratios); `None`: the matrix as is.
+    pub mix_levels: Option<u8>,
+    /// #157's bridging term: a cell set's search score also counts, per ordered pixel,
+    /// 0.01 × the squared width of the OKLab-L bracket the set gives it (½ plus its
+    /// distance to the nearest end when unbracketed).
+    pub bridging: bool,
+}
+
+impl Divergences {
+    /// Whether all are off (png2c64's pipeline).
+    pub fn none(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Linear-light RGB, png2c64's `Color3f`.
 pub type Rgb = [f32; 3];
 
@@ -127,14 +163,22 @@ pub fn convert_px(
     hooks: &quantize::Hooks,
 ) -> quantize::Screen {
     let (w, _) = mode.screen();
+    let levels = hooks.divergences.mix_levels;
     let bias: Vec<Option<f32>> = px
         .iter()
         .enumerate()
-        .map(|(i, s)| s.bias(i % w, i / w))
+        .map(|(i, s)| s.bias_levels(i % w, i / w, levels))
         .collect();
     let mut screen = quantize::quantize_px(image, palette, mode, &bias, hooks);
     if px.iter().any(|s| s.method.kernel().is_some()) {
-        dither::diffuse_px(image, &mut screen, palette, px, serpentine);
+        dither::diffuse_px(
+            image,
+            &mut screen,
+            palette,
+            px,
+            serpentine,
+            &hooks.divergences,
+        );
     }
     screen
 }

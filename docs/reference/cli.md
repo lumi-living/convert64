@@ -51,6 +51,7 @@ For a PNG, a `.kla` or `.art` output also picks the mode when `--mode` is not gi
 | Option | Overrides | Values |
 |---|---|---|
 | `--solver` | `solve.solver` | `reference` (default: png2c64's pipeline, #181), `native` |
+| `--diverge` | `solve.divergences` | The reference solver's named divergences from png2c64, all off by default: `chroma-guard`, `max-luma-diff=N` (0–8), `pair-bias=X` (−1–1), `cell-clamp`, `mix-levels=N` (1–16), `bridging`; repeatable or comma-separated ([png2c64-reference.md](png2c64-reference.md#divergences)) |
 | `--mode` | `target` | `koala` (also `mc`, `multicolor`), `hires` (also `hi-res`, `art`) |
 | `--palette` | `palette` | `pepto` / `pepto-pal`, `pepto-ntsc`, `colodore`, or a `.vpl` path |
 | `--dither` | each layer's `recipe.method.kind` | Any id in [dither-methods.md](dither-methods.md) |
@@ -132,7 +133,7 @@ max-clashes = 20
 skip = true
 ```
 
-Every table takes `convert`'s options in kebab-case (`solver`, `mode`, `palette`, `dither`, `strength`, `metric`, `cell-metric`, `no-cell-clamp`, `max-luma-diff`, `ordered-semantics`, `no-chroma-guard`, `error-clamp`, `adaptive`, `mix-levels`, `smooth`, `gamma`, `match-range`, `bg`, `hysteresis`, `supersample`), plus `outputs` (`kla`, `art`, `prg`, `png`, `raw`), `max-clashes`, `zoom` (PNG previews) and `skip`. Unknown keys are errors. A file's table wins over `[defaults]`; options on the command line win over both.
+Every table takes `convert`'s options in kebab-case (`solver`, `diverge` (a list), `mode`, `palette`, `dither`, `strength`, `metric`, `cell-metric`, `no-cell-clamp`, `max-luma-diff`, `ordered-semantics`, `no-chroma-guard`, `error-clamp`, `adaptive`, `mix-levels`, `smooth`, `gamma`, `match-range`, `bg`, `hysteresis`, `supersample`), plus `outputs` (`kla`, `art`, `prg`, `png`, `raw`), `max-clashes`, `zoom` (PNG previews) and `skip`. Unknown keys are errors. A file's table wins over `[defaults]`; options on the command line win over both.
 
 Files convert independently: one failure does not stop the others. The exit code is the worst file's (3, then 2, then 1). JSON fields: `dir`, `manifest`, `out`, `converted`, `failed`, `skipped` (`input`, `reason`) and `files`, one `convert` report per file with its `input`.
 

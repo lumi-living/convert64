@@ -20,6 +20,7 @@ pub mod steering;
 pub use cell::{CellChoice, Constraints};
 pub use input::{Input, InputOptions};
 pub use metric::{Metric, MetricTables, Space};
+pub use png2c64_ref::Divergences;
 pub use report::{CellReport, ClashReport, Summary};
 pub use solver::{Background, Solution, SolveMode, SolveOptions, Solver, SolverKind};
 pub use steering::{Pin, Steering};

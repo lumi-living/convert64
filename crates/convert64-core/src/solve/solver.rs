@@ -66,6 +66,8 @@ pub enum SolveMode {
 pub struct SolveOptions {
     /// Which solver (the reference by default).
     pub solver: SolverKind,
+    /// The reference solver's named extras, all off by default (#181 step 7).
+    pub divergences: super::png2c64_ref::Divergences,
     /// Full search or the interactive fast path.
     pub mode: SolveMode,
     /// Background choice.
@@ -92,6 +94,7 @@ impl Default for SolveOptions {
     fn default() -> Self {
         Self {
             solver: SolverKind::Reference,
+            divergences: super::png2c64_ref::Divergences::default(),
             mode: SolveMode::Full,
             background: Background::Auto,
             luma_pair_bias: 0.0,
@@ -774,6 +777,155 @@ mod tests {
                     "{mode} {kind:?}: the dirty cells follow the new picture"
                 );
             }
+        }
+    }
+
+    /// #181 step 7: each named divergence, on its own, changes the reference's output
+    /// and keeps it legal; all off is png2c64's.
+    #[test]
+    fn every_divergence_changes_the_output_and_stays_legal() {
+        use super::super::png2c64_ref::Divergences;
+        let s = Solver::new(&Palette::pepto_pal());
+        let cases: [(&str, DitherKind, Divergences); 6] = [
+            (
+                "chroma_guard",
+                DitherKind::Bayer4,
+                Divergences {
+                    chroma_guard: true,
+                    ..Divergences::default()
+                },
+            ),
+            (
+                "max_luma_diff",
+                DitherKind::FloydSteinberg,
+                Divergences {
+                    max_luma_diff: Some(1),
+                    ..Divergences::default()
+                },
+            ),
+            (
+                "pair_bias",
+                DitherKind::Bayer4,
+                Divergences {
+                    pair_bias: 0.05,
+                    ..Divergences::default()
+                },
+            ),
+            (
+                "cell_clamp",
+                DitherKind::FloydSteinberg,
+                Divergences {
+                    cell_clamp: true,
+                    ..Divergences::default()
+                },
+            ),
+            (
+                "mix_levels",
+                DitherKind::Bayer8,
+                Divergences {
+                    mix_levels: Some(2),
+                    ..Divergences::default()
+                },
+            ),
+            (
+                "bridging",
+                DitherKind::Bayer4,
+                Divergences {
+                    bridging: true,
+                    ..Divergences::default()
+                },
+            ),
+        ];
+        for mode in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
+            for (name, kind, div) in cases {
+                let f = frame(mode, kind);
+                let off = s.solve(&f, &Steering::new(), None, &SolveOptions::default());
+                let on = s.solve(
+                    &f,
+                    &Steering::new(),
+                    None,
+                    &SolveOptions {
+                        divergences: div,
+                        ..SolveOptions::default()
+                    },
+                );
+                assert_eq!(on.solver, SolverKind::Reference, "{mode} {name}");
+                assert_eq!(validate(&on.image.to_indexed()), Ok(()), "{mode} {name}");
+                assert_ne!(indices(&on), indices(&off), "{mode} {name} changes nothing");
+            }
+        }
+    }
+
+    #[test]
+    fn the_chroma_guard_keeps_a_grey_ramp_grey() {
+        use super::super::png2c64_ref::Divergences;
+        let greys = [0u8, 1, 11, 12, 15];
+        let px: Vec<[f32; 4]> = (0..320 * 200)
+            .map(|i| {
+                let v = (i % 320) as f32 / 319.0;
+                [v, v, v, 1.0]
+            })
+            .collect();
+        let mut l = Layer::new(
+            "ramp",
+            Arc::new(SourceImage::from_linear(320, 200, px).unwrap()),
+        );
+        l.set_recipe(Recipe::with_method(DitherKind::Bayer4, 1.0).unwrap());
+        let mut c = Compositor::new(SuperGrid::new(Mode::MulticolorBitmap, 2).unwrap());
+        c.update(&[l], &[]);
+        let guarded = Solver::new(&Palette::pepto_pal()).solve(
+            c.frame(),
+            &Steering::new(),
+            None,
+            &SolveOptions {
+                divergences: Divergences {
+                    chroma_guard: true,
+                    ..Divergences::default()
+                },
+                ..SolveOptions::default()
+            },
+        );
+        let chromatic = indices(&guarded)
+            .iter()
+            .filter(|c| !greys.contains(&c.get()))
+            .count();
+        assert_eq!(chromatic, 0, "{chromatic} chromatic pixels in a grey ramp");
+    }
+
+    #[test]
+    fn max_luma_diff_zero_keeps_mixes_to_one_luma_level() {
+        use super::super::png2c64_ref::Divergences;
+        use crate::palette::luma::level_diff;
+        let s = Solver::new(&Palette::pepto_pal());
+        for kind in [DitherKind::FloydSteinberg, DitherKind::Bayer4] {
+            let f = frame(Mode::MulticolorBitmap, kind);
+            let solve = |div| {
+                s.solve(
+                    &f,
+                    &Steering::new(),
+                    None,
+                    &SolveOptions {
+                        divergences: div,
+                        ..SolveOptions::default()
+                    },
+                )
+            };
+            // Horizontal neighbours in a cell more than one luma level apart.
+            let jumps = |sol: &Solution| {
+                let px = indices(sol);
+                (0..px.len())
+                    .filter(|&i| i % 4 != 3 && level_diff(px[i], px[i + 1]) > 1)
+                    .count()
+            };
+            let free = jumps(&solve(Divergences::default()));
+            let safe = jumps(&solve(Divergences {
+                max_luma_diff: Some(0),
+                ..Divergences::default()
+            }));
+            assert!(
+                safe < free,
+                "{kind:?}: {safe} jumps with the limit, {free} without"
+            );
         }
     }
 
