@@ -620,8 +620,14 @@ impl Session {
         }
     }
 
-    /// The core command for a JSON command (reading any file it names).
+    /// The core command for a JSON command (reading any file it names, relative to the
+    /// project or recipe file).
     pub fn to_command(&self, cmd: JsonCommand) -> Result<Command, RecipeError> {
+        self.to_command_at(cmd, &self.base)
+    }
+
+    /// The core command for a JSON command, reading any file it names relative to `base`.
+    pub fn to_command_at(&self, cmd: JsonCommand, base: &Path) -> Result<Command, RecipeError> {
         Ok(match cmd {
             JsonCommand::MaskStroke {
                 layer,
@@ -675,7 +681,7 @@ impl Session {
             }
             JsonCommand::MaskLoad { layer, path } => Command::MaskLoad(MaskLoad {
                 layer: self.resolve(&layer)?,
-                raster: load_mask(&self.base.join(path))?,
+                raster: load_mask(&base.join(path))?,
             }),
             JsonCommand::MaskClear { layer, value } => Command::MaskClear(MaskClear {
                 layer: self.resolve(&layer)?,
@@ -704,6 +710,13 @@ impl Session {
     /// Runs one JSON command.
     pub fn run(&mut self, cmd: JsonCommand) -> Result<Dirty, RecipeError> {
         let c = self.to_command(cmd)?;
+        self.editor.execute(c).map_err(invalid)
+    }
+
+    /// Runs one JSON command whose file paths are relative to `base` (a commands file's
+    /// directory, or the working directory for a command given on the command line).
+    pub fn run_at(&mut self, cmd: JsonCommand, base: &Path) -> Result<Dirty, RecipeError> {
+        let c = self.to_command_at(cmd, base)?;
         self.editor.execute(c).map_err(invalid)
     }
 

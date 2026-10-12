@@ -2,11 +2,12 @@
 //!
 //! `convert64 convert` solves a PNG or a `.convert64` project into every M1 output
 //! format, `convert64 validate` checks a picture against the rules in
-//! `docs/reference/vic-ii-constraints.md` §6, and `convert64 recipe apply` runs a project's
-//! or recipe's commands headless (ADR-005). Every command takes `--json` and exits 0 (ok),
+//! `docs/reference/vic-ii-constraints.md` §6, `convert64 apply` runs any registry command
+//! on a project (ADR-005) and `convert64 commands` lists them. Every command takes `--json` and exits 0 (ok),
 //! 1 (not legal, or too many clashes), 2 (input or option error) or 3 (write error);
 //! `docs/reference/cli.md` documents them.
 
+mod apply;
 mod convert;
 mod json;
 mod report;
@@ -104,6 +105,37 @@ enum Command {
         #[arg(long, value_enum)]
         format: Option<validate::ReadFormat>,
     },
+    /// Run registry commands on a project and save it.
+    ///
+    /// Every command in the core's registry (`convert64 commands` lists them) runs here,
+    /// exactly as the app runs it. Commands come from --commands FILE (a JSON array,
+    /// paths in it relative to the file) and then from each --command (paths relative
+    /// to the working directory), in order. Without --save or --in-place nothing is
+    /// written: the commands are only checked. Exits 0 on success, 2 when the project
+    /// cannot be read or a command fails (nothing is written then), 3 when the project
+    /// cannot be written.
+    Apply {
+        /// The project (.convert64) or version-1 recipe.
+        file: PathBuf,
+        /// A command as JSON: {"command": "<name>", ...arguments}. Repeatable.
+        #[arg(long = "command", value_name = "JSON")]
+        command: Vec<String>,
+        /// A JSON file holding an array of commands, run before any --command.
+        #[arg(long = "commands", value_name = "FILE")]
+        commands_file: Option<PathBuf>,
+        /// Save the result as a .convert64 project.
+        #[arg(short = 'o', long, value_name = "PATH")]
+        save: Option<PathBuf>,
+        /// Save the result over the input file.
+        #[arg(long, conflicts_with = "save")]
+        in_place: bool,
+        #[command(flatten)]
+        embed: EmbedArgs,
+    },
+    /// List every registry command with its argument schema.
+    ///
+    /// With --json, each command's JSON Schema and a working example.
+    Commands,
     /// Work with recipe and project files: layers plus commands, in JSON.
     Recipe {
         #[command(subcommand)]
@@ -203,19 +235,34 @@ fn main() -> ExitCode {
             }
             RecipeAction::Commands => {
                 let mut run = Run::new("recipe commands", json);
-                for c in convert64_core::command::REGISTRY {
-                    run.say(format!("{:<18} {}", c.name, c.summary));
-                }
-                run.set(
-                    "commands",
-                    convert64_core::command::REGISTRY
-                        .iter()
-                        .map(|c| serde_json::json!({ "name": c.name, "summary": c.summary }))
-                        .collect::<Vec<_>>(),
-                );
+                apply::list(&mut run);
                 run.finish(Ok(0))
             }
         },
+        Command::Apply {
+            file,
+            command,
+            commands_file,
+            save,
+            in_place,
+            embed,
+        } => {
+            let mut run = Run::new("apply", json);
+            let save = if in_place { Some(file.clone()) } else { save };
+            let job = apply::ApplyJob {
+                file: &file,
+                commands: &command,
+                commands_file: commands_file.as_deref(),
+                save: save.as_deref().map(|p| (p, embed.embed())),
+            };
+            let r = apply::run(&mut run, &job);
+            run.finish(r)
+        }
+        Command::Commands => {
+            let mut run = Run::new("commands", json);
+            apply::list(&mut run);
+            run.finish(Ok(0))
+        }
     }
 }
 
