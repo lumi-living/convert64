@@ -215,7 +215,48 @@ As built in E4 (2026-10-11): the compositor and attribute map ([ADR-002](adr/ADR
   The single-threaded cold composite falls from 105 to 63 ms hi-res and from 51 to 33 ms multicolor. Multicolor meets the 60 ms budget in every run. Hi-res does not: it was within it in 4 runs of 10 (47.9–56.3 ms) and over it in 6 (62.6–87.6 ms), so #139's target is not met for hi-res. The warm recomposite is unchanged, and the nudge and the feather slider, which rebuild one layer, gain little; the differences in those rows are the hosts'.
 - **Builds.** `convert64-cli` and `convert64-mcp` build the core with `parallel`. The app does not, because it also targets wasm.
 
-As built in E5 (2026-10-12): the bitmap solver (§3.1, §3.4–§3.5), in `convert64-core::solve` (#126–#136; #5 tracks them). The full dither scope in [reference/dither-methods.md](reference/dither-methods.md) continues in #114–#116 and #120.
+As built in E5 (2026-10-12): the bitmap solver (§3.1, §3.4–§3.5), in `convert64-core::solve`. The first run was #126–#136; the follow-ups #123, #142, #114, #115, #120, #150 and #116 are recorded in their own "As built" paragraphs below. #5 tracked them all.
+
+**E5 in summary (at closing)**
+- **Methods.** 58 `DitherKind`s; every one has a golden on `gradient` (`fixtures/gradient/expected_m-<id>.png`).
+
+  | Family | Count | Kinds |
+  |---|---|---|
+  | None | 1 | `none` |
+  | Ordered | 27 | `bayer2/4/8/16`, `bayer2x2-mc`, `checker`, `h2x4`, `clustered4/8`, `halftone8`, `dot`, `diamond`, `star`, `line-h2/4/8`, `line-v2/4/8`, `line-checker`, `diag-down/up`, `diagonal8`, `spiral5`, `hex5/8`, `custom` |
+  | Noise | 4 | `blue-noise`, `ign`, `r2`, `white-noise` |
+  | Effects | 3 | `crosshatch`, `radial`, `value-noise` |
+  | Diffusion | 17 | `floyd-steinberg` (`fs`), `false-fs`, `fs-wide`, `line-fs`, `jarvis-judice-ninke` (`jarvis`), `stucki`, `burkes`, `sierra` (`sierra3`), `sierra2`, `sierra-lite`, `atkinson`, `stevenson-arce`, `shiau-fan1/2`, `ostromoukhov`, `zhou-fang`, `riemersma` |
+  | Palette-aware | 6 | `yliluoma1/2/3`, `knoll`, `luma`, `pair` |
+
+- **Metrics.**
+  - Colour metrics: OKLab (default), CIELAB, Pepto Y'UV (luma-weighted) and RGB, with the signed same-luma pair bias (default 0).
+  - Cell metrics for the set search: `mse` (default), `blur` and `ssim`.
+- **Recipe knobs and defaults** (all serialised, all on the CLI):
+  - `strength` 0–1.
+  - `phase` screen.
+  - `orientation` auto.
+  - `cell_clamp` true.
+  - `max_luma_diff` 8 (off).
+  - `adaptive` 0.
+  - `mix_levels` 4 (ordered, noise and effects; 0 = continuous).
+  - `smooth` false.
+  - `cell_metric` mse.
+  - `error_clamp` 0.1 (diffusion; 0 = off).
+  - `custom` matrix (for `custom`).
+- **Solve options.**
+  - `background` auto.
+  - `refinements` 2.
+  - `finalists` 3.
+  - `hysteresis` off (0.97 is Dithertron's).
+  - `luma_pair_bias` 0.
+- **Adjustments added for png2c64 parity.** `gamma` (identity) and `match_range` (off), with the "Auto levels" suggestion.
+- **Quality bar.**
+  - Both converters are scored against the gamma-1.5 source by blurred OKLab MSE; ours is lower on all six fixtures (#142 table below).
+  - Per-pixel MSE is reported, not gated.
+- **Determinism.** Byte-identical on 1 and N threads, and across OSes as far as CI shows: platform `sin`/`powf` are kept out of the solver's input since #147.
+
+**Original E5 notes (the first run, #126–#136)**
 
 **Types**
 - **`metric`.**
