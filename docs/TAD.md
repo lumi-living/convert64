@@ -251,9 +251,11 @@ As built in E5 (2026-10-12): the bitmap solver (§3.1, §3.4–§3.5), in `conve
   - `hysteresis` off (0.97 is Dithertron's).
   - `luma_pair_bias` 0.
 - **Adjustments added for png2c64 parity.** `gamma` (identity) and `match_range` (off), with the "Auto levels" suggestion.
-- **Quality bar.**
-  - Both converters are scored against the gamma-1.5 source by blurred OKLab MSE; ours is lower on all six fixtures (#142 table below).
-  - Per-pixel MSE is reported, not gated.
+- **Ordered semantics (#156).** Default `OrderedSemantics::Png2c64`, png2c64's `apply_ordered_matrix` formula, with the chroma guard on and cells re-picked by what they render. E5's semantics remain as `Legacy` (`expected_legacy.png` reproduces the old portrait golden).
+- **Quality gate (#156).** A human review of `sheet-vs-png2c64.png`, not a number.
+  - Per-pixel and blurred OKLab MSE against the gamma-1.5 source are reported for every fixture.
+  - Both bars said we beat png2c64 while the eye said png2c64 won: per-pixel MSE rewards a flat wrong colour, and blurred MSE rewards a banded render whose regional averages are right.
+  - The sheet adds a gradient-domain error on lightness (differences of horizontal and vertical L gradients after a 1-px blur) for reading. With the png2c64 semantics, our ordered renders score about twice png2c64's on it on the test card (`bayer4` 1.37 vs 0.67). Ours carry more pattern energy: more bridging colours and stepped cell-wide bands in the colour ramps. Diffusion is level or lower (`fs` 1.18 vs 1.31).
 - **Determinism.** Byte-identical on 1 and N threads, and across OSes as far as CI shows: platform `sin`/`powf` are kept out of the solver's input since #147.
 
 **Original E5 notes (the first run, #126–#136)**
@@ -387,6 +389,31 @@ As built in #120 (2026-10-12): cell metrics for the set search (`solve::cellscor
 | `lineart` hi-res, none | 7.3 / 7.4 ms | 34.8 / 23.1 ms | 25.3 / 17.7 ms |
 
 As built in #150 (2026-10-12): `error_clamp`. The #116 comparison sheet showed Floyd–Steinberg and Sierra Lite smearing colour across the test card's saturated bands. An out-of-gamut colour, which no palette colour reaches, accumulated diffused error row after row, both in the unconstrained diffusion the set search uses and in the cell-clamped pass. Recipes now carry `error_clamp`, png2c64's per-channel limit on received error: default 0.1 (its default), 0 for off, `--error-clamp` on the CLI. It applies in every diffusion pass, Riemersma included.
+
+As built in #156 (2026-10-12): png2c64's ordered semantics, the chroma guard and rendered set search. The sheet, not a metric, judged this work.
+
+- **Semantics.** `OrderedSemantics::Png2c64` (the default) ports png2c64's `apply_ordered_matrix` exactly:
+  - `a` and `b` are the nearest and second-nearest colours of the cell set in the pixel's metric;
+  - `t = √dA / (√dA + √dB)`;
+  - the pixel shows `b` where `threshold < t × strength`.
+
+  `Legacy` keeps E5's pick and #142's mix levels (`mix_levels` and `smooth` only act there).
+- **Chroma guard** (`chroma_guard`, default on).
+  - A neutral pixel (OKLab chroma ≤ 0.02) only uses colours within 0.03 of grey, and its pair's mean chroma may exceed its own by at most 0.03.
+  - A tinted pixel only uses colours within about 53° of its hue (`cos ≥ 0.6`; greys always pass).
+  - Grey ramps render with greys only (`the_grey_ramp_has_no_chromatic_pixels`), and amber no longer mixes light red with green.
+- **Rendered set search.** Cells with png2c64-ordered pixels re-pick their sets for the finalists. The score is:
+  - each pixel's distance to the linear-light mix its pair shows (`t × strength`);
+  - plus 0.01 × the squared width of the OKLab-L bracket the set gives the pixel (½ more when unbracketed). Same-hue colours bracket chromatic pixels.
+
+  The short list holds the pixels' own guarded pairs over all allowed colours (png2c64's unconstrained choice), their lightness brackets, the squared-distance winner and the most wanted colours, six colours at most.
+  - Effects: ramps keep their intermediate greys (`no_grey_ramp_cell_skips_an_intermediate_grey`), and dark olive gets brown with black instead of a black background (#154: `a_two_level_pattern_does_not_turn_dark_olive_black`; `checker` on portrait is a brown/black checker).
+  - Cost: refinement skips cells that received no error, and the interactive fast path keeps the squared-distance sets. A full multicolor Bayer 4 solve is 14.8 ms with `parallel` and 98 ms single-threaded (local); it was 7.7 ms and about 55 ms before.
+- **Golden harness.** It uses png2c64's own baseline recipe (`checker` 0.7) and reports per-pixel and blurred MSE without gating; a human reviews the sheet (§6, CONTRIBUTING.md).
+- **Known differences on the sheet.**
+  - The dark end of our grey ramps is too bright. png2c64's `t` is a ratio of OKLab distances, which overstates a dark mix in linear light, and our sets offer dark grey where png2c64's offer brown or nothing.
+  - Colour ramps split into cell-wide bands where neighbouring cells pick different sets.
+  - The radial blob has a pale ring.
 
 ### 4.1 Image model (`convert64-core::model`)
 
