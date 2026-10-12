@@ -46,14 +46,20 @@ pub(crate) enum FormatArg {
     Art,
     /// A self-displaying PRG: `LOAD"…",8` then `RUN` shows the picture.
     Prg,
+    /// A raw set: `<name>.bitmap.bin`, `.screen.bin`, (multicolor) `.colour.bin` and
+    /// `.bg.bin`, and the `<name>.json` manifest, next to each other.
+    Raw,
 }
 
 impl FormatArg {
-    /// The format an output path's extension names.
+    /// The format an output path's extension names; `.json` is a raw set's manifest.
     pub(crate) fn from_path(path: &Path) -> Option<Self> {
         let ext = path.extension()?.to_str()?;
         if ext.eq_ignore_ascii_case("prg") {
             return Some(Self::Prg);
+        }
+        if ext.eq_ignore_ascii_case("json") {
+            return Some(Self::Raw);
         }
         BitmapFormat::from_extension(ext).map(|f| match f {
             BitmapFormat::Koala => Self::Kla,
@@ -66,7 +72,7 @@ impl FormatArg {
         match self {
             Self::Kla => Some(Mode::MulticolorBitmap),
             Self::Art => Some(Mode::HiresBitmap),
-            Self::Prg => None,
+            Self::Prg | Self::Raw => None,
         }
     }
 
@@ -75,8 +81,24 @@ impl FormatArg {
             Self::Kla => "kla",
             Self::Art => "art",
             Self::Prg => "prg",
+            Self::Raw => "raw",
         }
     }
+}
+
+/// The directory and set name a raw output path names: `build/title.json` and
+/// `build/title` are both the set `title` in `build/`.
+fn raw_name(path: &Path) -> Result<(PathBuf, String), Fail> {
+    let dir = path.parent().map(Path::to_owned).unwrap_or_default();
+    let name = if FormatArg::from_path(path) == Some(FormatArg::Raw) {
+        path.file_stem()
+    } else {
+        path.file_name()
+    }
+    .and_then(|n| n.to_str())
+    .filter(|n| !n.is_empty())
+    .ok_or_else(|| Fail::input(format!("{}: not a raw set name", path.display())))?;
+    Ok((dir, name.to_owned()))
 }
 
 /// Settings that override a project's own (or the defaults, for a PNG). Also the shape of
@@ -377,7 +399,7 @@ pub(crate) fn run(run: &mut Run, job: &ConvertJob<'_>) -> Result<u8, Fail> {
             .or_else(|| FormatArg::from_path(o))
             .ok_or_else(|| {
                 Fail::input(format!(
-                    "cannot tell the format of {}: use .kla, .art or .prg, or --format",
+                    "cannot tell the format of {}: use .kla, .art, .prg or .json (raw set), or --format",
                     o.display()
                 ))
             })?;
@@ -435,6 +457,23 @@ pub(crate) fn run(run: &mut Run, job: &ConvertJob<'_>) -> Result<u8, Fail> {
             FormatArg::Kla | FormatArg::Art => file.clone(),
             FormatArg::Prg => {
                 convert64_formats::prg::display_prg(bitmap, &file).map_err(Fail::input)?
+            }
+            FormatArg::Raw => {
+                let (dir, name) = raw_name(path)?;
+                let set = convert64_formats::raw::write(&sol.image, &name, session.palette())
+                    .map_err(Fail::input)?;
+                for (file, bytes) in &set {
+                    run.write(&dir.join(file), bytes)?;
+                }
+                written.push(json!({ "path": path.display().to_string(), "format": f.name() }));
+                run.say(format!(
+                    "{} -> {} ({}, {ms:.0} ms)",
+                    job.input.display(),
+                    dir.join(convert64_formats::raw::manifest_name(&name))
+                        .display(),
+                    f.name(),
+                ));
+                continue;
             }
         };
         run.write(path, &bytes)?;

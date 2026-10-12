@@ -43,6 +43,7 @@ The picture is solved once and written in each `-o`'s format, from its extension
 | `.kla`, `.koa` | `kla` | Koala Painter; multicolor only |
 | `.art`, `.aas` | `art` | Art Studio; hi-res only |
 | `.prg` | `prg` | A self-displaying PRG (`LOAD"…",8` then `RUN`) embedding the Koala or Art Studio file ([file-formats.md](file-formats.md#koala--art-studio-display-prg-convert64_formatsprgdisplay_prg)) |
+| `.json` | `raw` | A raw set ([file-formats.md](file-formats.md#raw-bitmap-set-convert64---format-raw)): `<name>.bitmap.bin`, `<name>.screen.bin`, and for multicolor `<name>.colour.bin` and `<name>.bg.bin`, plus the `<name>.json` manifest, next to each other. `-o build/title.json` and `--format raw -o build/title` both write the set `title` in `build/`. |
 
 For a PNG, a `.kla` or `.art` output also picks the mode when `--mode` is not given. An output that disagrees with the mode is an error (exit 2).
 
