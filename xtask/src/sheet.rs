@@ -249,6 +249,50 @@ fn blur(img: Vec<[f64; 3]>) -> Vec<[f64; 3]> {
     v
 }
 
+/// Gradient-domain error on lightness (#156): both images' OKLab L blurred by one
+/// pixel (`[1 2 1] / 4` per axis), then the mean squared difference of their
+/// horizontal and vertical gradients, × 1000. Bands and hard steps where the source is
+/// smooth show here even when the regional average (and so the blurred MSE) is right.
+/// For reading, not a bar.
+fn gradient_error(a: &[Rgb8], source: &[Rgb8]) -> f64 {
+    let l = |img: &[Rgb8]| -> Vec<f64> { linear(img).into_iter().map(|c| oklab(c)[0]).collect() };
+    let blur1 = |v: Vec<f64>| -> Vec<f64> {
+        let pass = |v: &[f64], horizontal: bool| -> Vec<f64> {
+            (0..320 * 200)
+                .map(|i| {
+                    let (x, y) = ((i % 320) as i64, (i / 320) as i64);
+                    let at = |dx: i64, dy: i64| {
+                        let (sx, sy) = ((x + dx).clamp(0, 319), (y + dy).clamp(0, 199));
+                        v[(sy * 320 + sx) as usize]
+                    };
+                    if horizontal {
+                        (at(-1, 0) + 2.0 * at(0, 0) + at(1, 0)) / 4.0
+                    } else {
+                        (at(0, -1) + 2.0 * at(0, 0) + at(0, 1)) / 4.0
+                    }
+                })
+                .collect()
+        };
+        pass(&pass(&v, true), false)
+    };
+    let (la, ls) = (blur1(l(a)), blur1(l(source)));
+    let mut total = 0.0;
+    for y in 0..200usize {
+        for x in 0..320usize {
+            let i = y * 320 + x;
+            if x + 1 < 320 {
+                let d = (la[i + 1] - la[i]) - (ls[i + 1] - ls[i]);
+                total += d * d;
+            }
+            if y + 1 < 200 {
+                let d = (la[i + 320] - la[i]) - (ls[i + 320] - ls[i]);
+                total += d * d;
+            }
+        }
+    }
+    1000.0 * total / (320.0 * 200.0)
+}
+
 /// Per-pixel and blurred OKLab MSE of `a` against `source`.
 fn mse(a: &[Rgb8], source: &[Rgb8]) -> (f64, f64) {
     let (la, ls) = (linear(a), linear(source));
@@ -325,10 +369,14 @@ fn versus(
             i64::from(x + TILE_W + GAP),
             i64::from(y + LABEL),
         );
-        let note = format!("mse {o:.4} | {t:.4}   blur {ob:.4} | {tb:.4}");
+        let (og, tg) = (
+            gradient_error(&to_rgb8(ours), source),
+            gradient_error(&to_rgb8(&theirs), source),
+        );
+        let note = format!("mse {o:.4}|{t:.4} blur {ob:.4}|{tb:.4} grad {og:.2}|{tg:.2}");
         font::draw(&mut img, x + 2, y + LABEL + TILE_H + 4, &note, 2, TEXT);
         lines.push(format!(
-            "| `{theirs_id}` | `{}` | {o:.4} | {t:.4} | {ob:.4} | {tb:.4} |",
+            "| `{theirs_id}` | `{}` | {o:.4} | {t:.4} | {ob:.4} | {tb:.4} | {og:.2} | {tg:.2} |",
             kind.id()
         ));
     }
@@ -403,9 +451,11 @@ pub(crate) fn run(
     let mut table = String::from(
         "<!-- Written by `cargo xtask dither-sheet`; do not edit by hand. -->\n\n\
          OKLab MSE of each render on the test card against the card with png2c64's \
-         preprocessing (gamma 1.5), per pixel and after the golden harness's blur.\n\n\
-         | png2c64 id | Convert64 id | MSE, Convert64 | MSE, png2c64 | blurred, Convert64 | blurred, png2c64 |\n\
-         |---|---|---|---|---|---|\n",
+         preprocessing (gamma 1.5), per pixel and after the golden harness's blur, and \
+         the gradient-domain error on lightness (× 1000; bands and hard steps where the \
+         source is smooth, #156). None of these is a bar: the sheet is (TAD §6).\n\n\
+         | png2c64 id | Convert64 id | MSE, Convert64 | MSE, png2c64 | blurred, Convert64 | blurred, png2c64 | gradient, Convert64 | gradient, png2c64 |\n\
+         |---|---|---|---|---|---|---|---|\n",
     );
     for l in &lines {
         table.push_str(l);

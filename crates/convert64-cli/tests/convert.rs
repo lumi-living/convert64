@@ -267,6 +267,8 @@ fn cell_metrics_from_the_command_line() {
         ["--cell-metric", "ssim"],
         ["--metric", "blur"],
         ["--metric", "cielab"],
+        ["--ordered-semantics", "legacy"],
+        ["--no-chroma-guard", "--strength=1"],
     ] {
         let r = convert(&[
             "convert",

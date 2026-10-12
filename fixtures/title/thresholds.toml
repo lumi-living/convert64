@@ -13,7 +13,9 @@ mse_vs_golden_max = 0.0002
 #
 # png2c64_blur_mse_vs_source: the png2c64 baseline's OKLab MSE against that source after
 # both are blurred in linear light (binomial, sigma about 1.4 display pixels), which is
-# what the eye sees of a dither pattern. The quality bar (#142): ours must not be worse.
+# what the eye sees of a dither pattern. Reported, and checked to still hold, but no
+# longer a bar (#156): a banded render with the right regional average scores well here
+# while looking worse. The gate is a human review of the side-by-side sheet (TAD §6).
 png2c64_blur_mse_vs_source = 0.002905
 
 # png2c64_mse_vs_source: the same per pixel, without the blur. Reported, and checked to

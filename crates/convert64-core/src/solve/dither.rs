@@ -457,6 +457,22 @@ pub fn pass(
                         };
                         match mixes[idx] {
                             Some(m) => m.pick(0.5 + (thr - 0.5) * (q.strength * q.adapt).min(1.0)),
+                            None if q.semantics == crate::layer::OrderedSemantics::Png2c64 => {
+                                let oklab = tables.colours(super::metric::Space::OkLab);
+                                let (shows, a, b, share) = ordered::png2c64_pick(
+                                    q.metric,
+                                    q.coords,
+                                    mix,
+                                    colours,
+                                    q.chroma_guard.then_some((q.oklab, oklab)),
+                                    thr,
+                                    q.strength * q.adapt,
+                                );
+                                let (la, lb) = (linear[a.as_usize()], linear[b.as_usize()]);
+                                aware_mix =
+                                    Some([0, 1, 2].map(|i| la[i] + share * (lb[i] - la[i])));
+                                shows
+                            }
                             None => ordered::ordered_pick(
                                 q.metric,
                                 q.coords,

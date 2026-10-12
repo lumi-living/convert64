@@ -219,6 +219,14 @@ impl Solver {
             let next: Vec<ColourSet> = (0..sets.len())
                 .map(|i| {
                     let cell = input.cell_at(i);
+                    // A cell that received no error re-picks what it already has
+                    // (and the rendered and blur/ssim re-picks are not cheap).
+                    let still = input
+                        .pixels_of(i)
+                        .all(|(x, y)| r.received[y * input.size.0 + x] == [0.0; 3]);
+                    if still && ctx.locked_set(cell).is_none() {
+                        return sets[i];
+                    }
                     ctx.locked_set(cell).unwrap_or_else(|| {
                         let pick = moved.pick_set(
                             t,
@@ -320,19 +328,23 @@ impl Solver {
                 .then(bg_key(a.bg).cmp(&bg_key(b.bg)))
         });
         found.truncate(usize::from(opts.finalists.max(1)));
-        // Cells scored by `blur` or `ssim` re-pick their sets for the finalists only
-        // (the background search stays on squared distances, #120).
-        if input
-            .cell_metric
-            .iter()
-            .any(|m| *m != crate::layer::CellMetric::Mse)
+        // Cells scored by `blur` or `ssim`, and cells of png2c64-ordered pixels (by what
+        // they render, #156), re-pick their sets for the finalists only (the
+        // background search stays on squared distances, #120).
+        // Not on the interactive fast path: the release's full solve does it.
+        if interactive.is_none()
+            && input
+                .cell_metric
+                .iter()
+                .zip(&input.rendered)
+                .any(|(m, r)| *m != crate::layer::CellMetric::Mse || *r)
         {
             for cand in &mut found {
                 let n = cand.sets.len();
                 let idx: Vec<usize> = (0..n).collect();
                 let repicked = crate::par::map(&idx, |&i| {
                     let cell = input.cell_at(i);
-                    if input.cell_metric[i] == crate::layer::CellMetric::Mse
+                    if (input.cell_metric[i] == crate::layer::CellMetric::Mse && !input.rendered[i])
                         || ctx.locked_set(cell).is_some()
                     {
                         cand.sets[i]
@@ -897,7 +909,9 @@ mod tests {
             crate::layer::FitMode::Adaptive,
         )
         .and_then(|r| r.with_mix_levels(mix_levels))
-        .unwrap();
+        .unwrap()
+        // These test E5's mix levels, which only the legacy semantics have (#156).
+        .with_ordered_semantics(crate::layer::OrderedSemantics::Legacy);
         let mut st = 11u32;
         let px: Vec<[f32; 4]> = (0..320 * 200)
             .map(|_| {
@@ -959,6 +973,38 @@ mod tests {
         let white: usize = white_counts(&sol).iter().map(|(n, c)| n * c).sum();
         let share = white as f32 / 64_000.0;
         assert!((share - 0.25).abs() < 0.02, "{share}");
+    }
+
+    #[test]
+    fn a_two_level_pattern_does_not_turn_dark_olive_black() {
+        // #154: portrait's background after gamma 1.5, with checker at 70 %, used to
+        // win with a black background and render flat black.
+        let olive = [0.0105f32, 0.0125, 0.0055, 1.0];
+        let mut l = Layer::new(
+            "olive",
+            Arc::new(SourceImage::from_linear(320, 200, vec![olive; 320 * 200]).unwrap()),
+        );
+        l.set_recipe(Recipe::with_method(DitherKind::Checker, 0.7).unwrap());
+        let mut c = Compositor::new(SuperGrid::new(Mode::MulticolorBitmap, 2).unwrap());
+        c.update(&[l], &[]);
+        let sol = Solver::new(&Palette::pepto_pal()).solve(
+            c.frame(),
+            &Steering::new(),
+            None,
+            &SolveOptions::default(),
+        );
+        let px = sol.image.to_indexed();
+        let black = px
+            .pixels()
+            .iter()
+            .filter(|&&p| p == ColourIndex::BLACK)
+            .count();
+        assert!(black * 10 < px.pixels().len() * 9, "{black} black pixels");
+        assert!(
+            px.pixels().contains(&ColourIndex::BROWN),
+            "no brown: {:?}",
+            sol.background
+        );
     }
 
     #[test]

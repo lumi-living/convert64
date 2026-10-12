@@ -5,7 +5,7 @@ use clap::ValueEnum;
 use convert64_cli::project::{Embed, PaletteSpec, ProjectFile, absolute};
 use convert64_cli::recipe::Session;
 use convert64_core::layer::{
-    CellMetric, DitherKind, Gamma, Metric, RangeMatch, suggest_range_match,
+    CellMetric, DitherKind, Gamma, Metric, OrderedSemantics, RangeMatch, suggest_range_match,
 };
 use convert64_core::mode::Mode;
 use convert64_core::solve::{Background, Solution};
@@ -160,6 +160,15 @@ pub(crate) struct Overrides {
     /// PAL-blend safe; 8 = off, the default).
     #[arg(long)]
     pub(crate) max_luma_diff: Option<u8>,
+    /// How ordered dithers pick colours: png2c64 (png2c64's formula, the default) or
+    /// legacy (E5's, with mix levels).
+    #[arg(long)]
+    pub(crate) ordered_semantics: Option<String>,
+    /// Let ordered mixes add chroma the source lacks (the chroma guard is on by
+    /// default).
+    #[arg(long)]
+    #[serde(default)]
+    pub(crate) no_chroma_guard: bool,
     /// Clamp diffused error to ± this per metric channel, 0–1 (png2c64 --error-clamp;
     /// 0 = off). Default 0.1.
     #[arg(long)]
@@ -211,6 +220,10 @@ impl Overrides {
             supersample: self.supersample.or(base.supersample),
             no_cell_clamp: self.no_cell_clamp || base.no_cell_clamp,
             max_luma_diff: self.max_luma_diff.or(base.max_luma_diff),
+            ordered_semantics: self
+                .ordered_semantics
+                .or_else(|| base.ordered_semantics.clone()),
+            no_chroma_guard: self.no_chroma_guard || base.no_chroma_guard,
             error_clamp: self.error_clamp.or(base.error_clamp),
             adaptive: self.adaptive.or(base.adaptive),
             hysteresis: self.hysteresis.or(base.hysteresis),
@@ -250,6 +263,13 @@ impl Overrides {
         }
         if let Some(v) = self.max_luma_diff {
             patch.push(("max_luma_diff", json!(v)));
+        }
+        if let Some(s) = &self.ordered_semantics {
+            named::<OrderedSemantics>("ordered semantics", s)?;
+            patch.push(("ordered_semantics", json!(s)));
+        }
+        if self.no_chroma_guard {
+            patch.push(("chroma_guard", json!(false)));
         }
         if let Some(v) = self.error_clamp {
             patch.push(("error_clamp", json!(v)));

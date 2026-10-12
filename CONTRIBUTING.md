@@ -31,7 +31,7 @@ Every file in the repository, test data included, must be MIT-compatible: no GPL
 
 - **`format::<fixture>`, bit-exact.** The fixture's png2c64 baseline is read and serialised again. The bytes are compared with `fixtures/<fixture>/expected_kla.snap` (or `expected_art.snap`). That file is an `insta` snapshot holding an annotated hex dump: one line per bitmap cell, one per Screen or Colour RAM row. A failure prints a diff naming the cell or row that changed.
 - **`prg::<fixture>`, bit-exact.** The display PRG `convert64-formats` builds from the baseline (the one `cargo xtask vice-check` runs in VICE) must be the same on every run and carry the baseline file verbatim. Its hex dump is `fixtures/<fixture>/expected_prg.snap`: the BASIC line and loader in rows of 16 bytes, then the embedded file.
-- **`solver::<fixture>`, perceptual.** The fixture's `source.png` gets png2c64's preprocessing (gamma 1.5), is composited at 4× and solved with the recipe closest to png2c64's baseline settings (Bayer 2×2 at 70 % for multicolor, no dither for `lineart`). The result is rendered through Pepto PAL and compared by mean squared OKLab distance with `fixtures/<fixture>/expected.png` (at most `mse_vs_golden_max`). It is also compared with the preprocessed source, box-filtered to the target grid, per pixel and after a blur in linear light. The blurred distance must not be worse than png2c64's own (`png2c64_blur_mse_vs_source` in `thresholds.toml`). The per-pixel one is reported only (#142). Each case prints a line you can paste into your PR:
+- **`solver::<fixture>`, perceptual.** The fixture's `source.png` gets png2c64's preprocessing (gamma 1.5), is composited at 4× and solved with png2c64's baseline settings (`checker` at 70 % for multicolor, no dither for `lineart`). The result is rendered through Pepto PAL and compared by mean squared OKLab distance with `fixtures/<fixture>/expected.png` (at most `mse_vs_golden_max`). It is also compared with the preprocessed source, box-filtered to the target grid, per pixel and after a blur in linear light. Both distances are reported next to png2c64's (`thresholds.toml`); neither is a bar (#156). Each case prints a line you can paste into your PR:
 
   ```
   portrait, multicolor-bitmap, mse_vs_golden=0.000000, mse_vs_png2c64=0.072101, mse_vs_source=0.033071, png2c64_vs_source=0.017110, blur_mse=0.001442, png2c64_blur_mse=0.014463
@@ -69,3 +69,12 @@ Byte layouts live in [`docs/reference/file-formats.md`](docs/reference/file-form
 ## Licence
 
 By contributing you agree your contribution is licensed under the MIT licence of this repository.
+
+## Solver changes: human review against png2c64
+
+Numbers have twice told us the solver beats png2c64 while the eye said the opposite (#142, #156). So no PR that changes solver output merges on numbers:
+
+1. Regenerate the previews with `cargo xtask dither-sheet --reason "..."` and commit them with the PR.
+2. Attach `docs/reference/dither-previews/convert64-sheets/sheet-vs-png2c64.png` to the PR description, with the scores under each pair (MSE, blurred MSE, gradient-domain error).
+3. The author (human or agent) writes an honest per-id verdict: better, equal or worse than png2c64, one line each.
+4. A human reviewer, not the authoring agent, looks at the sheet at full size and approves only if ours is at least as good as png2c64 on every shared id. Auto-merge stays off until then. The agent reports; it does not approve.

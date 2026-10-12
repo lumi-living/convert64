@@ -20,12 +20,12 @@
 //!   stay within `mse_vs_golden_max`) and with the preprocessed source, box-filtered to
 //!   the target grid: the picture both converters actually solved (#142). The png2c64
 //!   baseline is scored against the same source by the same code, per pixel and after
-//!   a blur that integrates dither patterns the way the eye does ([`blur_mse`]). The
-//!   quality bar is the blurred one: ours must not be worse than
-//!   `png2c64_blur_mse_vs_source`. Per-pixel MSE is reported but no longer a bar
-//!   (#142): against a colour the palette cannot reach it is lowest for a flat wrong
-//!   colour, so it rewards exactly the flat, washed-out areas the bar should catch.
-//!   `thresholds.toml` records both png2c64 values and the test checks they still hold. Each case prints `fixture, mode, mse_vs_golden,
+//!   a blur that integrates dither patterns the way the eye does ([`blur_mse`]). Neither
+//!   is a bar any more (#156): both said we beat png2c64 while the side-by-side sheet
+//!   showed png2c64 winning by eye (per-pixel MSE rewards flat wrong colours, blurred
+//!   MSE rewards banded areas with the right regional average). The gate is a human
+//!   review of `sheet-vs-png2c64.png` (CONTRIBUTING.md, TAD §6). `thresholds.toml`
+//!   records both png2c64 values and the test checks they still hold. Each case prints `fixture, mode, mse_vs_golden,
 //!   mse_vs_png2c64, mse_vs_source, png2c64_vs_source, blur_mse, png2c64_blur_mse` so
 //!   PRs can report the delta to png2c64 (`CLAUDE.md`).
 //!
@@ -194,12 +194,11 @@ fn check_prg(name: &str, format: BitmapFormat) {
 // Solver: perceptual.
 
 /// The recipe closest to the png2c64 baseline settings (`fixtures/README.md`):
-/// png2c64 ran `--dither checker --dither-strength 0.7` in OKLab-like error space for the
-/// multicolor fixtures, which is a 2 × 2 ordered pattern at 70 %, and `--dither none`
-/// for `lineart`.
+/// png2c64 ran `--dither checker --dither-strength 0.7` for the multicolor fixtures (our
+/// `checker` since #114) and `--dither none` for `lineart`.
 fn baseline_recipe(format: BitmapFormat) -> Recipe {
     match format {
-        BitmapFormat::Koala => Recipe::with_method(DitherKind::Bayer2, 0.7),
+        BitmapFormat::Koala => Recipe::with_method(DitherKind::Checker, 0.7),
         BitmapFormat::ArtStudio => Recipe::with_method(DitherKind::None, 0.0),
     }
     .expect("valid recipe")
@@ -247,7 +246,13 @@ fn solved_with(
     if let Some(s) = cache.lock().expect("cache").get(&key) {
         return Arc::clone(s);
     }
-    let path = fixture_dir(name).join("source.png");
+    // `card` is the dither-preview test card (`docs/reference/dither-previews/`).
+    let path = if name == "card" {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/reference/dither-previews/testcard.png")
+    } else {
+        fixture_dir(name).join("source.png")
+    };
     let img = image::open(&path)
         .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
         .to_rgba8();
@@ -493,6 +498,101 @@ mod cell_metrics {
     }
 }
 
+/// #156: png2c64's ordered semantics, the chroma guard and bridging colours, on the
+/// dither-preview test card, and E5's semantics kept reproducible.
+mod ordered_semantics {
+    use super::{
+        BitmapFormat, DitherKind, Gamma, Recipe, SolveOptions, check_variant, solved_with,
+    };
+    use convert64_core::ColourIndex;
+    use convert64_core::layer::OrderedSemantics;
+
+    /// The card's grey ramp (display rows 0–47: whole cells) solved with `kind`.
+    fn ramp(kind: DitherKind) -> std::sync::Arc<super::Solved> {
+        solved_with(
+            "card",
+            BitmapFormat::Koala,
+            &format!("card-{}", kind.id()),
+            Recipe::with_method(kind, 1.0).expect("recipe"),
+            &SolveOptions::default(),
+            Gamma::PNG2C64,
+        )
+    }
+
+    /// The greys from darkest to lightest.
+    const GREYS: [ColourIndex; 5] = [
+        ColourIndex::BLACK,
+        ColourIndex::DARK_GREY,
+        ColourIndex::MEDIUM_GREY,
+        ColourIndex::LIGHT_GREY,
+        ColourIndex::WHITE,
+    ];
+
+    #[test]
+    fn the_grey_ramp_has_no_chromatic_pixels() {
+        for kind in [
+            DitherKind::Bayer4,
+            DitherKind::Checker,
+            DitherKind::BlueNoise,
+        ] {
+            let s = ramp(kind);
+            for y in 0..48u16 {
+                for x in 0..160u16 {
+                    let c = s.output.pixel(x, y);
+                    assert!(GREYS.contains(&c), "{kind:?}: ({x}, {y}) is {c}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_grey_ramp_cell_skips_an_intermediate_grey() {
+        for kind in [
+            DitherKind::Bayer4,
+            DitherKind::Checker,
+            DitherKind::BlueNoise,
+        ] {
+            let s = ramp(kind);
+            for cy in 0..6u16 {
+                for cx in 0..40u16 {
+                    let mut used = [false; 5];
+                    for y in cy * 8..cy * 8 + 8 {
+                        for x in cx * 4..cx * 4 + 4 {
+                            let c = s.output.pixel(x, y);
+                            if let Some(k) = GREYS.iter().position(|g| *g == c) {
+                                used[k] = true;
+                            }
+                        }
+                    }
+                    let (lo, hi) = (
+                        used.iter().position(|u| *u).unwrap_or(0),
+                        used.iter().rposition(|u| *u).unwrap_or(0),
+                    );
+                    assert!(
+                        used[lo..=hi].iter().all(|u| *u),
+                        "{kind:?}: cell ({cx}, {cy}) uses {used:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// E5's semantics reproduce the portrait golden as it was before #156.
+    #[test]
+    fn legacy_semantics_reproduce_the_e5_portrait() {
+        let r = Recipe::with_method(DitherKind::Bayer2, 0.7)
+            .expect("recipe")
+            .with_ordered_semantics(OrderedSemantics::Legacy);
+        check_variant(
+            "portrait",
+            BitmapFormat::Koala,
+            "legacy",
+            r,
+            &SolveOptions::default(),
+        );
+    }
+}
+
 /// #142: mix levels, pre-smoothing and the gradient swatches.
 mod flat_areas {
     use super::{
@@ -503,7 +603,8 @@ mod flat_areas {
 
     /// The swatch band of `gradient` is the 16 Pepto colours, 10 multicolor pixels each:
     /// solved from the raw source (png2c64's gamma would move them off the palette),
-    /// every pixel of the cell rows wholly inside the band is its swatch's index.
+    /// every pixel of the cell rows wholly inside the band, away from the swatch edges,
+    /// is its swatch's index.
     #[test]
     fn gradient_swatches_quantise_exactly() {
         let s = solved_with(
@@ -515,7 +616,9 @@ mod flat_areas {
             Gamma::IDENTITY,
         );
         for y in 152..200 {
-            for x in 0..160 {
+            // The column on either side of a swatch edge blends through the resampler,
+            // and png2c64's ordered semantics (#156) dither a blend, as they should.
+            for x in (0..160).filter(|x| !matches!(x % 10, 0 | 9)) {
                 assert_eq!(
                     s.output.pixel(x, y),
                     ColourIndex::ALL[(x / 10) as usize],
@@ -525,12 +628,14 @@ mod flat_areas {
         }
     }
 
-    /// E5's continuous per-pixel ratio is still there as `mix_levels = 0`.
+    /// E5's continuous per-pixel ratio is still there as `mix_levels = 0` (legacy
+    /// semantics, #156).
     #[test]
     fn portrait_continuous_ratio() {
         let r = Recipe::with_method(DitherKind::Bayer2, 0.7)
             .and_then(|r| r.with_mix_levels(0))
-            .expect("recipe");
+            .expect("recipe")
+            .with_ordered_semantics(convert64_core::layer::OrderedSemantics::Legacy);
         check_variant(
             "portrait",
             BitmapFormat::Koala,
@@ -540,12 +645,13 @@ mod flat_areas {
         );
     }
 
-    /// Pre-smoothing of the mix ratio (off by default).
+    /// Pre-smoothing of the mix ratio (off by default; legacy semantics, #156).
     #[test]
     fn portrait_smoothed_ratio() {
         let r = Recipe::with_method(DitherKind::Bayer2, 0.7)
             .expect("recipe")
-            .with_smooth(true);
+            .with_smooth(true)
+            .with_ordered_semantics(convert64_core::layer::OrderedSemantics::Legacy);
         check_variant(
             "portrait",
             BitmapFormat::Koala,
@@ -892,11 +998,6 @@ fn check_solver(name: &str, format: BitmapFormat) {
         "{name}: png2c64 now scores {:.6} blurred against the source, thresholds.toml says \
          {blur_bar:.6}",
         s.png2c64_blur_mse
-    );
-    assert!(
-        s.blur_mse <= blur_bar,
-        "{name}, {mode}: blurred OKLab MSE vs source {:.6} is worse than png2c64's {blur_bar:.6}",
-        s.blur_mse
     );
     assert!(
         (s.png2c64_vs_source - bar).abs() <= bar * 0.01,

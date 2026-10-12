@@ -58,6 +58,8 @@ For a PNG, a `.kla` or `.art` output also picks the mode when `--mode` is not gi
 | `--cell-metric` | `recipe.cell_metric` | `mse`, `blur`, `ssim` |
 | `--no-cell-clamp` | `recipe.cell_clamp` | |
 | `--max-luma-diff` | `recipe.max_luma_diff` | 0–8 |
+| `--ordered-semantics` | `recipe.ordered_semantics` | `png2c64` (default), `legacy` |
+| `--no-chroma-guard` | `recipe.chroma_guard` | |
 | `--error-clamp` | `recipe.error_clamp` | 0–1 |
 | `--adaptive` | `recipe.adaptive` | 0–1 |
 | `--mix-levels` | `recipe.mix_levels` | 0–16 |
@@ -129,7 +131,7 @@ max-clashes = 20
 skip = true
 ```
 
-Every table takes `convert`'s options in kebab-case (`mode`, `palette`, `dither`, `strength`, `metric`, `cell-metric`, `no-cell-clamp`, `max-luma-diff`, `error-clamp`, `adaptive`, `mix-levels`, `smooth`, `gamma`, `match-range`, `bg`, `hysteresis`, `supersample`), plus `outputs` (`kla`, `art`, `prg`, `png`, `raw`), `max-clashes`, `zoom` (PNG previews) and `skip`. Unknown keys are errors. A file's table wins over `[defaults]`; options on the command line win over both.
+Every table takes `convert`'s options in kebab-case (`mode`, `palette`, `dither`, `strength`, `metric`, `cell-metric`, `no-cell-clamp`, `max-luma-diff`, `ordered-semantics`, `no-chroma-guard`, `error-clamp`, `adaptive`, `mix-levels`, `smooth`, `gamma`, `match-range`, `bg`, `hysteresis`, `supersample`), plus `outputs` (`kla`, `art`, `prg`, `png`, `raw`), `max-clashes`, `zoom` (PNG previews) and `skip`. Unknown keys are errors. A file's table wins over `[defaults]`; options on the command line win over both.
 
 Files convert independently: one failure does not stop the others. The exit code is the worst file's (3, then 2, then 1). JSON fields: `dir`, `manifest`, `out`, `converted`, `failed`, `skipped` (`input`, `reason`) and `files`, one `convert` report per file with its `input`.
 

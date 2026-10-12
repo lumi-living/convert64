@@ -129,7 +129,11 @@ fn see_cell(
                 return Seen::Solid(prev[idx]);
             }
             let q = &input.px[idx];
-            if q.weight <= 0.0 || q.mix_levels == 0 || !q.kind.family().is_threshold() {
+            if q.weight <= 0.0
+                || q.mix_levels == 0
+                || q.semantics != crate::layer::OrderedSemantics::Legacy
+                || !q.kind.family().is_threshold()
+            {
                 return Seen::Skip;
             }
             let colours = tables.colours(q.metric.space());
@@ -287,10 +291,11 @@ pub(crate) fn plan(
 ) -> Vec<Option<Mix>> {
     let (w, h) = input.size;
     let (cx, cy) = input.cells;
-    let wants = input
-        .px
-        .iter()
-        .any(|q| q.mix_levels > 0 && q.kind.family().is_threshold());
+    let wants = input.px.iter().any(|q| {
+        q.mix_levels > 0
+            && q.semantics == crate::layer::OrderedSemantics::Legacy
+            && q.kind.family().is_threshold()
+    });
     if !wants {
         return vec![None; w * h];
     }
