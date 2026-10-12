@@ -19,11 +19,11 @@ Every command exits with one of these:
 
 | Field | Meaning |
 |---|---|
-| `command` | `convert`, `validate`, `apply`, `commands`, `recipe apply`, `recipe commands`, or `usage` for a command line that could not be parsed |
+| `command` | `convert`, `validate`, `batch`, `export`, `apply`, `commands`, `recipe apply`, `recipe commands`, or `usage` for a command line that could not be parsed |
 | `ok` | `exit_code == 0` |
 | `exit_code` | As above |
 | `error` | The error message, or `null` |
-| `timing_ms` | `total`, plus each phase the command ran: `load`, `apply`, `solve`, `write`, `validate` |
+| `timing_ms` | `total`, plus each phase the command ran: `load`, `apply`, `solve`, `write`, `validate`, `convert` (batch) |
 | `files_written` | Every file written, in order, as given on the command line |
 
 followed by the command's own fields.
@@ -89,10 +89,59 @@ build/title.kla: art/title.convert64 art/title.png
 ## `validate`
 
 ```sh
-convert64 validate <file> [--format kla|art]
+convert64 validate <file> [--format kla|art|prg|project|raw]
 ```
 
-Checks a picture against [vic-ii-constraints.md](vic-ii-constraints.md) §6 and prints `legal` (exit 0) or every violation (exit 1). JSON fields: `file`, `format`, `mode`, `legal`, `violations` (`rule`, `location`, `message`).
+Checks a file against [vic-ii-constraints.md](vic-ii-constraints.md) §6 and prints `legal` (exit 0) or every violation (exit 1). Every format convert64 reads:
+
+| Format | How it is checked |
+|---|---|
+| Koala (`.kla`, `.koa`), Art Studio (`.art`, `.aas`) | Read, then the picture and its load address validated |
+| Display PRG (`.prg`) | Its header and loader must be the ones `convert64` writes, byte for byte (exit 2 otherwise); the embedded Koala or Art Studio file is then validated |
+| Raw set (its `.json` manifest) | The manifest read, every block file beside it checked for size (rule 6) and the picture validated |
+| Project (`.convert64`, or a version-1 recipe `.json`) | Loaded, solved, and the solved picture validated; `clashes` is reported |
+
+The format comes from `--format`, else the extension (a `.json` whose `format` is `convert64-raw-bitmap` is a raw set, any other a recipe), else the size of a picture file. JSON fields: `file`, `format`, `mode`, `legal`, `violations` (`rule`, `location`, `message`), and `clashes` for a project.
+
+## `batch`
+
+```sh
+convert64 batch <dir> [--manifest batch.toml] [--out build/] [-j N] [convert options]
+```
+
+Converts every PNG and `.convert64` project in `dir` (not its subdirectories), plus any file the manifest names, `N` at a time (default: one per CPU). A PNG with a project of the same name next to it is skipped, because the project usually links it. Outputs are `<out>/<name>.<format>`.
+
+The manifest is TOML; `dir/batch.toml` is used when `--manifest` is not given and it exists:
+
+```toml
+out = "build"                 # relative to the manifest; default: dir
+
+[defaults]                    # every file
+dither = "bayer4"
+outputs = ["kla", "prg"]      # default: the mode's picture format (kla or art)
+
+[files."title.png"]           # one file, relative to dir
+mode = "hires"
+strength = 0.8
+max-clashes = 20
+
+[files."draft.png"]
+skip = true
+```
+
+Every table takes `convert`'s options in kebab-case (`mode`, `palette`, `dither`, `strength`, `metric`, `cell-metric`, `no-cell-clamp`, `max-luma-diff`, `error-clamp`, `adaptive`, `mix-levels`, `smooth`, `gamma`, `match-range`, `bg`, `hysteresis`, `supersample`), plus `outputs` (`kla`, `art`, `prg`, `png`, `raw`), `max-clashes`, `zoom` (PNG previews) and `skip`. Unknown keys are errors. A file's table wins over `[defaults]`; options on the command line win over both.
+
+Files convert independently: one failure does not stop the others. The exit code is the worst file's (3, then 2, then 1). JSON fields: `dir`, `manifest`, `out`, `converted`, `failed`, `skipped` (`input`, `reason`) and `files`, one `convert` report per file with its `input`.
+
+## `export`
+
+```sh
+convert64 export <project.convert64 | dir> --asm kickass|acme|64tass|ca65|c|all[,…] --out <dir> [--data include-raw|include-picture|bytes] [--name N] [--max-clashes N] [convert options]
+```
+
+Solves the project, or every `.convert64` in the directory, and writes for each target the source `convert64-formats` emits ([file-formats.md](file-formats.md), "Assembler source we emit"): `<name>.asm` (KickAssembler), `<name>.a` (ACME), `<name>.tas` (64tass), `<name>.s` (ca65) or `<name>.h` (C header), with the binaries it includes. `--data include-raw` (the default) includes the raw set's `.bin` files, `include-picture` the `.kla`/`.art` file, `bytes` writes the data into the source. `<name>` is the project's file name unless `--name` gives one (a single project only). Options override the projects' settings, as in `convert`.
+
+One command exports a whole directory to every assembler: `convert64 export art --asm all --out build`. The exit code is the worst project's. JSON fields: `input`, `assemblers`, `projects` (one report per project: `input`, `mode`, `sources` (`assembler`, `path`), the solve fields of `convert`, `files_written`).
 
 ## `apply`
 
