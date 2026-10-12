@@ -169,7 +169,8 @@ impl Solver {
             (SolveMode::Interactive { dirty }, Some(_)) => Some(dirty),
             _ => None,
         };
-        let input = Input::new_for(frame, &self.tables, opts.input, only);
+        let mut input = Input::new_for(frame, &self.tables, opts.input, only);
+        input.pair_bias = opts.luma_pair_bias;
         self.solve_input(&input, steering, previous, opts)
     }
 
@@ -494,6 +495,9 @@ mod tests {
             (Mode::MulticolorBitmap, DitherKind::Bayer4),
             (Mode::HiresBitmap, DitherKind::Atkinson),
             (Mode::HiresBitmap, DitherKind::BlueNoise),
+            (Mode::MulticolorBitmap, DitherKind::Yliluoma2),
+            (Mode::MulticolorBitmap, DitherKind::Pair),
+            (Mode::HiresBitmap, DitherKind::Riemersma),
         ] {
             let mut f = frame(mode, kind);
             if kind == DitherKind::BlueNoise {

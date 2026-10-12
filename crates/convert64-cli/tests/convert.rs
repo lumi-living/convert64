@@ -223,12 +223,22 @@ const DIFFUSION_IDS: &[&str] = &[
     "riemersma",
 ];
 
+/// Every palette-aware id of `docs/reference/dither-methods.md` §4.
+const AWARE_IDS: &[&str] = &[
+    "yliluoma1",
+    "yliluoma2",
+    "yliluoma3",
+    "knoll",
+    "luma",
+    "pair",
+];
+
 #[test]
 fn convert_accepts_every_method_id_of_the_reference() {
     let dir = temp("convert-ids");
     let png = source(&dir);
     let out = dir.join("id.kla");
-    for id in THRESHOLD_IDS.iter().chain(DIFFUSION_IDS) {
+    for id in THRESHOLD_IDS.iter().chain(DIFFUSION_IDS).chain(AWARE_IDS) {
         let r = convert(&[
             "convert",
             png.to_str().unwrap(),

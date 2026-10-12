@@ -337,9 +337,13 @@ fn variant_result(
         return (s, Err(e));
     };
     let mse = oklab_mse(&rendered, &golden);
-    let source = oklab_mse(&rendered, &reference(&s.frame));
+    let reference = reference(&s.frame);
+    let source = oklab_mse(&rendered, &reference);
+    let blurred = blur_mse(&rendered, &reference);
     let threshold = thresholds(name).mse_vs_golden_max(mode_name(format));
-    println!("{name}/{variant}, mse_vs_golden={mse:.6}, mse_vs_source={source:.6}");
+    println!(
+        "{name}/{variant}, mse_vs_golden={mse:.6}, mse_vs_source={source:.6}, blur_mse={blurred:.6}"
+    );
     let result = if mse <= threshold {
         Ok(())
     } else {
@@ -401,6 +405,64 @@ mod methods {
             })
             .collect();
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+}
+
+/// #115: the palette-aware methods on `portrait` from png2c64's preprocessed source, at
+/// png2c64's strength (0.7), next to Ostromoukhov and checker for comparison. The
+/// harness prints each one's per-pixel and blurred OKLab MSE against the source.
+mod aware {
+    use super::{BitmapFormat, DitherKind, Recipe, SolveOptions, check_variant};
+
+    fn portrait(kind: DitherKind, variant: &str) {
+        let r = Recipe::with_method(kind, 0.7).expect("recipe");
+        check_variant(
+            "portrait",
+            BitmapFormat::Koala,
+            variant,
+            r,
+            &SolveOptions::default(),
+        );
+    }
+
+    #[test]
+    fn portrait_yliluoma1() {
+        portrait(DitherKind::Yliluoma1, "yliluoma1");
+    }
+
+    #[test]
+    fn portrait_yliluoma2() {
+        portrait(DitherKind::Yliluoma2, "yliluoma2");
+    }
+
+    #[test]
+    fn portrait_yliluoma3() {
+        portrait(DitherKind::Yliluoma3, "yliluoma3");
+    }
+
+    #[test]
+    fn portrait_knoll() {
+        portrait(DitherKind::Knoll, "knoll");
+    }
+
+    #[test]
+    fn portrait_luma() {
+        portrait(DitherKind::Luma, "luma");
+    }
+
+    #[test]
+    fn portrait_pair() {
+        portrait(DitherKind::Pair, "pair");
+    }
+
+    #[test]
+    fn portrait_ostromoukhov() {
+        portrait(DitherKind::Ostromoukhov, "ostromoukhov");
+    }
+
+    #[test]
+    fn portrait_checker() {
+        portrait(DitherKind::Checker, "checker");
     }
 }
 

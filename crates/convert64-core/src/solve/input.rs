@@ -95,6 +95,8 @@ pub struct Input {
     pub(crate) intended: Vec<(AttrSource, ColourSet)>,
     /// The custom threshold matrices the pixels' recipes use (see `Px::custom`).
     pub(crate) customs: Vec<CustomMatrix>,
+    /// The solve's signed same-luma pair bias (`pair` dithering reads it).
+    pub(crate) pair_bias: f32,
 }
 
 /// How much more a Force pixel counts than an Adaptive one in the cell-set search
@@ -221,6 +223,7 @@ impl Input {
             allowed,
             intended,
             customs,
+            pair_bias: 0.0,
         }
     }
 
@@ -259,6 +262,7 @@ impl Input {
             allowed: self.allowed.clone(),
             intended: self.intended.clone(),
             customs: self.customs.clone(),
+            pair_bias: self.pair_bias,
         }
     }
 
@@ -383,13 +387,22 @@ fn search_colours(px: &mut [Px], colour: &[[f32; 3]], customs: &[CustomMatrix], 
     crate::par::for_each(&mut rows, |(y, row)| {
         for (x, q) in row.iter_mut().enumerate() {
             let s = q.strength * q.adapt;
-            if !q.kind.family().is_threshold() || s <= 0.0 || q.weight <= 0.0 {
+            let family = q.kind.family();
+            let positional =
+                family.is_threshold() || family == crate::layer::DitherFamily::PaletteAware;
+            if !positional || s <= 0.0 || q.weight <= 0.0 {
                 q.search = q.coords;
                 continue;
             }
             let (xi, yi) = (x as i64, *y as i64);
+            // Palette-aware methods are placed by Bayer 8.
+            let kind = if family.is_threshold() {
+                q.kind
+            } else {
+                DitherKind::Bayer8
+            };
             let thr = match q.custom {
-                0 => super::ordered::threshold(q.kind, q.orientation, xi, yi)
+                0 => super::ordered::threshold(kind, q.orientation, xi, yi)
                     .expect("threshold methods have thresholds"),
                 c => super::ordered::custom_threshold(
                     &customs[usize::from(c) - 1],

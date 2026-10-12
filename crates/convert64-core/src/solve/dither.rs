@@ -306,6 +306,10 @@ pub fn pass(
     };
     // Stable mix levels of ordered pixels (#142), planned cell by cell up front.
     let mixes = super::mix::plan(input, tables, &full, locked);
+    let linear: [[f32; 3]; 16] = ColourIndex::ALL.map(|c| {
+        let l = tables.palette().linear(c);
+        [l.r, l.g, l.b]
+    });
     let mut out = vec![ColourIndex::BLACK; w * h];
     let mut received = vec![[0.0f32; 3]; w * h];
     let mut error = 0.0f32;
@@ -407,21 +411,40 @@ pub fn pass(
             } else {
                 set
             };
+            let origin = match q.source {
+                crate::composite::AttrSource::Layer(l) => {
+                    layer_origins.get(usize::from(l)).copied().unwrap_or((0, 0))
+                }
+                _ => (0, 0),
+            };
+            let (px, py) = ordered::pattern_position(x as i64, y as i64, q.phase, origin);
+            // What a palette-aware pixel's pattern averages to (linear RGB).
+            let mut aware_mix = None;
             let choice = if q.weight <= 0.0 {
                 // Uncovered: the background where there is one, else the nearest.
                 bg.filter(|b| set.contains(b))
                     .unwrap_or_else(|| ordered::nearest(q.metric, q.coords, set, colours))
             } else {
                 match family {
-                    f if f.is_threshold() => {
-                        let origin = match q.source {
-                            crate::composite::AttrSource::Layer(l) => {
-                                layer_origins.get(usize::from(l)).copied().unwrap_or((0, 0))
-                            }
-                            _ => (0, 0),
+                    DitherFamily::PaletteAware => {
+                        let thr = ordered::threshold(DitherKind::Bayer8, q.orientation, px, py)
+                            .expect("Bayer 8 has thresholds");
+                        let ctx = super::aware::Ctx {
+                            set: mix,
+                            colours,
+                            linear: &linear,
+                            oklab: tables.colours(super::metric::Space::OkLab),
+                            thr: 0.5 + (thr - 0.5) * (q.strength * q.adapt).min(1.0),
+                            x,
+                            y,
+                            wide: input.has_background(),
+                            pair_bias: input.pair_bias,
                         };
-                        let (px, py) =
-                            ordered::pattern_position(x as i64, y as i64, q.phase, origin);
+                        let (c, m) = super::aware::pick(q, &ctx);
+                        aware_mix = Some(m);
+                        c
+                    }
+                    f if f.is_threshold() => {
                         let thr = match q.custom {
                             0 => ordered::threshold(q.kind, q.orientation, px, py)
                                 .expect("threshold methods have thresholds"),
@@ -470,9 +493,14 @@ pub fn pass(
             out[idx] = choice;
             let d = q.weight * q.metric.distance(q.coords, colours[choice.as_usize()]);
             error += d;
-            seen += match mixes[idx] {
-                Some(m) => q.weight * m.error,
-                None => d,
+            seen += match (mixes[idx], aware_mix) {
+                (Some(m), _) => q.weight * m.error,
+                (None, Some(m)) => {
+                    q.weight
+                        * q.metric
+                            .distance(q.coords, q.metric.coords(m.map(|v| v.max(0.0))))
+                }
+                (None, None) => d,
             };
             // Diffuse.
             let Some(k) = kernel(q.kind) else { continue };

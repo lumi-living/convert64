@@ -315,6 +315,20 @@ As built in #114, part 2 (2026-10-12): the diffusion kernels of §3.
 - **Riemersma** walks a Hilbert curve over the target before the raster walk. It keeps Riemersma's 16-sample history (weights `16^(i/15)` over 16, each sample the pixel's error against its own colour) and is clamped at cells like the others. Riemersma pixels neither send error to the raster walk nor receive it.
 - **Diffusion-aware set search.** As png2c64 does with its global Floyd–Steinberg pass, a diffusion pixel is searched as the colour an unconstrained diffusion of the whole frame (all 16 colours, its own kernel) gives it. A cell then keeps the colours its dither mixes; before, a cell in a ramp kept only its nearest colour and the diffused error had nowhere to go. Refinement still re-picks from colour plus received error.
 
+As built in #115 (2026-10-12): the palette-aware methods of §4 (`solve::aware`), 58 kinds in all (6 palette-aware).
+
+- **All six are positional.** They are placed by Bayer 8 with phase, orientation and strength (thresholds pulled towards ½; strength 0 is nearest-in-set) and searched with the dither-aware lightness nudge. They mix in linear RGB and score in the pixel's metric.
+- **Algorithms.**
+  - `yliluoma1`: the best pair and ratio in 1/64 steps (the linear projection and its two neighbouring steps), with Yliluoma's 0.1 spread penalty.
+  - `yliluoma2`: a 16-entry running-average candidate list.
+  - `yliluoma3`: Knoll's error-accumulating list in linear light.
+  - `knoll`: the same list in the metric's space, error × 0.75.
+
+  Lists are sorted by luminance and indexed by the threshold.
+- **`luma`** mixes the nearest colour with the set colour on the other side of the pixel's OKLab L that is closest to it in hue. The ratio is taken on luminance, so there is no colour speckle.
+- **`pair`** takes the two set colours whose even mix is nearest. A same-luma pair scores `pair_bias − 0.002` lower (the solve's signed bias). The pair is used only if it beats the nearest colour alone, and below strength ½ the nearest colour is kept. The weave alternates by scanline on multicolor (PAL's delay line blends successive lines) and is a checker on hi-res.
+- **Ranking.** Finalists are ranked by the colour each pattern averages to, like mix levels.
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.
