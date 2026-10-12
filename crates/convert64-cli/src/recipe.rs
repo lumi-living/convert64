@@ -5,6 +5,9 @@
 //! gives the same result through every front-end. JSON and file paths live here, not in
 //! `convert64-core`, which does no I/O.
 //!
+//! A [`Session`] also opens and saves `.convert64` project files ([`crate::project`],
+//! ADR-009); a recipe file is read as a project whose commands run after loading.
+//!
 //! ```json
 //! {
 //!   "version": 1,
@@ -20,6 +23,10 @@
 //! }
 //! ```
 
+use crate::project::{
+    self, Embed, LayerEntry, MaskSpec, PaletteSpec, ProjectFile, RegionEntry, SCHEMA_VERSION,
+    SourceSpec, SteeringSpec,
+};
 use convert64_core::command::{
     CellAllow, CellClear, CellDeny, CellLock, CellPin, Command, Dirty, LayerViaMask, MaskClear,
     MaskFill, MaskFromAlpha, MaskGradient, MaskKey, MaskLoad, MaskSetModifier, MaskStroke,
@@ -27,11 +34,12 @@ use convert64_core::command::{
 };
 use convert64_core::geom::Vec2;
 use convert64_core::layer::{Adjustments, Blend, Layer, Recipe, SourceImage, Transform};
-use convert64_core::mask::{Combine, Gradient, Key, MaskRaster, PaintMode};
+use convert64_core::mask::{Combine, Gradient, Key, Mask, MaskRaster, PaintMode};
 use convert64_core::mode::Mode;
 use convert64_core::palette::linear_to_srgb8;
+use convert64_core::region::{self, Region};
 use convert64_core::solve::{Solution, SolveMode, SolveOptions, Solver};
-use convert64_core::{Compositor, Editor, Project, SuperGrid};
+use convert64_core::{Compositor, Editor, Palette, Project, SuperGrid};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -103,8 +111,9 @@ pub struct RecipeFile {
     pub solve: SolveSpec,
 }
 
-/// Solve settings in a recipe file (the per-pixel knobs live in each layer's recipe).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Solve settings in a recipe or project file (the per-pixel knobs live in each layer's
+/// recipe).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SolveSpec {
     /// Background: `auto` (default) or `{"fixed": n}`.
@@ -116,6 +125,61 @@ pub struct SolveSpec {
     /// Same-luma pair bias per pair (positive penalises, negative rewards).
     #[serde(default)]
     pub luma_pair_bias: f32,
+    /// Refinement rounds, 0–2.
+    #[serde(default = "default_refinements")]
+    pub refinements: u8,
+    /// Backgrounds carried from the search into dithering, at least 1.
+    #[serde(default = "default_finalists")]
+    pub finalists: u8,
+}
+
+fn default_refinements() -> u8 {
+    SolveOptions::default().refinements
+}
+
+fn default_finalists() -> u8 {
+    SolveOptions::default().finalists
+}
+
+impl Default for SolveSpec {
+    fn default() -> Self {
+        Self {
+            background: convert64_core::solve::Background::default(),
+            hysteresis: None,
+            luma_pair_bias: 0.0,
+            refinements: default_refinements(),
+            finalists: default_finalists(),
+        }
+    }
+}
+
+impl SolveSpec {
+    /// Checks the values a solve cannot take.
+    pub fn check(&self) -> Result<(), RecipeError> {
+        if let Some(h) = self.hysteresis
+            && !(h > 0.0 && h <= 1.0)
+        {
+            return Err(invalid(format!(
+                "solve: hysteresis must be in (0, 1], got {h}"
+            )));
+        }
+        if !self.luma_pair_bias.is_finite() {
+            return Err(invalid("solve: luma_pair_bias must be finite"));
+        }
+        if self.refinements > 2 {
+            return Err(invalid(format!(
+                "solve: refinements must be 0–2, got {}",
+                self.refinements
+            )));
+        }
+        if self.finalists == 0 || self.finalists > 16 {
+            return Err(invalid(format!(
+                "solve: finalists must be 1–16, got {}",
+                self.finalists
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// A command as JSON: `{"command": "<name>", ...arguments}`. Names are the core
@@ -275,27 +339,37 @@ fn save(path: &Path, img: &image::DynamicImage) -> Result<(), RecipeError> {
         .map_err(|e| RecipeError::Io(path.to_owned(), e.to_string()))
 }
 
-/// A recipe being edited: the project, its history and the compositor.
+/// Where a layer's pixels came from, so a saved project can link or embed them.
+#[derive(Clone, Debug)]
+enum Origin {
+    /// A file (absolute path) and its bytes as loaded.
+    Linked(PathBuf, Arc<Vec<u8>>),
+    /// Bytes embedded in the project file.
+    Embedded(Arc<Vec<u8>>),
+}
+
+/// A project or recipe being edited: the project, its history, the compositor and the
+/// solver.
 pub struct Session {
     editor: Editor,
     compositor: Compositor,
     base: PathBuf,
+    palette_spec: PaletteSpec,
+    palette: Palette,
     solver: Solver,
     last: Option<Solution>,
     spec: SolveSpec,
+    origins: Vec<(Arc<SourceImage>, Origin)>,
     /// Cells changed since the last solve (from the compositor's dirty-cell API).
     dirty: convert64_core::CellSet,
 }
 
 impl Session {
-    /// Loads a recipe file's layers and runs its commands.
+    /// Loads a project file, or a version-1 recipe file, and runs its commands.
     pub fn open(path: &Path) -> Result<Self, RecipeError> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| RecipeError::Io(path.to_owned(), e.to_string()))?;
-        let file: RecipeFile =
-            serde_json::from_str(&text).map_err(|e| RecipeError::Json(e.to_string()))?;
+        let file = ProjectFile::read(path)?;
         let base = path.parent().map(Path::to_owned).unwrap_or_default();
-        Self::from_file(file, &base)
+        Self::from_project(file, &base)
     }
 
     /// Builds a session from a parsed recipe, resolving paths against `base`.
@@ -306,38 +380,113 @@ impl Session {
                 file.version
             )));
         }
+        Self::from_project(ProjectFile::from_recipe(file), base)
+    }
+
+    /// Builds a session from a parsed project, resolving paths against `base`, and runs
+    /// its commands.
+    pub fn from_project(file: ProjectFile, base: &Path) -> Result<Self, RecipeError> {
+        if file.schema_version != SCHEMA_VERSION {
+            return Err(invalid(format!(
+                "project schema_version {} is not supported (this build reads {SCHEMA_VERSION})",
+                file.schema_version
+            )));
+        }
         let grid = SuperGrid::new(file.target, file.supersample).map_err(invalid)?;
-        let mut sources: Vec<(PathBuf, Arc<SourceImage>)> = Vec::new();
-        let mut layers = Vec::with_capacity(file.layers.len());
-        for spec in file.layers {
-            let path = base.join(&spec.source);
-            let src = match sources.iter().find(|(p, _)| *p == path) {
-                Some((_, s)) => Arc::clone(s),
-                None => {
-                    let s = Arc::new(load_source(&path)?);
-                    sources.push((path, Arc::clone(&s)));
+        file.solve.check()?;
+        let palette_spec = match file.palette {
+            PaletteSpec::Vpl(p) => PaletteSpec::Vpl(project::absolute(&base.join(p))),
+            p => p,
+        };
+        let palette = palette_spec.resolve(base)?;
+        let mut origins: Vec<(Arc<SourceImage>, Origin)> = Vec::new();
+        let mut layers: Vec<Layer> = Vec::with_capacity(file.layers.len());
+        for (i, entry) in file.layers.into_iter().enumerate() {
+            let what = format!("layer {i} ({:?})", entry.name);
+            let src = match entry.source {
+                SourceSpec::Path(p) | SourceSpec::Linked(project::Linked { path: p }) => {
+                    let path = project::absolute(&base.join(p));
+                    let known = origins.iter().find_map(|(s, o)| match o {
+                        Origin::Linked(q, _) if *q == path => Some(Arc::clone(s)),
+                        _ => None,
+                    });
+                    if let Some(s) = known {
+                        s
+                    } else {
+                        let bytes = std::fs::read(&path)
+                            .map_err(|e| RecipeError::Io(path.clone(), e.to_string()))?;
+                        let s =
+                            Arc::new(project::decode_source(&bytes, &path.display().to_string())?);
+                        origins.push((Arc::clone(&s), Origin::Linked(path, Arc::new(bytes))));
+                        s
+                    }
+                }
+                SourceSpec::Embedded(e) => {
+                    let bytes = crate::base64::decode(&e.png_base64)
+                        .map_err(|e| invalid(format!("{what}: {e}")))?;
+                    let s = Arc::new(project::decode_source(&bytes, &what)?);
+                    origins.push((Arc::clone(&s), Origin::Embedded(Arc::new(bytes))));
                     s
                 }
+                SourceSpec::Shared(project::Shared { layer }) => layers
+                    .get(layer)
+                    .map(|l| Arc::clone(l.source()))
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "{what}: shares the pixels of layer {layer}, which is not below it"
+                        ))
+                    })?,
             };
-            let mut layer = Layer::new(spec.name, src);
-            layer.set_transform(spec.transform);
-            layer.set_opacity(spec.opacity).map_err(invalid)?;
-            layer.set_blend(spec.blend);
-            layer.set_recipe(spec.recipe);
-            layer.set_adjustments(spec.adjustments);
+            let size = src.size();
+            let mut layer = Layer::new(entry.name, src);
+            layer.set_transform(entry.transform);
+            layer
+                .set_opacity(entry.opacity)
+                .map_err(|e| invalid(format!("{what}: {e}")))?;
+            layer.set_blend(entry.blend);
+            layer.set_visible(entry.visible);
+            layer.set_recipe(entry.recipe);
+            layer.set_adjustments(entry.adjustments);
+            if let Some(m) = entry.mask {
+                let raster = project::load_raster(&m.raster, base, size, &format!("{what} mask"))?;
+                let mut mask = Mask::new(raster);
+                mask.set_sources(m.sources);
+                mask.set_modifiers(m.modifiers);
+                layer
+                    .set_mask(Some(mask))
+                    .map_err(|e| invalid(format!("{what}: {e}")))?;
+            }
             layers.push(layer);
         }
+        let mut regions = Vec::with_capacity(file.regions.len());
+        for (i, r) in file.regions.into_iter().enumerate() {
+            let what = format!("region {i} ({:?})", r.name);
+            let raster = project::load_raster(
+                &r.mask,
+                base,
+                (region::CANVAS_WIDTH, region::CANVAS_HEIGHT),
+                &format!("{what} mask"),
+            )?;
+            regions.push(
+                Region::new(r.name, raster, r.recipe)
+                    .map_err(|e| invalid(format!("{what}: {e}")))?,
+            );
+        }
+        let steering = file.steering.to_steering()?;
         let mut session = Self {
             editor: Editor::new(Project {
                 layers,
-                regions: Vec::new(),
-                steering: Default::default(),
+                regions,
+                steering,
             }),
             compositor: Compositor::new(grid),
             base: base.to_owned(),
-            solver: Solver::new(&convert64_core::Palette::default()),
+            solver: Solver::new(&palette),
+            palette_spec,
+            palette,
             last: None,
-            spec: file.solve.clone(),
+            spec: file.solve,
+            origins,
             dirty: convert64_core::CellSet::all(),
         };
         for (i, cmd) in file.commands.into_iter().enumerate() {
@@ -346,6 +495,106 @@ impl Session {
                 .map_err(|e| invalid(format!("command {i}: {e}")))?;
         }
         Ok(session)
+    }
+
+    /// The project as a project file whose paths are relative to `dir`, the directory
+    /// it will be saved in. Commands run so far are part of the layers, masks and
+    /// steering it holds; it lists no commands.
+    pub fn to_project_file(&self, dir: &Path, embed: Embed) -> Result<ProjectFile, RecipeError> {
+        let p = self.project();
+        let mut layers = Vec::with_capacity(p.layers.len());
+        for (i, l) in p.layers.iter().enumerate() {
+            let shared = p.layers[..i]
+                .iter()
+                .position(|k| Arc::ptr_eq(k.source(), l.source()));
+            let origin = self
+                .origins
+                .iter()
+                .find(|(s, _)| Arc::ptr_eq(s, l.source()))
+                .map(|(_, o)| o);
+            let embedded = |bytes: &[u8]| {
+                SourceSpec::Embedded(project::Embedded {
+                    png_base64: crate::base64::encode(bytes),
+                })
+            };
+            let source = match (shared, origin, embed) {
+                (Some(layer), _, _) => SourceSpec::Shared(project::Shared { layer }),
+                (None, Some(Origin::Linked(path, _)), Embed::Keep | Embed::None) => {
+                    SourceSpec::Linked(project::Linked {
+                        path: project::relative(dir, path),
+                    })
+                }
+                (None, _, Embed::None) => {
+                    return Err(invalid(format!(
+                        "layer {i} ({:?}) has no source file to link; save it embedded",
+                        l.name()
+                    )));
+                }
+                (None, Some(Origin::Linked(_, bytes) | Origin::Embedded(bytes)), _) => {
+                    embedded(bytes)
+                }
+                (None, None, _) => embedded(&project::encode_source(l.source())),
+            };
+            layers.push(LayerEntry {
+                name: l.name().to_owned(),
+                source,
+                visible: l.visible(),
+                transform: l.transform(),
+                opacity: l.opacity(),
+                blend: l.blend(),
+                recipe: *l.recipe(),
+                adjustments: l.adjustments().clone(),
+                mask: l.mask().map(|m| MaskSpec {
+                    raster: project::raster_spec(m.raster()),
+                    sources: m.sources().to_vec(),
+                    modifiers: m.modifiers(),
+                }),
+            });
+        }
+        Ok(ProjectFile {
+            schema_version: SCHEMA_VERSION,
+            target: self.target(),
+            supersample: self.compositor.grid().n(),
+            palette: match &self.palette_spec {
+                PaletteSpec::Vpl(path) => PaletteSpec::Vpl(project::relative(dir, path)),
+                other => other.clone(),
+            },
+            layers,
+            regions: p
+                .regions
+                .iter()
+                .map(|r| RegionEntry {
+                    name: r.name().to_owned(),
+                    mask: project::raster_spec(r.mask()),
+                    recipe: *r.recipe(),
+                })
+                .collect(),
+            steering: SteeringSpec::from_steering(&p.steering),
+            solve: self.spec.clone(),
+            commands: Vec::new(),
+        })
+    }
+
+    /// Saves the project to `path` (see [`Self::to_project_file`]).
+    pub fn save(&self, path: &Path, embed: Embed) -> Result<(), RecipeError> {
+        let dir = path.parent().map(Path::to_owned).unwrap_or_default();
+        let text = self.to_project_file(&dir, embed)?.to_json();
+        std::fs::write(path, text).map_err(|e| RecipeError::Io(path.to_owned(), e.to_string()))
+    }
+
+    /// The target mode.
+    pub fn target(&self) -> Mode {
+        self.compositor.grid().target()
+    }
+
+    /// The palette the picture is solved and previewed with.
+    pub const fn palette(&self) -> &Palette {
+        &self.palette
+    }
+
+    /// The solve settings.
+    pub const fn solve_spec(&self) -> &SolveSpec {
+        &self.spec
     }
 
     /// The project.
@@ -371,8 +620,14 @@ impl Session {
         }
     }
 
-    /// The core command for a JSON command (reading any file it names).
+    /// The core command for a JSON command (reading any file it names, relative to the
+    /// project or recipe file).
     pub fn to_command(&self, cmd: JsonCommand) -> Result<Command, RecipeError> {
+        self.to_command_at(cmd, &self.base)
+    }
+
+    /// The core command for a JSON command, reading any file it names relative to `base`.
+    pub fn to_command_at(&self, cmd: JsonCommand, base: &Path) -> Result<Command, RecipeError> {
         Ok(match cmd {
             JsonCommand::MaskStroke {
                 layer,
@@ -426,7 +681,7 @@ impl Session {
             }
             JsonCommand::MaskLoad { layer, path } => Command::MaskLoad(MaskLoad {
                 layer: self.resolve(&layer)?,
-                raster: load_mask(&self.base.join(path))?,
+                raster: load_mask(&base.join(path))?,
             }),
             JsonCommand::MaskClear { layer, value } => Command::MaskClear(MaskClear {
                 layer: self.resolve(&layer)?,
@@ -458,6 +713,13 @@ impl Session {
         self.editor.execute(c).map_err(invalid)
     }
 
+    /// Runs one JSON command whose file paths are relative to `base` (a commands file's
+    /// directory, or the working directory for a command given on the command line).
+    pub fn run_at(&mut self, cmd: JsonCommand, base: &Path) -> Result<Dirty, RecipeError> {
+        let c = self.to_command_at(cmd, base)?;
+        self.editor.execute(c).map_err(invalid)
+    }
+
     fn composite(&mut self) {
         let p = self.editor.project();
         let changed = self.compositor.update(&p.layers, &p.regions);
@@ -479,6 +741,8 @@ impl Session {
             background: self.spec.background,
             hysteresis: self.spec.hysteresis,
             luma_pair_bias: self.spec.luma_pair_bias,
+            refinements: self.spec.refinements,
+            finalists: self.spec.finalists,
             layer_origins: convert64_core::solve::dither::layer_origins(
                 self.compositor.grid(),
                 &p.layers,

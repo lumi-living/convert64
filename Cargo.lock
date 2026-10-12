@@ -737,6 +737,7 @@ dependencies = [
  "image",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
@@ -757,6 +758,10 @@ name = "convert64-formats"
 version = "0.0.0"
 dependencies = [
  "convert64-core",
+ "image",
+ "insta",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

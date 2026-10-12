@@ -4,27 +4,62 @@ Byte layouts Convert64 reads and writes. Offsets are decimal unless prefixed `$`
 
 ## Bitmap pictures
 
+Koala and Art Studio share one shape: a two-byte load address, then the 8000 bitmap bytes, then Screen RAM, then (Koala only) Colour RAM and the background. Bitmap bytes are in VIC-II order, one 8-byte cell after another along each row (`offset = cell_row × 320 + cell_col × 8 + pixel_row`), bit 7 leftmost ([vic-ii-constraints.md §2](vic-ii-constraints.md)). Screen and Colour RAM are 1000 bytes, one per cell, row by row (`cell_row × 40 + cell_col`). "In memory" is where each block lands when the file is loaded at its conventional address; a viewer copies Screen and Colour RAM from there to the addresses it displays from.
+
 ### Koala Painter (`.kla`, `.koa`) — multicolor bitmap
 ```
-Offset  Size  Content
-0       2     Load address $6000 ($00 $60)
-2       8000  Bitmap
-8002    1000  Screen RAM   (per cell: high nybble = bit pair 01, low nybble = 10)
-9002    1000  Colour RAM   (per cell: low nybble = bit pair 11)
-10002   1     Background colour (bit pair 00)
-Total   10003
+Offset         Size  In memory at $6000   Content
+0     $0000    2     —                    Load address, little-endian: $00 $60 = $6000
+2     $0002    8000  $6000–$7F3F          Bitmap: 2 bits per pixel, 4 pixels per byte
+8002  $1F42    1000  $7F40–$8327          Screen RAM: high nybble = bit pair 01, low nybble = bit pair 10
+9002  $232A    1000  $8328–$870F          Colour RAM: low nybble = bit pair 11
+10002 $2712    1     $8710                Background colour ($D021) = bit pair 00
+Total          10003
 ```
 
 ### Art Studio (`.art`, `.aas`) — hi-res bitmap
 ```
-0       2     Load address $2000
-2       8000  Bitmap
-8002    1000  Screen RAM (high nybble = bit 1 colour, low nybble = bit 0 colour)
-Total   9002
+Offset         Size  In memory at $2000   Content
+0     $0000    2     —                    Load address, little-endian: $00 $20 = $2000
+2     $0002    8000  $2000–$3F3F          Bitmap: 1 bit per pixel, 8 pixels per byte
+8002  $1F42    1000  $3F40–$4327          Screen RAM: high nybble = colour of set bits (1), low nybble = clear bits (0)
+[9002 $232A    7     $4328–$432E          Padding, in some files]
+Total          9002 (9009 padded)
 ```
-Some files carry 7 trailing padding bytes (9009 total); readers should accept both.
 
-`convert64-formats` reads both formats (`BitmapFormat::read`) and writes them (`BitmapFormat::write`, `BitmapFile::to_bytes`): Koala at load address `$6000`, Art Studio at `$2000` without padding. Every committed fixture baseline round-trips byte for byte.
+**As read** (`BitmapFormat::read`, `read_koala`, `read_art_studio`):
+- The format comes from the extension, case-insensitively and with or without a dot (`kla`/`koa` Koala, `art`/`aas` Art Studio: `BitmapFormat::from_extension`), or from the size alone, which no two formats share (`BitmapFormat::from_size`).
+- The size must be exactly 10003 (Koala) or 9002 or 9009 (Art Studio). Anything else is refused as rule 6 with a message that says whether the file is truncated or oversized and by how much, e.g. `Koala files are 10003 bytes; this one is 10002 (truncated: 1 byte short)`.
+- Any load address is accepted and kept (`BitmapFile::load_address`): Koala at `$6000` and Art Studio at `$2000` are the conventions, and the layout after the header does not depend on the address, so a file saved elsewhere reads the same. The round-trip tests use both `$6000` and `$2000` for both formats.
+- Koala Colour RAM keeps only its low nybble, as the hardware does: memory dumps of `$D800` carry random high bits. A background byte above `$0F` is refused (rule 2).
+- Art Studio's seven padding bytes are ignored, whatever they hold.
+
+**As written** (`BitmapFormat::write`, `BitmapFile::to_bytes`):
+- `BitmapFormat::write` writes the format's conventional load address (`$6000` Koala, `$2000` Art Studio); `BitmapFile::to_bytes` writes the file's own `load_address`, so a file read at another address writes back unchanged.
+- Koala: 10003 bytes. Colour RAM bytes have clear high nybbles.
+- Art Studio: 9002 bytes, never padded.
+- Each format refuses a picture of the other mode (`WriteError`) rather than writing a file a viewer would misread.
+
+**Bit pairs** (`BitmapFormat::write_with(image, BitpairPolicy)`, `convert64_formats::bitpairs`, #124). Which of a cell's colours sits on which bit pattern is free: multicolor bit pairs `01` (Screen RAM high nybble), `10` (low nybble) and `11` (Colour RAM) can be permuted, and a hi-res cell's two colours can swap nybbles (its bitmap bits inverted). `write` keeps the image's own assignment; `write_with` first reassigns every cell, rewriting Screen RAM, Colour RAM and the bitmap together, so the file shows exactly the same picture:
+
+| Policy (id) | Assignment |
+|---|---|
+| `Stable` (`stable`, the default) | as png2prg: each colour keeps the slot it had in the cell to the left, else the cell above, else the slot it has used most so far, else the first free one. Unused slots repeat the left (else above) neighbour's value. |
+| `Frequency` (`frequency`) | per cell, most used colour first (ties: lower index) on `01`, `10`, `11` (hi-res: bit 0, then 1); unused slots black. |
+| `BruteForcePacked` (`packed`) | `Stable`, then two passes trying every assignment of every cell (unused slots: a neighbour's value or black), keeping the one an adaptive order-1 model of Screen and Colour RAM codes shortest; the result is kept only if the size estimate below is smaller than `Stable`'s. |
+
+The size estimate (`bitpairs::packed_size_estimate`) is the length of Screen RAM followed by Colour RAM compressed as one fixed-Huffman DEFLATE block after a greedy LZ77 parse (`bitpairs::deflate_fixed_size`), computed without a compression crate. On the six png2c64 baselines, in bytes (`crates/convert64-formats/tests/bitpairs.rs` asserts `Stable` < `Frequency` and `packed` ≤ `Stable`; `tests/snapshots/bitpairs__bitpair_policies.snap` holds each file's fingerprint):
+
+| Fixture | as png2c64 wrote it | `stable` | `frequency` | `packed` |
+|---|---|---|---|---|
+| portrait | 374 | 313 | 460 | 308 |
+| terrain | 591 | 430 | 891 | 408 |
+| title | 565 | 384 | 713 | 356 |
+| gradient | 259 | 222 | 312 | 222 |
+| photo | 960 | 864 | 1327 | 852 |
+| lineart | 420 | 471 | 481 | 460 |
+
+Round trips, tested in `crates/convert64-formats/tests/bitmap_roundtrip.rs` (#158): every fixture solved in both modes writes, reads back as the same `BitmapImage` under each extension and at both load addresses, and validates; every committed png2c64 baseline reads and writes back byte for byte.
 
 ### Advanced Art Studio (`.ocp`, `.mpic`) — multicolor bitmap
 ```
@@ -48,14 +83,58 @@ Total   9006
 ```
 
 ### Raw bitmap set (Convert64 `--format raw`)
-Separate files with no headers, plus a small manifest:
+Separate files with no headers, plus a JSON manifest (`convert64_formats::raw`):
 ```
-<name>.bitmap.bin   8000 bytes
-<name>.screen.bin   1000 bytes
-<name>.colour.bin   1000 bytes   (multicolor only)
-<name>.bg.bin       1 byte       (multicolor only)
-<name>.json         mode, palette preset, suggested load addresses
+File                Size   Suggested address   Content
+<name>.bitmap.bin   8000   $6000               Bitmap, VIC-II cell order (as in Koala/Art Studio)
+<name>.screen.bin   1000   $5C00               Screen RAM (nybbles as in Koala/Art Studio)
+<name>.colour.bin   1000   $D800               Colour RAM, high nybbles clear   (multicolor only)
+<name>.bg.bin       1      — ($D021)           Background colour 0–15           (multicolor only)
+<name>.json         —      —                   Manifest
 ```
+The block files concatenated in this order are a Koala (multicolor) or Art Studio (hi-res) file without its two-byte load address. The suggested addresses are VIC bank 1, the layout the display PRG uses: `$DD00` bits 0–1 = `%10`, `$D018` = `$78`.
+
+The manifest, as written for a hi-res set called `line` (pretty-printed with two-space indents, LF line endings, a trailing newline; a multicolor set lists four files):
+```json
+{
+  "format": "convert64-raw-bitmap",
+  "version": 1,
+  "mode": "hires-bitmap",
+  "palette": {
+    "name": "Pepto (PAL)",
+    "rgb": ["#000000", "#FFFFFF", "…14 more, index order"]
+  },
+  "files": [
+    { "block": "bitmap", "file": "line.bitmap.bin", "size": 8000, "load_address": "$6000" },
+    { "block": "screen", "file": "line.screen.bin", "size": 1000, "load_address": "$5C00" }
+  ]
+}
+```
+
+| Field | Value |
+|---|---|
+| `format` | always `convert64-raw-bitmap` |
+| `version` | `1`; a reader refuses versions newer than it knows |
+| `mode` | `multicolor-bitmap` or `hires-bitmap` |
+| `palette.name` | the palette preset the picture was solved and previewed with |
+| `palette.rgb` | its 16 colours in index order, `#RRGGBB` (uppercase when written; either case read) |
+| `files[]` | one per block, in the order `bitmap`, `screen`, then `colour`, `background` for multicolor |
+| `files[].file` | the file name, next to the manifest; a name with a directory is refused |
+| `files[].size` | 8000, 1000, 1000, 1 |
+| `files[].load_address` | the suggested address as `$XXXX`; absent for `background`, which is the `$D021` value |
+
+Unknown fields are refused. Reading (`raw::read`, `raw::read_files`) checks the format, the version, that the files are exactly the mode's blocks, every size in the manifest and on disk (rule 6) and the background (rule 2), and keeps only the low nybble of Colour RAM bytes. Every fixture, solved in both modes, round-trips through a raw set to the identical `BitmapImage` (`crates/convert64-formats/tests/raw_roundtrip.rs`, #159).
+
+### PNG preview (`convert64_formats::png`)
+Not a C64 file: a picture of what the VIC-II shows, for people and diffs.
+```
+Size        320·zoom × 200·zoom pixels, zoom 1–8, both modes
+Pixels      8-bit RGB (PNG colour type 2), no alpha, no gamma or colour-profile chunks
+Colours     exactly the 16 RGB values of the palette object passed in (the solve's own)
+Aspect      multicolor: each logical pixel 2·zoom wide, zoom tall; hi-res: zoom × zoom
+Scaling     pixel repetition only; never filtered or resampled
+```
+`png::preview(&BitmapImage, &Palette, zoom)` and `png::preview_indexed(&IndexedBitmap, …)` return the PNG bytes; `png::rgb` returns the raw pixels. The PNG is RGB, not indexed: the `image` crate cannot write a palette PNG and TAD §4 allows no other PNG crate. The output is byte-stable for a given `image` version (its default encoder settings, no metadata). At 1× every png2c64 baseline's preview equals png2c64's own `baseline.png` pixel for pixel, and every solve's equals the golden harness's rendering (`crates/convert64-formats/tests/png_preview.rs`, #160).
 
 ### FLI (`.fli`, raw layout as used by retropixels/Convert64)
 ```
@@ -211,6 +290,21 @@ Copy routine address: `$0874` (Koala), `$085C` (Art Studio). Zero page `$FB`–`
 
 **Why these destinations.** The payload occupies `$0900`–`$3012` at most. Bank 1 puts the bitmap at `$6000` and Screen RAM at `$5C00`, both above the payload, so the copies never overlap their source and a plain forward copy is safe; bank 1 also has no character-ROM shadow. The file's own load address (`$6000` Koala, `$2000` Art Studio) is ignored: the loader always copies. Whole pages are copied, so the bytes past each block land in memory the VIC-II does not show (`$7F40`–`$7FFF` after the bitmap, `$5FE8`–`$5FFF` after Screen RAM, `$DBE8`–`$DBFF` after Colour RAM).
 
+### VICE acceptance (`cargo xtask vice-check`)
+
+Every C64 file Convert64 exports is run in VICE `x64sc` through the display PRG above: PAL, the Pepto palette at neutral colour settings, no CRT filter (the exact options are in each fixture README). The capture's 320 × 200 window must agree with the picture on at least 99.5 % of pixels, with no cell showing a colour its own cell does not use. VICE is not on the CI runners, so this runs locally; checked with **VICE 3.10** (#162):
+
+| Export | Checked on | Result recorded in |
+|---|---|---|
+| Koala / Art Studio files as png2c64 wrote them (`BitmapFormat::read`, then the display PRG) | the six fixture baselines | fixture README; capture committed as `fixtures/<name>/vice.png` |
+| Koala / Art Studio as Convert64 writes them (`BitmapFormat::write`) | every fixture solved in both modes (12 solves) | fixture README, with a fingerprint of the solve |
+| the same written with each bitpair policy (`write_with`: `stable`, `frequency`, `packed`) | the 12 solves | fixture README |
+| the raw bitmap set (`raw::write`, read back with `raw::read_files`, the `.bin` files concatenated as a picture body) | the 12 solves | fixture README |
+| assembler and C sources (`asm::emit`) | not run in VICE: their data equals `write`'s byte for byte (`crates/convert64-formats/tests/asm_emit.rs`), which is | — |
+| PNG preview (`png::preview`) | not a C64 file | — |
+
+The captures of the solves go to `target/xtask/vice/exports/` and are not committed, since they follow the solver. Rerun `cargo xtask vice-check` after a change to a writer, the PRG stub or the solver; `--skip-baselines` and `--skip-exports` run one half.
+
 ## Assembler source we emit
 
 Every export can be written as source for the four common cross-assemblers. The data is identical; only directives differ.
@@ -227,6 +321,25 @@ Emitted labels follow `lowercase_with_underscores`; constants `UPPERCASE_WITH_UN
 .function spritePtr(addr) { .return (addr - (addr & $c000)) / 64 }
 ```
 C header exports emit `static const unsigned char name[] = { ... };` with a size constant.
+
+### Bitmap pictures (`convert64_formats::asm::emit`)
+
+`emit(Assembler, &BitmapImage, &EmitOptions)` returns `Vec<(PathBuf, Vec<u8>)>`: the source file first, then any file it includes. Paths are bare file names.
+
+| Target (`Assembler`, id) | Source file | Program counter | Label definition | Constant |
+|---|---|---|---|---|
+| KickAssembler (`kickass`) | `<name>.asm` | `* = $6000 "<name>"` | `name_bitmap:` | `.const NAME_BITMAP_SIZE = 8000` |
+| ACME (`acme`) | `<name>.a` | `* = $6000` | `name_bitmap` | `NAME_BITMAP_SIZE = 8000` |
+| 64tass (`64tass`) | `<name>.tas` | `* = $6000` | `name_bitmap` | `NAME_BITMAP_SIZE = 8000` |
+| ca65 (`ca65`) | `<name>.s` | `.segment "NAME"` | `name_bitmap:` | `NAME_BITMAP_SIZE = 8000` |
+| C header (`c`) | `<name>.h` | — | `static const unsigned char name_bitmap[NAME_BITMAP_SIZE]` | `#define NAME_BITMAP_SIZE 8000` |
+
+- **Data and addresses.** The data is the picture file's body in its own order, at the format's load address: Koala `bitmap` `$6000`, `screen` `$7F40`, `colour` `$8328`, `background` `$8710`; Art Studio `bitmap` `$2000`, `screen` `$3F40`. Assembling the source therefore gives the bytes `BitmapFormat::write` writes after its load address, and KickAssembler, ACME (`-f cbm`) and 64tass, which write a load address in front, produce the `.kla` / `.art` file itself. `EmitOptions::load_address` moves the data; ca65 leaves placement to the linker (the header comment shows a matching `ld65` config).
+- **Names.** `EmitOptions::name` is the file stem. Labels are it lowercased with every character other than an ASCII letter or digit turned into `_` (prefixed `pic_` if it starts with a digit): `<name>_bitmap`, `<name>_screen`, `<name>_colour`, `<name>_background`. Constants are the same uppercased: `<NAME>_LOAD_ADDRESS`, `<NAME>_<BLOCK>_SIZE` per block, `<NAME>_BACKGROUND_COLOUR` (multicolor). The ca65 segment is `<NAME>`, the C include guard `<NAME>_H`.
+- **Data styles** (`DataStyle`). `Bytes`: byte lines, 16 bytes per line, lowercase hex (`$0b`, or `0x0b` in C). `IncludeRaw`: one binary include per block of the [raw bitmap set](#raw-bitmap-set-convert64---format-raw) (`<name>.bitmap.bin`, …), which are returned with the source. `IncludePicture`: one include of `<name>.kla` / `<name>.art` that skips its load address, the other labels defined as offsets from `<name>_bitmap`; the picture file is returned with the source. A C header always holds the bytes, since C has no standard binary include.
+- **Header comment.** Name, mode and layout, then the address and size of each block, then how to assemble.
+
+Tests (`crates/convert64-formats/tests/asm_emit.rs`, #161): every target and data style on every fixture baseline yields the binary writer's bytes (read back by a small parser of the emitted directives); golden text snapshots of each target (`tests/snapshots/asm_emit__*.snap`); where ACME, 64tass, ca65/ld65, KickAssembler (`KICKASS_JAR`) or a C compiler (`cc`) is installed, the real tool's output is compared too, otherwise skipped.
 
 ---
 *Layouts cross-checked against retropixels' documented writers, the Koala/Art Studio/Doodle conventions used by VICE and common viewers, and community documentation of SpritePad/CharPad project files. Corrections welcome with a VICE or hardware screenshot.*

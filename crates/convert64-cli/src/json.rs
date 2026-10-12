@@ -1,17 +1,9 @@
-//! `--json` output, serialised with `serde_json`.
+//! `validate`'s fields in the `--json` report, serialised with `serde_json`.
 
-use crate::{Finding, Report};
+use crate::report::Run;
+use crate::validate::{Finding, Report};
 use convert64_core::Location;
 use serde::Serialize;
-
-#[derive(Serialize)]
-struct JsonReport<'a> {
-    file: &'a str,
-    format: &'static str,
-    mode: Option<&'static str>,
-    legal: bool,
-    violations: Vec<JsonFinding<'a>>,
-}
 
 #[derive(Serialize)]
 struct JsonFinding<'a> {
@@ -29,26 +21,24 @@ enum JsonLocation {
     At(Location),
 }
 
-/// The whole report as pretty-printed JSON.
-pub(crate) fn report(r: &Report) -> String {
-    let json = JsonReport {
-        file: &r.file,
-        format: r.format.name(),
-        mode: r.mode,
-        legal: r.findings.is_empty(),
-        violations: r
-            .findings
-            .iter()
-            .map(|f: &Finding| JsonFinding {
-                rule: f.rule,
-                location: f
-                    .location
-                    .map_or(JsonLocation::File { kind: "file" }, JsonLocation::At),
-                message: &f.message,
-            })
-            .collect(),
-    };
-    serde_json::to_string_pretty(&json).unwrap_or_else(|e| unreachable!("plain data: {e}"))
+/// Sets `file`, `format`, `mode`, `legal` and `violations`.
+pub(crate) fn set_report(run: &mut Run, r: &Report) {
+    run.set("file", &r.file);
+    run.set("format", &r.format);
+    run.set("mode", r.mode);
+    run.set("legal", r.findings.is_empty());
+    let violations: Vec<_> = r
+        .findings
+        .iter()
+        .map(|f: &Finding| JsonFinding {
+            rule: f.rule,
+            location: f
+                .location
+                .map_or(JsonLocation::File { kind: "file" }, JsonLocation::At),
+            message: &f.message,
+        })
+        .collect();
+    run.set("violations", violations);
 }
 
 #[cfg(test)]
