@@ -828,7 +828,14 @@ mod tests {
                 "g",
                 Arc::new(SourceImage::from_linear(320, 200, px.clone()).unwrap()),
             );
-            layer.set_recipe(Recipe::with_method(kind, 1.0).unwrap());
+            // Unclamped: black and white are ±0.5 L from the grey, past the 0.1 clamp,
+            // which trades this accuracy for stability on out-of-gamut colours.
+            layer.set_recipe(
+                Recipe::with_method(kind, 1.0)
+                    .unwrap()
+                    .with_error_clamp(0.0)
+                    .unwrap(),
+            );
             let mut c = Compositor::new(SuperGrid::new(Mode::HiresBitmap, 1).unwrap());
             c.update(&[layer], &[]);
             let t = MetricTables::new(&Palette::pepto_pal());
