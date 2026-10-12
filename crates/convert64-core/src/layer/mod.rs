@@ -5,6 +5,7 @@
 
 pub mod adjust;
 pub mod recipe;
+pub mod snap;
 
 pub use adjust::{
     AdjustCache, AdjustError, AdjustPlan, Adjustments, BrightnessContrast, Curve, Curves, Gamma,
@@ -14,6 +15,7 @@ pub use recipe::{
     CellMetric, CustomMatrix, DitherFamily, DitherKind, FitMode, Method, Metric, OrderedSemantics,
     Orientation, PatternPhase, Recipe, RecipeError,
 };
+pub use snap::{Snap, snap_transform};
 
 use crate::geom::Vec2;
 use crate::mask::{Mask, MaskError};
@@ -208,6 +210,10 @@ struct TransformData {
     #[serde(default = "unit_scale")]
     scale: Vec2,
     #[serde(default)]
+    rotate: f32,
+    #[serde(default = "centre")]
+    anchor: Vec2,
+    #[serde(default)]
     flip_h: bool,
     #[serde(default)]
     flip_v: bool,
@@ -217,15 +223,80 @@ const fn unit_scale() -> Vec2 {
     Vec2::ONE
 }
 
-/// Where a layer sits on the canvas: `canvas = translate + scale ⊙ flip(layer)`, in
-/// square canvas pixels (`geom` module docs). Flips mirror within the layer's own box
-/// before scaling. No rotation: the transform stays axis-aligned, which keeps
-/// resampling separable.
+const fn centre() -> Vec2 {
+    Transform::CENTRE
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+fn is_centre(v: &Vec2) -> bool {
+    *v == Transform::CENTRE
+}
+
+/// `(sin, cos)` of `deg` degrees with basic IEEE operations only (no platform `sin`), so
+/// a rotated layer composites the same on every OS (as `composite::resample`'s
+/// `sin_pi`): the angle is reduced to `|r| ≤ 45°` around a multiple of 90° and the
+/// series summed in f64. A multiple of 90° is exact (`sin 90° = 1`, `cos 90° = 0`).
+fn sin_cos_deg(deg: f32) -> (f64, f64) {
+    let d = f64::from(deg).rem_euclid(360.0);
+    let k = (d / 90.0).round();
+    let r = (d - 90.0 * k).to_radians();
+    let r2 = r * r;
+    // Taylor series to r^17 / r^18 (|r| ≤ π/4).
+    let (mut s, mut ts) = (r, r);
+    let (mut c, mut tc) = (1.0, 1.0);
+    for n in 1..=9 {
+        let n = f64::from(n);
+        ts = -ts * r2 / ((2.0 * n) * (2.0 * n + 1.0));
+        tc = -tc * r2 / ((2.0 * n - 1.0) * (2.0 * n));
+        s += ts;
+        c += tc;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "k is 0..=4"
+    )]
+    match (k as u32) % 4 {
+        0 => (s, c),
+        1 => (c, -s),
+        2 => (-s, -c),
+        _ => (-c, s),
+    }
+}
+
+/// Where a layer sits on the canvas, in square canvas pixels (`geom` module docs), y
+/// down (ADR-011, amended 2026-10-13):
+///
+/// ```text
+/// canvas = translate + c + R(rotate) · (S · F(p) − c),   c = S · (anchor ⊙ size)
+/// ```
+///
+/// `F` mirrors within the layer's own box (`x → width − x` for `flip_h`), `S` scales
+/// per axis, and `R` turns by `rotate` degrees, **positive clockwise on screen** (with
+/// y down, `R = [cos −sin; sin cos]`). `translate` is the top-left corner of the
+/// *unrotated* box, and the anchor (0–1 in layer space, default the centre) is only the
+/// pivot the box turns about. With `rotate == 0` the anchor has no effect and this is
+/// the axis-aligned `translate + S · F(p)` the compositor resamples separably.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "TransformData")]
 pub struct Transform {
     translate: Vec2,
     scale: Vec2,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    rotate: f32,
+    #[serde(default = "centre", skip_serializing_if = "is_centre")]
+    anchor: Vec2,
     flip_h: bool,
     flip_v: bool,
 }
@@ -233,7 +304,9 @@ pub struct Transform {
 impl TryFrom<TransformData> for Transform {
     type Error = LayerError;
     fn try_from(d: TransformData) -> Result<Self, LayerError> {
-        Self::new(d.translate, d.scale, d.flip_h, d.flip_v)
+        Self::new(d.translate, d.scale, d.flip_h, d.flip_v)?
+            .with_rotation(d.rotate)?
+            .with_anchor(d.anchor)
     }
 }
 
@@ -244,16 +317,21 @@ impl Default for Transform {
 }
 
 impl Transform {
+    /// The default anchor: the layer's centre.
+    pub const CENTRE: Vec2 = Vec2::new(0.5, 0.5);
+
     /// Source pixel `(0, 0)` at canvas `(0, 0)`, one source pixel per canvas pixel.
     pub const IDENTITY: Self = Self {
         translate: Vec2::ZERO,
         scale: Vec2::ONE,
+        rotate: 0.0,
+        anchor: Self::CENTRE,
         flip_h: false,
         flip_v: false,
     };
 
-    /// A transform; `translate` must be finite and both scale factors finite and > 0
-    /// (mirroring is the flips' job).
+    /// An unrotated transform anchored at the centre; `translate` must be finite and both
+    /// scale factors finite and > 0 (mirroring is the flips' job).
     pub fn new(
         translate: Vec2,
         scale: Vec2,
@@ -277,6 +355,8 @@ impl Transform {
         Ok(Self {
             translate,
             scale,
+            rotate: 0.0,
+            anchor: Self::CENTRE,
             flip_h,
             flip_v,
         })
@@ -287,7 +367,63 @@ impl Transform {
         Self::new(translate, Vec2::ONE, false, false)
     }
 
-    /// Offset of the layer's top-left corner, in canvas pixels.
+    /// This transform turned to `degrees` (finite; positive is clockwise on screen) about
+    /// its anchor. The angle is kept as given: 360 is not folded to 0.
+    pub fn with_rotation(self, degrees: f32) -> Result<Self, LayerError> {
+        if !degrees.is_finite() {
+            return Err(LayerError::NotFinite { what: "rotate" });
+        }
+        Ok(Self {
+            rotate: degrees,
+            ..self
+        })
+    }
+
+    /// This transform with its pivot at `anchor` (0–1 in layer space on both axes). With
+    /// a rotation, the picture turns about the new pivot, so it moves; see
+    /// [`Self::reanchored`] to keep it in place.
+    pub fn with_anchor(self, anchor: Vec2) -> Result<Self, LayerError> {
+        if !anchor.is_finite() {
+            return Err(LayerError::NotFinite { what: "anchor" });
+        }
+        for v in [anchor.x, anchor.y] {
+            if !(0.0..=1.0).contains(&v) {
+                return Err(LayerError::OutOfRange {
+                    what: "anchor",
+                    value: v,
+                });
+            }
+        }
+        Ok(Self { anchor, ..self })
+    }
+
+    /// This transform with its pivot moved to `anchor` and `translate` adjusted so the
+    /// picture (a source of `size`) stays where it is: `translate' = translate + (I − R)
+    /// (c − c')`. Without a rotation only the anchor changes.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "canvas coordinates are well within f32"
+    )]
+    pub fn reanchored(self, anchor: Vec2, size: (u32, u32)) -> Result<Self, LayerError> {
+        let moved = self.with_anchor(anchor)?;
+        if self.rotate == 0.0 {
+            return Ok(moved);
+        }
+        let (c0, c1) = (self.pivot(size), moved.pivot(size));
+        let (dx, dy) = (c0.0 - c1.0, c0.1 - c1.1);
+        let (s, c) = sin_cos_deg(self.rotate);
+        let shift = (dx - (c * dx - s * dy), dy - (s * dx + c * dy));
+        let translate = Vec2::new(
+            (f64::from(self.translate.x) + shift.0) as f32,
+            (f64::from(self.translate.y) + shift.1) as f32,
+        );
+        if !translate.is_finite() {
+            return Err(LayerError::NotFinite { what: "translate" });
+        }
+        Ok(Self { translate, ..moved })
+    }
+
+    /// Offset of the unrotated box's top-left corner, in canvas pixels.
     pub const fn translate(&self) -> Vec2 {
         self.translate
     }
@@ -295,6 +431,22 @@ impl Transform {
     /// Canvas pixels per source pixel, per axis.
     pub const fn scale(&self) -> Vec2 {
         self.scale
+    }
+
+    /// Rotation in degrees about the anchor, positive clockwise on screen.
+    pub const fn rotate(&self) -> f32 {
+        self.rotate
+    }
+
+    /// The pivot of the rotation, 0–1 in layer space.
+    pub const fn anchor(&self) -> Vec2 {
+        self.anchor
+    }
+
+    /// Whether the layer's box stays axis-aligned (`rotate == 0`): the compositor's
+    /// separable fast path.
+    pub fn is_axis_aligned(&self) -> bool {
+        self.rotate == 0.0
     }
 
     /// Mirrored left–right.
@@ -309,10 +461,57 @@ impl Transform {
 
     /// This transform moved by `by` canvas pixels.
     pub fn nudged(&self, by: Vec2) -> Result<Self, LayerError> {
-        Self::new(self.translate + by, self.scale, self.flip_h, self.flip_v)
+        let t = Self::new(self.translate + by, self.scale, self.flip_h, self.flip_v)?;
+        Ok(Self {
+            rotate: self.rotate,
+            anchor: self.anchor,
+            ..t
+        })
+    }
+
+    /// The pivot `c = S · (anchor ⊙ size)`, relative to `translate`, in f64.
+    fn pivot(&self, size: (u32, u32)) -> (f64, f64) {
+        (
+            f64::from(self.scale.x) * f64::from(self.anchor.x) * f64::from(size.0),
+            f64::from(self.scale.y) * f64::from(self.anchor.y) * f64::from(size.1),
+        )
+    }
+
+    /// The map from canvas to layer space (source of `size`) as `[a, b, c, d, e, f]`:
+    /// `u = a·x + b·y + c`, `v = d·x + e·y + f`. For the compositor's rotated path.
+    pub(crate) fn canvas_to_layer_affine(&self, size: (u32, u32)) -> [f64; 6] {
+        let (s, c) = sin_cos_deg(self.rotate);
+        let (px, py) = self.pivot(size);
+        let (tx, ty) = (
+            f64::from(self.translate.x) + px,
+            f64::from(self.translate.y) + py,
+        );
+        // q = pivot + Rᵀ (p − translate − pivot), then F(q / S).
+        let (kx, ox) = if self.flip_h {
+            (-1.0 / f64::from(self.scale.x), f64::from(size.0))
+        } else {
+            (1.0 / f64::from(self.scale.x), 0.0)
+        };
+        let (ky, oy) = if self.flip_v {
+            (-1.0 / f64::from(self.scale.y), f64::from(size.1))
+        } else {
+            (1.0 / f64::from(self.scale.y), 0.0)
+        };
+        [
+            kx * c,
+            kx * s,
+            kx * (px - c * tx - s * ty) + ox,
+            -ky * s,
+            ky * c,
+            ky * (py + s * tx - c * ty) + oy,
+        ]
     }
 
     /// A layer-space point (source of size `size`) to canvas space.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "canvas coordinates are well within f32"
+    )]
     pub fn layer_to_canvas(&self, size: (u32, u32), p: Vec2) -> Vec2 {
         let fx = if self.flip_h {
             size.0 as f32 - p.x
@@ -324,29 +523,76 @@ impl Transform {
         } else {
             p.y
         };
+        if self.rotate == 0.0 {
+            return Vec2::new(
+                self.translate.x + self.scale.x * fx,
+                self.translate.y + self.scale.y * fy,
+            );
+        }
+        let (px, py) = self.pivot(size);
+        let dx = f64::from(self.scale.x) * f64::from(fx) - px;
+        let dy = f64::from(self.scale.y) * f64::from(fy) - py;
+        let (s, c) = sin_cos_deg(self.rotate);
         Vec2::new(
-            self.translate.x + self.scale.x * fx,
-            self.translate.y + self.scale.y * fy,
+            (f64::from(self.translate.x) + px + c * dx - s * dy) as f32,
+            (f64::from(self.translate.y) + py + s * dx + c * dy) as f32,
         )
     }
 
     /// A canvas-space point to layer space (source of size `size`).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "layer coordinates are well within f32"
+    )]
     pub fn canvas_to_layer(&self, size: (u32, u32), p: Vec2) -> Vec2 {
-        let fx = (p.x - self.translate.x) / self.scale.x;
-        let fy = (p.y - self.translate.y) / self.scale.y;
-        Vec2::new(
-            if self.flip_h { size.0 as f32 - fx } else { fx },
-            if self.flip_v { size.1 as f32 - fy } else { fy },
-        )
+        if self.rotate == 0.0 {
+            let fx = (p.x - self.translate.x) / self.scale.x;
+            let fy = (p.y - self.translate.y) / self.scale.y;
+            return Vec2::new(
+                if self.flip_h { size.0 as f32 - fx } else { fx },
+                if self.flip_v { size.1 as f32 - fy } else { fy },
+            );
+        }
+        let [a, b, c, d, e, f] = self.canvas_to_layer_affine(size);
+        let (x, y) = (f64::from(p.x), f64::from(p.y));
+        Vec2::new((a * x + b * y + c) as f32, (d * x + e * y + f) as f32)
     }
 
-    /// The layer's box on the canvas: top-left and bottom-right corners.
+    /// The layer's four corners on the canvas, in the order of source `(0, 0)`,
+    /// `(w, 0)`, `(w, h)`, `(0, h)`: the rotated quad the app draws handles on.
+    pub fn canvas_quad(&self, size: (u32, u32)) -> [Vec2; 4] {
+        let (w, h) = (size.0 as f32, size.1 as f32);
+        [
+            Vec2::new(0.0, 0.0),
+            Vec2::new(w, 0.0),
+            Vec2::new(w, h),
+            Vec2::new(0.0, h),
+        ]
+        .map(|p| self.layer_to_canvas(size, p))
+    }
+
+    /// The layer's axis-aligned bounding box on the canvas (of the rotated quad when
+    /// rotated): top-left and bottom-right corners.
     pub fn canvas_bounds(&self, size: (u32, u32)) -> (Vec2, Vec2) {
-        let min = self.translate;
-        let max = Vec2::new(
-            self.translate.x + self.scale.x * size.0 as f32,
-            self.translate.y + self.scale.y * size.1 as f32,
-        );
+        if self.rotate == 0.0 {
+            let min = self.translate;
+            let max = Vec2::new(
+                self.translate.x + self.scale.x * size.0 as f32,
+                self.translate.y + self.scale.y * size.1 as f32,
+            );
+            return (min, max);
+        }
+        let q = self.canvas_quad(size);
+        let min = q
+            .iter()
+            .fold(Vec2::new(f32::INFINITY, f32::INFINITY), |m, p| {
+                Vec2::new(m.x.min(p.x), m.y.min(p.y))
+            });
+        let max = q
+            .iter()
+            .fold(Vec2::new(f32::NEG_INFINITY, f32::NEG_INFINITY), |m, p| {
+                Vec2::new(m.x.max(p.x), m.y.max(p.y))
+            });
         (min, max)
     }
 }
@@ -617,6 +863,173 @@ mod tests {
         let t: Transform = toml::from_str("translate = { x = 0.25, y = 1.0 }\n").unwrap();
         assert_eq!(t, Transform::translated(Vec2::new(0.25, 1.0)).unwrap());
         assert!(toml::from_str::<Transform>("scale = { x = 0.0, y = 1.0 }\n").is_err());
+    }
+
+    fn close(a: Vec2, b: Vec2) -> bool {
+        (a.x - b.x).abs() < 1e-4 && (a.y - b.y).abs() < 1e-4
+    }
+
+    /// #198: positive angles turn clockwise on screen (y down) about the anchor, and
+    /// `translate` stays the unrotated box's top-left corner.
+    #[test]
+    fn rotation_turns_clockwise_about_the_anchor() {
+        let size = (10, 20);
+        let t = Transform::translated(Vec2::ZERO)
+            .unwrap()
+            .with_rotation(90.0)
+            .unwrap();
+        // The box (centre (5, 10)) turned a quarter clockwise: the source's top-left
+        // lands on the turned box's top-right.
+        assert_eq!(t.layer_to_canvas(size, Vec2::ZERO), Vec2::new(15.0, 5.0));
+        assert_eq!(
+            t.layer_to_canvas(size, Vec2::new(5.0, 10.0)),
+            Vec2::new(5.0, 10.0)
+        );
+        assert_eq!(
+            t.canvas_bounds(size),
+            (Vec2::new(-5.0, 5.0), Vec2::new(15.0, 15.0))
+        );
+        // About the top-left corner instead, it swings to the left of it.
+        let t = t.with_anchor(Vec2::ZERO).unwrap();
+        assert_eq!(t.layer_to_canvas(size, Vec2::ZERO), Vec2::ZERO);
+        assert_eq!(
+            t.layer_to_canvas(size, Vec2::new(0.0, 20.0)),
+            Vec2::new(-20.0, 0.0)
+        );
+        // Unrotated, the anchor changes nothing.
+        let a = Transform::new(Vec2::new(1.0, 2.0), Vec2::new(2.0, 3.0), true, false).unwrap();
+        let b = a.with_anchor(Vec2::new(1.0, 0.0)).unwrap();
+        for p in [Vec2::ZERO, Vec2::new(3.5, 7.25)] {
+            assert_eq!(a.layer_to_canvas(size, p), b.layer_to_canvas(size, p));
+            assert_eq!(a.canvas_to_layer(size, p), b.canvas_to_layer(size, p));
+        }
+        assert_eq!(a.canvas_bounds(size), b.canvas_bounds(size));
+    }
+
+    #[test]
+    fn rotated_transform_maps_both_ways() {
+        let size = (37, 23);
+        for (fh, fv) in [(false, false), (true, false), (false, true), (true, true)] {
+            for deg in [0.25, 33.0, -90.0, 181.5, 360.0] {
+                let t = Transform::new(Vec2::new(3.25, -1.5), Vec2::new(2.0, 0.5), fh, fv)
+                    .unwrap()
+                    .with_rotation(deg)
+                    .unwrap()
+                    .with_anchor(Vec2::new(0.2, 0.9))
+                    .unwrap();
+                for p in [Vec2::ZERO, Vec2::new(4.5, 7.25), Vec2::new(37.0, 23.0)] {
+                    let back = t.canvas_to_layer(size, t.layer_to_canvas(size, p));
+                    assert!(close(back, p), "{deg} {fh} {fv}: {back:?} {p:?}");
+                }
+                // The bounding box holds the quad and touches it on every side.
+                let (lo, hi) = t.canvas_bounds(size);
+                let q = t.canvas_quad(size);
+                for p in q {
+                    assert!(p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y);
+                }
+                assert!(q.iter().any(|p| p.x == lo.x) && q.iter().any(|p| p.y == hi.y));
+            }
+        }
+    }
+
+    /// The anchor helper moves the pivot and keeps the picture where it is.
+    #[test]
+    fn reanchoring_keeps_the_picture_in_place() {
+        let size = (37, 23);
+        let t = Transform::new(Vec2::new(10.0, 20.0), Vec2::new(1.5, 0.75), false, true)
+            .unwrap()
+            .with_rotation(-41.0)
+            .unwrap();
+        for anchor in [Vec2::ZERO, Vec2::ONE, Vec2::new(0.1, 0.7)] {
+            let r = t.reanchored(anchor, size).unwrap();
+            assert_eq!(r.anchor(), anchor);
+            assert_eq!(r.rotate(), t.rotate());
+            for p in [Vec2::ZERO, Vec2::new(11.0, 5.5), Vec2::new(37.0, 23.0)] {
+                assert!(close(
+                    r.layer_to_canvas(size, p),
+                    t.layer_to_canvas(size, p)
+                ));
+            }
+        }
+        assert!(t.reanchored(Vec2::new(1.5, 0.0), size).is_err());
+        let flat = Transform::translated(Vec2::new(4.0, 5.0)).unwrap();
+        assert_eq!(
+            flat.reanchored(Vec2::ZERO, size).unwrap().translate(),
+            flat.translate()
+        );
+    }
+
+    #[test]
+    fn rotation_and_anchor_are_validated() {
+        let t = Transform::IDENTITY;
+        for bad in [f32::NAN, f32::INFINITY] {
+            assert_eq!(
+                t.with_rotation(bad),
+                Err(LayerError::NotFinite { what: "rotate" })
+            );
+        }
+        assert_eq!(
+            t.with_anchor(Vec2::new(-0.1, 0.5)),
+            Err(LayerError::OutOfRange {
+                what: "anchor",
+                value: -0.1
+            })
+        );
+        assert!(t.with_anchor(Vec2::new(0.5, f32::NAN)).is_err());
+        // A nudge keeps the rotation and the anchor.
+        let r = t
+            .with_rotation(12.0)
+            .unwrap()
+            .with_anchor(Vec2::ONE)
+            .unwrap();
+        let n = r.nudged(Vec2::new(0.25, 0.0)).unwrap();
+        assert_eq!((n.rotate(), n.anchor()), (12.0, Vec2::ONE));
+        assert!(!n.is_axis_aligned() && t.is_axis_aligned());
+    }
+
+    /// Old files load with no rotation, anchored at the centre; an unrotated, centred
+    /// transform writes exactly the fields it always did (project bytes and goldens stay
+    /// the same).
+    #[test]
+    fn rotation_and_anchor_are_optional_in_files() {
+        let t: Transform =
+            toml::from_str("translate = { x = 1.0, y = 2.0 }\nflip_h = true\n").unwrap();
+        assert_eq!((t.rotate(), t.anchor()), (0.0, Transform::CENTRE));
+        let text = toml::to_string(&t).unwrap();
+        assert!(
+            !text.contains("rotate") && !text.contains("anchor"),
+            "{text}"
+        );
+        let r = t
+            .with_rotation(-12.5)
+            .unwrap()
+            .with_anchor(Vec2::new(0.0, 1.0))
+            .unwrap();
+        let text = toml::to_string(&r).unwrap();
+        assert!(
+            text.contains("rotate = -12.5") && text.contains("anchor"),
+            "{text}"
+        );
+        assert_eq!(toml::from_str::<Transform>(&text).unwrap(), r);
+        assert!(toml::from_str::<Transform>("anchor = { x = 2.0, y = 0.0 }\n").is_err());
+    }
+
+    #[test]
+    fn sin_cos_is_exact_on_right_angles_and_close_elsewhere() {
+        assert_eq!(sin_cos_deg(0.0), (0.0, 1.0));
+        assert_eq!(sin_cos_deg(90.0), (1.0, 0.0));
+        assert_eq!(sin_cos_deg(-90.0), (-1.0, 0.0));
+        assert_eq!(sin_cos_deg(180.0), (0.0, -1.0));
+        assert_eq!(sin_cos_deg(360.0), (0.0, 1.0));
+        for i in -3600..=3600 {
+            let d = i as f32 * 0.37;
+            let (s, c) = sin_cos_deg(d);
+            let r = f64::from(d).to_radians();
+            assert!(
+                (s - r.sin()).abs() < 1e-12 && (c - r.cos()).abs() < 1e-12,
+                "{d}"
+            );
+        }
     }
 
     #[test]

@@ -34,6 +34,7 @@
 //!   in 4 × 4 tiles. Gradients and mask extents are computed a row at a time in loops
 //!   that vectorise, and identity adjustments premultiply the source without copying it.
 
+mod affine;
 mod attr;
 mod blend;
 mod frame;
@@ -47,6 +48,7 @@ use crate::layer::{AdjustCache, Adjustments, Blend, Layer, SourceImage, Transfor
 use crate::mask::{Mask, Modifiers, SnapToCells};
 use crate::region::Region;
 use crate::scratch;
+use affine::AffineMap;
 use attr::AttrPlanes;
 use blend::RgbaRow;
 use resample::{AxisMap, Planes, resample_into, resample_planes};
@@ -228,14 +230,49 @@ struct Spare {
 /// The adjusted pixels premultiplied, with the source and adjustments they came from.
 type Premultiplied = (Arc<SourceImage>, Adjustments, Vec<[f32; 4]>);
 
+/// A mip of the premultiplied pixels: its level, pixels and size.
+type ColourMip = ((u32, u32), Vec<[f32; 4]>, (u32, u32));
+
+/// A mip of a mask's layer-space values, with what it was made from.
+#[derive(Debug)]
+struct MaskMip {
+    generation: u64,
+    source: Arc<SourceImage>,
+    level: (u32, u32),
+    values: Vec<f32>,
+    size: (u32, u32),
+}
+
+/// Where a layer lands on the super grid: two axis maps for an axis-aligned layer (the
+/// separable fast path), or the inverse affine map of a rotated one (#198).
+enum Placement {
+    Axis(AxisMap, AxisMap),
+    Affine(AffineMap),
+}
+
+impl Placement {
+    /// The mip level a rotated layer samples, if above level 0.
+    fn mip_level(&self) -> Option<(u32, u32)> {
+        match self {
+            Self::Affine(map) if map.level != (0, 0) => Some(map.level),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct LayerCache {
     adjust: AdjustCache,
     /// The adjusted pixels premultiplied, keyed by the source's identity and the
     /// adjustments.
     premul: Option<Premultiplied>,
+    /// A rotated layer's mip of `premul` (#198): its level, pixels and size; dropped
+    /// with `premul`.
+    colour_mip: Option<ColourMip>,
     /// The mask's layer-space values when it has sources.
     values: Option<LayerValues>,
+    /// A rotated layer's mip of the mask's layer-space values (#198).
+    mask_mip: Option<MaskMip>,
     raster: Option<(RasterKey, Arc<LayerRaster>)>,
     /// The feather cache: rebuilt only when the modifiers or the raster change.
     mask: Option<EvaluatedMask>,
@@ -287,17 +324,16 @@ impl LayerCache {
         }
         // A modifier changed: resample the mask again (the raster's colour stays) and
         // evaluate it.
-        let (mx, my, _) = axis_maps(layer, grid);
+        let (place, _) = placement(layer, grid);
         let mut values = std::mem::take(&mut self.spare.values);
         self.update_mask_source(m, layer.source());
-        let src = self.mask_source(m);
+        self.update_mask_mip(m, layer.source(), &place);
+        let (src, size) = self.mask_input(m, layer.source().size(), &place);
         let rect = raster.rect;
-        let sw = layer.source().size().0;
         evaluate_mask(
             src,
-            sw,
-            &mx,
-            &my,
+            size,
+            &place,
             rect,
             grid,
             &modifiers,
@@ -369,6 +405,44 @@ impl LayerCache {
         }
     }
 
+    /// Brings the mask's mip up to date for a rotated `place` that samples one, after
+    /// [`Self::update_mask_source`]; it changes only with the mask, the source or the
+    /// level.
+    fn update_mask_mip(&mut self, m: &Mask, src: &Arc<SourceImage>, place: &Placement) {
+        let Some(level) = place.mip_level() else {
+            return;
+        };
+        let fresh = matches!(&self.mask_mip, Some(x)
+            if x.generation == m.generation() && Arc::ptr_eq(&x.source, src) && x.level == level);
+        if !fresh {
+            let (w, h) = src.size();
+            let (values, size) = affine::mip(self.mask_source(m), w, h, level.0, level.1);
+            self.mask_mip = Some(MaskMip {
+                generation: m.generation(),
+                source: Arc::clone(src),
+                level,
+                values,
+                size,
+            });
+        }
+    }
+
+    /// What `place` resamples `m` from and its size: the mask's layer-space values, or
+    /// their mip for a rotated, scaled-down layer (after [`Self::update_mask_mip`]).
+    fn mask_input<'a>(
+        &'a self,
+        m: &'a Mask,
+        size: (u32, u32),
+        place: &Placement,
+    ) -> (&'a [f32], (u32, u32)) {
+        if place.mip_level().is_some() {
+            let x = self.mask_mip.as_ref().expect("updated by the caller");
+            (&x.values, x.size)
+        } else {
+            (self.mask_source(m), size)
+        }
+    }
+
     /// Resamples the layer (adjusted, premultiplied) onto the grid and, alongside, its
     /// mask, which it evaluates (modifiers applied) when the layer has one.
     fn build_raster(
@@ -379,7 +453,7 @@ impl LayerCache {
     ) -> (LayerRaster, Option<Vec<f32>>) {
         let src = layer.source();
         let (sw, sh) = src.size();
-        let (mx, my, rect) = axis_maps(layer, grid);
+        let (place, rect) = placement(layer, grid);
         if rect.is_empty() {
             let raster = LayerRaster {
                 rect: PxRect::EMPTY,
@@ -403,31 +477,57 @@ impl LayerCache {
                 premultiply(&self.adjust.get(src, adj))
             };
             self.premul = Some((Arc::clone(src), adj.clone(), premul));
+            self.colour_mip = None;
+        }
+        if let Some(level) = place.mip_level()
+            && self.colour_mip.as_ref().is_none_or(|(l, _, _)| *l != level)
+        {
+            let (_, _, premul) = self.premul.as_ref().expect("filled above");
+            let (px, size) = affine::mip(premul, sw, sh, level.0, level.1);
+            self.colour_mip = Some((level, px, size));
         }
         let mut rgba = std::mem::take(&mut self.spare.rgba);
         let mut values = std::mem::take(&mut self.spare.values);
         let mask = layer.mask();
         if let Some(m) = mask {
             self.update_mask_source(m, src);
+            self.update_mask_mip(m, src, &place);
         }
-        let mask_src = mask.map(|m| self.mask_source(m));
+        let mask_src = mask.map(|m| self.mask_input(m, (sw, sh), &place));
         let (_, _, premul) = self.premul.as_ref().expect("filled above");
         debug_assert_eq!(sh as usize * sw as usize, premul.len());
+        // A rotated layer scaled down samples a mip of the pixels.
+        let colour = match (&self.colour_mip, place.mip_level()) {
+            (Some((_, px, size)), Some(_)) => (&px[..], *size),
+            _ => (&premul[..], (sw, sh)),
+        };
         // The colour and the mask are independent: resample them side by side.
         let (extent, values) = crate::par::join(
             || {
                 let mut extent = Vec::new();
-                resample_planes(premul, sw, &mx, &my, &mut rgba, &mut extent);
+                match &place {
+                    Placement::Axis(mx, my) => {
+                        resample_planes(premul, sw, mx, my, &mut rgba, &mut extent);
+                    }
+                    Placement::Affine(map) => {
+                        affine::resample_planes_affine(
+                            colour.0,
+                            colour.1,
+                            map,
+                            &mut rgba,
+                            &mut extent,
+                        );
+                    }
+                }
                 extent
             },
             || {
-                let (m, mask_src) = mask.zip(mask_src)?;
+                let (m, (mask_src, size)) = mask.zip(mask_src)?;
                 let modifiers = m.modifiers();
                 evaluate_mask(
                     mask_src,
-                    sw,
-                    &mx,
-                    &my,
+                    size,
+                    &place,
                     rect,
                     grid,
                     &modifiers,
@@ -446,6 +546,21 @@ impl LayerCache {
     }
 }
 
+/// Where `layer` lands on `grid` and the super rectangle it touches: the separable axis
+/// maps when it is axis-aligned (`rotate == 0`, unchanged by #198), else the inverse
+/// affine map, whose rectangle is the rotated quad's bounding box on the grid.
+fn placement(layer: &Layer, grid: SuperGrid) -> (Placement, PxRect) {
+    let t = layer.transform();
+    if t.is_axis_aligned() {
+        let (mx, my, rect) = axis_maps(layer, grid);
+        (Placement::Axis(mx, my), rect)
+    } else {
+        let map = AffineMap::new(&t, layer.source().size(), grid);
+        let rect = map.rect;
+        (Placement::Affine(map), rect)
+    }
+}
+
 /// A layer's per-axis resampling maps onto `grid` and the super rectangle it touches.
 fn axis_maps(layer: &Layer, grid: SuperGrid) -> (AxisMap, AxisMap, PxRect) {
     let (sw, sh) = layer.source().size();
@@ -458,20 +573,21 @@ fn axis_maps(layer: &Layer, grid: SuperGrid) -> (AxisMap, AxisMap, PxRect) {
     (mx, my, rect)
 }
 
-/// Resamples a mask's layer-space values (`sw` wide) onto `rect` of `grid` into `out`
-/// and applies `modifiers`. A feather blurred at half resolution with no snap before it
-/// reduces the resampled rows to half resolution as they are made
-/// ([`resample::resample_half`]), so the full-resolution mask is never stored before
-/// the feather writes it (#139); the values are the same either way.
+/// Resamples a mask's layer-space values (`size`) onto `rect` of `grid` through `place`
+/// into `out` and applies `modifiers`: a rotated layer's mask goes through the same
+/// affine map as its colour (ADR-008), then its modifiers. On the separable path, a
+/// feather blurred at half resolution with no snap before it reduces the resampled rows
+/// to half resolution as they are made ([`resample::resample_half`]), so the
+/// full-resolution mask is never stored before the feather writes it (#139); the values
+/// are the same either way.
 #[expect(
     clippy::too_many_arguments,
     reason = "the resampling maps and the modifiers"
 )]
 fn evaluate_mask(
     values: &[f32],
-    sw: u32,
-    mx: &AxisMap,
-    my: &AxisMap,
+    size: (u32, u32),
+    place: &Placement,
     rect: PxRect,
     grid: SuperGrid,
     modifiers: &Modifiers,
@@ -479,6 +595,15 @@ fn evaluate_mask(
     out: &mut Vec<f32>,
 ) {
     use crate::mask::eval;
+    let (mx, my) = match place {
+        Placement::Axis(mx, my) => (mx, my),
+        Placement::Affine(map) => {
+            affine::resample_mask_affine(values, size, map, out);
+            eval::apply_modifiers_with(out, rect, grid, modifiers, full_res);
+            return;
+        }
+    };
+    let sw = size.0;
     let Some(sigma) = eval::half_res_sigma(modifiers, grid, full_res) else {
         resample_mask(values, sw, mx, my, out);
         eval::apply_modifiers_with(out, rect, grid, modifiers, full_res);
@@ -1227,16 +1352,39 @@ pub fn mask_change_cells(grid: SuperGrid, layer: &Layer, layer_rect: PxRect) -> 
     }
     let size = layer.source().size();
     let t = layer.transform();
-    let a = grid.canvas_to_super(
-        t.layer_to_canvas(size, Vec2::new(layer_rect.x0 as f32, layer_rect.y0 as f32)),
-    );
-    let b = grid.canvas_to_super(
-        t.layer_to_canvas(size, Vec2::new(layer_rect.x1 as f32, layer_rect.y1 as f32)),
-    );
+    let corner = |x: u32, y: u32| {
+        grid.canvas_to_super(t.layer_to_canvas(size, Vec2::new(x as f32, y as f32)))
+    };
     let step = grid.super_px_in_canvas();
-    // Resampling reaches one source pixel (bilinear) or three super pixels (Lanczos).
-    let reach_x = (t.scale().x / step.x).max(3.0).ceil() as u32 + 1;
-    let reach_y = (t.scale().y / step.y).max(3.0).ceil() as u32 + 1;
+    let (a, b, reach_x, reach_y) = if t.is_axis_aligned() {
+        let (a, b) = (
+            corner(layer_rect.x0, layer_rect.y0),
+            corner(layer_rect.x1, layer_rect.y1),
+        );
+        // Resampling reaches one source pixel (bilinear) or three super pixels (Lanczos).
+        let reach_x = (t.scale().x / step.x).max(3.0).ceil() as u32 + 1;
+        let reach_y = (t.scale().y / step.y).max(3.0).ceil() as u32 + 1;
+        (a, b, reach_x, reach_y)
+    } else {
+        // Rotated (#198): the bounding box of the rect's four corners, grown by what a
+        // source pixel reaches through the mip and the kernel, plus the antialiased edge.
+        let q = [
+            corner(layer_rect.x0, layer_rect.y0),
+            corner(layer_rect.x1, layer_rect.y0),
+            corner(layer_rect.x1, layer_rect.y1),
+            corner(layer_rect.x0, layer_rect.y1),
+        ];
+        let lo = q
+            .iter()
+            .fold(q[0], |m, p| Vec2::new(m.x.min(p.x), m.y.min(p.y)));
+        let hi = q
+            .iter()
+            .fold(q[0], |m, p| Vec2::new(m.x.max(p.x), m.y.max(p.y)));
+        let map = AffineMap::new(&t, size, grid);
+        let canvas = map.reach_src() as f32 * t.scale().x.max(t.scale().y);
+        let reach = (canvas / step.x.min(step.y)).max(3.0).ceil() as u32 + 2;
+        (lo, hi, reach, reach)
+    };
     let (gw, gh) = grid.size();
     let clampf = |v: f32, hi: u32| v.clamp(0.0, hi as f32);
     let mut r = PxRect::new(
@@ -1620,10 +1768,14 @@ mod tests {
 
     #[test]
     fn mask_changes_touch_only_the_reported_cells() {
-        for (mode, snap, feather) in [
-            (Mode::HiresBitmap, SnapToCells::Off, 0.0),
-            (Mode::HiresBitmap, SnapToCells::Expand, 3.0),
-            (Mode::MulticolorBitmap, SnapToCells::Nearest, 12.0),
+        // The last three are rotated (#198), one scaled down far enough to sample a mip.
+        for (mode, snap, feather, rotate, scale) in [
+            (Mode::HiresBitmap, SnapToCells::Off, 0.0, 0.0, 1.3),
+            (Mode::HiresBitmap, SnapToCells::Expand, 3.0, 0.0, 1.3),
+            (Mode::MulticolorBitmap, SnapToCells::Nearest, 12.0, 0.0, 1.3),
+            (Mode::HiresBitmap, SnapToCells::Off, 0.0, 33.0, 1.3),
+            (Mode::MulticolorBitmap, SnapToCells::Expand, 3.0, -71.5, 1.3),
+            (Mode::HiresBitmap, SnapToCells::Off, 1.0, 12.0, 0.3),
         ] {
             let g = grid(mode, 2);
             let m = Modifiers::new(false, crate::layer::Levels::IDENTITY, snap, feather).unwrap();
@@ -1633,7 +1785,10 @@ mod tests {
                 m,
             );
             l.set_transform(
-                Transform::new(Vec2::new(30.5, 20.25), Vec2::new(1.3, 0.9), false, false).unwrap(),
+                Transform::new(Vec2::new(30.5, 20.25), Vec2::new(scale, 0.9), false, false)
+                    .unwrap()
+                    .with_rotation(rotate)
+                    .unwrap(),
             );
             let mut c = Compositor::new(g);
             let before = c.composite(&[l.clone()]).downsample();
@@ -2033,6 +2188,276 @@ mod tests {
             "an invisible layer governs nothing"
         );
         assert!((a.strength - 1.0).abs() < 1e-6);
+    }
+
+    /// A deterministic test pattern with partial alpha.
+    fn pattern(w: u32, h: u32) -> Vec<[f32; 4]> {
+        let mut s = 0x2545_f491_u32;
+        (0..w * h)
+            .map(|_| {
+                let mut next = || {
+                    s ^= s << 13;
+                    s ^= s >> 17;
+                    s ^= s << 5;
+                    (s >> 8) as f32 / (1u32 << 24) as f32
+                };
+                [next(), next(), next(), 0.5 + 0.5 * next()]
+            })
+            .collect()
+    }
+
+    /// A smooth pattern: a few slow waves.
+    fn smooth(w: u32, h: u32) -> Vec<[f32; 4]> {
+        (0..w * h)
+            .map(|i| {
+                let (x, y) = ((i % w) as f32, (i / w) as f32);
+                [
+                    0.5 + 0.4 * (x * 0.21).sin(),
+                    0.5 + 0.4 * (y * 0.17).cos(),
+                    0.5 + 0.3 * ((x + y) * 0.11).sin(),
+                    1.0,
+                ]
+            })
+            .collect()
+    }
+
+    /// `px` (`w × h`) turned 90° clockwise: `h × w`.
+    fn turned<T: Copy>(px: &[T], w: u32, h: u32) -> Vec<T> {
+        let mut out = Vec::with_capacity(px.len());
+        for y in 0..w {
+            for x in 0..h {
+                out.push(px[((h - 1 - x) * w + y) as usize]);
+            }
+        }
+        out
+    }
+
+    fn layer_of(px: Vec<[f32; 4]>, w: u32, h: u32, t: Transform) -> Layer {
+        let mut l = Layer::new("p", Arc::new(SourceImage::from_linear(w, h, px).unwrap()));
+        l.set_transform(t);
+        l
+    }
+
+    fn max_diff(a: &[[f32; 4]], b: &[[f32; 4]]) -> f32 {
+        assert_eq!(a.len(), b.len());
+        a.iter()
+            .zip(b)
+            .flat_map(|(p, q)| p.iter().zip(q).map(|(x, y)| (x - y).abs()))
+            .fold(0.0, f32::max)
+    }
+
+    /// #198: with `rotate == 0` the anchor changes nothing, and `-0.0` is no rotation.
+    #[test]
+    fn an_unrotated_layer_ignores_its_anchor() {
+        let (w, h) = (37, 23);
+        let t = Transform::new(Vec2::new(10.3, 7.6), Vec2::new(1.7, 0.6), true, false).unwrap();
+        for mode in [Mode::HiresBitmap, Mode::MulticolorBitmap] {
+            let g = grid(mode, 4);
+            let a = Compositor::new(g)
+                .composite(&[layer_of(pattern(w, h), w, h, t)])
+                .clone();
+            for t2 in [
+                t.with_anchor(Vec2::new(0.0, 1.0)).unwrap(),
+                t.with_rotation(-0.0).unwrap(),
+            ] {
+                let b = Compositor::new(g)
+                    .composite(&[layer_of(pattern(w, h), w, h, t2)])
+                    .clone();
+                assert!(
+                    a.pixels()
+                        .iter()
+                        .zip(b.pixels())
+                        .all(|(p, q)| p.map(f32::to_bits) == q.map(f32::to_bits)),
+                    "{mode}"
+                );
+            }
+        }
+    }
+
+    /// #198: a full turn (360°) takes the rotated path and reproduces the unrotated
+    /// layer: exactly on a 1× hi-res grid (every sample on a pixel centre, the coverage
+    /// exact), and within 0.006 per channel (1.5 8-bit steps) of the target frame on a
+    /// smooth source where
+    /// the rotated path's filters meet the separable path's (Catmull-Rom against
+    /// bilinear at 4×; a mip against Lanczos-3 for multicolor's 2-px-wide super pixels at
+    /// 1×).
+    #[test]
+    fn a_full_turn_is_the_identity() {
+        let (w, h) = (40, 30);
+        for (mode, n, src, tol) in [
+            (Mode::HiresBitmap, 1, pattern(w, h), 1e-6),
+            (Mode::HiresBitmap, 4, smooth(w, h), 6e-3),
+            (Mode::MulticolorBitmap, 4, smooth(w, h), 6e-3),
+            (Mode::MulticolorBitmap, 1, smooth(w, h), 6e-3),
+        ] {
+            let g = grid(mode, n);
+            let t = Transform::new(Vec2::new(20.0, 16.0), Vec2::ONE, false, false).unwrap();
+            let a = layer_of(src.clone(), w, h, t);
+            let b = layer_of(src.clone(), w, h, t.with_rotation(360.0).unwrap());
+            let mut ca = Compositor::new(g);
+            let mut cb = Compositor::new(g);
+            ca.composite(&[a]);
+            cb.composite(&[b]);
+            let d = max_diff(&ca.canvas().downsample(), &cb.canvas().downsample());
+            assert!(d <= tol, "{mode} {n}×: {d}");
+        }
+        // A sub-pixel placement: the edge coverage agrees too.
+        let g = grid(Mode::HiresBitmap, 4);
+        let t = Transform::new(Vec2::new(20.3, 16.6), Vec2::ONE, false, false).unwrap();
+        let src = vec![[0.4, 0.5, 0.6, 1.0]; (w * h) as usize];
+        let mut ca = Compositor::new(g);
+        let mut cb = Compositor::new(g);
+        ca.composite(&[layer_of(src.clone(), w, h, t)]);
+        cb.composite(&[layer_of(src, w, h, t.with_rotation(-360.0).unwrap())]);
+        let d = max_diff(ca.canvas().pixels(), cb.canvas().pixels());
+        assert!(d < 1e-5, "coverage: {d}");
+    }
+
+    /// #198: turning a layer 90° about its centre composites what the source's pixels,
+    /// turned and placed axis-aligned, do: exactly (to 1e-6) on a 1× grid, mask, feather
+    /// and attribute map included (masks transform with their layer, ADR-008), and within
+    /// 0.006 per channel of the target frame at 4× on a smooth source (Catmull-Rom against
+    /// the reference's bilinear).
+    #[test]
+    fn a_quarter_turn_matches_the_pixels_turned() {
+        let (w, h) = (40u32, 24u32);
+        // The turned box (h × w) about the same centre: its corner moves by
+        // ((w − h) / 2, (h − w) / 2) = (8, −8).
+        let t = Transform::new(Vec2::new(50.0, 60.0), Vec2::ONE, false, false).unwrap();
+        let rt = Transform::translated(Vec2::new(58.0, 52.0)).unwrap();
+        let mask: Vec<f32> = (0..w * h)
+            .map(|i| if i % w < 15 || i / w < 5 { 1.0 } else { 0.3 })
+            .collect();
+        // At 4× the mask is smooth too, so the two kernels agree.
+        let soft: Vec<f32> = smooth(w, h).iter().map(|p| p[0]).collect();
+        for (n, src, mask, tol) in [
+            (1, pattern(w, h), mask, 1e-6),
+            (4, smooth(w, h), soft, 6e-3),
+        ] {
+            for feather in [0.0, 1.5] {
+                let m = Modifiers::feathered(feather).unwrap();
+                let mut rotated = masked(
+                    Arc::new(SourceImage::from_linear(w, h, src.clone()).unwrap()),
+                    mask.clone(),
+                    m,
+                );
+                rotated.set_transform(t.with_rotation(90.0).unwrap());
+                let mut reference = masked(
+                    Arc::new(SourceImage::from_linear(h, w, turned(&src, w, h)).unwrap()),
+                    turned(&mask, w, h),
+                    m,
+                );
+                reference.set_transform(rt);
+                let g = grid(Mode::HiresBitmap, n);
+                let mut ca = Compositor::new(g);
+                let mut cb = Compositor::new(g);
+                ca.composite(&[rotated]);
+                cb.composite(&[reference]);
+                let (ra, ma) = ca.evaluated_mask(0).unwrap();
+                let (rb, mb) = cb.evaluated_mask(0).unwrap();
+                assert_eq!(ra, rb, "{n}× feather {feather}: the same rectangle");
+                if n == 1 {
+                    let d = max_diff(ca.canvas().pixels(), cb.canvas().pixels());
+                    assert!(d <= tol, "{n}× feather {feather}: colour {d}");
+                    let dm = ma
+                        .iter()
+                        .zip(mb)
+                        .map(|(a, b)| (a - b).abs())
+                        .fold(0.0, f32::max);
+                    assert!(dm <= 1e-6, "{n}× feather {feather}: mask {dm}");
+                    assert_eq!(ca.attribute_map(), cb.attribute_map());
+                } else {
+                    let d = max_diff(&ca.canvas().downsample(), &cb.canvas().downsample());
+                    assert!(d <= tol, "{n}× feather {feather}: colour {d}");
+                }
+            }
+        }
+    }
+
+    /// #198: a rotated, scaled-down layer samples a mip and still keeps a flat field
+    /// flat inside its quad, with the coverage summing to the quad's area.
+    #[test]
+    fn a_rotated_downscale_keeps_flat_fields() {
+        let (w, h) = (400u32, 300u32);
+        let g = grid(Mode::MulticolorBitmap, 4);
+        let t = Transform::new(Vec2::new(100.0, 50.0), Vec2::new(0.2, 0.25), false, false)
+            .unwrap()
+            .with_rotation(27.0)
+            .unwrap();
+        let mut c = Compositor::new(g);
+        c.composite(&[layer_of(
+            vec![[0.3, 0.6, 0.9, 1.0]; (w * h) as usize],
+            w,
+            h,
+            t,
+        )]);
+        let step = g.super_px_in_canvas();
+        let mut area = 0.0f64;
+        for p in c.canvas().pixels() {
+            area += f64::from(p[3]);
+            if p[3] > 0.0 {
+                let straight = [p[0] / p[3], p[1] / p[3], p[2] / p[3]];
+                for (a, b) in straight.iter().zip([0.3, 0.6, 0.9]) {
+                    assert!((a - b).abs() < 1e-4, "{straight:?}");
+                }
+            }
+        }
+        let area = area * f64::from(step.x * step.y);
+        let want = 400.0 * 0.2 * 300.0 * 0.25;
+        assert!((area - want).abs() < 1e-3 * want, "{area} {want}");
+    }
+
+    /// #198: rotating a layer recomposites, and reports, the cells whose output changed,
+    /// all inside the bounding boxes of the old and new quads; the result equals a full
+    /// recomposite.
+    #[test]
+    fn rotation_updates_cover_the_old_and_new_quads() {
+        for mode in [Mode::HiresBitmap, Mode::MulticolorBitmap] {
+            let g = grid(mode, 2);
+            let mut layers = edit_scene();
+            let mut c = Compositor::new(g);
+            c.update(&layers, &[]);
+            type Edit = fn(Transform) -> Transform;
+            let edits: [(&str, Edit); 5] = [
+                ("rotate", |t| t.with_rotation(30.0).unwrap()),
+                ("a quarter degree more", |t| t.with_rotation(30.25).unwrap()),
+                ("move the anchor", |t| {
+                    t.with_anchor(Vec2::new(0.0, 0.0)).unwrap()
+                }),
+                ("turn past a right angle", |t| {
+                    t.with_rotation(-120.0).unwrap()
+                }),
+                ("back to axis-aligned", |t| t.with_rotation(0.0).unwrap()),
+            ];
+            for (name, edit) in edits {
+                let (_, before) = full(g, &layers, &[]);
+                let old = c.last.as_ref().unwrap().0[1].as_ref().unwrap().raster.rect;
+                let t = edit(layers[1].transform());
+                layers[1].set_transform(t);
+                let reported = c.update(&layers, &[]);
+                let new = c.last.as_ref().unwrap().0[1].as_ref().unwrap().raster.rect;
+                let (canvas, frame) = full(g, &layers, &[]);
+                assert!(c.canvas() == &canvas, "{mode} {name}: canvas");
+                assert!(c.frame() == &frame, "{mode} {name}: frame");
+                let (tw, th) = g.target_size();
+                let changed: CellSet = before
+                    .differing(&frame, PxRect::of_size(tw, th))
+                    .into_iter()
+                    .filter_map(|(x, y)| g.target_px_to_cell(x, y))
+                    .collect();
+                assert!(!changed.is_empty(), "{mode} {name}");
+                assert_eq!(reported, changed, "{mode} {name}");
+                // The quad's bounding box on the grid is the layer's rectangle.
+                let size = layers[1].source().size();
+                let (lo, hi) = t.canvas_bounds(size);
+                let (a, b) = (g.canvas_to_super(lo), g.canvas_to_super(hi));
+                assert!(new.x0 as f32 <= a.x.max(0.0) && new.y0 as f32 <= a.y.max(0.0));
+                assert!(new.x1 as f32 >= b.x.min(g.size().0 as f32) - 1e-3);
+                assert!(new.y1 as f32 >= b.y.min(g.size().1 as f32) - 1e-3);
+                let footprint = CellSet::from_super_rect(g, old.union(new));
+                assert_eq!(reported.intersection(footprint), reported, "{mode} {name}");
+            }
+        }
     }
 
     proptest! {
