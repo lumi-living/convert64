@@ -413,6 +413,12 @@ As built in #166 (2026-10-12): GUI/CLI parity, enforced by a test.
 - **The parity test** (`crates/convert64-cli/tests/parity.rs`) enumerates `REGISTRY`, takes each command's example from `convert64 commands --json`, runs it through `convert64 apply`, and compares the saved project with the same command run on the core in-process. A registry command with no JSON form, schema, example or CLI path fails it.
 - **What parity covers so far.** The registry holds the 14 mask and cell commands (E4, E5). Layer, recipe, mode and palette changes are not commands yet: the CLI sets them through the project file and `convert`'s options. They join the registry, and so this test, when the app (E8) needs them as undoable actions.
 
+As built in #165 (2026-10-12): `export` to every assembler, `validate` for every format read, `batch` with a manifest.
+
+- **`export <project | dir> --asm …`** solves each project and writes `convert64_formats::asm::emit`'s source for every target (`all` = KickAssembler, ACME, 64tass, ca65, C) with the binaries it includes, once per project; `--data` picks byte lines or includes of the raw set or picture file.
+- **`validate`** reads Koala, Art Studio, raw sets (manifest and blocks via `convert64_formats::raw::read`), convert64's display PRGs (header and loader compared byte for byte with `convert64_formats::prg`'s, then the embedded picture validated) and projects (loaded, solved, the solution validated, `clashes` reported).
+- **`batch <dir>`** converts every PNG and project in a directory with `std::thread::scope` workers pulling from a shared index (`-j`, default one per CPU); each file runs `convert`'s code with a non-printing report, and the batch report holds them all. Per-file settings come from a TOML manifest (`toml`, already approved in §4): `out`, `[defaults]`, `[files."…"]`, each `convert`'s options in kebab-case (the same `Overrides` struct, deserialised with unknown keys refused) plus `outputs`, `max-clashes` and `skip`. Precedence: command line, then the file's table, then `[defaults]`. A PNG with a same-named project beside it is skipped. Output is the same with one worker or many.
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.

@@ -8,7 +8,9 @@
 //! `docs/reference/cli.md` documents them.
 
 mod apply;
+mod batch;
 mod convert;
+mod export;
 mod json;
 mod report;
 mod validate;
@@ -107,6 +109,58 @@ enum Command {
         /// Read the file as this format instead of guessing from extension and size.
         #[arg(long, value_enum)]
         format: Option<validate::ReadFormat>,
+    },
+    /// Convert every PNG and .convert64 project in a directory, in parallel.
+    ///
+    /// Per-file settings come from a TOML manifest (--manifest, or DIR/batch.toml when
+    /// it exists): `out`, `[defaults]` and `[files."name"]` tables holding convert's
+    /// options in kebab-case, plus `outputs` (formats, e.g. ["kla", "prg"]),
+    /// `max-clashes` and `skip`. Options given here override the manifest. A PNG with a
+    /// project of the same name next to it is skipped: the project is converted. One
+    /// report covers every file; the exit code is the worst file's.
+    Batch {
+        /// The directory.
+        dir: PathBuf,
+        /// The TOML manifest (default: DIR/batch.toml, if present).
+        #[arg(long, value_name = "FILE")]
+        manifest: Option<PathBuf>,
+        /// Output directory (default: the manifest's `out`, else DIR).
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        /// Files converted at once (default: one per CPU).
+        #[arg(short, long, value_name = "N")]
+        jobs: Option<usize>,
+        #[command(flatten)]
+        overrides: Overrides,
+    },
+    /// Solve a project, or every project in a directory, and write assembler source.
+    ///
+    /// For each project and each --asm target: `<name>.asm` (KickAssembler), `.a` (ACME),
+    /// `.tas` (64tass), `.s` (ca65) or `.h` (C), plus the binaries it includes, in
+    /// --out. Options override the projects' settings. Exit codes as for convert; the
+    /// worst project's wins.
+    Export {
+        /// A .convert64 project, or a directory of them.
+        input: PathBuf,
+        /// Targets: kickass, acme, 64tass, ca65, c, or all. Repeatable or comma-separated.
+        #[arg(long, value_delimiter = ',', required = true, value_name = "TARGET")]
+        asm: Vec<String>,
+        /// How the data is written: include-raw (the raw set's .bin files, the
+        /// default), include-picture (the .kla/.art file) or bytes (in the source).
+        #[arg(long, value_enum, default_value = "include-raw")]
+        data: export::DataArg,
+        /// Output directory (created if missing).
+        #[arg(long, value_name = "DIR")]
+        out: PathBuf,
+        /// Base name of the files and labels (default: the project's file name; one
+        /// project only).
+        #[arg(long)]
+        name: Option<String>,
+        /// Exit 1 when a picture has more clashing cells than this.
+        #[arg(long, value_name = "N")]
+        max_clashes: Option<usize>,
+        #[command(flatten)]
+        overrides: Overrides,
     },
     /// Run registry commands on a project and save it.
     ///
@@ -261,6 +315,46 @@ fn main() -> ExitCode {
                 save: save.as_deref().map(|p| (p, embed.embed())),
             };
             let r = apply::run(&mut run, &job);
+            run.finish(r)
+        }
+        Command::Export {
+            input,
+            asm,
+            data,
+            out,
+            name,
+            max_clashes,
+            overrides,
+        } => {
+            let mut run = Run::new("export", json);
+            let job = export::ExportJob {
+                input: &input,
+                asm: &asm,
+                data,
+                out: &out,
+                name: name.as_deref(),
+                max_clashes,
+                overrides: &overrides,
+            };
+            let r = export::run(&mut run, &job);
+            run.finish(r)
+        }
+        Command::Batch {
+            dir,
+            manifest,
+            out,
+            jobs,
+            overrides,
+        } => {
+            let mut run = Run::new("batch", json);
+            let job = batch::BatchJob {
+                dir: &dir,
+                manifest: manifest.as_deref(),
+                out: out.as_deref(),
+                jobs,
+                overrides: &overrides,
+            };
+            let r = batch::run(&mut run, &job);
             run.finish(r)
         }
         Command::Commands => {

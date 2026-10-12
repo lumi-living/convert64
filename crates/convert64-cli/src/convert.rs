@@ -82,13 +82,22 @@ impl FormatArg {
         }
     }
 
-    const fn name(self) -> &'static str {
+    pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::Kla => "kla",
             Self::Art => "art",
             Self::Prg => "prg",
             Self::Raw => "raw",
             Self::Png => "png",
+        }
+    }
+
+    /// The extension of the path an output of this format is named by (the manifest,
+    /// for a raw set).
+    pub(crate) const fn extension(self) -> &'static str {
+        match self {
+            Self::Raw => "json",
+            other => other.name(),
         }
     }
 }
@@ -188,6 +197,30 @@ fn named<T: serde::de::DeserializeOwned>(what: &str, name: &str) -> Result<T, Fa
 }
 
 impl Overrides {
+    /// `self` on top of `base`: every value `self` sets wins (a batch file's settings
+    /// over the manifest's defaults over the command line's).
+    pub(crate) fn or(self, base: &Self) -> Self {
+        Self {
+            mode: self.mode.or(base.mode),
+            palette: self.palette.or_else(|| base.palette.clone()),
+            metric: self.metric.or_else(|| base.metric.clone()),
+            cell_metric: self.cell_metric.or_else(|| base.cell_metric.clone()),
+            dither: self.dither.or_else(|| base.dither.clone()),
+            strength: self.strength.or(base.strength),
+            bg: self.bg.or_else(|| base.bg.clone()),
+            supersample: self.supersample.or(base.supersample),
+            no_cell_clamp: self.no_cell_clamp || base.no_cell_clamp,
+            max_luma_diff: self.max_luma_diff.or(base.max_luma_diff),
+            error_clamp: self.error_clamp.or(base.error_clamp),
+            adaptive: self.adaptive.or(base.adaptive),
+            hysteresis: self.hysteresis.or(base.hysteresis),
+            mix_levels: self.mix_levels.or(base.mix_levels),
+            smooth: self.smooth || base.smooth,
+            gamma: self.gamma.or(base.gamma),
+            match_range: self.match_range || base.match_range,
+        }
+    }
+
     /// The recipe fields these overrides set, as recipe JSON (`method.kind` as `kind`).
     fn recipe_patch(&self) -> Result<Vec<(&'static str, Value)>, Fail> {
         let mut patch = Vec::new();
