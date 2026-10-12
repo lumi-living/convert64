@@ -19,11 +19,11 @@ Every command exits with one of these:
 
 | Field | Meaning |
 |---|---|
-| `command` | `convert`, `validate`, `recipe apply`, `recipe commands`, or `usage` for a command line that could not be parsed |
+| `command` | `convert`, `validate`, `apply`, `commands`, `recipe apply`, `recipe commands`, or `usage` for a command line that could not be parsed |
 | `ok` | `exit_code == 0` |
 | `exit_code` | As above |
 | `error` | The error message, or `null` |
-| `timing_ms` | `total`, plus each phase the command ran: `load`, `solve`, `write`, `validate` |
+| `timing_ms` | `total`, plus each phase the command ran: `load`, `apply`, `solve`, `write`, `validate` |
 | `files_written` | Every file written, in order, as given on the command line |
 
 followed by the command's own fields.
@@ -94,6 +94,26 @@ convert64 validate <file> [--format kla|art]
 
 Checks a picture against [vic-ii-constraints.md](vic-ii-constraints.md) §6 and prints `legal` (exit 0) or every violation (exit 1). JSON fields: `file`, `format`, `mode`, `legal`, `violations` (`rule`, `location`, `message`).
 
+## `apply`
+
+```sh
+convert64 apply <project.convert64> [--commands steps.json] [--command '<json>']… [-o out.convert64 | --in-place] [--embed | --link]
+```
+
+Runs commands from the core's registry on a project, exactly as the app runs them (ADR-005), and saves it. Every registry command is available here: this is the CLI's half of GUI/CLI parity, and `crates/convert64-cli/tests/parity.rs` fails if a registry command cannot run through it or gives a different project than the core in-process.
+
+Commands are `{"command": "<name>", …arguments}` objects. `--commands FILE` holds an array of them (paths inside, such as `mask_load`'s, are relative to the file); each `--command` adds one (paths relative to the working directory); the file's run first. Without `-o` or `--in-place` nothing is written and the commands are only checked. A failing command names itself and its index, and nothing is written (exit 2).
+
+JSON fields: `file`, `commands_applied` (their names), `layers`.
+
+## `commands`
+
+```sh
+convert64 commands [--json]
+```
+
+Lists the registry: each command's name, summary and arguments (`?` marks optional ones). With `--json`, `commands` holds each one's `name`, `summary`, `schema` (JSON Schema of its arguments, the same the MCP server gives its tools) and `example` (a working command for a project whose layer 0 is at least 32 × 32 pixels).
+
 ## `recipe apply`
 
 ```sh
@@ -104,4 +124,4 @@ Loads a project or a version-1 recipe, runs its commands, and writes what is ask
 
 ## `recipe commands`
 
-Lists the registry's commands, the ones a recipe or project's `commands` can contain. JSON field: `commands` (`name`, `summary`).
+The same as `commands`.

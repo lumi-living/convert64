@@ -406,6 +406,13 @@ As built in #164 (2026-10-12): `convert64 convert` over projects, every M1 outpu
 - **`--json`** is global. Every command prints one object: `command`, `ok`, `exit_code`, `error`, `timing_ms` (`total` and phases), `files_written`, then its own fields (`report.rs`). `convert`'s solve fields are `background`, `clashes`, `legal`, `violations`, `solve_error`, `summary`, `worst`; the total solve error moved from `error` to `solve_error`, since `error` is now the message.
 - **`--save-project`** writes the project `convert` solved, overrides applied, so `convert64 convert title.png --dither bayer4 --save-project art/title.convert64` starts a project from the command line.
 
+As built in #166 (2026-10-12): GUI/CLI parity, enforced by a test.
+
+- **`convert64 apply`** runs any registry command on a project (`--commands FILE`, repeatable `--command JSON`) and saves it (`-o`, `--in-place`), through `Session::run_at`, so a command's file paths resolve against the file it came from or the working directory.
+- **`convert64 commands`** lists the registry with each command's argument schema; `--json` adds the JSON Schema and a working example. Both live in `convert64_cli::schema`, which the MCP server now uses for its tools' input schemas too (it had hand-written schemas for three commands).
+- **The parity test** (`crates/convert64-cli/tests/parity.rs`) enumerates `REGISTRY`, takes each command's example from `convert64 commands --json`, runs it through `convert64 apply`, and compares the saved project with the same command run on the core in-process. A registry command with no JSON form, schema, example or CLI path fails it.
+- **What parity covers so far.** The registry holds the 14 mask and cell commands (E4, E5). Layer, recipe, mode and palette changes are not commands yet: the CLI sets them through the project file and `convert`'s options. They join the registry, and so this test, when the app (E8) needs them as undoable actions.
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.
