@@ -54,7 +54,76 @@ pub(crate) enum Mode {
     Accept,
 }
 
-pub(crate) fn run(accept: bool, reason: Option<&str>, pr: Option<u32>) -> Result<(), String> {
+/// Which pull request a changelog line cites.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PrRef {
+    /// A pull request number.
+    Number(u32),
+    /// Not opened yet: `--set-pr N` fills it in.
+    Pending,
+}
+
+/// The placeholder `--pr pending` writes and `--set-pr` replaces.
+pub(crate) const PENDING: &str = "#pending";
+
+impl std::str::FromStr for PrRef {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        if s == "pending" {
+            return Ok(Self::Pending);
+        }
+        s.trim_start_matches('#')
+            .parse()
+            .map(Self::Number)
+            .map_err(|_| format!("--pr takes a pull request number or `pending`, not {s:?}"))
+    }
+}
+
+impl std::fmt::Display for PrRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Number(n) => write!(f, "#{n}"),
+            Self::Pending => f.write_str(PENDING),
+        }
+    }
+}
+
+/// `--set-pr N`: rewrites every `#pending` changelog entry to `#N`.
+pub(crate) fn set_pr(root: &Path, n: u32) -> Result<(), String> {
+    let path = root.join("fixtures").join("CHANGELOG.md");
+    let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (out, count) = replace_pending(&text, n);
+    if count == 0 {
+        return Err(format!(
+            "{} has no {PENDING} entries; nothing to set",
+            path.display()
+        ));
+    }
+    fs::write(&path, out).map_err(|e| format!("{}: {e}", path.display()))?;
+    println!(
+        "{count} changelog entr{} now cite #{n}; commit fixtures/CHANGELOG.md.",
+        if count == 1 { "y" } else { "ies" }
+    );
+    Ok(())
+}
+
+/// Replaces `#pending` in changelog entry lines (`- <date> #pending …`) with `#n`.
+fn replace_pending(text: &str, n: u32) -> (String, usize) {
+    let mut count = 0;
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let is_entry = line.starts_with("- ") && line.split(' ').nth(2) == Some(PENDING);
+        if is_entry {
+            out.push_str(&line.replacen(PENDING, &format!("#{n}"), 1));
+            count += 1;
+        } else {
+            out.push_str(line);
+        }
+    }
+    (out, count)
+}
+
+pub(crate) fn run(accept: bool, reason: Option<&str>, pr: Option<PrRef>) -> Result<(), String> {
     let reason = match (accept, reason.map(str::trim)) {
         (true, None | Some("")) => {
             return Err("--accept needs --reason \"why the goldens change\"".to_owned());
@@ -65,13 +134,20 @@ pub(crate) fn run(accept: bool, reason: Option<&str>, pr: Option<u32>) -> Result
     let pr = match (accept, pr) {
         (true, None) => {
             return Err(
-                "--accept needs --pr <number> of the pull request the goldens go into".to_owned(),
+                "--accept needs --pr <number>, or --pr pending before the PR exists".to_owned(),
             );
         }
         (_, pr) => pr,
     };
     let mode = if accept { Mode::Accept } else { Mode::Report };
     let root = repo_root();
+    let log = fs::read_to_string(root.join("fixtures").join("CHANGELOG.md")).unwrap_or_default();
+    if replace_pending(&log, 0).1 > 0 {
+        println!(
+            "note: fixtures/CHANGELOG.md has {PENDING} entries; run `cargo xtask regen-goldens \
+             --set-pr N` once the pull request exists."
+        );
+    }
     let dirty = check_tree(&root, mode)?;
     let head = git(&root, &["rev-parse", "--short=12", "HEAD"])?;
     let commit = if dirty {
@@ -348,7 +424,7 @@ fn mse(a: &[Rgb8], b: &[Rgb8]) -> f64 {
 }
 
 /// One changelog line per fixture, listing every file that changed in it.
-fn changelog_lines(changes: &[Change], date: &str, pr: u32, reason: &str) -> Vec<String> {
+fn changelog_lines(changes: &[Change], date: &str, pr: PrRef, reason: &str) -> Vec<String> {
     let mut by_fixture: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for c in changes {
         by_fixture.entry(&c.fixture).or_default().push(&c.file);
@@ -357,14 +433,19 @@ fn changelog_lines(changes: &[Change], date: &str, pr: u32, reason: &str) -> Vec
         .into_iter()
         .map(|(fixture, files)| {
             format!(
-                "- {date} #{pr} **{fixture}** ({}): {reason}",
+                "- {date} {pr} **{fixture}** ({}): {reason}",
                 files.join(", ")
             )
         })
         .collect()
 }
 
-fn append_changelog(root: &Path, changes: &[Change], pr: u32, reason: &str) -> Result<(), String> {
+fn append_changelog(
+    root: &Path,
+    changes: &[Change],
+    pr: PrRef,
+    reason: &str,
+) -> Result<(), String> {
     let path = root.join("fixtures").join("CHANGELOG.md");
     let mut text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     if !text.ends_with('\n') {
@@ -401,7 +482,9 @@ fn civil_date(days: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Apply, Change, Mode, changelog_lines, check_tree, civil_date, run};
+    use super::{
+        Apply, Change, Mode, PrRef, changelog_lines, check_tree, civil_date, replace_pending, run,
+    };
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
@@ -461,9 +544,9 @@ mod tests {
 
     #[test]
     fn accept_without_reason_is_rejected_before_anything_runs() {
-        let err = run(true, None, Some(1)).expect_err("needs a reason");
+        let err = run(true, None, Some(PrRef::Number(1))).expect_err("needs a reason");
         assert!(err.contains("--reason"), "{err}");
-        let err = run(true, Some("   "), Some(1)).expect_err("blank reason");
+        let err = run(true, Some("   "), Some(PrRef::Number(1))).expect_err("blank reason");
         assert!(err.contains("--reason"), "{err}");
         let err = run(true, Some("why"), None).expect_err("needs a PR number");
         assert!(err.contains("--pr"), "{err}");
@@ -484,7 +567,7 @@ mod tests {
                 change("portrait", "expected.png"),
             ],
             "2026-10-11",
-            123,
+            PrRef::Number(123),
             "new dither",
         );
         assert_eq!(
@@ -494,5 +577,34 @@ mod tests {
                 "- 2026-10-11 #123 **title** (expected.png): new dither",
             ]
         );
+    }
+
+    #[test]
+    fn pending_entries_are_set_once_the_pr_exists() {
+        let change = |fixture: &str| Change {
+            fixture: fixture.to_owned(),
+            file: "expected.png".to_owned(),
+            detail: String::new(),
+            apply: Apply::Snapshot(PathBuf::new()),
+        };
+        let lines = changelog_lines(&[change("title")], "2026-10-12", PrRef::Pending, "why");
+        assert_eq!(
+            lines,
+            ["- 2026-10-12 #pending **title** (expected.png): why"]
+        );
+        let text = format!(
+            "# Log\n\nMentions #pending in prose.\n- 2026-10-11 #70 **a** (x): y\n{}\n",
+            lines[0]
+        );
+        let (out, n) = replace_pending(&text, 141);
+        assert_eq!(n, 1);
+        assert!(out.contains("- 2026-10-12 #141 **title** (expected.png): why"));
+        assert!(
+            out.contains("Mentions #pending in prose."),
+            "prose is untouched"
+        );
+        assert_eq!("pending".parse::<PrRef>(), Ok(PrRef::Pending));
+        assert_eq!("#12".parse::<PrRef>(), Ok(PrRef::Number(12)));
+        assert!("soon".parse::<PrRef>().is_err());
     }
 }
