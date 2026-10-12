@@ -6,6 +6,7 @@
 //! bytes; the caller does the file I/O. The other formats arrive with E6.
 
 mod bitmap_files;
+pub mod png;
 pub mod prg;
 
 pub use bitmap_files::{

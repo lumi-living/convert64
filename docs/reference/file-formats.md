@@ -73,6 +73,17 @@ Separate files with no headers, plus a small manifest:
 <name>.json         mode, palette preset, suggested load addresses
 ```
 
+### PNG preview (`convert64_formats::png`)
+Not a C64 file: a picture of what the VIC-II shows, for people and diffs.
+```
+Size        320·zoom × 200·zoom pixels, zoom 1–8, both modes
+Pixels      8-bit RGB (PNG colour type 2), no alpha, no gamma or colour-profile chunks
+Colours     exactly the 16 RGB values of the palette object passed in (the solve's own)
+Aspect      multicolor: each logical pixel 2·zoom wide, zoom tall; hi-res: zoom × zoom
+Scaling     pixel repetition only; never filtered or resampled
+```
+`png::preview(&BitmapImage, &Palette, zoom)` and `png::preview_indexed(&IndexedBitmap, …)` return the PNG bytes; `png::rgb` returns the raw pixels. The PNG is RGB, not indexed: the `image` crate cannot write a palette PNG and TAD §4 allows no other PNG crate. The output is byte-stable for a given `image` version (its default encoder settings, no metadata). At 1× every png2c64 baseline's preview equals png2c64's own `baseline.png` pixel for pixel, and every solve's equals the golden harness's rendering (`crates/convert64-formats/tests/png_preview.rs`, #160).
+
 ### FLI (`.fli`, raw layout as used by retropixels/Convert64)
 ```
 0       2     Load address

@@ -11,8 +11,6 @@ publish.workspace = true
 
 [dependencies]
 convert64-core = { workspace = true }
-
-[dev-dependencies]
 image = { workspace = true }
 
 [lints]
