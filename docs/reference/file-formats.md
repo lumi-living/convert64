@@ -4,27 +4,43 @@ Byte layouts Convert64 reads and writes. Offsets are decimal unless prefixed `$`
 
 ## Bitmap pictures
 
+Koala and Art Studio share one shape: a two-byte load address, then the 8000 bitmap bytes, then Screen RAM, then (Koala only) Colour RAM and the background. Bitmap bytes are in VIC-II order, one 8-byte cell after another along each row (`offset = cell_row × 320 + cell_col × 8 + pixel_row`), bit 7 leftmost ([vic-ii-constraints.md §2](vic-ii-constraints.md)). Screen and Colour RAM are 1000 bytes, one per cell, row by row (`cell_row × 40 + cell_col`). "In memory" is where each block lands when the file is loaded at its conventional address; a viewer copies Screen and Colour RAM from there to the addresses it displays from.
+
 ### Koala Painter (`.kla`, `.koa`) — multicolor bitmap
 ```
-Offset  Size  Content
-0       2     Load address $6000 ($00 $60)
-2       8000  Bitmap
-8002    1000  Screen RAM   (per cell: high nybble = bit pair 01, low nybble = 10)
-9002    1000  Colour RAM   (per cell: low nybble = bit pair 11)
-10002   1     Background colour (bit pair 00)
-Total   10003
+Offset         Size  In memory at $6000   Content
+0     $0000    2     —                    Load address, little-endian: $00 $60 = $6000
+2     $0002    8000  $6000–$7F3F          Bitmap: 2 bits per pixel, 4 pixels per byte
+8002  $1F42    1000  $7F40–$8327          Screen RAM: high nybble = bit pair 01, low nybble = bit pair 10
+9002  $232A    1000  $8328–$870F          Colour RAM: low nybble = bit pair 11
+10002 $2712    1     $8710                Background colour ($D021) = bit pair 00
+Total          10003
 ```
 
 ### Art Studio (`.art`, `.aas`) — hi-res bitmap
 ```
-0       2     Load address $2000
-2       8000  Bitmap
-8002    1000  Screen RAM (high nybble = bit 1 colour, low nybble = bit 0 colour)
-Total   9002
+Offset         Size  In memory at $2000   Content
+0     $0000    2     —                    Load address, little-endian: $00 $20 = $2000
+2     $0002    8000  $2000–$3F3F          Bitmap: 1 bit per pixel, 8 pixels per byte
+8002  $1F42    1000  $3F40–$4327          Screen RAM: high nybble = colour of set bits (1), low nybble = clear bits (0)
+[9002 $232A    7     $4328–$432E          Padding, in some files]
+Total          9002 (9009 padded)
 ```
-Some files carry 7 trailing padding bytes (9009 total); readers should accept both.
 
-`convert64-formats` reads both formats (`BitmapFormat::read`) and writes them (`BitmapFormat::write`, `BitmapFile::to_bytes`): Koala at load address `$6000`, Art Studio at `$2000` without padding. Every committed fixture baseline round-trips byte for byte.
+**As read** (`BitmapFormat::read`, `read_koala`, `read_art_studio`):
+- The format comes from the extension, case-insensitively and with or without a dot (`kla`/`koa` Koala, `art`/`aas` Art Studio: `BitmapFormat::from_extension`), or from the size alone, which no two formats share (`BitmapFormat::from_size`).
+- The size must be exactly 10003 (Koala) or 9002 or 9009 (Art Studio). Anything else is refused as rule 6 with a message that says whether the file is truncated or oversized and by how much, e.g. `Koala files are 10003 bytes; this one is 10002 (truncated: 1 byte short)`.
+- Any load address is accepted and kept (`BitmapFile::load_address`): Koala at `$6000` and Art Studio at `$2000` are the conventions, and the layout after the header does not depend on the address, so a file saved elsewhere reads the same. The round-trip tests use both `$6000` and `$2000` for both formats.
+- Koala Colour RAM keeps only its low nybble, as the hardware does: memory dumps of `$D800` carry random high bits. A background byte above `$0F` is refused (rule 2).
+- Art Studio's seven padding bytes are ignored, whatever they hold.
+
+**As written** (`BitmapFormat::write`, `BitmapFile::to_bytes`):
+- `BitmapFormat::write` writes the format's conventional load address (`$6000` Koala, `$2000` Art Studio); `BitmapFile::to_bytes` writes the file's own `load_address`, so a file read at another address writes back unchanged.
+- Koala: 10003 bytes. Colour RAM bytes have clear high nybbles.
+- Art Studio: 9002 bytes, never padded.
+- Each format refuses a picture of the other mode (`WriteError`) rather than writing a file a viewer would misread.
+
+Round trips, tested in `crates/convert64-formats/tests/bitmap_roundtrip.rs` (#158): every fixture solved in both modes writes, reads back as the same `BitmapImage` under each extension and at both load addresses, and validates; every committed png2c64 baseline reads and writes back byte for byte.
 
 ### Advanced Art Studio (`.ocp`, `.mpic`) — multicolor bitmap
 ```
