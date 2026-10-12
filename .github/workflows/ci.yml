@@ -37,6 +37,11 @@ jobs:
         run: cargo fmt --all --check
       - name: cargo clippy
         run: cargo clippy --workspace -- -D warnings
+      # The app theme is generated from design/tokens.json (#195); fail if the
+      # committed crates/convert64-app/src/theme/generated.rs is stale.
+      - name: cargo xtask tokens --check
+        if: runner.os == 'Linux'
+        run: cargo xtask tokens --check
       # The png2c64 parity test runs in its own step below, so its report shows.
       - name: cargo test
         run: cargo test --workspace -- --skip png2c64_parity

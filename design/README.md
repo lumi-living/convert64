@@ -20,9 +20,13 @@ Figma variables change and commit the diff; the diff is the review.
 
 ## How it is consumed
 
-`cargo xtask tokens` (E8) reads this file and generates
+`cargo xtask tokens` (#195) reads this file and generates
 `crates/convert64-app/src/theme/generated.rs`: `apply_light/apply_dark` for
-`egui / Visuals`, `apply_spacing`, `text_styles()`, `Theme::{LIGHT,DARK}`,
-and `layout::*` constants. `C64 / Palette` is **not** imported; a test asserts
-it equals the core palette and fails if Figma drifts. Fonts named in
-`egui / Text` must exist under `crates/convert64-app/assets/fonts/`.
+`egui / Visuals`, `apply_spacing`, `text_styles()`, `fonts::*`,
+`Theme::{LIGHT,DARK}`, and `layout::*` constants. It fails on any `rust` path
+egui 0.36 or the app does not have. After re-exporting, run it and commit both
+files; CI runs `cargo xtask tokens --check` and fails if `generated.rs` is
+stale. `C64 / Palette` is **not** imported; an xtask test asserts it equals the
+core's Colodore palette and fails if Figma drifts. Fonts named in
+`egui / Text` must exist under `crates/convert64-app/assets/fonts/` as
+`<Name without spaces>-Regular.ttf` (see the README there).
