@@ -6,6 +6,7 @@
 //! (`tests/parity.rs`) runs every example through `convert64 apply`, so a registry
 //! command without a schema, an example or a CLI path fails the build.
 
+use convert64_core::layer::DitherKind;
 use serde_json::{Value, json};
 
 /// An object schema with these properties, of which `required` must be present.
@@ -136,6 +137,175 @@ fn source_entry_schema() -> Value {
     )
 }
 
+fn enum_schema(values: &[&str], description: &str) -> Value {
+    json!({ "type": "string", "enum": values, "description": description })
+}
+
+fn layer_index_schema(description: &str) -> Value {
+    json!({ "type": "integer", "minimum": 0, "description": description })
+}
+
+fn transform_schema() -> Value {
+    object_schema(
+        json!({
+            "translate": point_schema(),
+            "scale": object_schema(json!({
+                "x": { "type": "number", "exclusiveMinimum": 0 },
+                "y": { "type": "number", "exclusiveMinimum": 0 }
+            }), &["x", "y"]),
+            "flip_h": { "type": "boolean", "default": false },
+            "flip_v": { "type": "boolean", "default": false }
+        }),
+        &[],
+    )
+}
+
+fn blend_schema() -> Value {
+    json!({ "type": "string", "enum": ["normal", "multiply", "screen", "overlay"], "default": "normal" })
+}
+
+fn source_schema() -> Value {
+    json!({
+        "description": "The pixels: a PNG path relative to the file the command is in (or the working directory), {\"path\": …}, {\"png_base64\": …} or {\"layer\": n} (an existing layer's pixels, shared)",
+        "oneOf": [
+            { "type": "string" },
+            object_schema(json!({ "path": { "type": "string" } }), &["path"]),
+            object_schema(json!({ "png_base64": { "type": "string" } }), &["png_base64"]),
+            object_schema(json!({ "layer": { "type": "integer", "minimum": 0 } }), &["layer"])
+        ]
+    })
+}
+
+fn method_schema() -> Value {
+    let kinds: Vec<Value> = DitherKind::ALL
+        .iter()
+        .filter_map(|k| serde_json::to_value(k).ok())
+        .collect();
+    object_schema(
+        json!({
+            "kind": { "type": "string", "enum": kinds,
+                      "description": "Dither method (docs/reference/dither-methods.md)" },
+            "orientation": enum_schema(&["auto", "vertical-biased", "two-to-one"], "Orientation preference"),
+            "custom": { "type": "array", "items": { "type": "integer", "minimum": 0 },
+                        "description": "Threshold ranks of a custom matrix (kind \"custom\")" }
+        }),
+        &["kind"],
+    )
+}
+
+/// The recipe fields, every one optional (a `recipe_set` change; a whole recipe needs
+/// `method` and `strength`).
+fn recipe_properties() -> Value {
+    json!({
+        "method": method_schema(),
+        "strength": unit("Dither strength", 1.0),
+        "phase": enum_schema(&["screen", "layer"], "Pattern locked to the screen or to the layer"),
+        "metric": enum_schema(&["oklab", "cielab", "pepto-yuv", "rgb"], "Colour metric"),
+        "allowed": colours_schema(1, 16),
+        "fit_mode": enum_schema(&["adaptive", "force"], "Adaptive or Force"),
+        "cell_clamp": { "type": "boolean", "description": "Native solver: keep diffused error inside a cell's colours" },
+        "max_luma_diff": { "type": "integer", "minimum": 0, "maximum": 8,
+                           "description": "Native solver: luma levels a mix may span (8 = off)" },
+        "adaptive": unit("Native solver: adaptive strength", 0.0),
+        "mix_levels": { "type": "integer", "minimum": 1, "maximum": 16,
+                        "description": "Native solver: mix ratios per pair" },
+        "smooth": { "type": "boolean", "description": "Native solver: smooth gradients" },
+        "cell_metric": enum_schema(&["mse", "blur", "ssim"], "Native solver: the cell score"),
+        "error_clamp": { "type": "number", "exclusiveMinimum": 0,
+                         "description": "Diffused error clamp per metric channel" },
+        "ordered_semantics": enum_schema(&["png2c64", "legacy"], "Ordered threshold semantics"),
+        "chroma_guard": { "type": "boolean", "description": "Native solver: the chroma guard" }
+    })
+}
+
+fn recipe_schema() -> Value {
+    object_schema(recipe_properties(), &["method", "strength"])
+}
+
+fn recipe_change_schema() -> Value {
+    let mut props = recipe_properties();
+    let p = props.as_object_mut().expect("object");
+    p.insert(
+        "allow".to_owned(),
+        json!({ "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 15 },
+                "description": "Colours added to the allowed set" }),
+    );
+    p.insert(
+        "deny".to_owned(),
+        json!({ "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 15 },
+                "description": "Colours taken out of the allowed set" }),
+    );
+    let mut schema = object_schema(props, &[]);
+    schema["description"] = json!(
+        "The recipe fields that change; the others are kept. Allowed colours: `allowed` (or the current set), plus `allow`, minus `deny`."
+    );
+    schema
+}
+
+fn adjustments_properties() -> Value {
+    let signed = |d: &str| json!({ "type": "number", "minimum": -1, "maximum": 1, "default": 0, "description": d });
+    let curve = json!({ "type": "array", "items": { "type": "array", "items": { "type": "number", "minimum": 0, "maximum": 1 }, "minItems": 2, "maxItems": 2 },
+                        "description": "Control points [x, y], 0–1" });
+    json!({
+        "gamma": { "type": "number", "minimum": 0.1, "maximum": 8, "default": 1 },
+        "levels": levels_schema(),
+        "brightness_contrast": object_schema(json!({
+            "brightness": signed("Brightness, linear light"),
+            "contrast": signed("Contrast")
+        }), &[]),
+        "hsl": object_schema(json!({
+            "hue": { "type": "number", "default": 0, "description": "Hue rotation, degrees" },
+            "saturation": signed("Saturation change"),
+            "lightness": signed("Lightness change")
+        }), &[]),
+        "curves": object_schema(json!({
+            "master": curve.clone(), "red": curve.clone(), "green": curve.clone(), "blue": curve
+        }), &[]),
+        "match_range": {
+            "description": "OKLab range matching (a project file's form), or null to turn it off",
+            "oneOf": [
+                { "type": "null" },
+                object_schema(json!({
+                    "percentile": { "type": "number" },
+                    "l": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+                    "a": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+                    "b": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }
+                }), &["percentile", "l", "a", "b"])
+            ]
+        }
+    })
+}
+
+fn palette_schema() -> Value {
+    json!({
+        "description": "A preset, 16 colours in VIC-II index order, or a VICE .vpl file relative to the file the command is in (or the working directory)",
+        "oneOf": [
+            { "type": "string", "enum": ["pepto", "pepto-pal", "pepto-ntsc", "colodore"] },
+            object_schema(json!({ "custom": { "type": "array", "minItems": 16, "maxItems": 16,
+                "items": { "type": "string", "pattern": "^#?[0-9A-Fa-f]{6}$" } } }), &["custom"]),
+            object_schema(json!({ "vpl": { "type": "string" } }), &["vpl"])
+        ]
+    })
+}
+
+fn divergences_schema() -> Value {
+    let mut schema = object_schema(
+        json!({
+            "chroma_guard": { "type": "boolean", "default": false },
+            "max_luma_diff": { "type": ["integer", "null"], "minimum": 0, "maximum": 8, "default": null },
+            "pair_bias": { "type": "number", "default": 0 },
+            "cell_clamp": { "type": "boolean", "default": false },
+            "mix_levels": { "type": ["integer", "null"], "minimum": 1, "default": null },
+            "bridging": { "type": "boolean", "default": false }
+        }),
+        &[],
+    );
+    schema["description"] = json!(
+        "The reference solver's named divergences from png2c64 (docs/reference/png2c64-reference.md), as a whole: those not named are off"
+    );
+    schema
+}
+
 /// The JSON Schema of a registry command's arguments, or `None` for a name that is not
 /// a command.
 pub fn command_schema(name: &str) -> Option<Value> {
@@ -229,13 +399,104 @@ pub fn command_schema(name: &str) -> Option<Value> {
             json!({ "cells": cells_schema(), "colours": colours_schema(1, 16) }),
             &["cells", "colours"],
         ),
+        "layer_add" => object_schema(
+            json!({
+                "name": { "type": "string" },
+                "source": source_schema(),
+                "index": layer_index_schema("Stack position, 0 = bottom; absent puts it on top"),
+                "visible": { "type": "boolean", "default": true },
+                "transform": transform_schema(),
+                "opacity": unit("Opacity", 1.0),
+                "blend": blend_schema(),
+                "recipe": recipe_schema(),
+                "adjustments": object_schema(adjustments_properties(), &[])
+            }),
+            &["name", "source"],
+        ),
+        "layer_remove" | "layer_duplicate" => {
+            object_schema(json!({ "layer": layer() }), &["layer"])
+        }
+        "layer_reorder" => object_schema(
+            json!({ "layer": layer(), "to": layer_index_schema("The new stack position, 0 = bottom") }),
+            &["layer", "to"],
+        ),
+        "layer_set_visible" => object_schema(
+            json!({ "layer": layer(), "visible": { "type": "boolean" } }),
+            &["layer", "visible"],
+        ),
+        "layer_set_opacity" => object_schema(
+            json!({ "layer": layer(), "opacity": { "type": "number", "minimum": 0, "maximum": 1 } }),
+            &["layer", "opacity"],
+        ),
+        "layer_set_blend" => object_schema(
+            json!({ "layer": layer(), "blend": blend_schema() }),
+            &["layer", "blend"],
+        ),
+        "layer_set_transform" => object_schema(
+            json!({ "layer": layer(), "transform": transform_schema() }),
+            &["layer", "transform"],
+        ),
+        "layer_nudge" => object_schema(
+            json!({ "layer": layer(), "by": point_schema() }),
+            &["layer", "by"],
+        ),
+        "layer_rename" => object_schema(
+            json!({ "layer": layer(), "name": { "type": "string", "minLength": 1 } }),
+            &["layer", "name"],
+        ),
+        "adjustments_set" => object_schema(
+            json!({
+                "layer": layer(),
+                "adjustments": {
+                    "description": "The adjustments that change; the others are kept",
+                    "type": "object",
+                    "properties": adjustments_properties(),
+                    "additionalProperties": false
+                }
+            }),
+            &["layer", "adjustments"],
+        ),
+        "recipe_set" => object_schema(
+            json!({ "layer": layer(), "recipe": recipe_change_schema() }),
+            &["layer", "recipe"],
+        ),
+        "mode_set" => object_schema(
+            json!({ "mode": enum_schema(&["multicolor-bitmap", "hires-bitmap"], "Target mode") }),
+            &["mode"],
+        ),
+        "palette_set" => object_schema(json!({ "palette": palette_schema() }), &["palette"]),
+        "background_pin" => object_schema(
+            json!({
+                "background": {
+                    "description": "{\"fixed\": n} pins colour n (multicolor); \"auto\" searches all 16",
+                    "oneOf": [
+                        { "type": "string", "enum": ["auto"] },
+                        object_schema(json!({ "fixed": { "type": "integer", "minimum": 0, "maximum": 15 } }), &["fixed"])
+                    ]
+                }
+            }),
+            &["background"],
+        ),
+        "solve_set" => object_schema(
+            json!({
+                "solver": enum_schema(&["reference", "native"], "png2c64's pipeline (reference) or Convert64's own (native)"),
+                "divergences": divergences_schema(),
+                "hysteresis": { "type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 1,
+                                "description": "Refinement hysteresis ratio; null turns it off" },
+                "luma_pair_bias": { "type": "number", "description": "Same-luma pair bias per pair (native solver)" },
+                "refinements": { "type": "integer", "minimum": 0, "maximum": 2 },
+                "finalists": { "type": "integer", "minimum": 1, "maximum": 16 }
+            }),
+            &[],
+        ),
         _ => return None,
     })
 }
 
 /// A working example of a registry command, as a recipe or project file's `commands`
-/// entry. It assumes layer 0 is at least 32 × 32 pixels and, for `mask_load`, a
-/// greyscale `mask.png` of layer 0's size next to it.
+/// entry. It assumes a project of at least two layers whose layer 0 is at least 32 × 32
+/// pixels, with a greyscale `mask.png` of layer 0's size (`mask_load`) and a PNG
+/// `photo.png` (`layer_add`) next to it.
 pub fn example(name: &str) -> Option<Value> {
     let square =
         json!([{ "x": 4, "y": 4 }, { "x": 28, "y": 4 }, { "x": 28, "y": 28 }, { "x": 4, "y": 28 }]);
@@ -261,6 +522,28 @@ pub fn example(name: &str) -> Option<Value> {
         "cell_clear" => json!({ "cells": [{ "x": 3, "y": 4 }] }),
         "cell_allow" => json!({ "cells": [{ "x": 5, "y": 5 }], "colours": [0, 1, 2] }),
         "cell_deny" => json!({ "cells": [{ "x": 6, "y": 5 }], "colours": [7] }),
+        "layer_add" => json!({ "name": "overlay", "source": "photo.png", "index": 1,
+            "opacity": 0.5, "blend": "screen",
+            "transform": { "translate": { "x": 16, "y": 8 }, "scale": { "x": 2, "y": 2 } } }),
+        "layer_remove" => json!({ "layer": 1 }),
+        "layer_reorder" => json!({ "layer": 0, "to": 1 }),
+        "layer_set_visible" => json!({ "layer": 1, "visible": false }),
+        "layer_set_opacity" => json!({ "layer": 0, "opacity": 0.5 }),
+        "layer_set_blend" => json!({ "layer": 1, "blend": "multiply" }),
+        "layer_set_transform" => json!({ "layer": 0, "transform": {
+            "translate": { "x": 8, "y": 4 }, "scale": { "x": 2.5, "y": 2.5 }, "flip_h": true } }),
+        "layer_nudge" => json!({ "layer": 0, "by": { "x": 0.5, "y": -1 } }),
+        "layer_rename" => json!({ "layer": 0, "name": "background" }),
+        "layer_duplicate" => json!({ "layer": 0 }),
+        "adjustments_set" => json!({ "layer": 0, "adjustments": { "gamma": 1.4,
+            "brightness_contrast": { "brightness": 0.1, "contrast": 0.2 } } }),
+        "recipe_set" => json!({ "layer": 0, "recipe": { "method": { "kind": "bayer4" },
+            "strength": 0.75, "deny": [7] } }),
+        "mode_set" => json!({ "mode": "hires-bitmap" }),
+        "palette_set" => json!({ "palette": "colodore" }),
+        "background_pin" => json!({ "background": { "fixed": 0 } }),
+        "solve_set" => json!({ "solver": "native", "divergences": { "chroma_guard": true },
+            "hysteresis": 0.97 }),
         _ => return None,
     };
     let mut v = json!({ "command": name });
