@@ -28,6 +28,16 @@ impl Combine {
             Self::Multiply => a * b,
         }
     }
+
+    /// `row[x] = apply(row[x], b[x])`, one loop per kind so it vectorises (#139).
+    pub(crate) fn apply_row(self, row: &mut [f32], b: &[f32]) {
+        let pairs = row.iter_mut().zip(b);
+        match self {
+            Self::Max => pairs.for_each(|(a, &b)| *a = a.max(b)),
+            Self::Min => pairs.for_each(|(a, &b)| *a = a.min(b)),
+            Self::Multiply => pairs.for_each(|(a, &b)| *a *= b),
+        }
+    }
 }
 
 /// Shape of a gradient.
@@ -148,6 +158,37 @@ impl Gradient {
             ((t - 0.5) / self.softness + 0.5).clamp(0.0, 1.0)
         };
         1.0 - ramp
+    }
+
+    /// [`Self::value`] along the row at layer `y`: `out[x]` at `(x + ½, y)`. The same
+    /// arithmetic, with the shape and the softness decided once per row so the loop
+    /// vectorises (#139).
+    pub(crate) fn row(&self, y: f32, out: &mut [f32]) {
+        #[inline(always)]
+        fn run(out: &mut [f32], y: f32, t: impl Fn(Vec2) -> f32, ramp: impl Fn(f32) -> f32) {
+            for (x, o) in out.iter_mut().enumerate() {
+                *o = 1.0 - ramp(t(Vec2::new(x as f32 + 0.5, y)));
+            }
+        }
+        let (from, d) = (self.from, self.to - self.from);
+        let len2 = d.x * d.x + d.y * d.y;
+        let linear = |p: Vec2| {
+            let q = p - from;
+            (q.x * d.x + q.y * d.y) / len2
+        };
+        let radial = |p: Vec2| {
+            let q = p - from;
+            ((q.x * q.x + q.y * q.y) / len2).sqrt()
+        };
+        let soft = self.softness;
+        let hard = |t: f32| if t < 0.5 { 0.0 } else { 1.0 };
+        let smooth = |t: f32| ((t - 0.5) / soft + 0.5).clamp(0.0, 1.0);
+        match (self.kind, soft == 0.0) {
+            (GradientKind::Linear, true) => run(out, y, linear, hard),
+            (GradientKind::Linear, false) => run(out, y, linear, smooth),
+            (GradientKind::Radial, true) => run(out, y, radial, hard),
+            (GradientKind::Radial, false) => run(out, y, radial, smooth),
+        }
     }
 }
 
@@ -285,6 +326,31 @@ pub struct SourceEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gradient_rows_and_combines_match_per_pixel_values_bit_for_bit() {
+        let (from, to) = (Vec2::new(13.25, -4.5), Vec2::new(150.0, 77.75));
+        for kind in [GradientKind::Linear, GradientKind::Radial] {
+            for softness in [0.0, 0.3, 1.0] {
+                let g = Gradient::new(kind, from, to, softness).unwrap();
+                for y in [0.5f32, 40.5, 199.5] {
+                    let mut row = vec![0.0; 333];
+                    g.row(y, &mut row);
+                    for (x, v) in row.iter().enumerate() {
+                        let want = g.value(Vec2::new(x as f32 + 0.5, y));
+                        assert_eq!(v.to_bits(), want.to_bits(), "{kind:?} {softness} {x} {y}");
+                    }
+                    for c in [Combine::Max, Combine::Min, Combine::Multiply] {
+                        let mut a: Vec<f32> = (0..333).map(|i| (i % 17) as f32 / 16.0).collect();
+                        let want: Vec<f32> =
+                            a.iter().zip(&row).map(|(&a, &b)| c.apply(a, b)).collect();
+                        c.apply_row(&mut a, &row);
+                        assert!(a.iter().zip(&want).all(|(a, b)| a.to_bits() == b.to_bits()));
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn gradients() {
