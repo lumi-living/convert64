@@ -50,9 +50,9 @@ path, not a `var(--css)` name, because the consumer is `theme.rs`, not CSS.
 
 ## Reading Figma back into code
 
-1. Export variables with the Figma REST Variables API
-   (`GET /v1/files/:key/variables/local`) into `design/tokens.json`
-   (committed, so diffs are reviewable).
+1. Export variables into `design/tokens.json` (committed, so diffs are
+   reviewable). The REST Variables API is Enterprise-only, so the export uses
+   the Plugin API — see `design/README.md`.
 2. `cargo xtask tokens` (to be written, tracked in the app epic) turns the
    JSON into `convert64-app/src/theme/generated.rs`:
    - `egui / Visuals` → `fn apply_light(v: &mut Visuals)` / `apply_dark`
