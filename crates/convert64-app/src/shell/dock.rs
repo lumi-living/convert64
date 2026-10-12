@@ -36,7 +36,7 @@ pub(super) fn show(
     egui::ScrollArea::vertical().show(ui, |ui| {
         egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            tab_content(shell, ws, ui);
+            tab_content(shell, ws, ui, actions);
         });
     });
 }
@@ -183,13 +183,14 @@ fn tabs(shell: &mut Shell, ui: &mut Ui) {
 
 /// The selected tab's group. Each tab's form arrives with its own issue (#205, #206,
 /// #207); until a project is open it says what to do first.
-fn tab_content(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui) {
+fn tab_content(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui, actions: &mut Vec<Action>) {
     let has_project = ws.is_some();
-    if shell.tab == DockTab::Export
-        && let Some(ws) = ws
-    {
-        export_tab(shell, ws, ui);
-        return;
+    if let Some(ws) = ws {
+        match shell.tab {
+            DockTab::Export => return export_tab(shell, ws, ui),
+            DockTab::Layers => return super::layers::show(shell, ws, ui, actions),
+            DockTab::Recipe => {}
+        }
     }
     let (glyph, what) = match shell.tab {
         DockTab::Recipe => (icons::RECIPE, "the recipe"),

@@ -99,8 +99,9 @@ impl Files {
         }
     }
 
-    /// Open… (`Cmd O`): the native dialog or the browser's file picker.
-    pub fn pick_open(&self, ctx: &egui::Context) {
+    /// Open… (`Cmd O`): the native dialog or the browser's file picker. `as_layer`
+    /// marks the result to be added as a layer (New Layer from File…).
+    pub fn pick_open(&self, ctx: &egui::Context, as_layer: bool) {
         let dialog = rfd::AsyncFileDialog::new().add_filter(OPEN_FILTER.0, OPEN_FILTER.1);
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -110,7 +111,7 @@ impl Files {
                 .pick_file();
             drop(dialog);
             if let Some(path) = picked {
-                self.open_path(path);
+                self.read_path(path, as_layer);
             }
         }
         #[cfg(target_arch = "wasm32")]
@@ -124,7 +125,7 @@ impl Files {
                         name: file.file_name(),
                         bytes,
                         path: None,
-                        dropped: false,
+                        dropped: as_layer,
                     });
                     ctx.request_repaint();
                 }

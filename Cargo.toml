@@ -49,6 +49,8 @@ eframe = { version = "0.36.2", default-features = false, features = [
     "x11",
 ] }
 egui = "0.36.2"
+# Drag to reorder the layer list (#206; approved for E8 alongside TAD §4).
+egui_dnd = "0.17.0"
 # File dialogs (TAD §4): native dialogs (xdg-portal on Linux, no GTK) and the browser's
 # file picker in wasm.
 rfd = "0.17.2"

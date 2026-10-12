@@ -43,14 +43,35 @@ pub(super) fn show(
             }
         });
         ui.menu_button("Edit", |ui| {
-            item(ui, "Undo", Some(&s::UNDO), false);
-            item(ui, "Redo", Some(&s::REDO), false);
+            let (undo, redo) = shell.history;
+            if item(ui, "Undo", Some(&s::UNDO), open && undo) {
+                actions.push(Action::Undo);
+            }
+            if item(ui, "Redo", Some(&s::REDO), open && redo) {
+                actions.push(Action::Redo);
+            }
         });
         ui.menu_button("View", |ui| view_menu(shell, ui, actions));
         ui.menu_button("Layer", |ui| {
-            item(ui, "New Layer from File…", Some(&s::NEW_LAYER), false);
-            item(ui, "Duplicate", Some(&s::DUPLICATE_LAYER), false);
-            item(ui, "Delete", None, false);
+            let layer = convert64_project::LayerRef::Index(shell.layer);
+            if item(ui, "New Layer from File…", Some(&s::NEW_LAYER), open) {
+                actions.push(Action::NewLayer);
+            }
+            if item(ui, "Duplicate", Some(&s::DUPLICATE_LAYER), open) {
+                actions.push(Action::Run(
+                    convert64_project::JsonCommand::LayerDuplicate {
+                        layer: layer.clone(),
+                    },
+                ));
+            }
+            if item(ui, "Show / Hide", Some(&s::TOGGLE_VISIBLE), open) {
+                actions.push(Action::ToggleVisible(shell.layer));
+            }
+            if item(ui, "Delete", Some(&s::DELETE_LAYER), open) {
+                actions.push(Action::Run(convert64_project::JsonCommand::LayerRemove {
+                    layer,
+                }));
+            }
         });
         ui.menu_button("Recipe", |ui| {
             item(ui, "Reset to Defaults", None, false);
