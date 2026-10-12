@@ -2,10 +2,9 @@
 //! run headless on a project (ADR-005, CLAUDE.md non-negotiable 4).
 
 use crate::report::{Fail, Run};
-use convert64_cli::project::Embed;
-use convert64_cli::recipe::{JsonCommand, Session};
 use convert64_cli::schema;
 use convert64_core::command::REGISTRY;
+use convert64_project::{Embed, JsonCommand, Session};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 

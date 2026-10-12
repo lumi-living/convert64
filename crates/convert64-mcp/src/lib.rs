@@ -11,9 +11,9 @@
 //! `mask_stroke`, … with the recipe file's JSON arguments), `undo`, `redo`,
 //! `mask_export`, `composite_export` and `attributes_export`.
 
-use convert64_cli::recipe::{JsonCommand, LayerRef, Session};
 use convert64_cli::schema::{command_schema, layer_schema, object_schema};
 use convert64_core::command::REGISTRY;
+use convert64_project::{JsonCommand, LayerRef, Session};
 use serde_json::{Value, json};
 use std::path::Path;
 

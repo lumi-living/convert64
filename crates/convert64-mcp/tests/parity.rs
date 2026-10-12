@@ -113,7 +113,7 @@ fn mcp_tools_match_a_recipe_file() {
     child.wait().unwrap();
 
     let mcp = image::open(&mcp_png).unwrap().to_luma16();
-    let mut session = convert64_cli::recipe::Session::open(&dir.join("recipe.json")).unwrap();
+    let mut session = convert64_project::Session::open(&dir.join("recipe.json")).unwrap();
     let (w, h, want) = session.evaluated_mask(0).unwrap();
     assert_eq!(mcp.dimensions(), (w, h));
     assert_eq!(mcp.as_raw(), &want, "MCP and recipe-file masks differ");

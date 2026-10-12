@@ -96,6 +96,10 @@ convert64/                      cargo workspace only (Rust 2024)
 │  │                            Builds for wasm32 unchanged.
 │  ├─ convert64-formats/        byte-exact readers/writers: Koala, Art Studio, raw bins, .spd,
 │  │                            CharPad-style bins, PRG stubs, asm/C emitters
+│  ├─ convert64-project/        the `.convert64` project file (schema, load/save, recipe migration,
+│  │                            sources, masks) and `Session` (editor + compositor + solver); file
+│  │                            access through a `Store` trait, `FsStore` behind the `fs` feature.
+│  │                            Builds for wasm32 (no `parallel`, no `fs`).
 │  ├─ convert64-cli/            `convert64` binary (clap): convert / validate / export / batch
 │  ├─ convert64-mcp/            MCP server (rmcp, stdio) over the command registry
 │  └─ convert64-app/            eframe/egui UI; native via `cargo run`, web via `trunk build`
@@ -465,6 +469,14 @@ As built in #165 (2026-10-12): `export` to every assembler, `validate` for every
 - **`export <project | dir> --asm …`** solves each project and writes `convert64_formats::asm::emit`'s source for every target (`all` = KickAssembler, ACME, 64tass, ca65, C) with the binaries it includes, once per project; `--data` picks byte lines or includes of the raw set or picture file.
 - **`validate`** reads Koala, Art Studio, raw sets (manifest and blocks via `convert64_formats::raw::read`), convert64's display PRGs (header and loader compared byte for byte with `convert64_formats::prg`'s, then the embedded picture validated) and projects (loaded, solved, the solution validated, `clashes` reported).
 - **`batch <dir>`** converts every PNG and project in a directory with `std::thread::scope` workers pulling from a shared index (`-j`, default one per CPU); each file runs `convert`'s code with a non-printing report, and the batch report holds them all. Per-file settings come from a TOML manifest (`toml`, already approved in §4): `out`, `[defaults]`, `[files."…"]`, each `convert`'s options in kebab-case (the same `Overrides` struct, deserialised with unknown keys refused) plus `outputs`, `max-clashes` and `skip`. Precedence: command line, then the file's table, then `[defaults]`. A PNG with a same-named project beside it is skipped. Output is the same with one worker or many.
+
+As built in #192 (2026-10-13): the project model moves out of the CLI into `crates/convert64-project` (ADR-009, amended), so the wasm app can load and save projects.
+
+- **What moved.** `convert64_cli::project` and `convert64_cli::recipe` become `convert64_project`: `file` (the `ProjectFile` schema, `SolveSpec`, `PaletteSpec`, masks on disk), `recipe` (the version-1 `RecipeFile` and its migration), `command` (`JsonCommand`, `LayerRef`), `codec` (PNG decode/encode), `paths` (lexical `absolute`/`relative`), the base64 codec and `session::Session`. The CLI library keeps only `schema` (argument schemas and examples, which the MCP server shares). The core does not depend on the new crate.
+- **`Store`.** `trait Store: Send + Sync { fn read(&self, &Path) -> Result<Vec<u8>, ProjectError>; fn write(&self, &Path, &[u8]) -> Result<(), ProjectError>; }`. A session owns a `Box<dyn Store>` and reads every linked source, mask, `.vpl` and `mask_load` PNG through it; `Session::open_in(store, path)`, `Session::load(file, base, store)` and `save_to_store` are the store-generic entry points. `MemoryStore` (paths normalised, shareable as `Arc<MemoryStore>`) is the browser's and the tests'. `FsStore`, `Session::open`/`from_project`/`save`, `ProjectFile::read` and the PNG writers (`write_mask`, `write_composite`, `write_attributes`) are behind the `fs` feature, enabled by the CLI and MCP server only.
+- **`Session` lives here** because nothing in it needs the file system once files come through a `Store`, and the app needs the same thing the CLI has: a project loaded into the `Editor`, `Compositor` and `Solver`, with the composite, the evaluated masks and the attribute map as RGBA (`composite_rgba`, `evaluated_mask`, `attributes_rgba`).
+- **Features.** The crate depends on the core without `parallel`; the CLI and MCP server turn it on, so native solves stay parallel and `cargo tree -p convert64-app --target wasm32-unknown-unknown -e features` shows neither `rayon` nor `fs`. No new external crates: `image`, `serde` and `serde_json` as before.
+- **Unchanged.** Saved bytes, schema version 2, CLI output and exit codes. The on-disk round-trip tests stay in `convert64-cli/tests/project.rs`; the module tests moved with the code, and `convert64-project/tests/memory.rs` repeats the round trip with a `MemoryStore`. The app has a load/save smoke test.
 
 ### 4.1 Image model (`convert64-core::model`)
 

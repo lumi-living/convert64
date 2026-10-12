@@ -723,6 +723,7 @@ name = "convert64-app"
 version = "0.0.0"
 dependencies = [
  "convert64-core",
+ "convert64-project",
  "eframe",
  "egui",
 ]
@@ -734,6 +735,7 @@ dependencies = [
  "clap",
  "convert64-core",
  "convert64-formats",
+ "convert64-project",
  "image",
  "serde",
  "serde_json",
@@ -770,7 +772,18 @@ version = "0.0.0"
 dependencies = [
  "convert64-cli",
  "convert64-core",
+ "convert64-project",
  "image",
+ "serde_json",
+]
+
+[[package]]
+name = "convert64-project"
+version = "0.0.0"
+dependencies = [
+ "convert64-core",
+ "image",
+ "serde",
  "serde_json",
 ]
 

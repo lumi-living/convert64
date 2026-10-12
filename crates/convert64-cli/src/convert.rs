@@ -2,14 +2,14 @@
 
 use crate::report::{Fail, NOT_LEGAL, Run};
 use clap::ValueEnum;
-use convert64_cli::project::{Embed, PaletteSpec, ProjectFile, absolute};
-use convert64_cli::recipe::Session;
 use convert64_core::layer::{
     CellMetric, DitherKind, Gamma, Metric, OrderedSemantics, RangeMatch, suggest_range_match,
 };
 use convert64_core::mode::Mode;
 use convert64_core::solve::{Background, Solution};
 use convert64_formats::BitmapFormat;
+use convert64_project::paths::{absolute, relative};
+use convert64_project::{Embed, FsStore, PaletteSpec, ProjectFile, Session};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -365,10 +365,7 @@ impl Overrides {
             file.palette = PaletteSpec::from_arg(p).map_err(Fail::input)?;
             if let PaletteSpec::Vpl(path) = &file.palette {
                 // A .vpl named on the command line is relative to the working directory.
-                file.palette = PaletteSpec::Vpl(convert64_cli::project::relative(
-                    &absolute(base),
-                    &absolute(path),
-                ));
+                file.palette = PaletteSpec::Vpl(relative(&absolute(base), &absolute(path)));
             }
         }
         if let Some(bg) = &self.bg {
@@ -404,7 +401,7 @@ impl Overrides {
             .transpose()
             .map_err(Fail::input)?;
         let match_range = if self.match_range {
-            let palette = file.palette.resolve(base).map_err(Fail::input)?;
+            let palette = file.palette.resolve(base, &FsStore).map_err(Fail::input)?;
             Some(
                 RangeMatch::for_palette(
                     &palette,
