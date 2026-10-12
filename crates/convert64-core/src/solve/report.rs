@@ -38,6 +38,11 @@ pub struct CellReport {
     pub dropped: Vec<Dropped>,
     /// The cell's error: Σ weight × distance(composite colour, output colour).
     pub error: f32,
+    /// The dither crosses more luma levels than a pixel's `max_luma_diff` allows: two
+    /// neighbouring pixels that want the same colour came out more than that many
+    /// levels apart. Only checked where a recipe asked for a limit (PAL-blend safe).
+    #[serde(default)]
+    pub luma_cross: bool,
 }
 
 impl CellReport {
@@ -63,6 +68,9 @@ pub struct Summary {
     pub dropped_cost: f32,
     /// The worst cell, if any clashes.
     pub worst: Option<CellPos>,
+    /// Cells flagged [`CellReport::luma_cross`].
+    #[serde(default)]
+    pub luma_crossings: usize,
 }
 
 /// The report for a whole solve.
@@ -70,6 +78,54 @@ pub struct Summary {
 pub struct ClashReport {
     /// Every cell, row-major.
     pub cells: Vec<CellReport>,
+}
+
+/// Whether cell `i`'s dither crosses more luma levels than its pixels allow: a right or
+/// lower neighbour in the cell wanting the same colour of `set` (its nearest) came out
+/// more than `max_luma_diff` levels away. Unrestricted pixels are never checked.
+fn crosses_luma(
+    input: &Input,
+    tables: &MetricTables,
+    out: &[ColourIndex],
+    i: usize,
+    set: ColourSet,
+) -> bool {
+    let (w, _) = input.size;
+    let (cw, ch) = input.cell;
+    let (gx, gy) = (i % input.cells.0, i / input.cells.0);
+    let colours: Vec<ColourIndex> = set.iter().collect();
+    if colours.is_empty() {
+        return false;
+    }
+    let nearest = |x: usize, y: usize| {
+        let q = &input.px[y * w + x];
+        super::ordered::nearest(
+            q.metric,
+            q.coords,
+            &colours,
+            tables.colours(q.metric.space()),
+        )
+    };
+    for y in gy * ch..(gy + 1) * ch {
+        for x in gx * cw..(gx + 1) * cw {
+            let q = &input.px[y * w + x];
+            if q.max_luma_diff >= crate::layer::recipe::MAX_LUMA_DIFF_OFF || q.weight <= 0.0 {
+                continue;
+            }
+            for (nx, ny) in [(x + 1, y), (x, y + 1)] {
+                if nx >= (gx + 1) * cw || ny >= (gy + 1) * ch {
+                    continue;
+                }
+                let limit = q.max_luma_diff.min(input.px[ny * w + nx].max_luma_diff);
+                if nearest(x, y) == nearest(nx, ny)
+                    && crate::palette::luma::level_diff(out[y * w + x], out[ny * w + nx]) > limit
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 impl ClashReport {
@@ -81,6 +137,7 @@ impl ClashReport {
         tables: &MetricTables,
         out: &[ColourIndex],
         background: Option<ColourIndex>,
+        sets: &[ColourSet],
         reuse: Option<(crate::geom::CellSet, &Self)>,
     ) -> Self {
         let (w, _) = input.size;
@@ -133,12 +190,14 @@ impl ClashReport {
                     })
                     .collect();
                 dropped.sort_by(|a, b| b.cost.total_cmp(&a.cost).then(a.colour.cmp(&b.colour)));
+                let set = background.map_or(sets[i], |b| sets[i].with(b));
                 CellReport {
                     cell,
                     wanted: want,
                     chosen,
                     dropped,
                     error,
+                    luma_cross: crosses_luma(input, tables, out, i, set),
                 }
             })
             .collect();
@@ -161,6 +220,7 @@ impl ClashReport {
                 .first()
                 .copied()
                 .filter(|c| self.cell(*c).is_some_and(CellReport::is_clash)),
+            luma_crossings: self.cells.iter().filter(|c| c.luma_cross).count(),
         }
     }
 

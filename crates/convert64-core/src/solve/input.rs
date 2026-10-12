@@ -31,6 +31,12 @@ pub(crate) struct Px {
     pub fit: FitMode,
     /// Which layer or region the recipe came from.
     pub source: AttrSource,
+    /// Drop diffused error at cell borders (the recipe's `cell_clamp`).
+    pub cell_clamp: bool,
+    /// Dither mixes stay within this many luma levels (8 = unrestricted).
+    pub max_luma_diff: u8,
+    /// `1 − adaptive × detail`: scales this pixel's dither (1 when `adaptive` is 0).
+    pub adapt: f32,
 }
 
 /// Solver options that shape the per-pixel input.
@@ -128,9 +134,14 @@ impl Input {
                     phase: recipe.phase(),
                     fit: recipe.fit_mode(),
                     source: a.source,
+                    cell_clamp: recipe.cell_clamp(),
+                    max_luma_diff: recipe.max_luma_diff(),
+                    adapt: recipe.adaptive(),
                 }
             })
             .collect();
+        let mut px = px;
+        apply_adaptive(&mut px, frame.colour(), w, h);
         let intended = intended_colours(&px, tables);
         let dist = build_dist(&px, tables, w, (cw, ch), (cx, cy), &intended, only);
         let mut allowed = vec![ColourSet::ALL; cx * cy];
@@ -301,6 +312,43 @@ impl Input {
                     (ColourIndex::ALL[best], w)
                 })
             })
+    }
+}
+
+/// Turns each pixel's `adaptive` (stored in `adapt`) into its dither scale
+/// `1 − adaptive × detail`, with detail the mean OKLab |ΔL| to the 4 neighbours / 0.15,
+/// capped at 1 (png2c64 `--adaptive`), measured on the target grid.
+fn apply_adaptive(px: &mut [Px], colour: &[[f32; 3]], w: usize, h: usize) {
+    if px.iter().all(|q| q.adapt == 0.0) {
+        for q in px.iter_mut() {
+            q.adapt = 1.0;
+        }
+        return;
+    }
+    let l: Vec<f32> = colour
+        .iter()
+        .map(|c| super::metric::Space::OkLab.coords(*c)[0])
+        .collect();
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            let q = &mut px[i];
+            if q.adapt == 0.0 {
+                q.adapt = 1.0;
+                continue;
+            }
+            let mut sum = 0.0;
+            let mut n = 0.0;
+            for (dx, dy) in [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)] {
+                let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+                if nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h {
+                    sum += (l[i] - l[ny as usize * w + nx as usize]).abs();
+                    n += 1.0;
+                }
+            }
+            let detail = (sum / n / 0.15).min(1.0);
+            q.adapt = 1.0 - q.adapt * detail;
+        }
     }
 }
 
