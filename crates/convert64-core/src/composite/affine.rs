@@ -176,6 +176,15 @@ impl AffineMap {
         (area(&poly[..n]).abs() / full).clamp(0.0, 1.0) as f32
     }
 
+    /// Layer `(u, v)` of super-pixel index `(i, j)` (pixel `(i, j)`'s centre when whole).
+    #[inline(always)]
+    fn at(&self, i: f64, j: f64) -> (f64, f64) {
+        (
+            self.u[0] * i + self.u[1] * j + self.u[2],
+            self.v[0] * i + self.v[1] * j + self.v[2],
+        )
+    }
+
     /// Calls `f(k, u, v)` for outputs `ks` of super row `j` (indices into the columns of
     /// `rect`), with the layer coordinates of each one's centre.
     #[inline(always)]
@@ -364,6 +373,43 @@ pub(crate) fn resample_mask_affine(
             map.row(j, 0..ow, |k, u, v| {
                 row[k] = map.sample(src, mw, mh, u, v).clamp(0.0, 1.0);
             });
+        }
+    });
+}
+
+/// [`resample_mask_affine`] straight at half resolution, for a feather blurred there
+/// (`mask::eval::half_res_sigma`): `half` (`⌈w/2⌉ × ⌈h/2⌉` of `map.rect`) gets, per 2 × 2
+/// block of super pixels, the sample at the block's centre (at an odd edge, the centre
+/// of the one or two pixels there), clamped to `0..=1`. The separable path averages the
+/// block's four samples instead; under a feather of at least 4 target px (16 half-res
+/// px at 4×) the two differ by far less than an 8-bit step, and this takes a quarter
+/// of the samples.
+pub(crate) fn resample_mask_affine_half(
+    src: &[f32],
+    (mw, mh): (u32, u32),
+    map: &AffineMap,
+    half: &mut [f32],
+) {
+    let (w, h) = (map.rect.width() as usize, map.rect.height() as usize);
+    let (hw, hh) = (w.div_ceil(2), h.div_ceil(2));
+    debug_assert_eq!(half.len(), hw * hh);
+    if hw == 0 || hh == 0 {
+        return;
+    }
+    // A block's centre in super-pixel index space (pixel `i`'s centre is at `i`).
+    let centre = |b: usize, len: usize, origin: u32| {
+        let offset = if 2 * b + 1 < len { 0.5 } else { 0.0 };
+        f64::from(origin) + f64::from(u32::try_from(2 * b).expect("fits u32")) + offset
+    };
+    let mut chunks: Vec<_> = half.chunks_mut(hw * CHUNK_ROWS).enumerate().collect();
+    crate::par::for_each(&mut chunks, |(c, rows)| {
+        for (i, row) in rows.chunks_mut(hw).enumerate() {
+            let j = centre(*c * CHUNK_ROWS + i, h, map.rect.y0);
+            for (k, o) in row.iter_mut().enumerate() {
+                let x = centre(k, w, map.rect.x0);
+                let (u, v) = map.at(x, j);
+                *o = map.sample(src, mw, mh, u, v).clamp(0.0, 1.0);
+            }
         }
     });
 }

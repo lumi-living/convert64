@@ -601,8 +601,20 @@ fn evaluate_mask(
     let (mx, my) = match place {
         Placement::Axis(mx, my) => (mx, my),
         Placement::Affine(map) => {
-            affine::resample_mask_affine(values, size, map, out);
-            eval::apply_modifiers_with(out, rect, grid, modifiers, full_res);
+            if let Some(sigma) = eval::half_res_sigma(modifiers, grid, full_res) {
+                // Sampled straight at half resolution, then the same point operations,
+                // blur and upsample as the separable path's.
+                let (w, h) = (rect.width() as usize, rect.height() as usize);
+                resample::sized(out, w * h, 0.0);
+                scratch::with(w.div_ceil(2) * h.div_ceil(2), |half| {
+                    affine::resample_mask_affine_half(values, size, map, half);
+                    eval::point_ops(half, modifiers);
+                    eval::blur_and_up(out, w, h, sigma, half);
+                });
+            } else {
+                affine::resample_mask_affine(values, size, map, out);
+                eval::apply_modifiers_with(out, rect, grid, modifiers, full_res);
+            }
             return;
         }
     };
@@ -2408,6 +2420,51 @@ mod tests {
         let area = area * f64::from(step.x * step.y);
         let want = 400.0 * 0.2 * 300.0 * 0.25;
         assert!((area - want).abs() < 1e-3 * want, "{area} {want}");
+    }
+
+    /// #198: under a feather blurred at half resolution, a rotated mask is sampled
+    /// straight at half resolution (one sample per 2 × 2 block). Against the reference
+    /// (sampled and blurred at full resolution, `set_full_res_feather`) on a hard edge
+    /// at 4×, it was measured within 0.0052 at σ = 4 target px, 0.0034 at 6 and 0.0023
+    /// at 9.5; the separable path's half-resolution feather on the same layer unrotated:
+    /// 0.0020, 0.0015 and 0.0010. The bound is 0.006 from σ = 4 and one 8-bit step from
+    /// σ = 6.
+    #[test]
+    fn a_rotated_feathered_mask_matches_the_full_resolution_reference() {
+        let (w, h) = (120u32, 90u32);
+        for (mode, feather, bound) in [
+            (Mode::HiresBitmap, 4.0, 0.006),
+            (Mode::MulticolorBitmap, 4.0, 0.006),
+            (Mode::MulticolorBitmap, 6.0, 1.0 / 255.0),
+            (Mode::HiresBitmap, 9.5, 1.0 / 255.0),
+        ] {
+            let mut l = masked(
+                solid(w, h, [0.6, 0.3, 0.1, 1.0]),
+                half_mask(w, h, 50),
+                Modifiers::feathered(feather).unwrap(),
+            );
+            l.set_transform(
+                Transform::new(Vec2::new(80.3, 40.6), Vec2::new(1.3, 0.8), true, false)
+                    .unwrap()
+                    .with_rotation(23.0)
+                    .unwrap(),
+            );
+            let g = grid(mode, 4);
+            let mut half = Compositor::new(g);
+            let mut full = Compositor::new(g);
+            full.set_full_res_feather(true);
+            half.composite(std::slice::from_ref(&l));
+            full.composite(std::slice::from_ref(&l));
+            let (ra, a) = half.evaluated_mask(0).unwrap();
+            let (rb, b) = full.evaluated_mask(0).unwrap();
+            assert_eq!(ra, rb);
+            let d = a
+                .iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0, f32::max);
+            assert!(d < bound, "{mode} feather {feather}: {d}");
+        }
     }
 
     /// #198: rotating a layer recomposites, and reports, the cells whose output changed,
