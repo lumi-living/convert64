@@ -498,27 +498,28 @@ As built in #198 (2026-10-13): rotation and an anchor in the layer transform ([A
   - **Rectangle and dirty region.** A rotated layer's raster rectangle is the bounding box of its quad on the grid, so `Compositor::update`'s union of old and new rectangles is ADR-011 §5's dirty region with no change to the update. `mask_change_cells` maps a mask edit's four corners and grows by the kernel's and the mip's reach.
 - **`layer::Snap { Off, C64Pixel, Cell }`** and `Snap::apply(t, size, mode)` (also `snap_transform`). The function rounds `translate` and the far edges of the scaled, unrotated box to whole target pixels (multicolor: 2 canvas px across) or to cells (8 × 8 canvas px in both modes). It rounds `rotate` to 0.5° or 15° and keeps the anchor and flips. `Transform` never records a snap.
 - **Tests.** `composite::tests` checks that an unrotated layer ignores its anchor bit for bit, and that a full turn equals no turn: exactly on a 1× hi-res grid, and within 0.006 per channel of the frame on a smooth source at 4× and in multicolor, where Catmull-Rom meets bilinear or Lanczos. A quarter turn equals the source's pixels turned and placed axis-aligned, again exactly at 1× (colour, evaluated mask with and without feather, attribute map) and within 0.006 at 4×. Other tests check that a rotated downscale keeps a flat field flat and its coverage sums to the quad's area, and that rotation edits in `update` report exactly the changed cells, inside the old and new rectangles, with the same result as a full recomposite. `mask_change_cells` gets rotated cases, one through a mip. `layer` tests cover clockwise turns about the anchor, round trips, re-anchoring, validation, defaults in files and the series against `f64::sin`. `layer::snap` checks that edges land on pixels and cells in both modes, and `composite::affine` checks the kernel, the mips and the coverage. `tests/rotate.rs` turns the `gradient` fixture by 0.25°, which changes 765 of 1000 cells' statistics in multicolor and 725 in hi-res.
-- **Benchmark.** `tests/bench.rs` repeats its four cases with every layer turned `3 + 7·i` degrees. Its nudge row there is a rotation drag: layer 4 turned a further 0.25° per update. Three runs on the macOS runner class (Apple M1 Virtual, 3 cores), 2026-10-13, started at once. Each figure is the median of the run medians, with their range in brackets, multicolor / hi-res:
+- **Benchmark.** `tests/bench.rs` repeats its four cases with every layer turned `3 + 7·i` degrees. Its nudge row there is a rotation drag: layer 4 turned a further 0.25° per update. Six runs on the macOS runner class (Apple M1 Virtual, 3 cores), 2026-10-13, in two batches of three started at once. The runners were slower than during #139: the axis-aligned rows, the same code as before, are up to 1.2× "After #139". Each figure is the median of the run medians, with their range in brackets, multicolor / hi-res:
 
   | case | `parallel` | single-threaded |
   |---|---|---|
-  | cold composite | 18.2 [10.8–20.1] / 34.6 [32.7–63.3] ms | 27.2 [24.4–31.5] / 53.5 [48.4–74.3] ms |
-  | cold composite, rotated | 75.2 [67.5–77.3] / 157 [94.1–192] ms | 152 [145–184] / 336 [280–347] ms |
-  | warm recomposite | 5.00 [4.87–9.02] / 9.61 [8.62–30.1] ms | 6.43 [6.18–8.76] / 11.9 [10.9–12.7] ms |
-  | warm recomposite, rotated | 3.90 [3.46–3.97] / 8.51 [7.11–10.7] ms | 6.87 [6.03–7.61] / 11.7 [11.3–14.3] ms |
-  | nudge one layer | 5.23 [4.91–5.66] / 9.46 [7.43–10.2] ms | 6.27 [5.87–10.2] / 12.3 [12.2–17.7] ms |
-  | rotation drag | 10.8 [9.30–13.4] / 21.1 [15.4–26.1] ms | 17.6 [17.1–20.5] / 36.5 [35.8–53.1] ms |
-  | feather slider | 3.41 [2.30–5.42] / 6.55 [5.70–6.89] ms | 4.44 [4.01–4.69] / 7.45 [7.43–7.46] ms |
-  | feather slider, rotated | 5.79 [4.14–6.14] / 14.8 [10.3–14.9] ms | 9.61 [9.30–12.3] / 22.4 [19.0–22.8] ms |
+  | cold composite | 20.2 [14.5–74.1] / 32.1 [25.1–120] ms | 32.0 [24.1–55.1] / 72.9 [45.6–77.6] ms |
+  | cold composite, rotated | 46.6 [34.1–129] / 88.5 [67.0–161] ms | 132 [106–183] / 240 [201–330] ms |
+  | warm recomposite | 6.05 [2.90–22.5] / 10.1 [6.37–22.5] ms | 7.02 [6.01–14.0] / 14.4 [11.7–21.5] ms |
+  | warm recomposite, rotated | 4.10 [2.95–5.89] / 8.23 [5.91–9.46] ms | 6.55 [5.75–9.42] / 13.7 [9.57–17.0] ms |
+  | nudge one layer | 6.55 [4.33–15.8] / 9.38 [7.47–24.8] ms | 8.02 [5.96–14.5] / 14.8 [12.7–24.4] ms |
+  | rotation drag | 6.53 [5.39–14.9] / 12.8 [11.0–26.7] ms | 15.8 [13.4–24.1] / 36.3 [25.0–41.3] ms |
+  | feather slider | 3.13 [2.17–8.54] / 6.18 [3.65–10.8] ms | 4.38 [3.71–7.30] / 10.0 [6.87–14.6] ms |
+  | feather slider, rotated | 3.17 [2.14–9.03] / 5.85 [4.21–12.7] ms | 6.45 [5.11–9.20] / 13.3 [12.5–19.2] ms |
 
-  The axis-aligned rows match "After #139" within the runner's noise. **The rotated path is over the #98/#139 budgets**:
-  - The cold composite of ten rotated layers takes 75 / 157 ms with `parallel` (budget 60) and 152 / 336 ms single-threaded (budget 60).
-  - The rotation drag takes 10.8 / 21.1 ms with `parallel`, against the nudge budget of 10 / 12 ms.
+  On an Apple M-series host (local, one run each), single-threaded: cold 13.7 / 26.4 ms, rotated 51.9 / 103 ms; nudge 3.6 / 7.3 ms, rotation drag 7.1 / 14.6 ms.
+
+  **The rotated path is over the #98/#139 budgets**:
+  - Ten rotated layers composite cold in 47 / 89 ms with `parallel` (budget 60: hi-res over) and 132 / 240 ms single-threaded (budget 60). That is about 4× the axis-aligned path, single-threaded.
+  - The rotation drag takes 6.5 / 12.8 ms with `parallel`, at the nudge budget of 10 / 12 ms (hi-res just over), and 15.8 / 36.3 ms single-threaded. The wasm build is single-threaded; §7's budget for a drag there is 50 ms.
   - The warm recomposite only re-blends, so it is unaffected.
 
-  Where the time goes, hi-res on an Apple M-series host, per full-screen layer: colour 7.2 ms and mask 5.8 ms, against about 1.5 ms for both on the separable path. A Catmull-Rom tap is a gather that does not vectorise across pixels. Restructuring the sum, a pixel-batched gather and a single bounds check per block were measured and did not help, and fused multiply-add would differ between platforms (and wasm has none). Possible follow-ups, none done:
+  Where the time goes, hi-res on the M-series host, per full-screen layer: colour 7.2 ms, against about 1.5 ms for colour and mask together on the separable path. A full-resolution mask costs 5.8 ms more; under a feather of at least 4 target px it is sampled at half resolution (above), which brings it to about 1.5 ms. A Catmull-Rom tap is a gather that does not vectorise across pixels. Three changes were measured and did not help: restructuring the sum, a pixel-batched gather, and one bounds check per block. Fused multiply-add would differ between platforms, and wasm has none. Possible follow-ups, none done:
   - sample the colour and the mask in one pass, sharing coordinates and weights;
-  - sample the mask straight at half resolution under a large feather;
   - skip the mask where neither the quad nor the feather's reach can use it;
   - pre-upsample the source with the separable Catmull-Rom and sample that bilinearly.
 
@@ -560,6 +561,6 @@ The public data model every front-end, solver, reader and writer shares. Constru
 ## 7. Performance budgets
 - Full re-solve (MC bitmap, 16 bg search): < 100 ms native, < 300 ms WASM. Measured (`tests/solve_bench.rs`, portrait at 4×, Apple M-series, release), sequential / `parallel`: reference solver Floyd–Steinberg 26.8 / 8.4 ms, Bayer 4 24.4 / 5.1 ms; native solver 49.0 / 15.8 ms and 95.4 / 13.9 ms (#181). Interactive re-solve after a 0.25 px nudge on the reference path: 8.0 / 5.5 ms and 5.7 / 3.3 ms.
 - Interactive single pass while dragging: < 16 ms native, < 50 ms WASM.
-- Rotated layers (#198, `tests/bench.rs`, macOS runner class, multicolor / hi-res): ten rotated masked layers composite cold in 75 / 157 ms with `parallel` and 152 / 336 ms single-threaded, and a rotation drag of one layer takes 10.8 / 21.1 ms and 17.6 / 36.5 ms. That is over #98's and #139's budgets (60 ms cold, 10 / 12 ms per nudge); axis-aligned layers are unchanged. See "As built in #198".
+- Rotated layers (#198, `tests/bench.rs`, macOS runner class, multicolor / hi-res): ten rotated masked layers composite cold in 47 / 89 ms with `parallel` and 132 / 240 ms single-threaded. A rotation drag of one layer takes 6.5 / 12.8 ms and 15.8 / 36.3 ms. That is over #98's and #139's budgets (60 ms cold, 10 / 12 ms per nudge); axis-aligned layers are unchanged. See "As built in #198".
 - Solve scheduler stages (#194; `stage_timings` in `convert64-app`, release, native with `parallel`, Apple M-series, multicolor at 4×, a full-screen layer and a 24 px square): cold composite 2.7 ms and full solve 8.9 ms; a 0.25 px nudge of the square 0.7 ms composite and 4.2 ms fast path; its release 7.6 ms full solve. In wasm each `tick` aims at 10 ms: a drag frame composites, and the next frame (or the same one, once both fit) solves the fast path; single-threaded the fast path is 6–8 ms native (above), an estimated 15–25 ms in wasm (not measured), within the 50 ms budget.
 - UI uploads the 320×200 preview as an egui texture with nearest-neighbour filtering and draws it at integer zoom with 2:1 pixel aspect where applicable; overlays (cell grid, pins/locks, clash heatmap) are painter calls over the same rect.
