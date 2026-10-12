@@ -49,8 +49,8 @@ The dither previews (`dither-previews/png2c64-card/`, `png2c64-portrait/`) were 
 rendered in #113 with an unrecorded clang 18 build. No build of the pinned commit
 reproduces nine of them: the seven diffusion methods and `none` on the portrait, and
 `ostromoukhov` on the card. GCC default, GCC strict and Apple clang agree with #113's
-renders on only 61–99.7 % of those pixels (table above). The parity test (#181)
-regenerates them with the strict build; the other 51 come out byte-identical.
+renders on only 61–99.7 % of those pixels (table above). They are regenerated with the
+strict build (`cargo xtask png2c64-previews`); the other 51 came out byte-identical.
 
 ## Test data
 
@@ -62,3 +62,13 @@ png2c64's own sources with the reference flags:
 g++-15 -O3 -std=c++26 -ffp-contract=off -I png2c64/src colour.cpp \
     png2c64/src/preprocess.cpp png2c64/src/scale.cpp -o colour && ./colour
 ```
+
+## The parity test
+
+`crates/convert64-core/tests/png2c64_parity.rs` runs the reference solver on every one of
+png2c64's 30 method ids on the test card (strength 1.0) and the portrait (png2c64's
+defaults), and on every fixture with its baseline's recorded settings, and requires at
+least 99 % of pixels identical to png2c64's render in each case. CI runs it as its own
+step (`png2c64 parity`) and prints every percentage. With the reference build all 66
+cases are 100 % except the `title` fixture at 99.997 % (2 pixels), whose baseline the
+GCC default build made.

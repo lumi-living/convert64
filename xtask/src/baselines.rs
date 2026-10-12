@@ -105,7 +105,7 @@ pub(crate) fn run(png2c64: &Path, only: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn output(cmd: &mut Command) -> Result<String, String> {
+pub(crate) fn output(cmd: &mut Command) -> Result<String, String> {
     let out = cmd.output().map_err(|e| format!("{cmd:?}: {e}"))?;
     if !out.status.success() {
         return Err(format!(
@@ -118,7 +118,7 @@ fn output(cmd: &mut Command) -> Result<String, String> {
 }
 
 /// The git commit of the checkout the binary was built in, if it is inside one.
-fn png2c64_commit(binary: &Path) -> String {
+pub(crate) fn png2c64_commit(binary: &Path) -> String {
     binary
         .ancestors()
         .find(|dir| dir.join(".git").exists())

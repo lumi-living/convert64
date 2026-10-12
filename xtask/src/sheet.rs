@@ -170,7 +170,7 @@ fn render_all(input: &Input) -> Result<Vec<(DitherKind, RgbImage, Vec<Rgb8>)>, S
 }
 
 /// A grid of labelled tiles.
-fn sheet(tiles: &[(String, RgbImage)]) -> RgbImage {
+pub(crate) fn sheet(tiles: &[(String, RgbImage)]) -> RgbImage {
     let rows = (tiles.len() as u32).div_ceil(COLUMNS);
     let w = COLUMNS * TILE_W + (COLUMNS + 1) * GAP;
     let h = rows * (TILE_H + LABEL) + (rows + 1) * GAP;
@@ -192,7 +192,7 @@ fn sheet(tiles: &[(String, RgbImage)]) -> RgbImage {
 }
 
 /// The grey-ramp crop of a card render, magnified 4×.
-fn zoom(card: &RgbImage) -> RgbImage {
+pub(crate) fn zoom(card: &RgbImage) -> RgbImage {
     let (x, y, w, h) = ZOOM;
     let crop = image::imageops::crop_imm(card, x, y, w, h).to_image();
     image::imageops::resize(&crop, w * 4, h * 4, image::imageops::FilterType::Nearest)
@@ -311,7 +311,7 @@ fn mse(a: &[Rgb8], source: &[Rgb8]) -> (f64, f64) {
     (plain, blurred)
 }
 
-fn save(img: &RgbImage, path: &Path) -> Result<(), String> {
+pub(crate) fn save(img: &RgbImage, path: &Path) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }

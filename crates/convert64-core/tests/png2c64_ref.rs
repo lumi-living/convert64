@@ -159,17 +159,12 @@ fn the_card_s_multicolor_none_is_png2c64_s_global_fs_choice() {
 fn the_card_s_diffusion_methods_are_png2c64_s() {
     use convert64_core::solve::png2c64_ref::convert;
     use convert64_core::solve::png2c64_ref::dither::{Method, Settings};
-    // Ostromoukhov's committed card render is not reproducible by any build of the
-    // pinned png2c64 (docs/reference/png2c64-reference.md); the parity test covers it.
     let im = prepared(
         "docs/reference/dither-previews/testcard.png",
         Mode::Multicolor,
     );
     let pal = palette_linear(&PEPTO_HEX);
-    for m in Method::ALL
-        .into_iter()
-        .filter(|m| !m.is_ordered() && *m != Method::Ostromoukhov)
-    {
+    for m in Method::ALL.into_iter().filter(|m| !m.is_ordered()) {
         let s = Settings {
             method: m,
             strength: 1.0,
