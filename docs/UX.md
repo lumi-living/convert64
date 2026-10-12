@@ -126,7 +126,7 @@ This is the only real form in the app, so it follows form conventions strictly: 
 
 Collapsible groups, in this order, all open by default on a tall window:
 
-1. **Position** — X, Y as `DragValue` with 0.25 px step (sub-pixel), Scale %, Flip H/V toggles. Arrow keys nudge 1 px, `Shift+arrow` 10 px, `Alt+arrow` 0.25 px (the sub-pixel nudge is the feature; it gets the modifier that no editor uses).
+1. **Position & scale** — X, Y as `DragValue` with 0.25 px step (sub-pixel); **W %, H %** with a chain toggle (uniform by default), 0.1 % step, 1–1000 %; **anchor** 3×3 picker (scale pivot, default centre); presets menu: *Fit width · Fit height · Fit screen · Fill screen · 1 source px = 1 C64 px · 2 source px = 1 C64 px · 100 %*; Flip H/V toggles. Arrow keys nudge 1 px, `Shift+arrow` 10 px, `Alt+arrow` 0.25 px (the sub-pixel nudge is the feature; it gets the modifier that no editor uses). Scale and position are in **C64 target pixels**, so "1 C64 px" means the same thing in hi-res and multicolor (multicolor's 2:1 is applied by the compositor, never by the user).
 2. **Adjustments** — Brightness, Contrast, Saturation, Hue as sliders −100…100 with numeric entry; Levels (black/gamma/white) and Curves (own widget over a histogram). Reset per widget via double-click on the label (PhotoCraft-style scrubby label) and a group Reset button.
 3. **Mask** — see §7a. Feather radius (target px, slider 0–32), Invert, Levels (black/white/gamma), Snap to cells (*Off / Expand / Contract / Nearest*), a **Sources** list (painted strokes, gradients, keys — each with its combine mode and a delete), and **Edit mask** (enters the mask tools, §7a). A layer without a mask shows one button: **Add mask** (from PNG alpha if the layer has any, otherwise full white).
 4. **Dither recipe** — Method (segmented by family: *None · Ordered · Diffusion · Noise*, then a dropdown within the family), Strength 0–100 % slider, Pattern phase (*Screen-locked / Layer-locked*), Orientation (*Auto / Vertical-biased*). Grouping by family follows Ditherista's lesson: a flat list of 30 methods is unusable.
@@ -144,6 +144,7 @@ Three tools in the toolbar, all operate on the preview, all additive to the proj
 | **Lock** cell | `L` | freeze the cell's output exactly as solved | lock a rectangle | lock glyph; locked cells are skipped by re-solve and drawn with a faint hatch when Clashes overlay is on |
 | **Region** override | `R` | — | paint a soft mask that carries its own recipe (dither/metric/allowed colours) | region shows as a tinted outline; its recipe editor opens in the Recipe panel as a pseudo-layer |
 | **Nudge** (move) | `V` | select layer under cursor | move the layer in sub-pixel steps | X/Y readout in status bar; the solver re-runs on drop |
+| **Transform** (scale) | `Cmd T` or `S` | select layer; shows its bounding box with 8 handles and the anchor | corner = uniform scale (hold `Shift` for free aspect), edge = one axis, inside = move, `Alt` = scale about the centre; scroll wheel over the box = ±1 % | live W/H % and X/Y in status bar; Interactive solve during drag, Full on release; `Enter` commits, `Esc` reverts the whole drag (one undo step) |
 
 Right-click on any cell: a small menu — *Pin colours · Lock · Clear pin/lock · Jump to worst neighbour · Copy cell colours*. `Cmd/Ctrl Shift ]` jumps to the next-worst cell, `[` to the previous.
 
@@ -187,6 +188,8 @@ Mask thumbnails in the Layers panel (§5) show the raster with modifiers applied
 | Toggle layer visibility | `Cmd ,` ; click eye | Photoshop/Pixelmator |
 | Nudge 1 / 10 / 0.25 px | `←↑↓→` / `Shift+` / `Alt+` | editors / ours |
 | Tools: Nudge, Pin, Lock, Region | `V`, `P`, `L`, `R` | single-key tools (Photoshop style) |
+| Transform (scale) layer | `Cmd T` / `S` | Photoshop free transform / ours |
+| Scale selected layer ±1 % / ±10 % | `Cmd` + `[` `]` / with `Shift` | ours |
 | Mask mode on/off; mask tools Brush, Lasso, Gradient, Key | `M`; `B`, `W`, `G`, `K` | Photoshop (`B`, `G`), ours (`M`, `W`, `K`) |
 | Brush size down / up; swap Add/Subtract | `[` / `]`; `X` | Photoshop |
 | Show mask alone | `Alt`-click mask thumbnail | Photoshop |
