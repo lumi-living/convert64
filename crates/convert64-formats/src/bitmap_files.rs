@@ -68,7 +68,9 @@ impl BitmapFormat {
     }
 
     /// Writes `image` in this format with the default load address, byte for byte as
-    /// `docs/reference/file-formats.md` lays it out (Art Studio without padding).
+    /// `docs/reference/file-formats.md` lays it out (Art Studio without padding). The
+    /// image's own assignment of colours to bit pairs is kept; see
+    /// [`write_with`](Self::write_with) to choose one.
     ///
     /// # Errors
     /// [`WriteError`] when the image's mode is not the format's (multicolor for Koala,
@@ -80,6 +82,20 @@ impl BitmapFormat {
             image: image.clone(),
         }
         .to_bytes()
+    }
+
+    /// Writes `image` like [`write`](Self::write) after putting each cell's colours on
+    /// bit pairs by `policy` ([`crate::bitpairs::reassign`]). The file shows the same
+    /// picture; only Screen RAM, Colour RAM and the bit patterns differ.
+    ///
+    /// # Errors
+    /// As [`write`](Self::write).
+    pub fn write_with(
+        self,
+        image: &BitmapImage,
+        policy: crate::bitpairs::BitpairPolicy,
+    ) -> Result<Vec<u8>, WriteError> {
+        self.write(&crate::bitpairs::reassign(image, policy))
     }
 
     /// The format a file of `len` bytes must be, if its size is unique to one format.

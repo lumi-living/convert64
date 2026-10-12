@@ -1,0 +1,22 @@
+---
+source: crates/convert64-formats/tests/bitpairs.rs
+expression: report
+---
+portrait  stable    fnv1a=388de2662dd3fd1f packed= 313 distinct_screen= 24
+portrait  frequency fnv1a=882cd6573a89373a packed= 460 distinct_screen= 25
+portrait  packed    fnv1a=25523071795ff7e1 packed= 308 distinct_screen= 22
+terrain   stable    fnv1a=0080c158d840aa4e packed= 430 distinct_screen= 48
+terrain   frequency fnv1a=32b3fc1473068593 packed= 891 distinct_screen= 49
+terrain   packed    fnv1a=d93e012634c68b2d packed= 408 distinct_screen= 56
+title     stable    fnv1a=b6eedd575e136b79 packed= 384 distinct_screen= 25
+title     frequency fnv1a=f71455eea02d11bc packed= 713 distinct_screen= 30
+title     packed    fnv1a=3669c3ee43e8750f packed= 356 distinct_screen= 28
+gradient  stable    fnv1a=474cf0075916a102 packed= 222 distinct_screen= 35
+gradient  frequency fnv1a=3f02560ea1ce8d57 packed= 312 distinct_screen= 58
+gradient  packed    fnv1a=474cf0075916a102 packed= 222 distinct_screen= 35
+photo     stable    fnv1a=ab0c1a854bc1682f packed= 864 distinct_screen= 68
+photo     frequency fnv1a=2832cd036b14a4af packed=1327 distinct_screen= 70
+photo     packed    fnv1a=7d825d0d018f9de9 packed= 852 distinct_screen= 76
+lineart   stable    fnv1a=d499bbf11ab181eb packed= 471 distinct_screen= 11
+lineart   frequency fnv1a=7688c6db8fabe5c1 packed= 481 distinct_screen= 12
+lineart   packed    fnv1a=abba6d1070b88f07 packed= 460 distinct_screen= 14
