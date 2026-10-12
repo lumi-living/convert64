@@ -249,6 +249,40 @@ fn best_triples(err4: &[f32]) -> [([u8; 3], f32); 16] {
     out
 }
 
+/// `quantize_cell_multicolor` for one background only: the best triple and its error,
+/// computed from the 455 four-colour sets that contain `bg` (the same sums, in the same
+/// pixel order, as [`errors4`] gives them).
+fn best_triple_for(table: &[[f32; 16]], bg: usize) -> ([u8; 3], f32) {
+    let (mut best, mut pick) = (f32::MAX, [0u8, 0, 0]);
+    let mut m = vec![0.0f32; table.len()];
+    for i in 0..16 {
+        if i == bg {
+            continue;
+        }
+        for j in i + 1..16 {
+            if j == bg {
+                continue;
+            }
+            for (mp, d) in m.iter_mut().zip(table) {
+                *mp = d[bg].min(d[i]).min(d[j]);
+            }
+            let mut acc = [0.0f32; 16];
+            for (&mp, d) in m.iter().zip(table) {
+                for k in 0..16 {
+                    acc[k] += mp.min(d[k]);
+                }
+            }
+            for (k, &e) in acc.iter().enumerate().skip(j + 1) {
+                if k != bg && e < best {
+                    best = e;
+                    pick = [i as u8, j as u8, k as u8];
+                }
+            }
+        }
+    }
+    (pick, best)
+}
+
 /// `global_fs_indices`: a serpentine Floyd–Steinberg dither of the whole picture
 /// against the full palette in OKLab, error clamped to ±0.12 per channel on read and on
 /// write. Returns each pixel's palette index.
@@ -374,21 +408,113 @@ pub fn quantize(
     quantize_px(image, palette, mode, &bias, &Hooks::default())
 }
 
+/// A cell's search constraints as colour bit masks: the colours its set may use (a
+/// filter: allow, deny, recipes' allowed colours, a full pin) and the colours it must
+/// use (pins). [`CellRule::FREE`] is png2c64's unconstrained search.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CellRule {
+    /// Colours the set may use.
+    pub candidates: u16,
+    /// Colours the set must contain.
+    pub required: u16,
+}
+
+impl CellRule {
+    /// No constraint.
+    pub const FREE: Self = Self {
+        candidates: u16::MAX,
+        required: 0,
+    };
+}
+
+impl Default for CellRule {
+    fn default() -> Self {
+        Self::FREE
+    }
+}
+
 /// What the cell search may be told beyond png2c64's own inputs. The default changes
 /// nothing: the search is png2c64's.
 #[derive(Clone, Debug, Default)]
 pub struct Hooks {
     /// Search only this background (multicolor); `None` tries all 16, as png2c64.
     pub background: Option<u8>,
+    /// Per cell, its constraints (empty: none). A free cell is searched exactly as
+    /// png2c64 searches it.
+    pub rules: Vec<CellRule>,
+    /// Per cell, a result copied through untouched: locked cells, and the clean cells
+    /// of an interactive re-solve (empty: none). A fixed cell is not searched and does
+    /// not count towards the background choice.
+    pub fixed: Vec<Option<Cell>>,
+}
+
+impl Hooks {
+    fn rule(&self, cell: usize) -> CellRule {
+        self.rules.get(cell).copied().unwrap_or(CellRule::FREE)
+    }
+
+    fn fixed(&self, cell: usize) -> Option<&Cell> {
+        self.fixed.get(cell).and_then(Option::as_ref)
+    }
+}
+
+/// The colours of a mask, ascending.
+fn bits(mask: u16) -> impl Iterator<Item = u8> {
+    (0..16u8).filter(move |c| mask & (1 << c) != 0)
+}
+
+/// A constrained cell's best colours for background `bg` (`None`: hi-res), `k` of them
+/// at most: every required colour (up to `k`), then the best combination of the other
+/// candidates, by the same error as the free search; ties to the first combination in
+/// ascending order. Returns the cell's slots (padded with the background, or the first
+/// colour in hi-res) and their error.
+fn constrained(table: &[[f32; 16]], bg: Option<u8>, k: usize, rule: CellRule) -> (Vec<u8>, f32) {
+    let bgm = bg.map_or(0u16, |b| 1 << b);
+    let required: Vec<u8> = bits(rule.required & !bgm).take(k).collect();
+    let free: Vec<u8> = bits(rule.candidates & !rule.required & !bgm).collect();
+    let picks = (k - required.len()).min(free.len());
+    let slots_of = |combo: &[usize]| {
+        let mut own: Vec<u8> = required
+            .iter()
+            .copied()
+            .chain(combo.iter().map(|&j| free[j]))
+            .collect();
+        own.sort_unstable();
+        let pad = bg.or_else(|| own.first().copied()).unwrap_or(0);
+        while own.len() < k {
+            own.push(pad);
+        }
+        bg.into_iter().chain(own).collect::<Vec<u8>>()
+    };
+    let mut idx: Vec<usize> = (0..picks).collect();
+    let mut best = {
+        let slots = slots_of(&idx);
+        let e = evaluate(table, &slots).1;
+        (slots, e)
+    };
+    while let Some(pos) = (0..picks).rev().find(|&p| idx[p] < free.len() - picks + p) {
+        idx[pos] += 1;
+        for q in pos + 1..picks {
+            idx[q] = idx[q - 1] + 1;
+        }
+        let slots = slots_of(&idx);
+        let e = evaluate(table, &slots).1;
+        if e < best.1 {
+            best = (slots, e);
+        }
+    }
+    best
 }
 
 /// [`quantize`] with a per-pixel threshold offset: `bias[i]` is pixel `i`'s `t`
 /// (`threshold × strength × strength` for an ordered pixel), `None` for a pixel without
 /// one. A cell none of whose pixels has an offset gets the global Floyd–Steinberg
-/// replacement; with one offset for every pixel, or none, this is png2c64's `quantize`.
+/// replacement; with one offset for every pixel, or none, and default `hooks`, this is
+/// png2c64's `quantize`.
 ///
 /// # Panics
-/// If `image` is not the mode's screen size or `bias` not one entry per pixel.
+/// If `image` is not the mode's screen size or `bias` not one entry per pixel, or if a
+/// cell is fixed in multicolor without `hooks.background`.
 pub fn quantize_px(
     image: &Image,
     palette: &[Rgb; 16],
@@ -401,19 +527,65 @@ pub fn quantize_px(
     let pal = palette.map(linear_to_oklab);
     let (cols, rows) = mode.cells();
     let cells: Vec<usize> = (0..cols * rows).collect();
-    let tables: Vec<Vec<[f32; 16]>> =
-        crate::par::map(&cells, |&i| cell_table(image, mode, i, &pal, bias));
+    let tables: Vec<Vec<[f32; 16]>> = crate::par::map(&cells, |&i| {
+        if hooks.fixed(i).is_some() {
+            Vec::new()
+        } else {
+            cell_table(image, mode, i, &pal, bias)
+        }
+    });
     let mut screen = match mode {
         Mode::Multicolor => {
-            let per_cell: Vec<[([u8; 3], f32); 16]> =
-                crate::par::map(&tables, |t| best_triples(&errors4(t)));
-            let (mut best_bg, mut best_total) = (0u8, f32::MAX);
+            assert!(
+                hooks.background.is_some() || !hooks.fixed.iter().any(Option::is_some),
+                "fixed cells need a fixed background"
+            );
+            // Per cell and background: its slots and error (fixed cells: none).
+            let per_cell: Vec<Vec<(Vec<u8>, f32)>> = crate::par::map(&cells, |&i| {
+                if hooks.fixed(i).is_some() {
+                    return Vec::new();
+                }
+                let rule = hooks.rule(i);
+                if rule == CellRule::FREE {
+                    if let Some(b) = hooks.background {
+                        // One background: only its 455 sets.
+                        return (0..16u8)
+                            .map(|bg| {
+                                if bg == b {
+                                    let ([x, y, z], e) =
+                                        best_triple_for(&tables[i], usize::from(b));
+                                    (vec![bg, x, y, z], e)
+                                } else {
+                                    (Vec::new(), f32::MAX)
+                                }
+                            })
+                            .collect();
+                    }
+                    best_triples(&errors4(&tables[i]))
+                        .iter()
+                        .enumerate()
+                        .map(|(bg, &([a, b, c], e))| (vec![bg as u8, a, b, c], e))
+                        .collect()
+                } else {
+                    (0..16u8)
+                        .map(|bg| {
+                            if hooks.background.is_some_and(|b| b != bg) {
+                                (Vec::new(), f32::MAX)
+                            } else {
+                                constrained(&tables[i], Some(bg), 3, rule)
+                            }
+                        })
+                        .collect()
+                }
+            });
+            let (mut best_bg, mut best_total) = (hooks.background.unwrap_or(0), f32::MAX);
             for bg in 0..16u8 {
                 if hooks.background.is_some_and(|b| b != bg) {
                     continue;
                 }
                 let total = per_cell
                     .iter()
+                    .filter(|c| !c.is_empty())
                     .fold(0.0f32, |s, c| s + c[usize::from(bg)].1);
                 if total < best_total {
                     best_total = total;
@@ -421,8 +593,10 @@ pub fn quantize_px(
                 }
             }
             let out = crate::par::map(&cells, |&i| {
-                let [a, b, c] = per_cell[i][usize::from(best_bg)].0;
-                let colors = vec![best_bg, a, b, c];
+                if let Some(c) = hooks.fixed(i) {
+                    return c.clone();
+                }
+                let colors = per_cell[i][usize::from(best_bg)].0.clone();
                 let (px, error) = evaluate(&tables[i], &colors);
                 Cell { colors, px, error }
             });
@@ -434,19 +608,28 @@ pub fn quantize_px(
             }
         }
         Mode::Hires => {
-            let out = crate::par::map(&tables, |t| {
-                let errs = errors2(t);
-                let (mut best, mut pick, mut r) = (f32::MAX, (0u8, 1u8), 0);
-                for i in 0..16u8 {
-                    for j in i + 1..16 {
-                        if errs[r] < best {
-                            best = errs[r];
-                            pick = (i, j);
-                        }
-                        r += 1;
-                    }
+            let out = crate::par::map(&cells, |&i| {
+                if let Some(c) = hooks.fixed(i) {
+                    return c.clone();
                 }
-                let colors = vec![pick.0, pick.1];
+                let t = &tables[i];
+                let rule = hooks.rule(i);
+                let colors = if rule == CellRule::FREE {
+                    let errs = errors2(t);
+                    let (mut best, mut pick, mut r) = (f32::MAX, (0u8, 1u8), 0);
+                    for a in 0..16u8 {
+                        for b in a + 1..16 {
+                            if errs[r] < best {
+                                best = errs[r];
+                                pick = (a, b);
+                            }
+                            r += 1;
+                        }
+                    }
+                    vec![pick.0, pick.1]
+                } else {
+                    constrained(t, None, 2, rule).0
+                };
                 let (px, error) = evaluate(t, &colors);
                 Cell { colors, px, error }
             });
@@ -459,15 +642,16 @@ pub fn quantize_px(
         }
     };
     let (cw, ch) = mode.cell();
-    let unbiased: Vec<bool> = cells
+    let replace: Vec<bool> = cells
         .iter()
         .map(|&i| {
             let (px, py) = ((i % cols) * cw, (i / cols) * ch);
-            (0..ch).all(|dy| (0..cw).all(|dx| bias[(py + dy) * image.w + px + dx].is_none()))
+            hooks.fixed(i).is_none()
+                && (0..ch).all(|dy| (0..cw).all(|dx| bias[(py + dy) * image.w + px + dx].is_none()))
         })
         .collect();
-    if unbiased.contains(&true) {
-        fs_replace(image, &pal, &mut screen, &unbiased);
+    if replace.contains(&true) {
+        fs_replace(image, &pal, &mut screen, &replace, hooks);
     }
     screen
 }
@@ -475,14 +659,21 @@ pub fn quantize_px(
 /// The global-FS palette replacement (`quantize_multicolor_bruteforce` and
 /// `quantize_hires` when `tfn` is empty): each cell's colours become the most used
 /// colours of [`global_fs_indices`] in it, the background excluded and fixed in slot 0
-/// (multicolor), most used first, ties to the lower index. Only cells marked in `which`.
-fn fs_replace(image: &Image, pal: &[Lab; 16], screen: &mut Screen, which: &[bool]) {
+/// (multicolor), most used first, ties to the lower index. Only cells marked in `which`;
+/// a constrained cell takes its required colours first and the others from its
+/// candidates only.
+fn fs_replace(image: &Image, pal: &[Lab; 16], screen: &mut Screen, which: &[bool], hooks: &Hooks) {
     let mode = screen.mode;
     let global = global_fs_indices(image, pal);
     let hists = histograms(mode, &global);
     let bg = screen.bg;
-    let replaced: Vec<Vec<u8>> = crate::par::map(&hists, |&hist| {
-        let mut hist = hist;
+    let idx: Vec<usize> = (0..screen.cells.len()).collect();
+    let replaced: Vec<Vec<u8>> = crate::par::map(&idx, |&i| {
+        let mut hist = hists[i];
+        let rule = hooks.rule(i);
+        if rule != CellRule::FREE {
+            return fs_constrained(hist, mode, bg, rule);
+        }
         match mode {
             Mode::Multicolor => {
                 hist[usize::from(bg)] = 0;
@@ -520,7 +711,6 @@ fn fs_replace(image: &Image, pal: &[Lab; 16], screen: &mut Screen, which: &[bool
             }
         }
     });
-    let idx: Vec<usize> = (0..screen.cells.len()).collect();
     let pixels = crate::par::map(&idx, |&i| {
         if which[i] {
             assign(image, mode, i, pal, &replaced[i])
@@ -533,6 +723,70 @@ fn fs_replace(image: &Image, pal: &[Lab; 16], screen: &mut Screen, which: &[bool
         if on {
             cell.colors = colors;
             cell.px = px;
+        }
+    }
+}
+
+/// [`fs_replace`]'s choice for a constrained cell: its required colours (other than the
+/// background), then its most used candidates, padded like a free cell.
+fn fs_constrained(mut hist: [u16; 16], mode: Mode, bg: u8, rule: CellRule) -> Vec<u8> {
+    let (k, bgm) = match mode {
+        Mode::Multicolor => (3, 1u16 << bg),
+        Mode::Hires => (2, 0),
+    };
+    let mut own: Vec<u8> = bits(rule.required & !bgm).take(k).collect();
+    for &c in &own {
+        hist[usize::from(c)] = 0;
+    }
+    while own.len() < k {
+        let (mut best_cnt, mut best_c) = (0u16, None);
+        for c in bits(rule.candidates & !bgm) {
+            if hist[usize::from(c)] > best_cnt {
+                best_cnt = hist[usize::from(c)];
+                best_c = Some(c);
+            }
+        }
+        let Some(c) = best_c else { break };
+        own.push(c);
+        hist[usize::from(c)] = 0;
+    }
+    match mode {
+        Mode::Multicolor => {
+            while own.len() < 3 {
+                own.push(bg);
+            }
+            std::iter::once(bg).chain(own).collect()
+        }
+        Mode::Hires => {
+            let first = own.first().copied().unwrap_or(0);
+            while own.len() < 2 {
+                own.push(first);
+            }
+            own
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One background's triple from its 455 sets equals the 1820-set search's, bit for
+    /// bit, on random tables.
+    #[test]
+    fn one_background_search_matches_the_full_one() {
+        let mut st = 11u32;
+        let mut rnd = || {
+            st = st.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (st >> 8) as f32 / 16_777_216.0
+        };
+        for _ in 0..20 {
+            let table: Vec<[f32; 16]> = (0..32).map(|_| std::array::from_fn(|_| rnd())).collect();
+            let all = best_triples(&errors4(&table));
+            for (bg, &(want, we)) in all.iter().enumerate() {
+                let (pick, e) = best_triple_for(&table, bg);
+                assert_eq!((pick, e.to_bits()), (want, we.to_bits()), "bg {bg}");
+            }
         }
     }
 }

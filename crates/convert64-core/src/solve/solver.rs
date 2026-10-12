@@ -185,8 +185,16 @@ impl Solver {
     ) -> Solution {
         let fallback = match opts.solver {
             SolverKind::Native => None,
-            SolverKind::Reference => match super::reference::unsupported(frame, steering, opts) {
-                None => return super::reference::solve(frame, self.palette(), opts),
+            SolverKind::Reference => match super::reference::unsupported(frame, opts) {
+                None => {
+                    return super::reference::solve(
+                        frame,
+                        self.palette(),
+                        steering,
+                        previous,
+                        opts,
+                    );
+                }
                 why => why,
             },
         };
@@ -563,11 +571,6 @@ mod tests {
                 .as_deref()
                 .is_some_and(|w| w.contains("png2c64"))
         );
-        let mut steering = Steering::new();
-        steering.set_lock(crate::model::CellPos::new(0, 0), true);
-        let f = frame(Mode::MulticolorBitmap, DitherKind::Bayer4);
-        let sol = s.solve(&f, &steering, None, &SolveOptions::default());
-        assert_eq!(sol.solver, SolverKind::Native);
         let knob = frame_with(
             Mode::MulticolorBitmap,
             Recipe::with_method(DitherKind::Bayer4, 1.0)
@@ -579,6 +582,199 @@ mod tests {
         let sol = s.solve(&knob, &Steering::new(), None, &SolveOptions::default());
         assert_eq!(sol.solver, SolverKind::Native);
         assert!(sol.fallback.unwrap().contains("max_luma_diff"));
+        let f = frame(Mode::MulticolorBitmap, DitherKind::Bayer4);
+        let biased = SolveOptions {
+            luma_pair_bias: 0.01,
+            ..SolveOptions::default()
+        };
+        assert_eq!(
+            s.solve(&f, &Steering::new(), None, &biased).solver,
+            SolverKind::Native
+        );
+    }
+
+    /// The reference path's output as palette indices.
+    fn indices(sol: &Solution) -> Vec<ColourIndex> {
+        sol.image.to_indexed().pixels().to_vec()
+    }
+
+    /// #181 step 6: steering that constrains nothing (allow everything, deny nothing),
+    /// a region with the layer's own recipe and a full mask leave the reference's output
+    /// png2c64's.
+    #[test]
+    fn neutral_hooks_leave_the_reference_untouched() {
+        let s = Solver::new(&Palette::pepto_pal());
+        for mode in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
+            for kind in [
+                DitherKind::Bayer4,
+                DitherKind::FloydSteinberg,
+                DitherKind::None,
+            ] {
+                let f = frame(mode, kind);
+                let plain = s.solve(&f, &Steering::new(), None, &SolveOptions::default());
+                let mut neutral = Steering::new();
+                for x in 0..40 {
+                    for y in 0..25 {
+                        let cell = crate::model::CellPos::new(x, y);
+                        neutral.set_allow(cell, ColourSet::ALL);
+                        neutral.set_deny(cell, ColourSet::EMPTY);
+                    }
+                }
+                let steered = s.solve(&f, &neutral, None, &SolveOptions::default());
+                assert_eq!(steered.solver, SolverKind::Reference);
+                assert_eq!(
+                    indices(&steered),
+                    indices(&plain),
+                    "{mode} {kind:?} steering"
+                );
+
+                // The same picture under a region with the layer's recipe, and with a
+                // mask of all ones.
+                let px: Vec<[f32; 4]> = (0..320 * 200)
+                    .map(|i| {
+                        let (x, y) = ((i % 320) as f32 / 320.0, (i / 320) as f32 / 200.0);
+                        [x * x, y, (1.0 - x) * 0.6 + 0.2 * y, 1.0]
+                    })
+                    .collect();
+                let recipe = Recipe::with_method(kind, 0.8).unwrap();
+                let mut l = Layer::new(
+                    "g",
+                    Arc::new(SourceImage::from_linear(320, 200, px).unwrap()),
+                );
+                l.set_recipe(recipe);
+                l.set_mask(Some(crate::mask::Mask::new(
+                    crate::mask::MaskRaster::filled(320, 200, 1.0).unwrap(),
+                )))
+                .unwrap();
+                // A region over the whole canvas: at a region's edge the compositor
+                // feathers the strength (its mask is resampled), which is upstream.
+                let whole = vec![1.0f32; 320 * 200];
+                let region = crate::region::Region::new(
+                    "same",
+                    crate::mask::MaskRaster::from_values(320, 200, whole).unwrap(),
+                    recipe,
+                )
+                .unwrap();
+                let mut c = Compositor::new(SuperGrid::new(mode, 2).unwrap());
+                c.update(&[l], &[region]);
+                let hooked = s.solve(c.frame(), &Steering::new(), None, &SolveOptions::default());
+                assert_eq!(hooked.solver, SolverKind::Reference);
+                assert_eq!(
+                    indices(&hooked),
+                    indices(&plain),
+                    "{mode} {kind:?} mask + region"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pins_and_allow_deny_constrain_reference_cells() {
+        use crate::model::CellPos;
+        let s = Solver::new(&Palette::pepto_pal());
+        for mode in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
+            for kind in [DitherKind::Bayer4, DitherKind::FloydSteinberg] {
+                let f = frame(mode, kind);
+                let mut st = Steering::new();
+                let (full, part, deny) =
+                    (CellPos::new(5, 5), CellPos::new(6, 5), CellPos::new(7, 5));
+                let pair: ColourSet = [ColourIndex::RED, ColourIndex::BLUE].into_iter().collect();
+                st.set_pin(
+                    full,
+                    super::super::steering::Pin {
+                        colours: pair,
+                        full: true,
+                    },
+                );
+                st.set_pin(
+                    part,
+                    super::super::steering::Pin {
+                        colours: ColourSet::EMPTY.with(ColourIndex::GREEN),
+                        full: false,
+                    },
+                );
+                let plain = s.solve(&f, &Steering::new(), None, &SolveOptions::default());
+                let banned = plain.sets[7 + 5 * 40];
+                st.set_deny(deny, banned);
+                let sol = s.solve(&f, &st, None, &SolveOptions::default());
+                assert_eq!(sol.solver, SolverKind::Reference);
+                assert_eq!(validate(&sol.image.to_indexed()), Ok(()));
+                let own = |c: CellPos| sol.sets[usize::from(c.y) * 40 + usize::from(c.x)];
+                assert_eq!(own(full), pair, "{mode} {kind:?} full pin");
+                assert!(
+                    own(part).contains(ColourIndex::GREEN),
+                    "{mode} {kind:?} pin"
+                );
+                assert!(
+                    own(deny).intersection(banned).is_empty(),
+                    "{mode} {kind:?} deny"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn locked_and_clean_cells_are_copied_through() {
+        use crate::model::CellPos;
+        let s = Solver::new(&Palette::pepto_pal());
+        for mode in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
+            for kind in [DitherKind::Bayer4, DitherKind::FloydSteinberg] {
+                let before = frame(mode, kind);
+                let prev = s.solve(&before, &Steering::new(), None, &SolveOptions::default());
+                // A different picture: the locked cells keep the previous result.
+                let after = frame_with(mode, Recipe::with_method(kind, 1.0).unwrap(), true);
+                let mut st = Steering::new();
+                let locked: Vec<CellPos> = (0..10).map(|x| CellPos::new(x, 3)).collect();
+                for &c in &locked {
+                    st.set_lock(c, true);
+                }
+                let sol = s.solve(&after, &st, Some(&prev), &SolveOptions::default());
+                assert_eq!(sol.solver, SolverKind::Reference);
+                assert_eq!(sol.background, prev.background);
+                assert_eq!(validate(&sol.image.to_indexed()), Ok(()));
+                let (a, b) = (indices(&sol), indices(&prev));
+                let (w, cw, ch) = if mode == Mode::MulticolorBitmap {
+                    (160, 4, 8)
+                } else {
+                    (320, 8, 8)
+                };
+                for c in &locked {
+                    for y in usize::from(c.y) * ch..(usize::from(c.y) + 1) * ch {
+                        for x in usize::from(c.x) * cw..(usize::from(c.x) + 1) * cw {
+                            assert_eq!(a[y * w + x], b[y * w + x], "{mode} {kind:?} {c}");
+                        }
+                    }
+                }
+                // Interactive: only the dirty cells are re-solved, on the reference path.
+                let dirty: crate::geom::CellSet = [CellPos::new(20, 12), CellPos::new(21, 12)]
+                    .into_iter()
+                    .collect();
+                let quick = s.solve(
+                    &after,
+                    &Steering::new(),
+                    Some(&prev),
+                    &SolveOptions {
+                        mode: SolveMode::Interactive { dirty },
+                        ..SolveOptions::default()
+                    },
+                );
+                assert_eq!(quick.solver, SolverKind::Reference);
+                assert_eq!(quick.background, prev.background);
+                let q = indices(&quick);
+                let mut changed_outside = 0;
+                for (i, (x, y)) in (0..q.len()).map(|i| (i % w, i / w)).enumerate() {
+                    let cell = CellPos::new((x / cw) as u16, (y / ch) as u16);
+                    if !dirty.contains(cell) && q[i] != b[i] {
+                        changed_outside += 1;
+                    }
+                }
+                assert_eq!(changed_outside, 0, "{mode} {kind:?}");
+                assert_ne!(
+                    q, b,
+                    "{mode} {kind:?}: the dirty cells follow the new picture"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1301,7 +1497,7 @@ mod tests {
             assert_eq!(flips, 0, "a cell went back to its first set");
         }
         // Hysteresis only ever keeps more cells unchanged than accepting every re-pick.
-        let free = solve_default(&f);
+        let free = solve_native(&f);
         let changed = |r: &[Vec<ColourSet>]| {
             r.windows(2)
                 .map(|w| w[0].iter().zip(&w[1]).filter(|(a, b)| a != b).count())
