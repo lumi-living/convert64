@@ -12,6 +12,7 @@
 //! `mask_export`, `composite_export` and `attributes_export`.
 
 use convert64_cli::recipe::{JsonCommand, LayerRef, Session};
+use convert64_cli::schema::{command_schema, layer_schema, object_schema};
 use convert64_core::command::REGISTRY;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -25,78 +26,6 @@ pub struct Server {
     session: Option<Session>,
 }
 
-fn object_schema(properties: Value, required: &[&str]) -> Value {
-    json!({ "type": "object", "properties": properties, "required": required })
-}
-
-fn layer_schema() -> Value {
-    json!({
-        "description": "Layer index (0 = bottom) or name",
-        "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "string" }]
-    })
-}
-
-fn point_schema() -> Value {
-    json!({ "type": "object", "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
-            "required": ["x", "y"] })
-}
-
-fn combine_schema() -> Value {
-    json!({ "type": "string", "enum": ["max", "min", "multiply"], "default": "max" })
-}
-
-/// The input schema of a registry command's tool.
-fn command_schema(name: &str) -> Value {
-    match name {
-        "mask_key" => object_schema(
-            json!({
-                "layer": layer_schema(),
-                "key": object_schema(json!({
-                    "channel": { "type": "string", "enum": ["luma", "chroma", "colour"] },
-                    "centre": { "type": "array", "items": { "type": "number", "minimum": 0, "maximum": 1 },
-                                "minItems": 3, "maxItems": 3,
-                                "description": "Keyed colour, linear sRGB 0–1" },
-                    "range": { "type": "number", "minimum": 0, "maximum": 2,
-                               "description": "Full-strength OKLab distance" },
-                    "softness": { "type": "number", "minimum": 0, "maximum": 2,
-                                  "description": "Fall-off beyond the range" }
-                }), &["channel", "centre", "range"]),
-                "combine": combine_schema()
-            }),
-            &["layer", "key"],
-        ),
-        "mask_gradient" => object_schema(
-            json!({
-                "layer": layer_schema(),
-                "gradient": object_schema(json!({
-                    "kind": { "type": "string", "enum": ["linear", "radial"] },
-                    "from": point_schema(),
-                    "to": point_schema(),
-                    "softness": { "type": "number", "minimum": 0, "maximum": 1, "default": 1 }
-                }), &["kind", "from", "to"]),
-                "combine": combine_schema()
-            }),
-            &["layer", "gradient"],
-        ),
-        "mask_set_modifier" => object_schema(
-            json!({
-                "layer": layer_schema(),
-                "modifier": {
-                    "description": "Exactly one of: {\"invert\": bool}, {\"levels\": {black, white, gamma}}, \
-                                    {\"snap\": \"off\"|\"expand\"|\"contract\"|\"nearest\"}, {\"feather\": 0–32 target px}",
-                    "type": "object"
-                }
-            }),
-            &["layer", "modifier"],
-        ),
-        _ => json!({
-            "type": "object",
-            "description": "The command's arguments as in a convert64 recipe file \
-                            (crates/convert64-cli/src/recipe.rs, JsonCommand), without \"command\"."
-        }),
-    }
-}
-
 fn tools() -> Value {
     let mut list = vec![json!({
         "name": "recipe_open",
@@ -107,7 +36,7 @@ fn tools() -> Value {
         list.push(json!({
             "name": c.name,
             "description": c.summary,
-            "inputSchema": command_schema(c.name),
+            "inputSchema": command_schema(c.name).unwrap_or_else(|| json!({ "type": "object" })),
         }));
     }
     for (name, description) in [
