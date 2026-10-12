@@ -4,6 +4,7 @@
 
 use super::{Action, Shell, ViewMode, shortcuts as s};
 use crate::view::Compare;
+use crate::workspace::Workspace;
 use egui::{Button, KeyboardShortcut, Ui};
 
 /// A menu item with its accelerator; `enabled` false until its feature lands.
@@ -15,13 +16,25 @@ fn item(ui: &mut Ui, label: &str, shortcut: Option<&KeyboardShortcut>, enabled: 
     ui.add_enabled(enabled, button).clicked()
 }
 
-pub(super) fn show(shell: &mut Shell, ui: &mut Ui, actions: &mut Vec<Action>) {
+pub(super) fn show(
+    shell: &mut Shell,
+    ws: Option<&Workspace>,
+    ui: &mut Ui,
+    actions: &mut Vec<Action>,
+) {
+    let open = ws.is_some();
     egui::MenuBar::new().ui(ui, |ui| {
         ui.menu_button("File", |ui| {
-            item(ui, "Open…", Some(&s::OPEN), false);
+            if item(ui, "Open…", Some(&s::OPEN), true) {
+                actions.push(Action::Open);
+            }
             ui.separator();
-            item(ui, "Save", Some(&s::SAVE), false);
-            item(ui, "Save As…", Some(&s::SAVE_AS), false);
+            if item(ui, "Save", Some(&s::SAVE), open) {
+                actions.push(Action::Save);
+            }
+            if item(ui, "Save As…", Some(&s::SAVE_AS), open) {
+                actions.push(Action::SaveAs);
+            }
             if cfg!(not(target_arch = "wasm32")) {
                 ui.separator();
                 if item(ui, "Quit", Some(&s::QUIT), true) {
@@ -43,8 +56,17 @@ pub(super) fn show(shell: &mut Shell, ui: &mut Ui, actions: &mut Vec<Action>) {
             item(ui, "Reset to Defaults", None, false);
         });
         ui.menu_button("Export", |ui| {
-            item(ui, "Export…", Some(&s::EXPORT), false);
-            item(ui, "Export Again", Some(&s::EXPORT_AGAIN), false);
+            if item(ui, "Export…", Some(&s::EXPORT), open)
+                && let Some(ws) = ws
+            {
+                shell.open_export(ws);
+            }
+            let again = open && shell.last_export.is_some();
+            if item(ui, "Export Again", Some(&s::EXPORT_AGAIN), again)
+                && let Some((settings, name)) = shell.last_export.clone()
+            {
+                actions.push(Action::Export(settings, name));
+            }
         });
         ui.menu_button("Help", |ui| {
             ui.label(format!("Convert64 {}", env!("CARGO_PKG_VERSION")));

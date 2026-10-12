@@ -5,8 +5,8 @@ use crate::scheduler::Snapshot;
 use convert64_core::mode::Mode;
 use convert64_core::solve::{Solution, SolveMode};
 use convert64_core::{Palette, SuperGrid};
-use convert64_project::{JsonCommand, MemoryStore, ProjectError, ProjectFile, Session};
-use std::path::Path;
+use convert64_project::{Embed, JsonCommand, MemoryStore, ProjectError, ProjectFile, Session};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// An open project.
@@ -17,9 +17,145 @@ pub struct Document {
     session: Session,
     /// Bumped by every edit, so views know when to rebuild what they derive.
     revision: u64,
+    /// The revision last saved; the title marks a difference (UX §9).
+    saved: u64,
+    /// Where the project was opened from or last saved to (native).
+    path: Option<PathBuf>,
+}
+
+/// Whether `name` is a project file rather than a picture.
+pub fn is_project(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".convert64") || lower.ends_with(".json")
 }
 
 impl Document {
+    /// Opens a picture or a project from its bytes. `path` (native) is where the file
+    /// is: a project's linked files are then read relative to it, and Save writes back
+    /// there. Without it (browser) a project must embed its sources.
+    pub fn open(name: &str, bytes: &[u8], path: Option<&Path>) -> Result<Self, ProjectError> {
+        if !is_project(name) {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(path) = path {
+                let source = convert64_project::codec::decode_source(bytes, name)?;
+                let stem = path
+                    .file_stem()
+                    .map_or_else(|| name.to_owned(), |s| s.to_string_lossy().into_owned());
+                let file =
+                    ProjectFile::from_png(Mode::MulticolorBitmap, &stem, path, source.size());
+                let session = Session::from_project(file, Path::new(""))?;
+                return Ok(Self::new(name, session, None));
+            }
+            return Self::from_png(name, bytes);
+        }
+        let text = std::str::from_utf8(bytes).map_err(|e| ProjectError::Json(e.to_string()))?;
+        let file = ProjectFile::parse(text)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(path) = path {
+            let base = path.parent().map(Path::to_owned).unwrap_or_default();
+            let session = Session::from_project(file, &base)?;
+            return Ok(Self::new(name, session, Some(path.to_owned())));
+        }
+        let _ = path;
+        drop(file);
+        let store = Arc::new(MemoryStore::new());
+        store.insert(name, bytes.to_vec());
+        let session = Session::open_in(Box::new(store), Path::new(name))?;
+        Ok(Self::new(name, session, None))
+    }
+
+    fn new(name: &str, session: Session, path: Option<PathBuf>) -> Self {
+        Self {
+            name: name.to_owned(),
+            session,
+            revision: 0,
+            saved: 0,
+            path,
+        }
+    }
+
+    /// The name without its extension, for saved and exported files.
+    pub fn stem(&self) -> String {
+        Path::new(&self.name)
+            .file_stem()
+            .map_or_else(|| self.name.clone(), |s| s.to_string_lossy().into_owned())
+    }
+
+    /// Where the project lives (native), once opened from or saved to a file.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// Whether there are edits since the last save.
+    pub fn is_dirty(&self) -> bool {
+        self.revision != self.saved
+    }
+
+    /// The project file as JSON, with links relative to `dir`, or every source embedded
+    /// (the browser's downloads stand alone).
+    pub fn project_json(&self, dir: &Path, embed: Embed) -> Result<String, ProjectError> {
+        Ok(self.session.to_project_file(dir, embed)?.to_json())
+    }
+
+    /// Saves the project to `path`, links relative to it (native).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn save_to(&mut self, path: &Path) -> Result<(), ProjectError> {
+        self.session.save(path, Embed::Keep)?;
+        self.path = Some(path.to_owned());
+        if let Some(name) = path.file_name() {
+            self.name = name.to_string_lossy().into_owned();
+        }
+        self.mark_saved();
+        Ok(())
+    }
+
+    /// Records that the current revision is saved (or downloaded).
+    pub fn mark_saved(&mut self) {
+        self.saved = self.revision;
+    }
+
+    /// Adds a picture as a new layer on top (a file dropped on an open project): its
+    /// bytes go into the session's store (browser) or it is linked by `path` (native).
+    pub fn add_layer(
+        &mut self,
+        name: &str,
+        bytes: &[u8],
+        path: Option<&Path>,
+    ) -> Result<(), ProjectError> {
+        let source = convert64_project::codec::decode_source(bytes, name)?;
+        let (w, h) = source.size();
+        let spec = match path {
+            Some(p) => convert64_project::file::SourceSpec::Path(p.to_owned()),
+            None => {
+                self.session.store().write(Path::new(name), bytes)?;
+                convert64_project::file::SourceSpec::Path(PathBuf::from(name))
+            }
+        };
+        // Fit inside the screen, never enlarged; top left.
+        let s = (320.0 / w as f32).min(200.0 / h as f32).min(1.0);
+        let transform = convert64_core::Transform::new(
+            convert64_core::Vec2::ZERO,
+            convert64_core::Vec2::new(s, s),
+            false,
+            false,
+        )
+        .map_err(|e| ProjectError::Invalid(e.to_string()))?;
+        let stem = Path::new(name)
+            .file_stem()
+            .map_or_else(|| name.to_owned(), |s| s.to_string_lossy().into_owned());
+        self.run(JsonCommand::LayerAdd {
+            name: stem,
+            source: spec,
+            index: None,
+            visible: true,
+            transform,
+            opacity: 1.0,
+            blend: convert64_core::Blend::default(),
+            recipe: Box::default(),
+            adjustments: Box::default(),
+        })
+    }
+
     /// A new project of one PNG, scaled to fill the screen, in multicolor with the
     /// default recipe and palette (what `convert64 convert picture.png` makes).
     pub fn from_png(name: &str, png: &[u8]) -> Result<Self, ProjectError> {
@@ -31,11 +167,7 @@ impl Document {
         let project = format!("{name}.convert64");
         store.insert(&project, file.to_json());
         let session = Session::open_in(Box::new(store), Path::new(&project))?;
-        Ok(Self {
-            name: name.to_owned(),
-            session,
-            revision: 0,
-        })
+        Ok(Self::new(name, session, None))
     }
 
     /// The session, for reading.
@@ -150,5 +282,53 @@ mod tests {
         .unwrap();
         assert_eq!(doc.revision(), before + 1);
         assert_eq!(doc.mode(), Mode::HiresBitmap);
+    }
+
+    /// The browser's save: every source embedded, reopened from the bytes alone.
+    #[test]
+    fn a_project_round_trips_through_its_json() {
+        let mut doc = Document::from_png("ramp.png", &png()).unwrap();
+        doc.run(JsonCommand::ModeSet(convert64_core::command::ModeSet {
+            mode: Mode::HiresBitmap,
+        }))
+        .unwrap();
+        assert!(doc.is_dirty());
+        let json = doc.project_json(Path::new(""), Embed::All).unwrap();
+        doc.mark_saved();
+        assert!(!doc.is_dirty());
+        let back = Document::open("ramp.convert64", json.as_bytes(), None).unwrap();
+        assert_eq!(back.mode(), Mode::HiresBitmap);
+        assert_eq!(back.session().project(), doc.session().project());
+        assert_eq!(back.stem(), "ramp");
+    }
+
+    /// The native save: links relative to the project, reopened from its path.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_project_saves_and_reopens_natively() {
+        let dir = std::env::temp_dir().join(format!("convert64-app-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("art")).unwrap();
+        let picture = dir.join("art/ramp.png");
+        std::fs::write(&picture, png()).unwrap();
+        let mut doc = Document::open("ramp.png", &png(), Some(&picture)).unwrap();
+        let project = dir.join("ramp.convert64");
+        doc.save_to(&project).unwrap();
+        assert_eq!(doc.path(), Some(project.as_path()));
+        assert_eq!(doc.name, "ramp.convert64");
+        let text = std::fs::read_to_string(&project).unwrap();
+        assert!(text.contains("art/ramp.png"), "{text}");
+        let bytes = std::fs::read(&project).unwrap();
+        let back = Document::open("ramp.convert64", &bytes, Some(&project)).unwrap();
+        assert_eq!(back.session().project(), doc.session().project());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_dropped_picture_becomes_a_layer() {
+        let mut doc = Document::from_png("ramp.png", &png()).unwrap();
+        doc.add_layer("logo.png", &png(), None).unwrap();
+        let layers = &doc.session().project().layers;
+        assert_eq!(layers.len(), 2);
+        assert_eq!(doc.revision(), 1);
     }
 }

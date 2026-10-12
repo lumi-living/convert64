@@ -12,8 +12,8 @@ publish.workspace = true
 [features]
 default = []
 # `FsStore` and the path-taking conveniences (`Session::open`, `Session::save`,
-# `ProjectFile::read`, the PNG writers) for the native front-ends. The app does
-# not enable it: in the browser, files come in as bytes through a `Store`.
+# `ProjectFile::read`, the PNG writers) for the native front-ends, the app's native
+# build included. In the browser, files come in as bytes through a `Store`.
 fs = []
 
 [dependencies]

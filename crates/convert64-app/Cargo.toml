@@ -11,15 +11,19 @@ publish.workspace = true
 
 [dependencies]
 convert64-core = { workspace = true }
+convert64-formats = { workspace = true }
 convert64-project = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
 egui_material_icons = { workspace = true }
+rfd = { workspace = true }
 
 # The solve scheduler's worker thread uses the core's data parallelism natively; the
 # web build stays single-threaded (CLAUDE.md non-negotiable 2).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 convert64-core = { workspace = true, features = ["parallel"] }
+# Natively a project's linked files are read and written in place (#205).
+convert64-project = { workspace = true, features = ["fs"] }
 
 [lints]
 workspace = true

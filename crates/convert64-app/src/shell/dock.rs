@@ -36,7 +36,7 @@ pub(super) fn show(
     egui::ScrollArea::vertical().show(ui, |ui| {
         egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            tab_content(shell, ws.is_some(), ui);
+            tab_content(shell, ws, ui);
         });
     });
 }
@@ -183,7 +183,14 @@ fn tabs(shell: &mut Shell, ui: &mut Ui) {
 
 /// The selected tab's group. Each tab's form arrives with its own issue (#205, #206,
 /// #207); until a project is open it says what to do first.
-fn tab_content(shell: &Shell, has_project: bool, ui: &mut Ui) {
+fn tab_content(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui) {
+    let has_project = ws.is_some();
+    if shell.tab == DockTab::Export
+        && let Some(ws) = ws
+    {
+        export_tab(shell, ws, ui);
+        return;
+    }
     let (glyph, what) = match shell.tab {
         DockTab::Recipe => (icons::RECIPE, "the recipe"),
         DockTab::Layers => (icons::LAYERS, "the layers"),
@@ -209,4 +216,24 @@ fn capitalise(s: &str) -> String {
     let mut c = s.chars();
     c.next()
         .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+}
+
+/// The Export tab: the dialog's button and what Export Again would repeat.
+fn export_tab(shell: &mut Shell, ws: &Workspace, ui: &mut Ui) {
+    let shortcut = ui.ctx().format_shortcut(&super::shortcuts::EXPORT);
+    let button = Button::new("Export…").shortcut_text(shortcut);
+    if ui.add(button).clicked() {
+        shell.open_export(ws);
+    }
+    if let Some((settings, name)) = &shell.last_export {
+        let again = ui.ctx().format_shortcut(&super::shortcuts::EXPORT_AGAIN);
+        ui.label(
+            RichText::new(format!(
+                "Last: {} as {name} · Export Again {again}",
+                settings.format.label(ws.doc.mode())
+            ))
+            .small()
+            .weak(),
+        );
+    }
 }
