@@ -125,3 +125,40 @@ fn solver_knobs_from_the_command_line() {
     ]);
     assert_eq!(bad.status.code(), Some(2));
 }
+
+#[test]
+fn mix_levels_gamma_and_range_matching_from_the_command_line() {
+    let dir = temp("convert-levels");
+    let png = source(&dir);
+    let out = dir.join("levels.kla");
+    let r = convert(&[
+        "convert",
+        png.to_str().unwrap(),
+        "--dither",
+        "bayer2",
+        "--strength",
+        "0.7",
+        "--mix-levels",
+        "8",
+        "--smooth",
+        "--gamma",
+        "1.5",
+        "--match-range",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let check = convert(&["validate", out.to_str().unwrap()]);
+    assert_eq!(String::from_utf8_lossy(&check.stdout).trim(), "legal");
+    for bad in [["--mix-levels", "17"], ["--gamma", "9"]] {
+        let r = convert(&[
+            "convert",
+            png.to_str().unwrap(),
+            bad[0],
+            bad[1],
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+        assert_eq!(r.status.code(), Some(2), "{bad:?}");
+    }
+}

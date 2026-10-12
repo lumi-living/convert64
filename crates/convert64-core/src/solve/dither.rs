@@ -98,6 +98,10 @@ pub struct PassResult {
     pub received: Vec<[f32; 3]>,
     /// Σ weight × distance(colour, output) over all pixels, the solve's error.
     pub error: f32,
+    /// The same with each pixel dithered with mix levels measured against the
+    /// linear-light mix it is part of ([`super::mix::Mix::error`]), which is what the
+    /// eye sees of the pattern: finalists and refinement rounds are ranked by it (#142).
+    pub seen: f32,
 }
 
 /// Cells whose output is copied from a previous solution (locks).
@@ -142,9 +146,12 @@ pub fn pass(
         None => false,
         Some(l) => l.cells.contains(input.cell_at(cell)),
     };
+    // Stable mix levels of ordered pixels (#142), planned cell by cell up front.
+    let mixes = super::mix::plan(input, tables, &full, locked);
     let mut out = vec![ColourIndex::BLACK; w * h];
     let mut received = vec![[0.0f32; 3]; w * h];
     let mut error = 0.0f32;
+    let mut seen = 0.0f32;
     for y in 0..h {
         let reverse = y % 2 == 1;
         for i in 0..w {
@@ -165,7 +172,9 @@ pub fn pass(
             if is_locked(cell) {
                 let prev = locked.expect("checked").previous[idx];
                 out[idx] = prev;
-                error += q.weight * q.metric.distance(q.coords, colours[prev.as_usize()]);
+                let d = q.weight * q.metric.distance(q.coords, colours[prev.as_usize()]);
+                error += d;
+                seen += d;
                 continue;
             }
             // max_luma_diff: dither only between colours within N luma levels of the
@@ -199,21 +208,29 @@ pub fn pass(
                             ordered::pattern_position(x as i64, y as i64, q.phase, origin);
                         let thr = ordered::threshold(q.kind, q.orientation, px, py)
                             .expect("ordered and noise methods have thresholds");
-                        ordered::ordered_pick(
-                            q.metric,
-                            q.coords,
-                            mix,
-                            colours,
-                            thr,
-                            q.strength * q.adapt,
-                        )
+                        match mixes[idx] {
+                            Some(m) => m.pick(0.5 + (thr - 0.5) * (q.strength * q.adapt).min(1.0)),
+                            None => ordered::ordered_pick(
+                                q.metric,
+                                q.coords,
+                                mix,
+                                colours,
+                                thr,
+                                q.strength * q.adapt,
+                            ),
+                        }
                     }
                     DitherFamily::Diffusion => ordered::nearest(q.metric, target, mix, colours),
                     _ => ordered::nearest(q.metric, target, set, colours),
                 }
             };
             out[idx] = choice;
-            error += q.weight * q.metric.distance(q.coords, colours[choice.as_usize()]);
+            let d = q.weight * q.metric.distance(q.coords, colours[choice.as_usize()]);
+            error += d;
+            seen += match mixes[idx] {
+                Some(m) => q.weight * m.error,
+                None => d,
+            };
             // Diffuse.
             let Some(k) = kernel(q.kind) else { continue };
             if q.weight <= 0.0 || q.strength <= 0.0 {
@@ -265,6 +282,7 @@ pub fn pass(
         out,
         received,
         error,
+        seen,
     }
 }
 

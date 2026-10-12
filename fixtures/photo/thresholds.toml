@@ -6,7 +6,18 @@
 # visible changes fail. Raise it only with a reason in the PR.
 mse_vs_golden_max = 0.0002
 
-# png2c64_mse_vs_source: the png2c64 baseline's mean squared OKLab distance from the
-# source (box-filtered to the target grid), measured by the golden harness with the same
-# code as ours. The quality bar (#111): our solve must be within this value + 2 %.
-png2c64_mse_vs_source = 0.028495
+# The source both converters are scored against (#142): `source.png` with png2c64's
+# preprocessing (`--gamma 1.5`, our `Gamma::PNG2C64` adjustment) applied, box-filtered
+# to the target grid. Our solve is made from the same preprocessed source, so the two
+# are compared on the picture each actually solved.
+#
+# png2c64_blur_mse_vs_source: the png2c64 baseline's OKLab MSE against that source after
+# both are blurred in linear light (binomial, sigma about 1.4 display pixels), which is
+# what the eye sees of a dither pattern. The quality bar (#142): ours must not be worse.
+png2c64_blur_mse_vs_source = 0.003758
+
+# png2c64_mse_vs_source: the same per pixel, without the blur. Reported, and checked to
+# still hold, but no longer a bar (#142): against a colour the palette cannot reach,
+# per-pixel MSE is lowest for a flat wrong colour, so it rewards the washed-out flat
+# areas the blurred bar is there to catch.
+png2c64_mse_vs_source = 0.015663

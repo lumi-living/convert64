@@ -106,7 +106,7 @@ most converters lack.
 |---|---|---|
 | `strength` | 0–100 % (png2c64 allows up to 200 %) | threshold / error scale, from the attribute map |
 | `adaptive` | 0–1 | reduce dithering in high-detail areas (png2c64 `--adaptive`), measured by local gradient on the super grid |
-| `gamma` | 0.1–8 | perceptual lift before thresholding (png2c64 default 1.5); we dither in linear light so the default here is 1.0 |
+| `gamma` | 0.1–8 | perceptual lift before thresholding (png2c64 default 1.5); we dither in linear light so the default here is 1.0. Built as the `gamma` layer adjustment (#142) |
 | `error_clamp` | per-channel | diffusion only |
 | `serpentine` | bool | diffusion only |
 | `cell_clamp` | bool, default true | diffusion only: drop error at cell borders (TAD §3.1). `false` = png2c64 behaviour, error flows into neighbours |

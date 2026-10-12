@@ -7,7 +7,7 @@ use super::metric::{Metric, MetricTables};
 use crate::colour::{ColourIndex, ColourSet};
 use crate::composite::{AttrSource, TargetFrame};
 use crate::geom::SuperGrid;
-use crate::layer::{DitherKind, FitMode, Orientation, PatternPhase, Recipe};
+use crate::layer::{DitherFamily, DitherKind, FitMode, Orientation, PatternPhase, Recipe};
 use crate::model::CellPos;
 
 /// One target pixel as the solver sees it.
@@ -37,6 +37,11 @@ pub(crate) struct Px {
     pub max_luma_diff: u8,
     /// `1 − adaptive × detail`: scales this pixel's dither (1 when `adaptive` is 0).
     pub adapt: f32,
+    /// Mix-ratio levels of an ordered or noise pixel (0 = continuous).
+    pub mix_levels: u8,
+    /// The colour in linear RGB (pre-smoothed like `coords`): mix ratios are taken in
+    /// linear light, where the eye averages a dither pattern.
+    pub lin: [f32; 3],
 }
 
 /// Solver options that shape the per-pixel input.
@@ -118,14 +123,31 @@ impl Input {
         );
         let attrs = frame.attributes();
         let default_recipe = Recipe::default();
+        // Ordered and noise pixels with `smooth` take their mix ratio from an
+        // edge-aware blur of the composite (#142); colours are still chosen from the
+        // unblurred one.
+        let smooths = |i: usize| {
+            let r = attrs
+                .recipe(attrs.pixels()[i].source)
+                .unwrap_or(&default_recipe);
+            r.smooth()
+                && matches!(
+                    r.method().kind.family(),
+                    DitherFamily::Ordered | DitherFamily::Noise
+                )
+        };
+        let smoothed = (0..w * h)
+            .any(smooths)
+            .then(|| smooth_colours(frame.colour(), frame.coverage(), w, h));
         let px: Vec<Px> = (0..w * h)
             .map(|i| {
                 let a = attrs.pixels()[i];
                 let recipe = attrs.recipe(a.source).unwrap_or(&default_recipe);
                 let metric = Metric::from_recipe(recipe.metric(), opts.luma_weight);
                 let method = recipe.method();
+                let colour = frame.colour()[i];
                 Px {
-                    coords: metric.coords(frame.colour()[i]),
+                    coords: metric.coords(colour),
                     metric,
                     weight: frame.coverage()[i],
                     kind: method.kind,
@@ -137,6 +159,11 @@ impl Input {
                     cell_clamp: recipe.cell_clamp(),
                     max_luma_diff: recipe.max_luma_diff(),
                     adapt: recipe.adaptive(),
+                    mix_levels: recipe.mix_levels(),
+                    lin: match &smoothed {
+                        Some(s) if smooths(i) => s[i],
+                        _ => colour,
+                    },
                 }
             })
             .collect();
@@ -352,6 +379,59 @@ fn apply_adaptive(px: &mut [Px], colour: &[[f32; 3]], w: usize, h: usize) {
     }
 }
 
+/// Spatial weights of the pre-smoothing blur: a Gaussian with σ = 1 target pixel at
+/// distances 0, 1 and 2 (`exp(−d²/2)`), written out so every platform gets the same bits.
+const SMOOTH_TAPS: [f32; 3] = [1.0, 0.606_530_66, 0.135_335_28];
+
+/// Neighbours at least this far (OKLab ΔE) from a pixel are left out of its blur, so
+/// edges stay sharp.
+pub const SMOOTH_EDGE: f32 = 0.08;
+
+/// The composite blurred for the mix ratio of ordered pixels with `smooth` (#142): a
+/// 5 × 5 Gaussian (σ = 1 target pixel) whose taps are weighted by coverage and by
+/// `1 − (ΔE / SMOOTH_EDGE)²` (OKLab), so micro-texture is averaged out but edges are not
+/// blurred across. Linear RGB in, linear RGB out.
+fn smooth_colours(colour: &[[f32; 3]], coverage: &[f32], w: usize, h: usize) -> Vec<[f32; 3]> {
+    let lab: Vec<[f32; 3]> = colour
+        .iter()
+        .map(|c| super::metric::Space::OkLab.coords(*c))
+        .collect();
+    let mut out: Vec<(usize, [f32; 3])> = (0..w * h).map(|i| (i, [0.0; 3])).collect();
+    crate::par::for_each(&mut out, |(i, o)| {
+        let (x, y) = (*i % w, *i / w);
+        let mut acc = [0.0f32; 3];
+        let mut total = 0.0f32;
+        for (dy, gy) in (-2i64..=2).zip([2usize, 1, 0, 1, 2]) {
+            for (dx, gx) in (-2i64..=2).zip([2usize, 1, 0, 1, 2]) {
+                let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+                if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 {
+                    continue;
+                }
+                let n = ny as usize * w + nx as usize;
+                let (a, b) = (lab[*i], lab[n]);
+                let d2 = ((a[0] - b[0]) * (a[0] - b[0])
+                    + (a[1] - b[1]) * (a[1] - b[1])
+                    + (a[2] - b[2]) * (a[2] - b[2]))
+                    / (SMOOTH_EDGE * SMOOTH_EDGE);
+                let wt = SMOOTH_TAPS[gx] * SMOOTH_TAPS[gy] * coverage[n] * (1.0 - d2);
+                if wt <= 0.0 {
+                    continue;
+                }
+                for (s, c) in acc.iter_mut().zip(colour[n]) {
+                    *s += wt * c;
+                }
+                total += wt;
+            }
+        }
+        *o = if total > 0.0 {
+            acc.map(|v| v / total)
+        } else {
+            colour[*i]
+        };
+    });
+    out.into_iter().map(|(_, c)| c).collect()
+}
+
 /// Each Force source's intended colours: the [`FORCE_TOP_K`] colours its pixels are
 /// most often nearest to, weighted by coverage (ties by index).
 fn intended_colours(px: &[Px], tables: &MetricTables) -> Vec<(AttrSource, ColourSet)> {
@@ -499,6 +579,34 @@ mod tests {
         let mut c = Compositor::new(SuperGrid::new(Mode::MulticolorBitmap, 2).unwrap());
         c.update(&[Layer::new("stripes", src)], &[]);
         c.frame().clone()
+    }
+
+    #[test]
+    fn smoothing_averages_texture_and_keeps_edges() {
+        // Left half black, right half a grey with ±0.02 texture.
+        let (w, h) = (16, 8);
+        let colour: Vec<[f32; 3]> = (0..w * h)
+            .map(|i| {
+                let x = i % w;
+                if x < 8 {
+                    [0.0; 3]
+                } else {
+                    let v = 0.4 + if (i / w + x) % 2 == 0 { 0.02 } else { -0.02 };
+                    [v; 3]
+                }
+            })
+            .collect();
+        let out = smooth_colours(&colour, &vec![1.0; w * h], w, h);
+        // The black side does not bleed into the grey edge column, nor grey into black.
+        for y in 0..h {
+            assert_eq!(out[y * w + 7], [0.0; 3]);
+            assert!(out[y * w + 8][0] > 0.37, "{:?}", out[y * w + 8]);
+        }
+        // Inside the grey, the texture is mostly averaged out.
+        for y in 2..h - 2 {
+            let v = out[y * w + 12][0];
+            assert!((v - 0.4).abs() < 0.01, "{v}");
+        }
     }
 
     #[test]

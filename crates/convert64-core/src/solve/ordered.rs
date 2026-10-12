@@ -95,6 +95,32 @@ pub fn threshold(kind: DitherKind, orientation: Orientation, x: i64, y: i64) -> 
     Some((f32::from(table[i]) + 0.5) / (n * n) as f32)
 }
 
+/// How many distinct thresholds an ordered or noise method's pattern has (`n²` for an
+/// `n × n` matrix), or `None` for diffusion and no-dither methods.
+pub const fn pattern_size(kind: DitherKind) -> Option<u32> {
+    match kind {
+        DitherKind::Bayer2 => Some(4),
+        DitherKind::Bayer4 => Some(16),
+        DitherKind::Bayer8 => Some(64),
+        DitherKind::BlueNoise => Some((BLUE_NOISE_SIZE * BLUE_NOISE_SIZE) as u32),
+        _ => None,
+    }
+}
+
+/// The share of a pattern's pixels that take the second colour at `level` when its
+/// `size` thresholds `(k + ½) / size` are pulled towards ½ by `strength` (as
+/// [`ordered_pick`] does): what the eye sees of an ordered mix.
+pub fn shown_share(level: f32, size: u32, strength: f32) -> f32 {
+    let s = strength.clamp(0.0, 1.0);
+    if s <= 0.0 {
+        return if level > 0.5 { 1.0 } else { 0.0 };
+    }
+    let n = size as f32;
+    // thr_k < level  ⇔  k < n × (½ + (level − ½) / s) − ½.
+    let below = (n * (0.5 + (level - 0.5) / s) - 0.5).ceil().clamp(0.0, n);
+    below / n
+}
+
 /// A pixel's position in its pattern: target pixel `(x, y)` for a screen-locked
 /// pattern, or relative to `layer_origin` (the layer's top-left corner in whole target
 /// pixels) for a layer-locked one, so the pattern moves with the layer.
@@ -273,6 +299,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn shown_share_counts_the_pattern_s_thresholds() {
+        assert_eq!(pattern_size(DitherKind::Bayer2), Some(4));
+        assert_eq!(pattern_size(DitherKind::FloydSteinberg), None);
+        // Bayer 2 at 70 %: the five levels show exactly 0, 1, 2, 3 and 4 of 4 pixels.
+        for (level, want) in [
+            (0.0, 0.0),
+            (0.25, 0.25),
+            (0.5, 0.5),
+            (0.75, 0.75),
+            (1.0, 1.0),
+        ] {
+            assert_eq!(shown_share(level, 4, 0.7), want, "{level}");
+        }
+        // The count agrees with thresholding the matrix itself.
+        for level in [0.1, 0.3, 0.45, 0.6, 0.9] {
+            for s in [0.3, 0.7, 1.0] {
+                let n = (0..16)
+                    .filter(|i| {
+                        let t =
+                            threshold(DitherKind::Bayer4, Orientation::Auto, i % 4, i / 4).unwrap();
+                        level > 0.5 + (t - 0.5) * s
+                    })
+                    .count();
+                assert_eq!(shown_share(level, 16, s), n as f32 / 16.0, "{level} {s}");
+            }
+        }
+        assert_eq!(shown_share(0.4, 64, 0.0), 0.0);
+        assert_eq!(shown_share(0.6, 64, 0.0), 1.0);
     }
 
     #[test]

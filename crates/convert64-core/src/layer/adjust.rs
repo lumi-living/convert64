@@ -1,12 +1,14 @@
 //! Per-layer colour adjustments (UX §6, group 2). Every field defaults to identity.
 //!
-//! Applied in a fixed order: levels → brightness/contrast → HSL → curves. Levels,
-//! brightness/contrast and curves work per channel in linear light and are baked into
-//! lookup tables; HSL works in OKLCh. Alpha is never touched. Passes at their identity
-//! value are skipped, so identity adjustments return the input bit for bit.
+//! Applied in a fixed order: gamma → levels → brightness/contrast → HSL → curves →
+//! range matching. Gamma, levels, brightness/contrast and curves work per channel in
+//! linear light and are baked into lookup tables; HSL works in OKLCh; range matching
+//! (png2c64 `--match-range`) remaps the whole image's OKLab extent and so runs over all
+//! pixels at once. Alpha is never touched. Passes at their identity value are skipped,
+//! so identity adjustments return the input bit for bit.
 
 use super::SourceImage;
-use crate::palette::{LinearRgb, Oklch, linear_to_srgb8, srgb8_to_linear};
+use crate::palette::{LinearRgb, Oklab, Oklch, Palette, linear_to_srgb8, srgb8_to_linear};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
@@ -52,6 +54,273 @@ fn check(what: &'static str, value: f32, lo: f32, hi: f32) -> Result<f32, Adjust
     } else {
         Err(AdjustError::OutOfRange { what, value })
     }
+}
+
+/// png2c64's `--gamma`: every channel raised to this power in linear light before any
+/// other adjustment, `0.1..=8`. Above 1 darkens mid-tones (png2c64's default is 1.5);
+/// 1 is identity. Note the direction is the opposite of [`Levels`]' gamma, which
+/// brightens above 1: `Gamma(g)` equals levels gamma `1/g`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "f32", into = "f32")]
+pub struct Gamma(f32);
+
+impl Gamma {
+    /// 1: no change.
+    pub const IDENTITY: Self = Self(1.0);
+
+    /// png2c64's default, 1.5.
+    pub const PNG2C64: Self = Self(1.5);
+
+    /// A gamma in `0.1..=8`.
+    pub fn new(value: f32) -> Result<Self, AdjustError> {
+        check("gamma", value, 0.1, 8.0).map(Self)
+    }
+
+    /// The exponent.
+    pub const fn get(self) -> f32 {
+        self.0
+    }
+
+    fn eval(self, v: f32) -> f32 {
+        if self.0 == 1.0 {
+            v
+        } else {
+            v.max(0.0).powf(self.0)
+        }
+    }
+}
+
+impl Default for Gamma {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+impl TryFrom<f32> for Gamma {
+    type Error = AdjustError;
+    fn try_from(v: f32) -> Result<Self, AdjustError> {
+        Self::new(v)
+    }
+}
+
+impl From<Gamma> for f32 {
+    fn from(g: Gamma) -> Self {
+        g.0
+    }
+}
+
+#[derive(Deserialize)]
+struct RangeMatchData {
+    percentile: f32,
+    l: [f32; 2],
+    a: [f32; 2],
+    b: [f32; 2],
+}
+
+/// png2c64's `--match-range` (OKLab range matching): the image's OKLab extent, taken
+/// between the `percentile` and `1 − percentile` quantiles of its opaque pixels, is
+/// mapped onto a target extent. L is stretched linearly; a and b are scaled around zero
+/// so greys stay grey. The target is a palette's extent shrunk by a margin
+/// ([`Self::for_palette`]), stored so a project file is self-contained.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RangeMatchData")]
+pub struct RangeMatch {
+    percentile: f32,
+    l: [f32; 2],
+    a: [f32; 2],
+    b: [f32; 2],
+}
+
+impl TryFrom<RangeMatchData> for RangeMatch {
+    type Error = AdjustError;
+    fn try_from(d: RangeMatchData) -> Result<Self, AdjustError> {
+        Self::new(d.percentile, d.l, d.a, d.b)
+    }
+}
+
+impl RangeMatch {
+    /// png2c64's tail fraction ignored at each end, 1 %.
+    pub const DEFAULT_PERCENTILE: f32 = 0.01;
+
+    /// png2c64's inward margin on the palette extent, 5 %.
+    pub const DEFAULT_MARGIN: f32 = 0.05;
+
+    /// Range matching with `percentile` in `0..0.5` onto target ranges `[lo, hi]` of
+    /// OKLab L, a and b (finite, `lo ≤ hi`).
+    pub fn new(
+        percentile: f32,
+        l: [f32; 2],
+        a: [f32; 2],
+        b: [f32; 2],
+    ) -> Result<Self, AdjustError> {
+        check("range percentile", percentile, 0.0, 0.499)?;
+        for (what, r) in [("range L", l), ("range a", a), ("range b", b)] {
+            check(what, r[0], -2.0, 2.0)?;
+            check(what, r[1], r[0], 2.0)?;
+        }
+        Ok(Self {
+            percentile,
+            l,
+            a,
+            b,
+        })
+    }
+
+    /// png2c64's matching onto `palette`: its OKLab extent shrunk by `margin` (a
+    /// fraction of each span, `0..0.5`) on each side.
+    pub fn for_palette(
+        palette: &Palette,
+        percentile: f32,
+        margin: f32,
+    ) -> Result<Self, AdjustError> {
+        check("range margin", margin, 0.0, 0.499)?;
+        let labs: Vec<Oklab> = crate::colour::ColourIndex::ALL
+            .into_iter()
+            .map(|c| palette.oklab(c))
+            .collect();
+        let extent = |f: fn(&Oklab) -> f32| {
+            let lo = labs.iter().map(f).fold(f32::INFINITY, f32::min);
+            let hi = labs.iter().map(f).fold(f32::NEG_INFINITY, f32::max);
+            let m = (hi - lo) * margin;
+            [lo + m, hi - m]
+        };
+        Self::new(
+            percentile,
+            extent(|c| c.l),
+            extent(|c| c.a),
+            extent(|c| c.b),
+        )
+    }
+
+    /// Tail fraction ignored at each end.
+    pub const fn percentile(&self) -> f32 {
+        self.percentile
+    }
+
+    /// Target L range.
+    pub const fn l(&self) -> [f32; 2] {
+        self.l
+    }
+
+    /// Target a range.
+    pub const fn a(&self) -> [f32; 2] {
+        self.a
+    }
+
+    /// Target b range.
+    pub const fn b(&self) -> [f32; 2] {
+        self.b
+    }
+
+    /// Remaps `px` (straight-alpha linear RGBA) in place; fully transparent pixels are
+    /// neither measured nor changed.
+    pub fn apply(&self, px: &mut [[f32; 4]]) {
+        let mut labs: Vec<(usize, Oklab)> = px
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p[3] > 0.0)
+            .map(|(i, p)| {
+                let lab = LinearRgb {
+                    r: p[0],
+                    g: p[1],
+                    b: p[2],
+                }
+                .to_oklab();
+                (i, lab)
+            })
+            .collect();
+        if labs.is_empty() {
+            return;
+        }
+        let p = self.percentile;
+        let range =
+            |f: fn(&Oklab) -> f32| source_range(labs.iter().map(|(_, c)| f(c)).collect(), p);
+        let (sl, sa, sb) = (range(|c| c.l), range(|c| c.a), range(|c| c.b));
+        crate::par::for_each(&mut labs, |(_, c)| {
+            c.l = remap(c.l, sl, self.l);
+            c.a = scale_around_zero(c.a, sa, self.a);
+            c.b = scale_around_zero(c.b, sb, self.b);
+        });
+        for (i, lab) in labs {
+            let out = LinearRgb::from_oklab(lab);
+            px[i][..3].copy_from_slice(&[out.r, out.g, out.b].map(|v| v.clamp(0.0, 1.0)));
+        }
+    }
+}
+
+/// The `p` and `1 − p` quantiles of `v` (png2c64's indices: `⌊n·p⌋` and `⌊n·(1 − p)⌋`).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "indices into a non-empty pixel list"
+)]
+fn source_range(mut v: Vec<f32>, p: f32) -> [f32; 2] {
+    let n = v.len();
+    let at = |q: f32| ((n as f32 * q) as usize).min(n - 1);
+    let (lo, hi) = (at(p), at(1.0 - p));
+    let lo_v = *v.select_nth_unstable_by(lo, f32::total_cmp).1;
+    let hi_v = *v.select_nth_unstable_by(hi, f32::total_cmp).1;
+    [lo_v, hi_v]
+}
+
+/// png2c64's linear remap of `v` from `src` to `dst`; a flat source maps to the middle.
+fn remap(v: f32, src: [f32; 2], dst: [f32; 2]) -> f32 {
+    let span = src[1] - src[0];
+    if span < 1e-6 {
+        return (dst[0] + dst[1]) * 0.5;
+    }
+    dst[0] + (v - src[0]) / span * (dst[1] - dst[0])
+}
+
+/// png2c64's chroma scaling: positive values by `dst.hi / src.hi`, negative ones by
+/// `dst.lo / src.lo`, so zero (grey) stays put.
+fn scale_around_zero(v: f32, src: [f32; 2], dst: [f32; 2]) -> f32 {
+    if v >= 0.0 {
+        if src[1] > 1e-6 {
+            v * dst[1] / src[1]
+        } else {
+            v
+        }
+    } else if src[0] < -1e-6 {
+        v * dst[0] / src[0]
+    } else {
+        v
+    }
+}
+
+/// A source whose OKLab L span covers less than this share of the palette's (both as
+/// [`suggest_range_match`] measures them) has a narrow range.
+const NARROW_RANGE: f32 = 0.6;
+
+/// An "Auto levels" suggestion for `source` (#142): range matching onto `palette` with
+/// png2c64's defaults when the source's OKLab L range (1st–99th percentile) covers less
+/// than 60 % of the palette's. Only a suggestion: nothing applies it unless asked.
+pub fn suggest_range_match(source: &SourceImage, palette: &Palette) -> Option<RangeMatch> {
+    let ls: Vec<f32> = source
+        .pixels()
+        .iter()
+        .filter(|p| p[3] > 0.0)
+        .map(|p| {
+            LinearRgb {
+                r: p[0],
+                g: p[1],
+                b: p[2],
+            }
+            .to_oklab()
+            .l
+        })
+        .collect();
+    if ls.is_empty() {
+        return None;
+    }
+    let m = RangeMatch::for_palette(
+        palette,
+        RangeMatch::DEFAULT_PERCENTILE,
+        RangeMatch::DEFAULT_MARGIN,
+    )
+    .expect("png2c64's defaults are valid");
+    let [lo, hi] = source_range(ls, RangeMatch::DEFAULT_PERCENTILE);
+    (hi - lo < NARROW_RANGE * (m.l[1] - m.l[0])).then_some(m)
 }
 
 #[derive(Deserialize)]
@@ -441,6 +710,9 @@ impl Curves {
 /// A layer's colour adjustments.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Adjustments {
+    /// png2c64-style gamma, applied first.
+    #[serde(default)]
+    pub gamma: Gamma,
     /// Input levels.
     #[serde(default)]
     pub levels: Levels,
@@ -453,13 +725,16 @@ pub struct Adjustments {
     /// Tone curves.
     #[serde(default)]
     pub curves: Curves,
+    /// OKLab range matching, applied last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_range: Option<RangeMatch>,
 }
 
 /// A separable per-channel tone function.
 #[derive(Clone, Debug)]
 enum ToneFn {
-    /// Levels then brightness/contrast.
-    Tone(Levels, BrightnessContrast),
+    /// Gamma, levels, then brightness/contrast.
+    Tone(Gamma, Levels, BrightnessContrast),
     /// Master curve then a channel curve.
     Curve(Curve, Curve),
 }
@@ -467,7 +742,7 @@ enum ToneFn {
 impl ToneFn {
     fn eval(&self, v: f32) -> f32 {
         match self {
-            Self::Tone(l, bc) => bc.eval(l.eval(v)),
+            Self::Tone(g, l, bc) => bc.eval(l.eval(g.eval(v))),
             Self::Curve(master, ch) => ch.eval(master.eval(v.clamp(0.0, 1.0))),
         }
     }
@@ -506,7 +781,7 @@ impl Lut {
 /// identity passes dropped.
 #[derive(Clone, Debug)]
 pub struct AdjustPlan {
-    /// Levels then brightness/contrast, the same for every channel.
+    /// Gamma, levels, then brightness/contrast, the same for every channel.
     tone: Option<Lut>,
     hsl: Option<Hsl>,
     /// Master then channel curve, per channel.
@@ -516,15 +791,17 @@ pub struct AdjustPlan {
 impl Adjustments {
     /// Whether every adjustment is at its identity value.
     pub fn is_identity(&self) -> bool {
-        self.plan().is_identity()
+        self.plan().is_identity() && self.match_range.is_none()
     }
 
     /// Compiles the adjustments into lookup tables.
     pub fn plan(&self) -> AdjustPlan {
-        let levels = self.levels;
+        let (gamma, levels) = (self.gamma, self.levels);
         let bc = self.brightness_contrast;
-        let tone = (levels != Levels::IDENTITY || bc != BrightnessContrast::default())
-            .then(|| Lut::build(ToneFn::Tone(levels, bc)));
+        let tone = (gamma != Gamma::IDENTITY
+            || levels != Levels::IDENTITY
+            || bc != BrightnessContrast::default())
+        .then(|| Lut::build(ToneFn::Tone(gamma, levels, bc)));
         let hsl = (!self.hsl.is_identity()).then_some(self.hsl);
         let c = &self.curves;
         let curves = (!c.is_identity()).then(|| {
@@ -579,6 +856,9 @@ impl AdjustCache {
             let mut px = source.pixels().to_vec();
             if !plan.is_identity() {
                 crate::par::for_each(&mut px, |p| plan.apply(p));
+            }
+            if let Some(m) = &adj.match_range {
+                m.apply(&mut px);
             }
             self.pixels = Some(px.into());
             self.key = Some((Arc::clone(source), adj.clone()));
@@ -655,13 +935,14 @@ mod tests {
     fn table_path_equals_direct_evaluation() {
         let levels = Levels::new(0.2, 0.9, 0.7).unwrap();
         let bc = BrightnessContrast::new(-0.3, 0.4).unwrap();
-        let lut = Lut::build(ToneFn::Tone(levels, bc));
+        let g = Gamma::new(1.5).unwrap();
+        let lut = Lut::build(ToneFn::Tone(g, levels, bc));
         for k in 0..=255u8 {
             let v = srgb8_to_linear(k);
-            assert_eq!(lut.eval(v), bc.eval(levels.eval(v)), "{k}");
+            assert_eq!(lut.eval(v), bc.eval(levels.eval(g.eval(v))), "{k}");
         }
         // Off-table input falls back to direct evaluation.
-        assert_eq!(lut.eval(0.123_457), bc.eval(levels.eval(0.123_457)));
+        assert_eq!(lut.eval(0.123_457), bc.eval(levels.eval(g.eval(0.123_457))));
     }
 
     #[test]
@@ -741,6 +1022,85 @@ mod tests {
             out.iter().take(3).all(|v| (v - 1.0).abs() < 1e-3),
             "{out:?}"
         );
+    }
+
+    #[test]
+    fn gamma_is_png2c64s_power_and_runs_first() {
+        assert!(Gamma::new(0.05).is_err() && Gamma::new(9.0).is_err());
+        let adj = Adjustments {
+            gamma: Gamma::PNG2C64,
+            levels: Levels::new(0.0, 0.5, 1.0).unwrap(),
+            ..Adjustments::default()
+        };
+        assert!(!adj.is_identity());
+        let out = run(&adj, [0.25, 0.5, 1.0, 1.0]);
+        // 0.25^1.5 = 0.125, then levels 0–0.5 doubles it.
+        assert!((out[0] - 0.25).abs() < 1e-5, "{out:?}");
+        assert!((out[1] - 0.5f32.powf(1.5) * 2.0).abs() < 1e-5, "{out:?}");
+        let text = toml::to_string(&Adjustments {
+            gamma: Gamma::PNG2C64,
+            ..Adjustments::default()
+        })
+        .unwrap();
+        assert!(
+            text.contains("gamma = 1.5") && !text.contains("match_range"),
+            "{text}"
+        );
+        let back: Adjustments = toml::from_str(&text).unwrap();
+        assert_eq!(back.gamma, Gamma::PNG2C64);
+    }
+
+    #[test]
+    fn range_matching_stretches_l_and_keeps_greys_grey() {
+        let p = Palette::pepto_pal();
+        let m = RangeMatch::for_palette(&p, 0.0, RangeMatch::DEFAULT_MARGIN).unwrap();
+        assert!(m.l()[0] < 0.1 && m.l()[1] > 0.9, "{m:?}");
+        // A dim grey ramp from 0.1 to 0.2 linear, plus one transparent pixel.
+        let mut px: Vec<[f32; 4]> = (0..=10)
+            .map(|i| {
+                let v = 0.1 + 0.01 * i as f32;
+                [v, v, v, 1.0]
+            })
+            .collect();
+        px.push([0.9, 0.0, 0.0, 0.0]);
+        m.apply(&mut px);
+        let l = |q: [f32; 4]| {
+            LinearRgb {
+                r: q[0],
+                g: q[1],
+                b: q[2],
+            }
+            .to_oklab()
+            .l
+        };
+        assert!((l(px[0]) - m.l()[0]).abs() < 1e-3, "{:?}", px[0]);
+        assert!((l(px[10]) - m.l()[1]).abs() < 1e-3, "{:?}", px[10]);
+        for q in &px[..11] {
+            assert!(
+                (q[0] - q[1]).abs() < 1e-3 && (q[1] - q[2]).abs() < 1e-3,
+                "{q:?}"
+            );
+        }
+        assert_eq!(px[11], [0.9, 0.0, 0.0, 0.0]);
+        assert!(RangeMatch::new(0.6, [0.0, 1.0], [0.0, 0.0], [0.0, 0.0]).is_err());
+        assert!(RangeMatch::new(0.01, [0.5, 0.4], [0.0, 0.0], [0.0, 0.0]).is_err());
+    }
+
+    #[test]
+    fn auto_levels_suggests_only_for_narrow_sources() {
+        let p = Palette::pepto_pal();
+        let ramp = |lo: u8, hi: u8| {
+            let bytes: Vec<u8> = (0..=255u16)
+                .flat_map(|i| {
+                    let v = (u16::from(lo) + (u16::from(hi - lo) * i) / 255) as u8;
+                    [v, v, v, 255]
+                })
+                .collect();
+            SourceImage::from_srgba8(256, 1, &bytes).unwrap()
+        };
+        assert!(suggest_range_match(&ramp(0, 255), &p).is_none());
+        let narrow = suggest_range_match(&ramp(70, 140), &p).expect("narrow source");
+        assert_eq!(narrow.percentile(), RangeMatch::DEFAULT_PERCENTILE);
     }
 
     #[test]

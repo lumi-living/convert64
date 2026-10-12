@@ -13,15 +13,21 @@
 //!   of 16 bytes, then the embedded file in the format case's layout. `cargo xtask
 //!   vice-check` runs these PRGs in VICE.
 //! - **Solver, perceptual.** The fixture's `source.png` is composited at 4× to fill the
-//!   screen and solved with the recipe closest to the png2c64 baseline settings (see
-//!   [`baseline_recipe`]). The result is rendered through the palette and compared by
-//!   OKLab mean squared error with `fixtures/<name>/expected.png` (it must stay within
-//!   `mse_vs_golden_max`) and with the source itself, box-filtered to the target grid.
-//!   The png2c64 baseline is scored against the same source by the same code; ours must
-//!   be within `png2c64_mse_vs_source × 1.02` (`thresholds.toml` records png2c64's
-//!   value, and the test checks it still holds). Each case prints `fixture, mode,
-//!   mse_vs_golden, mse_vs_png2c64, mse_vs_source, png2c64_vs_source` so PRs can report
-//!   the delta to png2c64 (`CLAUDE.md`).
+//!   screen, with png2c64's preprocessing (`--gamma 1.5`, as [`Gamma::PNG2C64`]) applied
+//!   as a layer adjustment, and solved with the recipe closest to the png2c64 baseline
+//!   settings (see [`baseline_recipe`]). The result is rendered through the palette and
+//!   compared by OKLab mean squared error with `fixtures/<name>/expected.png` (it must
+//!   stay within `mse_vs_golden_max`) and with the preprocessed source, box-filtered to
+//!   the target grid: the picture both converters actually solved (#142). The png2c64
+//!   baseline is scored against the same source by the same code, per pixel and after
+//!   a blur that integrates dither patterns the way the eye does ([`blur_mse`]). The
+//!   quality bar is the blurred one: ours must not be worse than
+//!   `png2c64_blur_mse_vs_source`. Per-pixel MSE is reported but no longer a bar
+//!   (#142): against a colour the palette cannot reach it is lowest for a flat wrong
+//!   colour, so it rewards exactly the flat, washed-out areas the bar should catch.
+//!   `thresholds.toml` records both png2c64 values and the test checks they still hold. Each case prints `fixture, mode, mse_vs_golden,
+//!   mse_vs_png2c64, mse_vs_source, png2c64_vs_source, blur_mse, png2c64_blur_mse` so
+//!   PRs can report the delta to png2c64 (`CLAUDE.md`).
 //!
 //! Golden candidates: with `CONVERT64_GOLDEN_OUT=<dir>` set, each solver case also writes
 //! its rendering to `<dir>/<fixture>/expected.png`. `cargo xtask regen-goldens` uses this
@@ -30,9 +36,11 @@
 use convert64_core::Palette;
 use convert64_core::composite::TargetFrame;
 use convert64_core::geom::Vec2;
-use convert64_core::layer::{DitherKind, Layer, Recipe, SourceImage, Transform};
+use convert64_core::layer::{
+    Adjustments, DitherKind, Gamma, Layer, Recipe, SourceImage, Transform,
+};
 use convert64_core::model::IndexedBitmap;
-use convert64_core::palette::{Rgb8, linear_to_srgb8, oklab_of};
+use convert64_core::palette::{LinearRgb, Rgb8, linear_to_srgb8, oklab_of, srgb8_to_linear};
 use convert64_core::solve::{SolveOptions, Solver, Steering};
 use convert64_core::validate;
 use convert64_core::{Compositor, SuperGrid};
@@ -219,17 +227,19 @@ fn solved(name: &str, format: BitmapFormat) -> Arc<Solved> {
         "",
         baseline_recipe(format),
         &SolveOptions::default(),
+        Gamma::PNG2C64,
     )
 }
 
-/// Composites and solves a fixture with `recipe` and `opts` once per test binary;
-/// `variant` names the combination in the cache.
+/// Composites and solves a fixture with `recipe` and `opts`, its source preprocessed
+/// with `gamma`, once per test binary; `variant` names the combination in the cache.
 fn solved_with(
     name: &str,
     format: BitmapFormat,
     variant: &str,
     recipe: Recipe,
     opts: &SolveOptions,
+    gamma: Gamma,
 ) -> Arc<Solved> {
     static CACHE: OnceLock<Mutex<HashMap<String, Arc<Solved>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Mutex::default);
@@ -254,6 +264,12 @@ fn solved_with(
         .expect("fit to screen"),
     );
     layer.set_recipe(recipe);
+    // png2c64's preprocessing (`Gamma::PNG2C64`), so both converters solve (and are
+    // scored against) the same picture (#142).
+    layer.set_adjustments(Adjustments {
+        gamma,
+        ..Adjustments::default()
+    });
     let grid = SuperGrid::with_default_factor(mode_of(format)).expect("bitmap grid");
     let mut c = Compositor::new(grid);
     c.update(&[layer], &[]);
@@ -279,7 +295,7 @@ fn check_variant(
     recipe: Recipe,
     opts: &SolveOptions,
 ) -> Arc<Solved> {
-    let s = solved_with(name, format, variant, recipe, opts);
+    let s = solved_with(name, format, variant, recipe, opts, Gamma::PNG2C64);
     assert_eq!(validate(&s.output), Ok(()), "{name}/{variant}: not legal");
     let rendered = render(&s.output, &Palette::pepto_pal());
     let file = format!("expected_{variant}.png");
@@ -302,6 +318,69 @@ fn check_variant(
 }
 
 /// Solver knobs (#123) on `portrait`.
+/// #142: mix levels, pre-smoothing and the gradient swatches.
+mod flat_areas {
+    use super::{
+        BitmapFormat, DitherKind, Gamma, Recipe, SolveOptions, baseline_recipe, check_variant,
+        solved_with,
+    };
+    use convert64_core::colour::ColourIndex;
+
+    /// The swatch band of `gradient` is the 16 Pepto colours, 10 multicolor pixels each:
+    /// solved from the raw source (png2c64's gamma would move them off the palette),
+    /// every pixel of the cell rows wholly inside the band is its swatch's index.
+    #[test]
+    fn gradient_swatches_quantise_exactly() {
+        let s = solved_with(
+            "gradient",
+            BitmapFormat::Koala,
+            "raw",
+            baseline_recipe(BitmapFormat::Koala),
+            &SolveOptions::default(),
+            Gamma::IDENTITY,
+        );
+        for y in 152..200 {
+            for x in 0..160 {
+                assert_eq!(
+                    s.output.pixel(x, y),
+                    ColourIndex::ALL[(x / 10) as usize],
+                    "swatch pixel ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    /// E5's continuous per-pixel ratio is still there as `mix_levels = 0`.
+    #[test]
+    fn portrait_continuous_ratio() {
+        let r = Recipe::with_method(DitherKind::Bayer2, 0.7)
+            .and_then(|r| r.with_mix_levels(0))
+            .expect("recipe");
+        check_variant(
+            "portrait",
+            BitmapFormat::Koala,
+            "levels0",
+            r,
+            &SolveOptions::default(),
+        );
+    }
+
+    /// Pre-smoothing of the mix ratio (off by default).
+    #[test]
+    fn portrait_smoothed_ratio() {
+        let r = Recipe::with_method(DitherKind::Bayer2, 0.7)
+            .expect("recipe")
+            .with_smooth(true);
+        check_variant(
+            "portrait",
+            BitmapFormat::Koala,
+            "smooth",
+            r,
+            &SolveOptions::default(),
+        );
+    }
+}
+
 mod knobs {
     use super::{BitmapFormat, DitherKind, Recipe, SolveOptions, check_variant};
 
@@ -440,6 +519,68 @@ fn oklab_mse(a: &[Rgb8], b: &[Rgb8]) -> f64 {
     sum / a.len() as f64
 }
 
+/// The blur [`blur_mse`] applies: binomial taps (`[1 4 6 4 1] / 16`, σ = 1 display
+/// pixel), run twice per axis (σ ≈ 1.4), enough to integrate a 2 × 2 multicolor pattern.
+const BLUR_TAPS: [f64; 5] = [1.0, 4.0, 6.0, 4.0, 1.0];
+
+/// One blur pass over a 320 × 200 linear image, horizontally or vertically, edges
+/// clamped.
+fn blur_pass(img: &[[f64; 3]], horizontal: bool) -> Vec<[f64; 3]> {
+    (0..320 * 200)
+        .map(|i| {
+            let (x, y) = ((i % 320) as i64, (i / 320) as i64);
+            let mut acc = [0.0; 3];
+            for (k, w) in (-2i64..=2).zip(BLUR_TAPS) {
+                let (sx, sy) = if horizontal {
+                    ((x + k).clamp(0, 319), y)
+                } else {
+                    (x, (y + k).clamp(0, 199))
+                };
+                let p = img[(sy * 320 + sx) as usize];
+                for c in 0..3 {
+                    acc[c] += w * p[c] / 16.0;
+                }
+            }
+            acc
+        })
+        .collect()
+}
+
+/// OKLab MSE after blurring both renderings in linear light (#142): what an eye at a
+/// normal viewing distance sees of a dither pattern. Calm, correct-on-average patterns
+/// score well; blotches that switch with the source's micro-texture do not.
+fn blur_mse(a: &[Rgb8], b: &[Rgb8]) -> f64 {
+    let blur = |img: &[Rgb8]| {
+        let mut v: Vec<[f64; 3]> = img
+            .iter()
+            .map(|c| [c.r, c.g, c.b].map(|u| f64::from(srgb8_to_linear(u))))
+            .collect();
+        for horizontal in [true, false, true, false] {
+            v = blur_pass(&v, horizontal);
+        }
+        v
+    };
+    let (ba, bb) = (blur(a), blur(b));
+    let lab = |p: [f64; 3]| {
+        #[expect(clippy::cast_possible_truncation, reason = "colour channels")]
+        let c = LinearRgb {
+            r: p[0] as f32,
+            g: p[1] as f32,
+            b: p[2] as f32,
+        }
+        .to_oklab();
+        [c.l, c.a, c.b].map(f64::from)
+    };
+    ba.iter()
+        .zip(&bb)
+        .map(|(&p, &q)| {
+            let (x, y) = (lab(p), lab(q));
+            (0..3).map(|k| (x[k] - y[k]) * (x[k] - y[k])).sum::<f64>()
+        })
+        .sum::<f64>()
+        / ba.len() as f64
+}
+
 /// `fixtures/<name>/thresholds.toml`.
 ///
 /// ```toml
@@ -453,8 +594,11 @@ fn oklab_mse(a: &[Rgb8], b: &[Rgb8]) -> f64 {
 #[serde(deny_unknown_fields)]
 struct Thresholds {
     mse_vs_golden_max: f64,
-    /// png2c64's OKLab MSE against the source (the quality bar: ours must be within 2 %).
+    /// png2c64's OKLab MSE against the source (reported; checked to still hold).
     png2c64_mse_vs_source: Option<f64>,
+    /// png2c64's blurred OKLab MSE against the source ([`blur_mse`]): the quality bar,
+    /// ours must not be worse.
+    png2c64_blur_mse_vs_source: Option<f64>,
     #[serde(default)]
     mode: std::collections::BTreeMap<String, ModeThresholds>,
 }
@@ -496,6 +640,8 @@ struct SolverScores {
     mse_vs_png2c64: f64,
     mse_vs_source: f64,
     png2c64_vs_source: f64,
+    blur_mse: f64,
+    png2c64_blur_mse: f64,
     threshold: f64,
 }
 
@@ -534,6 +680,8 @@ fn score(
         mse_vs_png2c64: oklab_mse(&rendered, &baseline),
         mse_vs_source: oklab_mse(&rendered, &source),
         png2c64_vs_source: oklab_mse(&baseline, &source),
+        blur_mse: blur_mse(&rendered, &source),
+        png2c64_blur_mse: blur_mse(&baseline, &source),
         threshold: thresholds(name).mse_vs_golden_max(mode_name(format)),
     }
 }
@@ -543,24 +691,42 @@ fn check_solver(name: &str, format: BitmapFormat) {
     let s = score(name, format, |o| o.clone(), true);
     println!(
         "{name}, {mode}, mse_vs_golden={:.6}, mse_vs_png2c64={:.6}, mse_vs_source={:.6}, \
-         png2c64_vs_source={:.6}",
-        s.mse_vs_golden, s.mse_vs_png2c64, s.mse_vs_source, s.png2c64_vs_source
+         png2c64_vs_source={:.6}, blur_mse={:.6}, png2c64_blur_mse={:.6}",
+        s.mse_vs_golden,
+        s.mse_vs_png2c64,
+        s.mse_vs_source,
+        s.png2c64_vs_source,
+        s.blur_mse,
+        s.png2c64_blur_mse
     );
-    let bar = thresholds(name).png2c64_mse_vs_source.unwrap_or_else(|| {
+    let t = thresholds(name);
+    let bar = t.png2c64_mse_vs_source.unwrap_or_else(|| {
         panic!(
             "{name}: thresholds.toml needs png2c64_mse_vs_source = {:.6}",
             s.png2c64_vs_source
         )
     });
+    let blur_bar = t.png2c64_blur_mse_vs_source.unwrap_or_else(|| {
+        panic!(
+            "{name}: thresholds.toml needs png2c64_blur_mse_vs_source = {:.6}",
+            s.png2c64_blur_mse
+        )
+    });
+    assert!(
+        (s.png2c64_blur_mse - blur_bar).abs() <= blur_bar * 0.01,
+        "{name}: png2c64 now scores {:.6} blurred against the source, thresholds.toml says \
+         {blur_bar:.6}",
+        s.png2c64_blur_mse
+    );
+    assert!(
+        s.blur_mse <= blur_bar,
+        "{name}, {mode}: blurred OKLab MSE vs source {:.6} is worse than png2c64's {blur_bar:.6}",
+        s.blur_mse
+    );
     assert!(
         (s.png2c64_vs_source - bar).abs() <= bar * 0.01,
         "{name}: png2c64 now scores {:.6} against the source, thresholds.toml says {bar:.6}",
         s.png2c64_vs_source
-    );
-    assert!(
-        s.mse_vs_source <= bar * 1.02,
-        "{name}, {mode}: OKLab MSE vs source {:.6} is worse than png2c64's {bar:.6} + 2 %",
-        s.mse_vs_source
     );
     assert!(
         s.mse_vs_golden <= s.threshold,

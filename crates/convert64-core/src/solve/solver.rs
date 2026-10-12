@@ -251,7 +251,7 @@ impl Solver {
             sets = next;
             rounds.push(sets.clone());
             r = pass(input, t, &sets, cand.bg, &opts.layer_origins, locked);
-            if r.error < best.0.error {
+            if r.seen < best.0.seen {
                 best = (r.clone(), sets.clone(), round);
             }
         }
@@ -328,8 +328,8 @@ impl Solver {
             .iter()
             .zip(dithered)
             .min_by(|(ca, ra), (cb, rb)| {
-                ra.0.error
-                    .total_cmp(&rb.0.error)
+                ra.0.seen
+                    .total_cmp(&rb.0.seen)
                     .then(bg_key(ca.bg).cmp(&bg_key(cb.bg)))
             })
             .expect("at least one candidate");
@@ -493,8 +493,14 @@ mod tests {
             (Mode::MulticolorBitmap, DitherKind::FloydSteinberg),
             (Mode::MulticolorBitmap, DitherKind::Bayer4),
             (Mode::HiresBitmap, DitherKind::Atkinson),
+            (Mode::HiresBitmap, DitherKind::BlueNoise),
         ] {
-            let f = frame(mode, kind);
+            let mut f = frame(mode, kind);
+            if kind == DitherKind::BlueNoise {
+                // Pre-smoothing too.
+                let r = Recipe::with_method(kind, 0.8).unwrap().with_smooth(true);
+                f = frame_with(mode, r, true);
+            }
             let one = rayon::ThreadPoolBuilder::new()
                 .num_threads(1)
                 .build()
@@ -831,6 +837,90 @@ mod tests {
             }
         }
         n
+    }
+
+    /// A hi-res frame of one grey (linear `level`, ± `noise` texture) that may use only
+    /// black and white, dithered with `kind` at `strength` and `mix_levels`.
+    fn black_and_white(
+        level: f32,
+        noise: f32,
+        kind: DitherKind,
+        strength: f32,
+        mix_levels: u8,
+    ) -> TargetFrame {
+        let r = Recipe::new(
+            crate::layer::Method::new(kind),
+            strength,
+            crate::layer::PatternPhase::Screen,
+            crate::layer::Metric::Oklab,
+            [ColourIndex::BLACK, ColourIndex::WHITE]
+                .into_iter()
+                .collect(),
+            crate::layer::FitMode::Adaptive,
+        )
+        .and_then(|r| r.with_mix_levels(mix_levels))
+        .unwrap();
+        let mut st = 11u32;
+        let px: Vec<[f32; 4]> = (0..320 * 200)
+            .map(|_| {
+                st = st.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                let n = ((st >> 16) as f32 / 65_536.0 - 0.5) * 2.0 * noise;
+                [level + n, level + n, level + n, 1.0]
+            })
+            .collect();
+        let mut l = Layer::new(
+            "grey",
+            Arc::new(SourceImage::from_linear(320, 200, px).unwrap()),
+        );
+        l.set_recipe(r);
+        let mut c = Compositor::new(SuperGrid::new(Mode::HiresBitmap, 2).unwrap());
+        c.update(&[l], &[]);
+        c.frame().clone()
+    }
+
+    /// White pixels per hi-res cell → how many cells have that count.
+    fn white_counts(sol: &Solution) -> std::collections::BTreeMap<usize, usize> {
+        let px = sol.image.to_indexed();
+        let mut counts = std::collections::BTreeMap::new();
+        for cy in 0..25u16 {
+            for cx in 0..40u16 {
+                let n = (cy * 8..cy * 8 + 8)
+                    .flat_map(|y| (cx * 8..cx * 8 + 8).map(move |x| (x, y)))
+                    .filter(|&(x, y)| px.pixel(x, y) == ColourIndex::WHITE)
+                    .count();
+                *counts.entry(n).or_insert(0) += 1;
+            }
+        }
+        counts
+    }
+
+    #[test]
+    fn mix_levels_give_a_flat_area_one_pattern() {
+        // A flat grey with ±0.03 texture: E5's per-pixel ratio follows the texture and
+        // the share of white wanders from cell to cell; mix levels give every cell the
+        // same pattern.
+        let s = Solver::new(&Palette::pepto_pal());
+        let solve = |levels| {
+            let f = black_and_white(0.2, 0.03, DitherKind::Bayer2, 0.7, levels);
+            s.solve(&f, &Steering::new(), None, &SolveOptions::default())
+        };
+        let calm = white_counts(&solve(4));
+        let top = calm.values().max().copied().unwrap_or(0);
+        assert!(top * 100 >= 1000 * 98, "{calm:?}");
+        let busy = white_counts(&solve(0));
+        assert!(busy.len() >= 5, "{busy:?}");
+    }
+
+    #[test]
+    fn mixes_are_taken_in_linear_light() {
+        // Linear 0.25 grey from black and white: a quarter of the pixels white (a ratio
+        // taken in OKLab, as E5 did, makes it about 63 %).
+        let s = Solver::new(&Palette::pepto_pal());
+        let f = black_and_white(0.25, 0.0, DitherKind::Bayer8, 1.0, 16);
+        let sol = s.solve(&f, &Steering::new(), None, &SolveOptions::default());
+        let white: usize = white_counts(&sol).iter().map(|(n, c)| n * c).sum();
+        let share = white as f32 / 64_000.0;
+        assert!((share - 0.25).abs() < 0.02, "{share}");
     }
 
     #[test]

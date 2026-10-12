@@ -7,6 +7,7 @@ pub mod cell;
 pub mod dither;
 pub mod input;
 pub mod metric;
+pub mod mix;
 pub mod ordered;
 pub mod report;
 pub mod solver;

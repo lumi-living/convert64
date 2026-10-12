@@ -7,8 +7,8 @@ pub mod adjust;
 pub mod recipe;
 
 pub use adjust::{
-    AdjustCache, AdjustError, AdjustPlan, Adjustments, BrightnessContrast, Curve, Curves, Hsl,
-    Levels,
+    AdjustCache, AdjustError, AdjustPlan, Adjustments, BrightnessContrast, Curve, Curves, Gamma,
+    Hsl, Levels, RangeMatch, suggest_range_match,
 };
 pub use recipe::{
     DitherFamily, DitherKind, FitMode, Method, Metric, Orientation, PatternPhase, Recipe,

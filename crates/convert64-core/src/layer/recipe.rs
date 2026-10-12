@@ -154,6 +154,8 @@ pub enum RecipeError {
     MaxLumaDiff(u8),
     /// `adaptive` is not a number in `0..=1`.
     Adaptive(f32),
+    /// `mix_levels` is above [`MAX_MIX_LEVELS`].
+    MixLevels(u8),
 }
 
 impl fmt::Display for RecipeError {
@@ -163,6 +165,9 @@ impl fmt::Display for RecipeError {
             Self::EmptyAllowedSet => f.write_str("a recipe must allow at least one colour"),
             Self::MaxLumaDiff(n) => write!(f, "max_luma_diff must be 0–8 luma levels, got {n}"),
             Self::Adaptive(a) => write!(f, "adaptive must be in 0–1, got {a}"),
+            Self::MixLevels(n) => {
+                write!(f, "mix_levels must be 0–{MAX_MIX_LEVELS}, got {n}")
+            }
         }
     }
 }
@@ -187,6 +192,10 @@ struct RecipeData {
     max_luma_diff: u8,
     #[serde(default)]
     adaptive: f32,
+    #[serde(default = "default_mix_levels")]
+    mix_levels: u8,
+    #[serde(default)]
+    smooth: bool,
 }
 
 const fn all_colours() -> ColourSet {
@@ -200,6 +209,16 @@ const fn yes() -> bool {
 const fn luma_off() -> u8 {
     MAX_LUMA_DIFF_OFF
 }
+
+const fn default_mix_levels() -> u8 {
+    DEFAULT_MIX_LEVELS
+}
+
+/// The default `mix_levels`: a cell mixes its two colours at 0, 25, 50, 75 or 100 %.
+pub const DEFAULT_MIX_LEVELS: u8 = 4;
+
+/// The largest `mix_levels`.
+pub const MAX_MIX_LEVELS: u8 = 16;
 
 /// `max_luma_diff` at which it restricts nothing: the nine luma levels are at most 8
 /// apart.
@@ -219,6 +238,8 @@ pub struct Recipe {
     cell_clamp: bool,
     max_luma_diff: u8,
     adaptive: f32,
+    mix_levels: u8,
+    smooth: bool,
 }
 
 impl TryFrom<RecipeData> for Recipe {
@@ -229,7 +250,9 @@ impl TryFrom<RecipeData> for Recipe {
         )?
         .with_cell_clamp(d.cell_clamp)
         .with_max_luma_diff(d.max_luma_diff)?
-        .with_adaptive(d.adaptive)
+        .with_adaptive(d.adaptive)?
+        .with_mix_levels(d.mix_levels)
+        .map(|r| r.with_smooth(d.smooth))
     }
 }
 
@@ -246,6 +269,8 @@ impl Default for Recipe {
             cell_clamp: true,
             max_luma_diff: MAX_LUMA_DIFF_OFF,
             adaptive: 0.0,
+            mix_levels: DEFAULT_MIX_LEVELS,
+            smooth: false,
         }
     }
 }
@@ -276,6 +301,8 @@ impl Recipe {
             cell_clamp: true,
             max_luma_diff: MAX_LUMA_DIFF_OFF,
             adaptive: 0.0,
+            mix_levels: DEFAULT_MIX_LEVELS,
+            smooth: false,
         })
     }
 
@@ -308,6 +335,42 @@ impl Recipe {
         }
         self.adaptive = adaptive;
         Ok(self)
+    }
+
+    /// This recipe with `mix_levels` set (ordered and noise methods; #142): each cell
+    /// mixes its two colours at one of `mix_levels + 1` evenly spaced ratios (4, the
+    /// default: 0/25/50/75/100 %), taken from the mean over its pixels and snapped to
+    /// what its neighbours show when within one step, so a flat area gets one calm
+    /// pattern. Pixels far from their cell's mean (edges, detail) keep their own ratio,
+    /// quantised the same way. 0 keeps the continuous per-pixel ratio of E5.
+    pub fn with_mix_levels(mut self, levels: u8) -> Result<Self, RecipeError> {
+        if levels > MAX_MIX_LEVELS {
+            return Err(RecipeError::MixLevels(levels));
+        }
+        self.mix_levels = levels;
+        Ok(self)
+    }
+
+    /// This recipe with `smooth` set (ordered and noise methods; #142): `true` takes the
+    /// mix ratio from an edge-aware blur of the composite (σ ≈ 1 target pixel;
+    /// neighbours more than 0.08 OKLab ΔE away are left out) while colours are still
+    /// chosen from the unblurred one, so micro-texture cannot move a pixel's ratio.
+    /// `false` (the default) uses the composite as is: with mix levels a flat area
+    /// already gets one pattern, and on the golden fixtures smoothing raised the blurred
+    /// error slightly on every one (title past png2c64's).
+    pub const fn with_smooth(mut self, smooth: bool) -> Self {
+        self.smooth = smooth;
+        self
+    }
+
+    /// Mix-ratio levels (see [`Self::with_mix_levels`]).
+    pub const fn mix_levels(&self) -> u8 {
+        self.mix_levels
+    }
+
+    /// Edge-aware pre-smoothing (see [`Self::with_smooth`]).
+    pub const fn smooth(&self) -> bool {
+        self.smooth
     }
 
     /// Whether diffused error is dropped at cell borders (see [`Self::with_cell_clamp`]).
@@ -438,5 +501,27 @@ mod tests {
         );
         let d = Recipe::default();
         assert!(d.cell_clamp() && d.max_luma_diff() == MAX_LUMA_DIFF_OFF && d.adaptive() == 0.0);
+        assert!(d.mix_levels() == DEFAULT_MIX_LEVELS && !d.smooth());
+    }
+
+    #[test]
+    fn mix_levels_and_smooth_parse_and_validate() {
+        let r: Recipe = toml::from_str(
+            "strength = 0.7\nmix_levels = 8\nsmooth = true\n[method]\nkind = \"bayer2\"\n",
+        )
+        .unwrap();
+        assert_eq!((r.mix_levels(), r.smooth()), (8, true));
+        assert!(
+            toml::from_str::<Recipe>(
+                "strength = 0.7\nmix_levels = 17\n[method]\nkind = \"bayer2\"\n"
+            )
+            .is_err()
+        );
+        assert_eq!(
+            Recipe::default().with_mix_levels(MAX_MIX_LEVELS + 1),
+            Err(RecipeError::MixLevels(MAX_MIX_LEVELS + 1))
+        );
+        let back: Recipe = toml::from_str(&toml::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
     }
 }
