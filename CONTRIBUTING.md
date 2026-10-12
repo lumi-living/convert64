@@ -39,16 +39,26 @@ Every file in the repository, test data included, must be MIT-compatible: no GPL
 
   `mse_vs_png2c64` is the distance to png2c64's baseline, the delta `CLAUDE.md` asks solver PRs to report. Run with `-- --nocapture` to see the lines.
 
-Until the solver exists (E5), the solver under test is an identity stub fed the png2c64 baseline, so every score is 0.
+The solver under test is the real E5 solver (`convert64_core::solve`), fed each fixture's `source.png`.
 
 **Updating goldens** is allowed when a change is intended, and it must say why. Nothing in `fixtures/` is ever edited by hand.
 
 ```sh
-cargo xtask regen-goldens --report                         # list what would change; exit 1 if anything does
-cargo xtask regen-goldens --accept --reason "why" --pr N   # replace the goldens and log the reason
+cargo xtask regen-goldens --report                                # list what would change; exit 1 if anything does
+cargo xtask regen-goldens --accept --reason "why" --pr pending    # replace the goldens, log the reason with a placeholder
+cargo xtask regen-goldens --set-pr N                              # once the PR exists: the placeholder becomes #N
 ```
 
-`--report` (also the default) changes no committed file, so it runs on uncommitted work. `--accept` needs a clean tree: commit your code change first, so the goldens come from committed code. Open the pull request first too: `--pr` is its number, which the changelog cites (squash merges make branch commit hashes unreachable from main).
+`--report` (also the default) changes no committed file, so it runs on uncommitted work. `--accept` needs a clean tree: commit your code change first, so the goldens come from committed code.
+
+The changelog cites the pull request, not a commit hash, because squash merges make branch commit hashes unreachable from main. The PR number does not exist before the first push, so the flow is:
+
+1. Commit the code change.
+2. `regen-goldens --accept --reason "why" --pr pending`, and commit the goldens and changelog.
+3. Push and open the PR. CI is green on this first push, because the goldens are already updated.
+4. `regen-goldens --set-pr N` with the new PR's number, then commit and push again.
+
+If the PR already exists, pass `--pr N` directly. `--report` reminds you while any `#pending` entry is left.
 
 `--accept` writes the new `expected_*.snap` and `expected.png` files. It appends one line per changed fixture to [`fixtures/CHANGELOG.md`](fixtures/CHANGELOG.md), with the date, pull request, files and reason, and re-runs the harness. Commit the result together with your PR, and quote the `mse_vs_png2c64` lines in its description.
 
