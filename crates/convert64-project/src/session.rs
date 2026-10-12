@@ -17,15 +17,17 @@ use crate::file::{
 use crate::paths;
 use crate::store::Store;
 use convert64_core::command::{
-    Command, Dirty, LayerViaMask, MaskClear, MaskFill, MaskFromAlpha, MaskGradient, MaskKey,
-    MaskLoad, MaskSetModifier, MaskStroke,
+    AdjustmentsSet, Command, Dirty, LayerAdd, LayerDuplicate, LayerNudge, LayerRemove, LayerRename,
+    LayerReorder, LayerSetBlend, LayerSetOpacity, LayerSetTransform, LayerSetVisible, LayerViaMask,
+    MaskClear, MaskFill, MaskFromAlpha, MaskGradient, MaskKey, MaskLoad, MaskSetModifier,
+    MaskStroke, PaletteSet, RecipeSet,
 };
 use convert64_core::layer::{Layer, SourceImage};
 use convert64_core::mask::{Mask, MaskRaster};
 use convert64_core::mode::Mode;
 use convert64_core::palette::linear_to_srgb8;
 use convert64_core::region::{self, Region};
-use convert64_core::solve::{Solution, SolveMode, SolveOptions, Solver};
+use convert64_core::solve::{Solution, SolveMode, Solver};
 use convert64_core::{Compositor, Editor, Palette, Project, SuperGrid};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -45,11 +47,16 @@ pub struct Session {
     editor: Editor,
     compositor: Compositor,
     base: PathBuf,
-    palette_spec: PaletteSpec,
-    palette: Palette,
+    /// Every palette the session has resolved with the spec it came from, latest last,
+    /// so a saved project names its palette as it was given (preset, colours, `.vpl`).
+    palette_specs: Vec<(Palette, PaletteSpec)>,
     solver: Solver,
+    /// The palette `solver` was built for.
+    solver_palette: Palette,
     last: Option<Solution>,
-    spec: SolveSpec,
+    /// The target and solve settings `last` was solved with; when they change, the next
+    /// solve is a full one.
+    last_settings: Option<(Mode, SolveSpec)>,
     origins: Vec<(Arc<SourceImage>, Origin)>,
     /// Cells changed since the last solve (from the compositor's dirty-cell API).
     dirty: convert64_core::CellSet,
@@ -89,7 +96,9 @@ impl Session {
             )));
         }
         let grid = SuperGrid::new(file.target, file.supersample).map_err(invalid)?;
-        file.solve.check()?;
+        file.solve
+            .check()
+            .map_err(|e| invalid(format!("solve: {e}")))?;
         let palette_spec = match file.palette {
             PaletteSpec::Vpl(p) => PaletteSpec::Vpl(paths::absolute(&base.join(p))),
             p => p,
@@ -99,39 +108,14 @@ impl Session {
         let mut layers: Vec<Layer> = Vec::with_capacity(file.layers.len());
         for (i, entry) in file.layers.into_iter().enumerate() {
             let what = format!("layer {i} ({:?})", entry.name);
-            let src = match entry.source {
-                SourceSpec::Path(p) | SourceSpec::Linked(file::Linked { path: p }) => {
-                    let path = paths::absolute(&base.join(p));
-                    let known = origins.iter().find_map(|(s, o)| match o {
-                        Origin::Linked(q, _) if *q == path => Some(Arc::clone(s)),
-                        _ => None,
-                    });
-                    if let Some(s) = known {
-                        s
-                    } else {
-                        let bytes = store.read(&path)?;
-                        let s =
-                            Arc::new(codec::decode_source(&bytes, &path.display().to_string())?);
-                        origins.push((Arc::clone(&s), Origin::Linked(path, Arc::new(bytes))));
-                        s
-                    }
-                }
-                SourceSpec::Embedded(e) => {
-                    let bytes = crate::base64::decode(&e.png_base64)
-                        .map_err(|e| invalid(format!("{what}: {e}")))?;
-                    let s = Arc::new(codec::decode_source(&bytes, &what)?);
-                    origins.push((Arc::clone(&s), Origin::Embedded(Arc::new(bytes))));
-                    s
-                }
-                SourceSpec::Shared(file::Shared { layer }) => layers
-                    .get(layer)
-                    .map(|l| Arc::clone(l.source()))
-                    .ok_or_else(|| {
-                        invalid(format!(
-                            "{what}: shares the pixels of layer {layer}, which is not below it"
-                        ))
-                    })?,
-            };
+            let src = resolve_source(
+                entry.source,
+                base,
+                store.as_ref(),
+                &mut origins,
+                &layers,
+                &what,
+            )?;
             let size = src.size();
             let mut layer = Layer::new(entry.name, src);
             layer.set_transform(entry.transform);
@@ -180,14 +164,17 @@ impl Session {
                 layers,
                 regions,
                 steering,
+                target: file.target,
+                palette: palette.clone(),
+                solve: file.solve,
             }),
             compositor: Compositor::new(grid),
             base: base.to_owned(),
             solver: Solver::new(&palette),
-            palette_spec,
-            palette,
+            solver_palette: palette.clone(),
+            palette_specs: vec![(palette, palette_spec)],
             last: None,
-            spec: file.solve,
+            last_settings: None,
             origins,
             dirty: convert64_core::CellSet::all(),
             store,
@@ -256,11 +243,11 @@ impl Session {
         }
         Ok(ProjectFile {
             schema_version: SCHEMA_VERSION,
-            target: self.target(),
+            target: p.target,
             supersample: self.compositor.grid().n(),
-            palette: match &self.palette_spec {
-                PaletteSpec::Vpl(path) => PaletteSpec::Vpl(paths::relative(dir, path)),
-                other => other.clone(),
+            palette: match self.palette_spec(&p.palette) {
+                PaletteSpec::Vpl(path) => PaletteSpec::Vpl(paths::relative(dir, &path)),
+                other => other,
             },
             layers,
             regions: p
@@ -273,9 +260,32 @@ impl Session {
                 })
                 .collect(),
             steering: SteeringSpec::from_steering(&p.steering),
-            solve: self.spec.clone(),
+            solve: p.solve.clone(),
             commands: Vec::new(),
         })
+    }
+
+    /// How a project file names `palette`: as the session was given it, else a preset it
+    /// equals, else its 16 colours.
+    fn palette_spec(&self, palette: &Palette) -> PaletteSpec {
+        if let Some((_, spec)) = self.palette_specs.iter().rev().find(|(p, _)| p == palette) {
+            return spec.clone();
+        }
+        if *palette == Palette::pepto_pal() {
+            PaletteSpec::PeptoPal
+        } else if *palette == Palette::pepto_ntsc() {
+            PaletteSpec::PeptoNtsc
+        } else if *palette == Palette::colodore(50.0, 100.0, 50.0) {
+            PaletteSpec::Colodore
+        } else {
+            PaletteSpec::Custom(
+                palette
+                    .rgb_table()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            )
+        }
     }
 
     /// Saves the project to `path` in the session's store (see
@@ -293,17 +303,17 @@ impl Session {
 
     /// The target mode.
     pub fn target(&self) -> Mode {
-        self.compositor.grid().target()
+        self.project().target
     }
 
     /// The palette the picture is solved and previewed with.
-    pub const fn palette(&self) -> &Palette {
-        &self.palette
+    pub fn palette(&self) -> &Palette {
+        &self.project().palette
     }
 
     /// The solve settings.
-    pub const fn solve_spec(&self) -> &SolveSpec {
-        &self.spec
+    pub fn solve_spec(&self) -> &SolveSpec {
+        &self.project().solve
     }
 
     /// The project.
@@ -331,12 +341,17 @@ impl Session {
 
     /// The core command for a JSON command (reading any file it names, relative to the
     /// project or recipe file).
-    pub fn to_command(&self, cmd: JsonCommand) -> Result<Command, ProjectError> {
-        self.to_command_at(cmd, &self.base)
+    pub fn to_command(&mut self, cmd: JsonCommand) -> Result<Command, ProjectError> {
+        let base = self.base.clone();
+        self.to_command_at(cmd, &base)
     }
 
     /// The core command for a JSON command, reading any file it names relative to `base`.
-    pub fn to_command_at(&self, cmd: JsonCommand, base: &Path) -> Result<Command, ProjectError> {
+    pub fn to_command_at(
+        &mut self,
+        cmd: JsonCommand,
+        base: &Path,
+    ) -> Result<Command, ProjectError> {
         Ok(match cmd {
             JsonCommand::MaskStroke {
                 layer,
@@ -413,6 +428,102 @@ impl Session {
                 selection,
                 cut,
             }),
+            JsonCommand::LayerAdd {
+                name,
+                source,
+                index,
+                visible,
+                transform,
+                opacity,
+                blend,
+                recipe,
+                adjustments,
+            } => {
+                let what = format!("layer_add {name:?}");
+                let src = resolve_source(
+                    source,
+                    base,
+                    self.store.as_ref(),
+                    &mut self.origins,
+                    &self.editor.project().layers,
+                    &what,
+                )?;
+                let mut layer = Layer::new(name, src);
+                layer.set_transform(transform);
+                layer
+                    .set_opacity(opacity)
+                    .map_err(|e| invalid(format!("{what}: {e}")))?;
+                layer.set_blend(blend);
+                layer.set_visible(visible);
+                layer.set_recipe(*recipe);
+                layer.set_adjustments(*adjustments);
+                Command::LayerAdd(Box::new(LayerAdd {
+                    index: index.unwrap_or(self.project().layers.len()),
+                    layer,
+                }))
+            }
+            JsonCommand::LayerRemove { layer } => Command::LayerRemove(LayerRemove {
+                layer: self.resolve(&layer)?,
+            }),
+            JsonCommand::LayerReorder { layer, to } => Command::LayerReorder(LayerReorder {
+                layer: self.resolve(&layer)?,
+                to,
+            }),
+            JsonCommand::LayerSetVisible { layer, visible } => {
+                Command::LayerSetVisible(LayerSetVisible {
+                    layer: self.resolve(&layer)?,
+                    visible,
+                })
+            }
+            JsonCommand::LayerSetOpacity { layer, opacity } => {
+                Command::LayerSetOpacity(LayerSetOpacity {
+                    layer: self.resolve(&layer)?,
+                    opacity,
+                })
+            }
+            JsonCommand::LayerSetBlend { layer, blend } => Command::LayerSetBlend(LayerSetBlend {
+                layer: self.resolve(&layer)?,
+                blend,
+            }),
+            JsonCommand::LayerSetTransform { layer, transform } => {
+                Command::LayerSetTransform(LayerSetTransform {
+                    layer: self.resolve(&layer)?,
+                    transform,
+                })
+            }
+            JsonCommand::LayerNudge { layer, by } => Command::LayerNudge(LayerNudge {
+                layer: self.resolve(&layer)?,
+                by,
+            }),
+            JsonCommand::LayerRename { layer, name } => Command::LayerRename(LayerRename {
+                layer: self.resolve(&layer)?,
+                name,
+            }),
+            JsonCommand::LayerDuplicate { layer } => Command::LayerDuplicate(LayerDuplicate {
+                layer: self.resolve(&layer)?,
+            }),
+            JsonCommand::AdjustmentsSet { layer, adjustments } => {
+                Command::AdjustmentsSet(Box::new(AdjustmentsSet {
+                    layer: self.resolve(&layer)?,
+                    adjustments,
+                }))
+            }
+            JsonCommand::RecipeSet { layer, recipe } => Command::RecipeSet(Box::new(RecipeSet {
+                layer: self.resolve(&layer)?,
+                recipe,
+            })),
+            JsonCommand::ModeSet(c) => Command::ModeSet(c),
+            JsonCommand::PaletteSet { palette } => {
+                let spec = match palette {
+                    PaletteSpec::Vpl(p) => PaletteSpec::Vpl(paths::absolute(&base.join(p))),
+                    p => p,
+                };
+                let resolved = spec.resolve(base, self.store.as_ref())?;
+                self.palette_specs.push((resolved.clone(), spec));
+                Command::PaletteSet(Box::new(PaletteSet { palette: resolved }))
+            }
+            JsonCommand::BackgroundPin(c) => Command::BackgroundPin(c),
+            JsonCommand::SolveSet(c) => Command::SolveSet(c),
         })
     }
 
@@ -442,6 +553,14 @@ impl Session {
 
     fn composite(&mut self) {
         let p = self.editor.project();
+        if self.compositor.grid().target() != p.target {
+            // `mode_set` (or its undo): a new grid, and nothing of the old solve carries.
+            let n = self.compositor.grid().n();
+            let grid = SuperGrid::new(p.target, n).expect("mode_set checks the mode");
+            self.compositor = Compositor::new(grid);
+            self.last = None;
+            self.dirty = convert64_core::CellSet::all();
+        }
         let changed = self.compositor.update(&p.layers, &p.regions);
         self.dirty = self.dirty.union(changed);
     }
@@ -451,26 +570,23 @@ impl Session {
     pub fn solve(&mut self, full: bool) -> &Solution {
         self.composite();
         let p = self.editor.project();
-        let mode = if full || self.last.is_none() {
+        if self.solver_palette != p.palette {
+            // `palette_set` (or its undo): the solver's tables are the palette's.
+            self.solver = Solver::new(&p.palette);
+            self.solver_palette = p.palette.clone();
+            self.last = None;
+        }
+        let settings = (p.target, p.solve.clone());
+        let mode = if full || self.last.is_none() || self.last_settings.as_ref() != Some(&settings)
+        {
             SolveMode::Full
         } else {
             SolveMode::Interactive { dirty: self.dirty }
         };
-        let opts = SolveOptions {
-            solver: self.spec.solver,
-            divergences: self.spec.divergences,
+        let opts = p.solve.options(
             mode,
-            background: self.spec.background,
-            hysteresis: self.spec.hysteresis,
-            luma_pair_bias: self.spec.luma_pair_bias,
-            refinements: self.spec.refinements,
-            finalists: self.spec.finalists,
-            layer_origins: convert64_core::solve::dither::layer_origins(
-                self.compositor.grid(),
-                &p.layers,
-            ),
-            ..SolveOptions::default()
-        };
+            convert64_core::solve::dither::layer_origins(self.compositor.grid(), &p.layers),
+        );
         let sol = self.solver.solve(
             self.compositor.frame(),
             &p.steering,
@@ -478,6 +594,7 @@ impl Session {
             &opts,
         );
         self.dirty = convert64_core::CellSet::EMPTY;
+        self.last_settings = Some(settings);
         self.last.insert(sol)
     }
 
@@ -626,4 +743,49 @@ impl Session {
 fn save(path: &Path, img: &image::DynamicImage) -> Result<(), ProjectError> {
     img.save(path)
         .map_err(|e| ProjectError::Io(path.to_owned(), e.to_string()))
+}
+
+/// The pixels a layer's source names: a file (read once per path, through `store`),
+/// embedded bytes, or an earlier layer's pixels, shared. New files and embedded bytes are
+/// recorded in `origins` so a saved project can link or embed them again.
+fn resolve_source(
+    spec: SourceSpec,
+    base: &Path,
+    store: &dyn Store,
+    origins: &mut Vec<(Arc<SourceImage>, Origin)>,
+    layers: &[Layer],
+    what: &str,
+) -> Result<Arc<SourceImage>, ProjectError> {
+    Ok(match spec {
+        SourceSpec::Path(p) | SourceSpec::Linked(file::Linked { path: p }) => {
+            let path = paths::absolute(&base.join(p));
+            let known = origins.iter().find_map(|(s, o)| match o {
+                Origin::Linked(q, _) if *q == path => Some(Arc::clone(s)),
+                _ => None,
+            });
+            if let Some(s) = known {
+                s
+            } else {
+                let bytes = store.read(&path)?;
+                let s = Arc::new(codec::decode_source(&bytes, &path.display().to_string())?);
+                origins.push((Arc::clone(&s), Origin::Linked(path, Arc::new(bytes))));
+                s
+            }
+        }
+        SourceSpec::Embedded(e) => {
+            let bytes = crate::base64::decode(&e.png_base64)
+                .map_err(|e| invalid(format!("{what}: {e}")))?;
+            let s = Arc::new(codec::decode_source(&bytes, what)?);
+            origins.push((Arc::clone(&s), Origin::Embedded(Arc::new(bytes))));
+            s
+        }
+        SourceSpec::Shared(file::Shared { layer }) => layers
+            .get(layer)
+            .map(|l| Arc::clone(l.source()))
+            .ok_or_else(|| {
+                invalid(format!(
+                    "{what}: shares the pixels of layer {layer}, which is not below it"
+                ))
+            })?,
+    })
 }

@@ -26,6 +26,7 @@ convert64-core = { path = "crates/convert64-core" }
 convert64-formats = { path = "crates/convert64-formats" }
 convert64-project = { path = "crates/convert64-project" }
 convert64-cli = { path = "crates/convert64-cli" }
+convert64-mcp = { path = "crates/convert64-mcp" }
 rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
 proptest = "1.11.0"

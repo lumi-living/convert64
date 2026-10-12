@@ -63,8 +63,7 @@ fn in_process(source: &Path) -> Vec<u16> {
     layer.set_transform(Transform::new(Vec2::ZERO, Vec2::new(5.0, 5.0), false, false).unwrap());
     let mut e = Editor::new(Project {
         layers: vec![layer],
-        regions: Vec::new(),
-        steering: Default::default(),
+        ..Project::default()
     });
     for c in [
         Command::MaskClear(MaskClear {

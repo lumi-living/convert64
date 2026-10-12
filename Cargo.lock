@@ -736,6 +736,7 @@ dependencies = [
  "clap",
  "convert64-core",
  "convert64-formats",
+ "convert64-mcp",
  "convert64-project",
  "image",
  "serde",
