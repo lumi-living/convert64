@@ -1009,10 +1009,27 @@ mod tests {
                 })
                 .count()
         };
-        let (fa, fb) = (
-            frame_with(Mode::HiresBitmap, fs, true),
-            frame_with(Mode::HiresBitmap, fs.with_adaptive(1.0).unwrap(), true),
-        );
+        // Pixel-level noise between a dark and a mid grey: every pixel's mean OKLab
+        // |ΔL| to its neighbours is past png2c64's 0.15, so detail is 1 everywhere.
+        let detail = |r: Recipe| {
+            let mut st = 5u32;
+            let px: Vec<[f32; 4]> = (0..320 * 200)
+                .map(|_| {
+                    st = st.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                    let v = if (st >> 16) & 1 == 0 { 0.03 } else { 0.35 };
+                    [v, v * 0.9, v * 0.8, 1.0]
+                })
+                .collect();
+            let mut l = Layer::new(
+                "noise",
+                Arc::new(SourceImage::from_linear(320, 200, px).unwrap()),
+            );
+            l.set_recipe(r);
+            let mut c = Compositor::new(SuperGrid::new(Mode::HiresBitmap, 2).unwrap());
+            c.update(&[l], &[]);
+            c.frame().clone()
+        };
+        let (fa, fb) = (detail(fs), detail(fs.with_adaptive(1.0).unwrap()));
         let (a, b) = (solve_default(&fa), solve_default(&fb));
         assert!(
             dithered(&b, &fb) < dithered(&a, &fa) / 2,
