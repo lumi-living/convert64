@@ -2,7 +2,7 @@
 //! of each, for `convert64 commands` and the MCP server's tool list (ADR-005).
 //!
 //! The arguments are those of a command in a recipe or project file
-//! ([`crate::recipe::JsonCommand`]), without `"command"`. The parity test
+//! ([`convert64_project::JsonCommand`]), without `"command"`. The parity test
 //! (`tests/parity.rs`) runs every example through `convert64 apply`, so a registry
 //! command without a schema, an example or a CLI path fails the build.
 
@@ -294,8 +294,8 @@ pub fn signature(schema: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recipe::JsonCommand;
     use convert64_core::command::REGISTRY;
+    use convert64_project::JsonCommand;
 
     #[test]
     fn every_registry_command_has_a_schema_and_an_example_that_parses() {

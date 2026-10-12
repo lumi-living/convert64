@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/convert64-core",
     "crates/convert64-formats",
+    "crates/convert64-project",
     "crates/convert64-cli",
     "crates/convert64-mcp",
     "crates/convert64-app",
@@ -23,6 +24,7 @@ publish = false
 [workspace.dependencies]
 convert64-core = { path = "crates/convert64-core" }
 convert64-formats = { path = "crates/convert64-formats" }
+convert64-project = { path = "crates/convert64-project" }
 convert64-cli = { path = "crates/convert64-cli" }
 rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }

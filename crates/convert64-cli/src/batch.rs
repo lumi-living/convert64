@@ -19,7 +19,7 @@
 use crate::convert::{self, ConvertJob, FormatArg, ModeArg, Overrides};
 use crate::report::{Fail, INPUT_ERROR, NOT_LEGAL, Run};
 use clap::ValueEnum;
-use convert64_cli::project::ProjectFile;
+use convert64_project::ProjectFile;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

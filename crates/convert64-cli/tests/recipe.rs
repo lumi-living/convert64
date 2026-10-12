@@ -157,7 +157,7 @@ fn library_session_matches_too() {
     let dir = temp("recipe-lib");
     let source = write_source(&dir);
     std::fs::write(dir.join("recipe.json"), RECIPE).unwrap();
-    let mut s = convert64_cli::recipe::Session::open(&dir.join("recipe.json")).unwrap();
+    let mut s = convert64_project::Session::open(&dir.join("recipe.json")).unwrap();
     let (_, _, got) = s.evaluated_mask(0).unwrap();
     assert_eq!(got, in_process(&source));
 }

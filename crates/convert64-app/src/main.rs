@@ -114,3 +114,38 @@ fn main() {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use convert64_core::mode::Mode;
+    use convert64_project::codec::encode_rgba8;
+    use convert64_project::{Embed, MemoryStore, ProjectFile, Session};
+    use std::path::Path;
+    use std::sync::Arc;
+
+    /// The app loads and saves projects through `convert64-project` with no file system
+    /// (#192): the store holds the files the browser was given.
+    #[test]
+    fn a_project_loads_and_saves_from_memory() {
+        let store = Arc::new(MemoryStore::new());
+        let rgba = (0..16 * 10).flat_map(|i| [i as u8, 90, 200, 255]).collect();
+        store.insert("art/title.png", encode_rgba8(16, 10, rgba));
+        let file =
+            ProjectFile::from_png(Mode::HiresBitmap, "title", Path::new("title.png"), (16, 10));
+        store.insert("art/title.convert64", file.to_json());
+
+        let session = Session::open_in(
+            Box::new(Arc::clone(&store)),
+            Path::new("art/title.convert64"),
+        )
+        .unwrap();
+        assert_eq!(session.project().layers.len(), 1);
+        session
+            .save_to_store(Path::new("art/saved.convert64"), Embed::Keep)
+            .unwrap();
+        assert_eq!(
+            store.get("art/saved.convert64"),
+            store.get("art/title.convert64")
+        );
+    }
+}

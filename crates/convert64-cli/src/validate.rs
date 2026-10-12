@@ -37,7 +37,7 @@ impl ReadFormat {
                 .is_ok_and(|v| v["format"] == convert64_formats::raw::FORMAT_ID);
             return Some(if raw { Self::Raw } else { Self::Project });
         }
-        if ext.eq_ignore_ascii_case(convert64_cli::project::EXTENSION) {
+        if ext.eq_ignore_ascii_case(convert64_project::EXTENSION) {
             return Some(Self::Project);
         }
         BitmapFormat::from_extension(ext)
@@ -104,7 +104,7 @@ pub(crate) fn run(run: &mut Run, path: &Path, format: Option<ReadFormat>) -> Res
         }
         ReadFormat::Project => {
             let mut session = run.time("load", || {
-                convert64_cli::recipe::Session::open(path).map_err(Fail::input)
+                convert64_project::Session::open(path).map_err(Fail::input)
             })?;
             let sol = run.time("solve", || session.solve(true).clone());
             run.set("clashes", sol.report.summary().clashes);
