@@ -6,10 +6,12 @@
 //!   `.aas`) pictures ([`BitmapFormat`]);
 //! - a self-displaying PRG for them ([`prg`]);
 //! - the raw bitmap set, headerless `.bin` files plus a JSON manifest ([`raw`]);
+//! - assembler source for KickAssembler, ACME, 64tass and ca65, and C headers ([`asm`]);
 //! - a palette-exact PNG preview at integer zoom ([`png`]).
 //!
 //! Readers and writers take and return bytes; the caller does the file I/O.
 
+pub mod asm;
 mod bitmap_files;
 pub mod png;
 pub mod prg;
