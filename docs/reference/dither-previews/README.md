@@ -1,10 +1,37 @@
-# Dither previews (png2c64 reference renders)
+# Dither previews: Convert64 and png2c64
 
-Every png2c64 method rendered on two inputs, multicolor, Pepto palette, so the
+Every dither method rendered on two inputs, multicolor, Pepto palette, so the
 look of each method in `dither-methods.md` can be checked without building
-anything. These are *png2c64's* results, our reference quality bar — not
-Convert64 output. Regenerate Convert64's own sheet with `cargo xtask
-dither-sheet` once E5 lands.
+anything: png2c64's renders (our reference quality bar) and Convert64's.
+
+## Convert64 side by side with png2c64
+
+![Convert64 next to png2c64 for the 30 shared methods](convert64-sheets/sheet-vs-png2c64.png)
+
+[`convert64-sheets/sheet-vs-png2c64.png`](convert64-sheets/sheet-vs-png2c64.png)
+pairs our render (left) with png2c64's (right) on the test card for the 30
+methods both have, with each one's OKLab MSE against the card under the pair,
+per pixel and after the golden harness's blur
+([`scores.md`](convert64-sheets/scores.md) has the same numbers as a table).
+png2c64's `sierra` is Sierra Lite and its `blue-noise` is interleaved gradient
+noise; they are paired with our `sierra-lite` and our void-and-cluster
+`blue-noise`.
+
+| File | What |
+|---|---|
+| `convert64-sheets/sheet-card.png` | all 58 Convert64 methods on the test card (strength 1.0) |
+| `convert64-sheets/sheet-zoom.png` | the grey ramp mid-tones of each at 4× |
+| `convert64-sheets/sheet-portrait.png` | all 58 on `fixtures/portrait/source.png` (strength 0.7) |
+| `convert64-card/`, `convert64-portrait/` | the individual 320×200 renders, named by method id |
+
+Both inputs get png2c64's preprocessing (gamma 1.5, its default), so the two
+converters solve the same picture; every method runs with its recipe defaults
+and nothing is tuned for the comparison. Regenerate with
+`cargo xtask dither-sheet --reason "..."` (the reason goes into
+[`CHANGELOG.md`](CHANGELOG.md)); `--input <png> --out <dir>` renders any other
+picture.
+
+## png2c64's renders
 
 | File | What |
 |---|---|

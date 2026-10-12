@@ -249,6 +249,70 @@ impl DitherKind {
         Self::Pair,
     ];
 
+    /// The id recipes and the command line spell this kind with (its serialised name).
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Bayer2 => "bayer2",
+            Self::Bayer4 => "bayer4",
+            Self::Bayer8 => "bayer8",
+            Self::FloydSteinberg => "floyd-steinberg",
+            Self::Atkinson => "atkinson",
+            Self::JarvisJudiceNinke => "jarvis-judice-ninke",
+            Self::Sierra => "sierra",
+            Self::BlueNoise => "blue-noise",
+            Self::Bayer16 => "bayer16",
+            Self::Bayer2x2Mc => "bayer2x2-mc",
+            Self::Checker => "checker",
+            Self::H2x4 => "h2x4",
+            Self::Clustered4 => "clustered4",
+            Self::Clustered8 => "clustered8",
+            Self::Halftone8 => "halftone8",
+            Self::Dot => "dot",
+            Self::Diamond => "diamond",
+            Self::Star => "star",
+            Self::LineH2 => "line-h2",
+            Self::LineH4 => "line-h4",
+            Self::LineH8 => "line-h8",
+            Self::LineV2 => "line-v2",
+            Self::LineV4 => "line-v4",
+            Self::LineV8 => "line-v8",
+            Self::LineChecker => "line-checker",
+            Self::DiagDown => "diag-down",
+            Self::DiagUp => "diag-up",
+            Self::Diagonal8 => "diagonal8",
+            Self::Spiral5 => "spiral5",
+            Self::Hex5 => "hex5",
+            Self::Hex8 => "hex8",
+            Self::Custom => "custom",
+            Self::Ign => "ign",
+            Self::R2 => "r2",
+            Self::WhiteNoise => "white-noise",
+            Self::Crosshatch => "crosshatch",
+            Self::Radial => "radial",
+            Self::ValueNoise => "value-noise",
+            Self::FalseFs => "false-fs",
+            Self::FsWide => "fs-wide",
+            Self::LineFs => "line-fs",
+            Self::Stucki => "stucki",
+            Self::Burkes => "burkes",
+            Self::Sierra2 => "sierra2",
+            Self::SierraLite => "sierra-lite",
+            Self::StevensonArce => "stevenson-arce",
+            Self::ShiauFan1 => "shiau-fan1",
+            Self::ShiauFan2 => "shiau-fan2",
+            Self::Ostromoukhov => "ostromoukhov",
+            Self::ZhouFang => "zhou-fang",
+            Self::Riemersma => "riemersma",
+            Self::Yliluoma1 => "yliluoma1",
+            Self::Yliluoma2 => "yliluoma2",
+            Self::Yliluoma3 => "yliluoma3",
+            Self::Knoll => "knoll",
+            Self::Luma => "luma",
+            Self::Pair => "pair",
+        }
+    }
+
     /// The family this kind belongs to.
     pub const fn family(self) -> DitherFamily {
         match self {
@@ -867,6 +931,10 @@ mod tests {
             let text = toml::to_string(&Method::new(k)).unwrap();
             let back: Method = toml::from_str(&text).unwrap();
             assert_eq!(back.kind, k, "{text}");
+            assert!(
+                text.starts_with(&format!("kind = \"{}\"\n", k.id())),
+                "{k:?}: {text}"
+            );
         }
         // The reference's ids and png2c64's names are accepted.
         for (id, want) in [
