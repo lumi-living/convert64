@@ -253,11 +253,15 @@ fn matrix(kind: DitherKind) -> Option<&'static Matrix> {
     clippy::cast_sign_loss,
     reason = "hash arithmetic on pattern coordinates"
 )]
+#[expect(
+    clippy::approx_constant,
+    reason = "png2c64's crosshatch uses the literal 0.7071, not 1/√2"
+)]
 fn analytical(kind: DitherKind, x: i64, y: i64) -> Option<f32> {
     let (fx, fy) = (x as f32, y as f32);
     Some(match kind {
         DitherKind::Ign => {
-            let v = 52.982_918_9 * (0.067_110_56 * fx + 0.005_837_15 * fy).rem_euclid(1.0);
+            let v = 52.982_918 * (0.067_110_56 * fx + 0.005_837_15 * fy).rem_euclid(1.0);
             v.rem_euclid(1.0)
         }
         DitherKind::R2 => (fx * 0.754_877_7 + fy * 0.569_840_3 + 0.5).rem_euclid(1.0),

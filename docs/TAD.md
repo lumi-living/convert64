@@ -267,6 +267,16 @@ As built in #142 (2026-10-12): calm flat areas, linear-light mixes and a fair qu
 | photo | 0.00255 | 0.00376 | 0.0118 | 0.0157 |
 | lineart | 0.00031 | 0.00045 | 0.0032 | 0.0151 |
 
+As built in #114, part 1 (2026-10-12): every ordered, noise and effect method of [reference/dither-methods.md](reference/dither-methods.md) §1–§2.
+
+- **Methods.** `DitherKind` has 39 kinds: 1 none, 4 diffusion, 27 ordered (`custom` included), 4 noise and 3 effects. `DitherFamily` gains `Effects` and `PaletteAware`, and `is_threshold()` covers ordered, noise and effects.
+- **png2c64's matrices and analytical patterns** (`ign`, `r2`, `white-noise`, `crosshatch`, `radial`, `value-noise`) are ported from its `dither.cpp` as written, in f32 with basic IEEE operations only. Its names are accepted as serde aliases, as are the reference's `fs`, `jarvis` and `sierra3`.
+- **Generated matrices.** `bayer16`, `clustered8` and the ArcPaint64 shapes (`dot` 6 × 6, `diamond`, `star`, `diag-down`/`diag-up` 8 × 8) are generated from integer metrics, so they are the same on every platform. `line-v*` are the transposed `line-h*`.
+- **`custom`** carries a user 8 × 8 or 16 × 16 matrix in `Method::custom`; only its order matters. Without a matrix it is Bayer 8.
+- **`white-noise`** is png2c64's per-pixel hash, the same everywhere. The reference's per-recipe seed is not built: the hash already keeps goldens stable.
+- **Dither-aware set search.** As in png2c64, a threshold pixel's OKLab L is nudged by `(threshold − ½) × strength × 0.15` before the cell-set search scores it (`Px::search`). This uses the screen-locked pattern position. Without it, a cell in a smooth ramp keeps only the colour its pixels are nearest to, and the pattern has nothing to mix with. It lowered the blurred error on every golden fixture.
+- **Golden.** `methods::gradient_with_every_method` renders `gradient` with every kind (`fixtures/gradient/expected_m-<id>.png`).
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.
