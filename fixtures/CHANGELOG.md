@@ -33,3 +33,8 @@ Every change to a golden file (`fixtures/<name>/expected_*.snap`, `fixtures/<nam
 - 2026-10-12 #pending **portrait** (expected.png, expected_adaptive.png, expected_fs-clamped.png, expected_fs-unclamped.png, expected_hysteresis.png, expected_levels0.png, expected_luma0.png, expected_smooth.png): #142: solved from png2c64's gamma-1.5 source with mix levels (linear-light ratio, flat cells share one level); gradient swatches now Pepto
 - 2026-10-12 #pending **terrain** (expected.png): #142: solved from png2c64's gamma-1.5 source with mix levels (linear-light ratio, flat cells share one level); gradient swatches now Pepto
 - 2026-10-12 #pending **title** (expected.png): #142: solved from png2c64's gamma-1.5 source with mix levels (linear-light ratio, flat cells share one level); gradient swatches now Pepto
+- 2026-10-12 #pending **gradient** (expected.png): #142: ordered pixels mix their nearest colour with the best partner, not the second nearest
+- 2026-10-12 #pending **photo** (expected.png): #142: ordered pixels mix their nearest colour with the best partner, not the second nearest
+- 2026-10-12 #pending **portrait** (expected.png, expected_smooth.png): #142: ordered pixels mix their nearest colour with the best partner, not the second nearest
+- 2026-10-12 #pending **terrain** (expected.png): #142: ordered pixels mix their nearest colour with the best partner, not the second nearest
+- 2026-10-12 #pending **title** (expected.png): #142: ordered pixels mix their nearest colour with the best partner, not the second nearest
