@@ -208,13 +208,33 @@ fn mode_of(format: BitmapFormat) -> convert64_core::mode::Mode {
 struct Solved {
     frame: TargetFrame,
     output: IndexedBitmap,
+    solution: convert64_core::solve::Solution,
 }
 
-/// Composites and solves each fixture once per test binary.
+/// The fixture solved with the png2c64-like recipe (see [`baseline_recipe`]).
 fn solved(name: &str, format: BitmapFormat) -> Arc<Solved> {
+    solved_with(
+        name,
+        format,
+        "",
+        baseline_recipe(format),
+        &SolveOptions::default(),
+    )
+}
+
+/// Composites and solves a fixture with `recipe` and `opts` once per test binary;
+/// `variant` names the combination in the cache.
+fn solved_with(
+    name: &str,
+    format: BitmapFormat,
+    variant: &str,
+    recipe: Recipe,
+    opts: &SolveOptions,
+) -> Arc<Solved> {
     static CACHE: OnceLock<Mutex<HashMap<String, Arc<Solved>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Mutex::default);
-    if let Some(s) = cache.lock().expect("cache").get(name) {
+    let key = format!("{name}/{variant}");
+    if let Some(s) = cache.lock().expect("cache").get(&key) {
         return Arc::clone(s);
     }
     let path = fixture_dir(name).join("source.png");
@@ -233,21 +253,120 @@ fn solved(name: &str, format: BitmapFormat) -> Arc<Solved> {
         )
         .expect("fit to screen"),
     );
-    layer.set_recipe(baseline_recipe(format));
+    layer.set_recipe(recipe);
     let grid = SuperGrid::with_default_factor(mode_of(format)).expect("bitmap grid");
     let mut c = Compositor::new(grid);
     c.update(&[layer], &[]);
     let frame = c.frame().clone();
-    let output = Solver::new(&Palette::pepto_pal())
-        .solve(&frame, &Steering::new(), None, &SolveOptions::default())
-        .image
-        .to_indexed();
-    let s = Arc::new(Solved { frame, output });
-    cache
-        .lock()
-        .expect("cache")
-        .insert(name.to_owned(), Arc::clone(&s));
+    let solution = Solver::new(&Palette::pepto_pal()).solve(&frame, &Steering::new(), None, opts);
+    let output = solution.image.to_indexed();
+    let s = Arc::new(Solved {
+        frame,
+        output,
+        solution,
+    });
+    cache.lock().expect("cache").insert(key, Arc::clone(&s));
     s
+}
+
+/// A recipe variant on a fixture: solved, validated, rendered, written as a candidate
+/// `expected_<variant>.png` and compared with the committed one within the fixture's
+/// `mse_vs_golden_max`. Returns the solve for extra checks.
+fn check_variant(
+    name: &str,
+    format: BitmapFormat,
+    variant: &str,
+    recipe: Recipe,
+    opts: &SolveOptions,
+) -> Arc<Solved> {
+    let s = solved_with(name, format, variant, recipe, opts);
+    assert_eq!(validate(&s.output), Ok(()), "{name}/{variant}: not legal");
+    let rendered = render(&s.output, &Palette::pepto_pal());
+    let file = format!("expected_{variant}.png");
+    if let Some(out) = std::env::var_os("CONVERT64_GOLDEN_OUT") {
+        save_png(&PathBuf::from(out).join(name).join(&file), &rendered);
+    }
+    let golden = load_png(&fixture_dir(name).join(&file)).unwrap_or_else(|| {
+        panic!("{name}: fixtures/{name}/{file} is missing; run `cargo xtask regen-goldens`")
+    });
+    let mse = oklab_mse(&rendered, &golden);
+    let source = oklab_mse(&rendered, &reference(&s.frame));
+    let threshold = thresholds(name).mse_vs_golden_max(mode_name(format));
+    println!("{name}/{variant}, mse_vs_golden={mse:.6}, mse_vs_source={source:.6}");
+    assert!(
+        mse <= threshold,
+        "{name}/{variant}: mse_vs_golden {mse:.6} exceeds {threshold}; if intended, run \
+         `cargo xtask regen-goldens --accept --reason \"...\" --pr pending`"
+    );
+    s
+}
+
+/// Solver knobs (#123) on `portrait`.
+mod knobs {
+    use super::{BitmapFormat, DitherKind, Recipe, SolveOptions, check_variant};
+
+    fn fs() -> Recipe {
+        Recipe::with_method(DitherKind::FloydSteinberg, 1.0).expect("recipe")
+    }
+
+    #[test]
+    fn portrait_fs_cell_clamped() {
+        check_variant(
+            "portrait",
+            BitmapFormat::Koala,
+            "fs-clamped",
+            fs(),
+            &SolveOptions::default(),
+        );
+    }
+
+    #[test]
+    fn portrait_fs_cell_unclamped() {
+        check_variant(
+            "portrait",
+            BitmapFormat::Koala,
+            "fs-unclamped",
+            fs().with_cell_clamp(false),
+            &SolveOptions::default(),
+        );
+    }
+
+    /// `max_luma_diff = 0` (PAL-blend safe): no cell's dither crosses a luma level.
+    #[test]
+    fn portrait_same_luma_only() {
+        let r = Recipe::with_method(DitherKind::Bayer2, 0.7)
+            .and_then(|r| r.with_max_luma_diff(0))
+            .expect("recipe");
+        let s = check_variant(
+            "portrait",
+            BitmapFormat::Koala,
+            "luma0",
+            r,
+            &SolveOptions::default(),
+        );
+        assert_eq!(s.solution.report.summary().luma_crossings, 0);
+    }
+
+    #[test]
+    fn portrait_fs_adaptive() {
+        let r = fs().with_adaptive(0.5).expect("recipe");
+        check_variant(
+            "portrait",
+            BitmapFormat::Koala,
+            "adaptive",
+            r,
+            &SolveOptions::default(),
+        );
+    }
+
+    #[test]
+    fn portrait_fs_hysteresis() {
+        let opts = SolveOptions {
+            hysteresis: Some(0.97),
+            ..SolveOptions::default()
+        };
+        check_variant("portrait", BitmapFormat::Koala, "hysteresis", fs(), &opts);
+    }
 }
 
 /// The source as the solver saw it: the composite on the target grid, in sRGB, rendered

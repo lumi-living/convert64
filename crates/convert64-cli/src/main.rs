@@ -67,6 +67,20 @@ enum Command {
         /// Supersample factor, 1–8.
         #[arg(long, default_value_t = 4)]
         supersample: u8,
+        /// Let diffused error cross cell borders (png2c64 behaviour) instead of dropping it.
+        #[arg(long)]
+        no_cell_clamp: bool,
+        /// Restrict dither mixes to colours within N luma levels, 0–8 (0 = same-luma only,
+        /// PAL-blend safe; 8 = off).
+        #[arg(long, default_value_t = 8)]
+        max_luma_diff: u8,
+        /// Dither less where the picture has detail, 0–1 (png2c64 --adaptive).
+        #[arg(long, default_value_t = 0.0)]
+        adaptive: f32,
+        /// Refinement hysteresis: keep a cell's colour set unless a re-pick beats it by this
+        /// ratio (e.g. 0.97); off by default.
+        #[arg(long)]
+        hysteresis: Option<f32>,
         /// Output file (.kla for multicolor, .art for hi-res).
         #[arg(short, long)]
         output: PathBuf,
@@ -167,6 +181,10 @@ fn main() -> ExitCode {
             strength,
             bg,
             supersample,
+            no_cell_clamp,
+            max_luma_diff,
+            adaptive,
+            hysteresis,
             output,
             report,
             json,
@@ -178,6 +196,10 @@ fn main() -> ExitCode {
                 strength,
                 bg,
                 supersample,
+                cell_clamp: !no_cell_clamp,
+                max_luma_diff,
+                adaptive,
+                hysteresis,
             };
             match run_convert(&input, &opts, &output, report, json) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -276,6 +298,10 @@ struct ConvertOptions {
     strength: f32,
     bg: String,
     supersample: u8,
+    cell_clamp: bool,
+    max_luma_diff: u8,
+    adaptive: f32,
+    hysteresis: Option<f32>,
 }
 
 /// A serde enum value from its kebab-case name.
@@ -321,7 +347,17 @@ fn run_convert(
         d.allowed(),
         d.fit_mode(),
     )
+    .and_then(|r| {
+        r.with_cell_clamp(o.cell_clamp)
+            .with_max_luma_diff(o.max_luma_diff)
+    })
+    .and_then(|r| r.with_adaptive(o.adaptive))
     .map_err(|e| e.to_string())?;
+    if let Some(h) = o.hysteresis
+        && !(h > 0.0 && h <= 1.0)
+    {
+        return Err(format!("--hysteresis must be in (0, 1], got {h}"));
+    }
     let src = convert64_cli::recipe::load_source(input).map_err(|e| e.to_string())?;
     let (w, h) = src.size();
     let mut layer = Layer::new("source", std::sync::Arc::new(src));
@@ -345,6 +381,7 @@ fn run_convert(
         None,
         &SolveOptions {
             background,
+            hysteresis: o.hysteresis,
             ..SolveOptions::default()
         },
     );

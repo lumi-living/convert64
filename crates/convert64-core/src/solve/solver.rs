@@ -63,6 +63,11 @@ pub struct SolveOptions {
     pub refinements: u8,
     /// Backgrounds carried from the search into dithering (at least 1).
     pub finalists: u8,
+    /// Refinement hysteresis: a re-picked cell set replaces the current one only if its
+    /// error is below `hysteresis ×` the current set's (Dithertron's sub-palette ratio
+    /// is 0.97), so sets cannot flip-flop between rounds. `None` (the default) accepts
+    /// every re-pick, as E5 shipped.
+    pub hysteresis: Option<f32>,
     /// Layer-locked pattern anchors, by layer index (see [`super::dither::layer_origins`]).
     pub layer_origins: Vec<(i64, i64)>,
     /// Per-pixel input options.
@@ -77,6 +82,7 @@ impl Default for SolveOptions {
             luma_pair_bias: 0.0,
             refinements: 2,
             finalists: 3,
+            hysteresis: None,
             layer_origins: Vec::new(),
             input: InputOptions::default(),
         }
@@ -96,6 +102,9 @@ pub struct Solution {
     pub error: f32,
     /// Refinement rounds that changed the result.
     pub refined: u8,
+    /// Each cell's set before refinement and after every refinement round that changed
+    /// any set, for diagnostics (convergence, flip-flop).
+    pub rounds: Vec<Vec<ColourSet>>,
     /// Wanted vs chosen vs dropped colours per cell.
     pub report: ClashReport,
 }
@@ -107,6 +116,10 @@ pub struct Solution {
 pub struct Solver {
     tables: MetricTables,
 }
+
+/// A refined finalist: the best pass, its sets, the round that produced it, and the
+/// sets of every round.
+type Refined = (PassResult, Vec<ColourSet>, u8, Vec<Vec<ColourSet>>);
 
 /// One background's search result.
 struct Candidate {
@@ -193,26 +206,42 @@ impl Solver {
         cand: &Candidate,
         ctx: &Context<'_>,
         opts: &SolveOptions,
-    ) -> (PassResult, Vec<ColourSet>, u8) {
+    ) -> Refined {
         let t = &self.tables;
         let locked = ctx.locked();
         let mut sets = cand.sets.clone();
         let mut r = pass(input, t, &sets, cand.bg, &opts.layer_origins, locked);
         let mut best = (r.clone(), sets.clone(), 0u8);
+        let mut rounds = vec![sets.clone()];
         for round in 1..=opts.refinements.min(2) {
             let moved = input.retarget(&r.received, t);
             let next: Vec<ColourSet> = (0..sets.len())
                 .map(|i| {
                     let cell = input.cell_at(i);
                     ctx.locked_set(cell).unwrap_or_else(|| {
-                        moved
-                            .best_set(
-                                cell,
-                                cand.bg,
-                                &ctx.steering.constraints(cell),
-                                opts.luma_pair_bias,
-                            )
-                            .set
+                        let pick = moved.best_set(
+                            cell,
+                            cand.bg,
+                            &ctx.steering.constraints(cell),
+                            opts.luma_pair_bias,
+                        );
+                        match opts.hysteresis {
+                            Some(ratio) if pick.set != sets[i] => {
+                                let current = super::cell::score_set(
+                                    moved.dist(i),
+                                    moved.per_cell(),
+                                    cand.bg,
+                                    sets[i],
+                                    opts.luma_pair_bias,
+                                );
+                                if pick.score < ratio * current {
+                                    pick.set
+                                } else {
+                                    sets[i]
+                                }
+                            }
+                            _ => pick.set,
+                        }
                     })
                 })
                 .collect();
@@ -220,12 +249,13 @@ impl Solver {
                 break;
             }
             sets = next;
+            rounds.push(sets.clone());
             r = pass(input, t, &sets, cand.bg, &opts.layer_origins, locked);
             if r.error < best.0.error {
                 best = (r.clone(), sets.clone(), round);
             }
         }
-        best
+        (best.0, best.1, best.2, rounds)
     }
 
     fn solve_input(
@@ -294,7 +324,7 @@ impl Solver {
         });
         found.truncate(usize::from(opts.finalists.max(1)));
         let dithered = crate::par::map(&found, |c| self.refine(input, c, &ctx, opts));
-        let (winner, (result, sets, refined)) = found
+        let (winner, (result, sets, refined, rounds)) = found
             .iter()
             .zip(dithered)
             .min_by(|(ca, ra), (cb, rb)| {
@@ -307,7 +337,7 @@ impl Solver {
             (Some(dirty), Some(p)) if p.background == winner.bg => Some((dirty, &p.report)),
             _ => None,
         };
-        let report = ClashReport::build(input, &self.tables, &result.out, winner.bg, reuse);
+        let report = ClashReport::build(input, &self.tables, &result.out, winner.bg, &sets, reuse);
         let indexed = IndexedBitmap::new(input.grid.target(), result.out, winner.bg)
             .expect("the output has the target's size");
         let image = BitmapImage::encode(&indexed).expect("every cell keeps to its set");
@@ -317,6 +347,7 @@ impl Solver {
             sets,
             error: result.error,
             refined,
+            rounds,
             report,
         }
     }
@@ -369,6 +400,7 @@ mod tests {
     use crate::geom::SuperGrid;
     use crate::layer::{DitherKind, Layer, Recipe, SourceImage};
     use crate::mode::Mode;
+    use crate::solve::input::InputOptions;
     use crate::validate;
     use std::sync::Arc;
 
@@ -716,6 +748,223 @@ mod tests {
                 assert_eq!(sol.report.step(order[0], false), Some(order[999]));
             }
         }
+    }
+
+    /// A frame whose single full-screen layer uses `recipe`.
+    fn frame_with(mode: Mode, recipe: Recipe, noise: bool) -> TargetFrame {
+        let mut st = 7u32;
+        let px: Vec<[f32; 4]> = (0..320 * 200)
+            .map(|i| {
+                let (x, y) = ((i % 320) as f32 / 320.0, (i / 320) as f32 / 200.0);
+                if noise {
+                    st = st.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                    let n = (st >> 16) as f32 / 65_536.0 * 0.08;
+                    [0.25 + n, 0.22 + n, 0.3 - n, 1.0]
+                } else {
+                    [x * x, y, (1.0 - x) * 0.6 + 0.2 * y, 1.0]
+                }
+            })
+            .collect();
+        let mut l = Layer::new(
+            "g",
+            Arc::new(SourceImage::from_linear(320, 200, px).unwrap()),
+        );
+        l.set_recipe(recipe);
+        let mut c = Compositor::new(SuperGrid::new(mode, 2).unwrap());
+        c.update(&[l], &[]);
+        c.frame().clone()
+    }
+
+    fn solve_default(f: &TargetFrame) -> Solution {
+        Solver::new(&Palette::pepto_pal()).solve(
+            f,
+            &Steering::new(),
+            None,
+            &SolveOptions::default(),
+        )
+    }
+
+    /// Adjacent pixel pairs that want the same colour of their cell but came out more
+    /// than `limit` luma levels apart: cross-luma speckle.
+    fn speckle(sol: &Solution, f: &TargetFrame, limit: u8) -> usize {
+        let input = Input::new(
+            f,
+            Solver::new(&Palette::pepto_pal()).tables(),
+            InputOptions::default(),
+        );
+        let img = sol.image.to_indexed();
+        let (w, h) = (usize::from(img.width()), usize::from(img.height()));
+        let (cw, ch) = input.cell;
+        let t = Solver::new(&Palette::pepto_pal());
+        let nearest = |x: usize, y: usize| {
+            let cell = (y / ch) * input.cells.0 + x / cw;
+            let set: Vec<ColourIndex> = sol
+                .background
+                .map_or(sol.sets[cell], |b| sol.sets[cell].with(b))
+                .iter()
+                .collect();
+            let q = &input.px[y * w + x];
+            super::super::ordered::nearest(
+                q.metric,
+                q.coords,
+                &set,
+                t.tables().colours(q.metric.space()),
+            )
+        };
+        let mut n = 0;
+        for y in 0..h {
+            for x in 0..w {
+                for (nx, ny) in [(x + 1, y), (x, y + 1)] {
+                    if nx < w
+                        && ny < h
+                        && nx / cw == x / cw
+                        && ny / ch == y / ch
+                        && nearest(x, y) == nearest(nx, ny)
+                        && crate::palette::luma::level_diff(
+                            img.pixel(x as u16, y as u16),
+                            img.pixel(nx as u16, ny as u16),
+                        ) > limit
+                    {
+                        n += 1;
+                    }
+                }
+            }
+        }
+        n
+    }
+
+    #[test]
+    fn knobs_at_their_defaults_change_nothing() {
+        for mode in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
+            let base = Recipe::with_method(DitherKind::FloydSteinberg, 0.9).unwrap();
+            let explicit = base
+                .with_cell_clamp(true)
+                .with_max_luma_diff(crate::layer::recipe::MAX_LUMA_DIFF_OFF)
+                .unwrap()
+                .with_adaptive(0.0)
+                .unwrap();
+            assert_eq!(
+                solve_default(&frame_with(mode, base, false)),
+                solve_default(&frame_with(mode, explicit, false)),
+                "{mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn max_luma_diff_zero_leaves_no_cross_luma_speckle() {
+        for mode in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
+            for kind in [DitherKind::FloydSteinberg, DitherKind::Bayer4] {
+                let free = Recipe::with_method(kind, 1.0).unwrap();
+                let safe = free.with_max_luma_diff(0).unwrap();
+                let (ff, fs) = (frame_with(mode, free, false), frame_with(mode, safe, false));
+                let (a, b) = (solve_default(&ff), solve_default(&fs));
+                assert!(
+                    speckle(&a, &ff, 0) > 0,
+                    "{mode} {kind:?}: the free dither speckles"
+                );
+                assert_eq!(speckle(&b, &fs, 0), 0, "{mode} {kind:?}");
+                assert_eq!(b.report.summary().luma_crossings, 0);
+                assert_eq!(validate(&b.image.to_indexed()), Ok(()));
+            }
+        }
+    }
+
+    #[test]
+    fn cell_clamp_off_lets_error_cross_cells() {
+        for mode in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
+            let on = Recipe::with_method(DitherKind::FloydSteinberg, 1.0).unwrap();
+            let off = on.with_cell_clamp(false);
+            let (a, b) = (
+                solve_default(&frame_with(mode, on, false)),
+                solve_default(&frame_with(mode, off, false)),
+            );
+            assert_ne!(a.image, b.image, "{mode}");
+            assert_eq!(validate(&b.image.to_indexed()), Ok(()), "{mode}");
+        }
+    }
+
+    #[test]
+    fn adaptive_dithers_less_where_there_is_detail() {
+        // Fine noise is all detail: adaptive 1 removes most of the dither.
+        let fs = Recipe::with_method(DitherKind::FloydSteinberg, 1.0).unwrap();
+        let dithered = |sol: &Solution, f: &TargetFrame| {
+            // Pixels whose output differs from their nearest in-set colour.
+            let input = Input::new(
+                f,
+                Solver::new(&Palette::pepto_pal()).tables(),
+                InputOptions::default(),
+            );
+            let img = sol.image.to_indexed();
+            let t = Solver::new(&Palette::pepto_pal());
+            let w = usize::from(img.width());
+            let (cw, ch) = input.cell;
+            (0..img.pixels().len())
+                .filter(|&i| {
+                    let (x, y) = (i % w, i / w);
+                    let cell = (y / ch) * input.cells.0 + x / cw;
+                    let set: Vec<ColourIndex> = sol
+                        .background
+                        .map_or(sol.sets[cell], |b| sol.sets[cell].with(b))
+                        .iter()
+                        .collect();
+                    let q = &input.px[i];
+                    img.pixels()[i]
+                        != super::super::ordered::nearest(
+                            q.metric,
+                            q.coords,
+                            &set,
+                            t.tables().colours(q.metric.space()),
+                        )
+                })
+                .count()
+        };
+        let (fa, fb) = (
+            frame_with(Mode::HiresBitmap, fs, true),
+            frame_with(Mode::HiresBitmap, fs.with_adaptive(1.0).unwrap(), true),
+        );
+        let (a, b) = (solve_default(&fa), solve_default(&fb));
+        assert!(
+            dithered(&b, &fb) < dithered(&a, &fa) / 2,
+            "{} vs {}",
+            dithered(&b, &fb),
+            dithered(&a, &fa)
+        );
+    }
+
+    #[test]
+    fn hysteresis_converges_without_flip_flop() {
+        let f = frame_with(
+            Mode::MulticolorBitmap,
+            Recipe::with_method(DitherKind::FloydSteinberg, 1.0).unwrap(),
+            true,
+        );
+        let sol = Solver::new(&Palette::pepto_pal()).solve(
+            &f,
+            &Steering::new(),
+            None,
+            &SolveOptions {
+                hysteresis: Some(0.97),
+                ..SolveOptions::default()
+            },
+        );
+        assert!(sol.rounds.len() <= 3, "at most two refinement rounds");
+        if sol.rounds.len() == 3 {
+            let flips = (0..sol.rounds[0].len())
+                .filter(|&i| {
+                    sol.rounds[1][i] != sol.rounds[0][i] && sol.rounds[2][i] == sol.rounds[0][i]
+                })
+                .count();
+            assert_eq!(flips, 0, "a cell went back to its first set");
+        }
+        // Hysteresis only ever keeps more cells unchanged than accepting every re-pick.
+        let free = solve_default(&f);
+        let changed = |r: &[Vec<ColourSet>]| {
+            r.windows(2)
+                .map(|w| w[0].iter().zip(&w[1]).filter(|(a, b)| a != b).count())
+                .sum::<usize>()
+        };
+        assert!(changed(&sol.rounds) <= changed(&free.rounds));
     }
 
     #[test]

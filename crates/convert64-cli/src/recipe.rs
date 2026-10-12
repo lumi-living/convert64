@@ -98,6 +98,24 @@ pub struct RecipeFile {
     /// Commands, run in order.
     #[serde(default)]
     pub commands: Vec<JsonCommand>,
+    /// How the picture is solved.
+    #[serde(default)]
+    pub solve: SolveSpec,
+}
+
+/// Solve settings in a recipe file (the per-pixel knobs live in each layer's recipe).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SolveSpec {
+    /// Background: `auto` (default) or `{"fixed": n}`.
+    #[serde(default)]
+    pub background: convert64_core::solve::Background,
+    /// Refinement hysteresis ratio, e.g. 0.97; absent = off.
+    #[serde(default)]
+    pub hysteresis: Option<f32>,
+    /// Same-luma pair bias per pair (positive penalises, negative rewards).
+    #[serde(default)]
+    pub luma_pair_bias: f32,
 }
 
 /// A command as JSON: `{"command": "<name>", ...arguments}`. Names are the core
@@ -264,6 +282,7 @@ pub struct Session {
     base: PathBuf,
     solver: Solver,
     last: Option<Solution>,
+    spec: SolveSpec,
     /// Cells changed since the last solve (from the compositor's dirty-cell API).
     dirty: convert64_core::CellSet,
 }
@@ -318,6 +337,7 @@ impl Session {
             base: base.to_owned(),
             solver: Solver::new(&convert64_core::Palette::default()),
             last: None,
+            spec: file.solve.clone(),
             dirty: convert64_core::CellSet::all(),
         };
         for (i, cmd) in file.commands.into_iter().enumerate() {
@@ -456,6 +476,9 @@ impl Session {
         };
         let opts = SolveOptions {
             mode,
+            background: self.spec.background,
+            hysteresis: self.spec.hysteresis,
+            luma_pair_bias: self.spec.luma_pair_bias,
             layer_origins: convert64_core::solve::dither::layer_origins(
                 self.compositor.grid(),
                 &p.layers,
@@ -700,6 +723,23 @@ mod tests {
             let back: JsonCommand = serde_json::from_str(&text).unwrap();
             assert_eq!(back, c, "{text}");
         }
+    }
+
+    #[test]
+    fn recipe_files_carry_solver_knobs() {
+        let text = r#"{
+            "version": 1, "target": "multicolor-bitmap",
+            "layers": [{ "name": "a", "source": "a.png",
+                "recipe": { "method": { "kind": "floyd-steinberg" }, "strength": 1.0,
+                            "cell_clamp": false, "max_luma_diff": 0, "adaptive": 0.5 } }],
+            "solve": { "background": { "fixed": 6 }, "hysteresis": 0.97, "luma_pair_bias": -0.01 }
+        }"#;
+        let f: RecipeFile = serde_json::from_str(text).unwrap();
+        let r = f.layers[0].recipe;
+        assert!(!r.cell_clamp() && r.max_luma_diff() == 0 && r.adaptive() == 0.5);
+        assert_eq!(f.solve.hysteresis, Some(0.97));
+        let back: RecipeFile = serde_json::from_str(&serde_json::to_string(&f).unwrap()).unwrap();
+        assert_eq!(back, f);
     }
 
     #[test]

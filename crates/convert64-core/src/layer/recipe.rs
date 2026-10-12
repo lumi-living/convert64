@@ -150,6 +150,10 @@ pub enum RecipeError {
     Strength(f32),
     /// No colour is allowed.
     EmptyAllowedSet,
+    /// `max_luma_diff` is above 8.
+    MaxLumaDiff(u8),
+    /// `adaptive` is not a number in `0..=1`.
+    Adaptive(f32),
 }
 
 impl fmt::Display for RecipeError {
@@ -157,6 +161,8 @@ impl fmt::Display for RecipeError {
         match self {
             Self::Strength(s) => write!(f, "dither strength must be in 0–1, got {s}"),
             Self::EmptyAllowedSet => f.write_str("a recipe must allow at least one colour"),
+            Self::MaxLumaDiff(n) => write!(f, "max_luma_diff must be 0–8 luma levels, got {n}"),
+            Self::Adaptive(a) => write!(f, "adaptive must be in 0–1, got {a}"),
         }
     }
 }
@@ -175,11 +181,29 @@ struct RecipeData {
     allowed: ColourSet,
     #[serde(default)]
     fit_mode: FitMode,
+    #[serde(default = "yes")]
+    cell_clamp: bool,
+    #[serde(default = "luma_off")]
+    max_luma_diff: u8,
+    #[serde(default)]
+    adaptive: f32,
 }
 
 const fn all_colours() -> ColourSet {
     ColourSet::ALL
 }
+
+const fn yes() -> bool {
+    true
+}
+
+const fn luma_off() -> u8 {
+    MAX_LUMA_DIFF_OFF
+}
+
+/// `max_luma_diff` at which it restricts nothing: the nine luma levels are at most 8
+/// apart.
+pub const MAX_LUMA_DIFF_OFF: u8 = 8;
 
 /// The attribute tuple `(method, strength, phase, metric, allowed_set, fit_mode)` a layer
 /// carries into the attribute map (ADR-002, TAD §3.5).
@@ -192,6 +216,9 @@ pub struct Recipe {
     metric: Metric,
     allowed: ColourSet,
     fit_mode: FitMode,
+    cell_clamp: bool,
+    max_luma_diff: u8,
+    adaptive: f32,
 }
 
 impl TryFrom<RecipeData> for Recipe {
@@ -199,7 +226,10 @@ impl TryFrom<RecipeData> for Recipe {
     fn try_from(d: RecipeData) -> Result<Self, RecipeError> {
         Self::new(
             d.method, d.strength, d.phase, d.metric, d.allowed, d.fit_mode,
-        )
+        )?
+        .with_cell_clamp(d.cell_clamp)
+        .with_max_luma_diff(d.max_luma_diff)?
+        .with_adaptive(d.adaptive)
     }
 }
 
@@ -213,6 +243,9 @@ impl Default for Recipe {
             metric: Metric::Oklab,
             allowed: ColourSet::ALL,
             fit_mode: FitMode::Adaptive,
+            cell_clamp: true,
+            max_luma_diff: MAX_LUMA_DIFF_OFF,
+            adaptive: 0.0,
         }
     }
 }
@@ -240,7 +273,56 @@ impl Recipe {
             metric,
             allowed,
             fit_mode,
+            cell_clamp: true,
+            max_luma_diff: MAX_LUMA_DIFF_OFF,
+            adaptive: 0.0,
         })
+    }
+
+    /// This recipe with `cell_clamp` set: `true` (the default) drops diffused error at
+    /// cell borders where the receiving cell lacks the colour it pulls towards (TAD
+    /// §3.1); `false` lets error flow into neighbouring cells as png2c64 does.
+    pub const fn with_cell_clamp(mut self, cell_clamp: bool) -> Self {
+        self.cell_clamp = cell_clamp;
+        self
+    }
+
+    /// This recipe with `max_luma_diff` set: every dither mix (ordered, diffusion, pair,
+    /// Yliluoma) is restricted to colours within this many of the nine luma levels of
+    /// `docs/reference/colour-pairs.md`. 0 allows same-luma pairs only (PAL-blend safe);
+    /// 8, the default, restricts nothing.
+    pub fn with_max_luma_diff(mut self, levels: u8) -> Result<Self, RecipeError> {
+        if levels > MAX_LUMA_DIFF_OFF {
+            return Err(RecipeError::MaxLumaDiff(levels));
+        }
+        self.max_luma_diff = levels;
+        Ok(self)
+    }
+
+    /// This recipe with `adaptive` set (png2c64 `--adaptive`): dithering is scaled by
+    /// `1 − adaptive × detail`, where detail is the mean OKLab |ΔL| to the 4 neighbours
+    /// / 0.15, capped at 1. 0 (the default) is off.
+    pub fn with_adaptive(mut self, adaptive: f32) -> Result<Self, RecipeError> {
+        if !(0.0..=1.0).contains(&adaptive) {
+            return Err(RecipeError::Adaptive(adaptive));
+        }
+        self.adaptive = adaptive;
+        Ok(self)
+    }
+
+    /// Whether diffused error is dropped at cell borders (see [`Self::with_cell_clamp`]).
+    pub const fn cell_clamp(&self) -> bool {
+        self.cell_clamp
+    }
+
+    /// Luma-level limit of dither mixes (see [`Self::with_max_luma_diff`]).
+    pub const fn max_luma_diff(&self) -> u8 {
+        self.max_luma_diff
+    }
+
+    /// Detail-adaptive dither reduction (see [`Self::with_adaptive`]).
+    pub const fn adaptive(&self) -> f32 {
+        self.adaptive
     }
 
     /// The default recipe with another method and strength.
@@ -339,5 +421,22 @@ mod tests {
             toml::from_str::<Recipe>("strength = 0.5\nallowed = 0\n[method]\nkind = \"none\"\n")
                 .is_err()
         );
+        let knobs: Recipe = toml::from_str(
+            "strength = 0.5\ncell_clamp = false\nmax_luma_diff = 0\nadaptive = 0.4\n[method]\nkind = \"bayer4\"\n",
+        )
+        .unwrap();
+        assert!(!knobs.cell_clamp() && knobs.max_luma_diff() == 0 && knobs.adaptive() == 0.4);
+        assert!(
+            toml::from_str::<Recipe>(
+                "strength = 0.5\nmax_luma_diff = 9\n[method]\nkind = \"none\"\n"
+            )
+            .is_err()
+        );
+        assert!(
+            toml::from_str::<Recipe>("strength = 0.5\nadaptive = 1.5\n[method]\nkind = \"none\"\n")
+                .is_err()
+        );
+        let d = Recipe::default();
+        assert!(d.cell_clamp() && d.max_luma_diff() == MAX_LUMA_DIFF_OFF && d.adaptive() == 0.0);
     }
 }

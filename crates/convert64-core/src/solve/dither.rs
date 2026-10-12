@@ -13,6 +13,7 @@ use super::metric::{Metric, MetricTables};
 use super::ordered;
 use crate::colour::{ColourIndex, ColourSet};
 use crate::layer::{DitherFamily, DitherKind};
+use crate::palette::luma;
 
 /// An error-diffusion kernel: `(dx, dy, weight)` for neighbours ahead of the pixel in
 /// scan order, and the divisor of the weights.
@@ -154,8 +155,10 @@ pub fn pass(
             let set = &full[cell];
             let colours = tables.colours(q.metric.space());
             let family = q.kind.family();
+            // `adaptive` scales the incoming error (1 when off, exactly).
             let target = if family == DitherFamily::Diffusion {
-                add(q.coords, received[idx])
+                let e = received[idx];
+                add(q.coords, [e[0] * q.adapt, e[1] * q.adapt, e[2] * q.adapt])
             } else {
                 q.coords
             };
@@ -165,6 +168,20 @@ pub fn pass(
                 error += q.weight * q.metric.distance(q.coords, colours[prev.as_usize()]);
                 continue;
             }
+            // max_luma_diff: dither only between colours within N luma levels of the
+            // pixel's own nearest colour (8 restricts nothing and skips this).
+            let restricted;
+            let mix: &[ColourIndex] = if q.max_luma_diff < crate::layer::recipe::MAX_LUMA_DIFF_OFF {
+                let c0 = ordered::nearest(q.metric, q.coords, set, colours);
+                restricted = set
+                    .iter()
+                    .copied()
+                    .filter(|&c| luma::level_diff(c, c0) <= q.max_luma_diff)
+                    .collect::<Vec<_>>();
+                &restricted
+            } else {
+                set
+            };
             let choice = if q.weight <= 0.0 {
                 // Uncovered: the background where there is one, else the nearest.
                 bg.filter(|b| set.contains(b))
@@ -182,8 +199,16 @@ pub fn pass(
                             ordered::pattern_position(x as i64, y as i64, q.phase, origin);
                         let thr = ordered::threshold(q.kind, q.orientation, px, py)
                             .expect("ordered and noise methods have thresholds");
-                        ordered::ordered_pick(q.metric, q.coords, set, colours, thr, q.strength)
+                        ordered::ordered_pick(
+                            q.metric,
+                            q.coords,
+                            mix,
+                            colours,
+                            thr,
+                            q.strength * q.adapt,
+                        )
                     }
+                    DitherFamily::Diffusion => ordered::nearest(q.metric, target, mix, colours),
                     _ => ordered::nearest(q.metric, target, set, colours),
                 }
             };
@@ -222,6 +247,7 @@ pub fn pass(
                     continue;
                 }
                 if ncell != cell
+                    && q.cell_clamp
                     && !accepts(
                         r.metric,
                         add(add(r.coords, received[n]), part),

@@ -41,6 +41,25 @@ pub const fn luma(c: ColourIndex) -> u8 {
     LUMA[c.as_usize()]
 }
 
+/// Index of `c`'s luma level among [`LUMA_LEVELS`] (0 = black … 8 = white): the unit of
+/// `max_luma_diff`.
+pub const fn level(c: ColourIndex) -> u8 {
+    let l = luma(c);
+    let mut i = 0;
+    while i < LUMA_LEVELS.len() {
+        if LUMA_LEVELS[i] == l {
+            return i as u8;
+        }
+        i += 1;
+    }
+    unreachable!()
+}
+
+/// How many luma levels apart two colours are (0–8).
+pub const fn level_diff(a: ColourIndex, b: ColourIndex) -> u8 {
+    level(a).abs_diff(level(b))
+}
+
 /// `true` when `a` and `b` are different colours with the same luma level.
 pub const fn is_same_luma_pair(a: ColourIndex, b: ColourIndex) -> bool {
     a.get() != b.get() && luma(a) == luma(b)

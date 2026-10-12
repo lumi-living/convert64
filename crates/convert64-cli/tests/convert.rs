@@ -87,3 +87,41 @@ fn a_fixed_background_and_bad_options() {
     assert_eq!(bad.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&bad.stderr).contains("unknown dither method"));
 }
+
+#[test]
+fn solver_knobs_from_the_command_line() {
+    let dir = temp("convert-knobs");
+    let png = source(&dir);
+    let out = dir.join("knobs.kla");
+    let r = convert(&[
+        "convert",
+        png.to_str().unwrap(),
+        "--dither",
+        "floyd-steinberg",
+        "--no-cell-clamp",
+        "--max-luma-diff",
+        "0",
+        "--adaptive",
+        "0.3",
+        "--hysteresis",
+        "0.97",
+        "-o",
+        out.to_str().unwrap(),
+        "--json",
+        "--report",
+    ]);
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&r.stdout).unwrap();
+    assert_eq!(v["summary"]["luma_crossings"], 0);
+    let check = convert(&["validate", out.to_str().unwrap()]);
+    assert_eq!(String::from_utf8_lossy(&check.stdout).trim(), "legal");
+    let bad = convert(&[
+        "convert",
+        png.to_str().unwrap(),
+        "--max-luma-diff",
+        "9",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(bad.status.code(), Some(2));
+}
