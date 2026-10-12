@@ -51,3 +51,4 @@ Every change to a golden file (`fixtures/<name>/expected_*.snap`, `fixtures/<nam
 - 2026-10-12 #147 **portrait** (expected_adaptive.png): #147: deterministic Lanczos sine and adjustment powers (byte-identical across OSes)
 - 2026-10-12 #pending **gradient** (expected_m-knoll.png, expected_m-luma.png, expected_m-pair.png, expected_m-yliluoma1.png, expected_m-yliluoma2.png, expected_m-yliluoma3.png): #115: palette-aware methods on gradient and portrait (with ostromoukhov and checker for comparison)
 - 2026-10-12 #pending **portrait** (expected_checker.png, expected_knoll.png, expected_luma.png, expected_ostromoukhov.png, expected_pair.png, expected_yliluoma1.png, expected_yliluoma2.png, expected_yliluoma3.png): #115: palette-aware methods on gradient and portrait (with ostromoukhov and checker for comparison)
+- 2026-10-12 #pending **portrait** (expected_ostromoukhov.png): #115: palette-aware methods after the deterministic resampler
