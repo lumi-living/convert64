@@ -245,6 +245,12 @@ impl PxSettings {
     /// (`ordered_threshold × strength`, × strength again as png2c64's
     /// `precompute_cell_dist` does), or `None` for `none` and diffusion.
     pub fn bias(&self, x: usize, y: usize) -> Option<f32> {
+        self.bias_levels(x, y, None)
+    }
+
+    /// [`Self::bias`] with the threshold quantised to `levels` steps (the `mix_levels`
+    /// divergence; `None` as png2c64).
+    pub fn bias_levels(&self, x: usize, y: usize, levels: Option<u8>) -> Option<f32> {
         if !self.method.is_ordered() || self.method == Method::None {
             return None;
         }
@@ -257,7 +263,12 @@ impl PxSettings {
                 (y as i64 - self.origin.1).rem_euclid(3200) as usize,
             )
         };
-        Some(ordered_threshold(self.method, x, y) * self.strength * self.strength)
+        let mut thr = ordered_threshold(self.method, x, y);
+        if let Some(n) = levels.filter(|&n| n > 0) {
+            let n = f32::from(n);
+            thr = (((thr + 0.5) * n).floor().min(n - 1.0) + 0.5) / n - 0.5;
+        }
+        Some(thr * self.strength * self.strength)
     }
 }
 
@@ -685,6 +696,7 @@ pub fn diffuse_px(
     palette: &[Rgb; 16],
     px: &[PxSettings],
     serpentine: bool,
+    div: &super::Divergences,
 ) {
     let pal = palette.map(linear_to_oklab);
     let (w, h) = screen.mode.screen();
@@ -721,7 +733,26 @@ pub fn diffuse_px(
                 lab[idx][1] + ce[1],
                 lab[idx][2] + ce[2],
             ];
-            let colors = &screen.cells[c].colors;
+            let all = &screen.cells[c].colors;
+            // The `max_luma_diff` divergence: only colours within the limit of the cell
+            // colour the pixel itself is nearest to.
+            let near: Vec<u8>;
+            let colors: &[u8] = match div.max_luma_diff {
+                Some(n) => {
+                    let own = all[usize::from(nearest(lab[idx], all, &pal).0)];
+                    near = all
+                        .iter()
+                        .copied()
+                        .filter(|&v| level_diff(v, own) <= n)
+                        .collect();
+                    &near
+                }
+                None => all,
+            };
+            let slot_of = |local: u8| -> u8 {
+                let v = colors[usize::from(local)];
+                all.iter().position(|&c| c == v).unwrap_or(0) as u8
+            };
             let (slot, chosen, scale) = if ostro {
                 let pair = nearest_pair(adj, colors, &pal);
                 (pair.a, pair.lab_a, Some(0.6 + 0.8 * blend(&pair)))
@@ -729,7 +760,7 @@ pub fn diffuse_px(
                 let (slot, chosen) = nearest(adj, colors, &pal);
                 (slot, chosen, None)
             };
-            screen.cells[c].px[p] = slot;
+            screen.cells[c].px[p] = slot_of(slot);
             let q = [
                 (adj[0] - chosen[0]) * s.strength,
                 (adj[1] - chosen[1]) * s.strength,
@@ -744,10 +775,50 @@ pub fn diffuse_px(
                 let n = ny as usize * w + nx as usize;
                 let wt = scale.map_or(weight, |o| weight * o);
                 let e = err[n];
-                err[n] = clamp([e[0] + q[0] * wt, e[1] + q[1] * wt, e[2] + q[2] * wt]);
+                let next = clamp([e[0] + q[0] * wt, e[1] + q[1] * wt, e[2] + q[2] * wt]);
+                // The `cell_clamp` divergence: error crossing into another cell is
+                // dropped where that cell lacks the colour it pulls towards.
+                if div.cell_clamp {
+                    let (nc, _) = cell_of(screen, nx as usize, ny as usize);
+                    if nc != c {
+                        let target = [
+                            lab[n][0] + next[0],
+                            lab[n][1] + next[1],
+                            lab[n][2] + next[2],
+                        ];
+                        let want = nearest_of_all(target, &pal);
+                        if !screen.cells[nc].colors.contains(&want) {
+                            continue;
+                        }
+                    }
+                }
+                err[n] = next;
             }
         }
     }
+}
+
+/// The nearest of all 16 colours (the lowest index on a tie).
+fn nearest_of_all(p: Lab, pal: &[Lab; 16]) -> u8 {
+    let (mut best, mut idx) = (f32::MAX, 0u8);
+    for (c, &cl) in pal.iter().enumerate() {
+        let d = dist2(p, cl);
+        if d < best {
+            best = d;
+            idx = c as u8;
+        }
+    }
+    idx
+}
+
+/// The luma levels between two palette indices (`docs/reference/colour-pairs.md`).
+fn level_diff(a: u8, b: u8) -> u8 {
+    use crate::colour::ColourIndex;
+    let (a, b) = (
+        ColourIndex::new(a).expect("index below 16"),
+        ColourIndex::new(b).expect("index below 16"),
+    );
+    crate::palette::luma::level_diff(a, b)
 }
 
 /// `dither::apply`: re-picks every pixel's slot within its cell's colours with
@@ -765,7 +836,14 @@ pub fn apply(image: &Image, screen: &mut Screen, palette: &[Rgb; 16], settings: 
         _ => {
             let (w, h) = screen.mode.screen();
             let px = vec![PxSettings::from(settings); w * h];
-            diffuse_px(image, screen, palette, &px, settings.serpentine);
+            diffuse_px(
+                image,
+                screen,
+                palette,
+                &px,
+                settings.serpentine,
+                &super::Divergences::default(),
+            );
         }
     }
 }

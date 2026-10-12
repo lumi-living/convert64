@@ -130,6 +130,7 @@ Cells are `x` 0–39, `y` 0–24; colours are indices 0–15. A pin names 1–4 
 | Field | Default | Meaning |
 |---|---|---|
 | `solver` | `"reference"` | `"reference"` (png2c64's pipeline, ported, #181) or `"native"` (Convert64's own solver). The reference falls back to native for frames it cannot solve yet; `refinements`, `finalists`, `hysteresis` and `luma_pair_bias` and the recipes' `cell_clamp`, `max_luma_diff`, `mix_levels`, `smooth`, `ordered_semantics` and `chroma_guard` are the native solver's |
+| `divergences` | all off (omitted) | The reference solver's named divergences: `{"chroma_guard": bool, "max_luma_diff": n or null, "pair_bias": x, "cell_clamp": bool, "mix_levels": n or null, "bridging": bool}`, any subset ([png2c64-reference.md](png2c64-reference.md#divergences)) |
 | `background` | `"auto"` | `"auto"` (search all 16) or `{"fixed": n}` (multicolor) |
 | `hysteresis` | none | Refinement hysteresis ratio in (0, 1], e.g. `0.97` |
 | `luma_pair_bias` | `0.0` | Same-luma pair bias per pair (positive penalises, negative rewards) |

@@ -239,6 +239,7 @@ pub(crate) fn solve(
         },
         rules: rules(frame, steering, mode),
         fixed,
+        divergences: opts.divergences,
     };
     let pal = colour::palette_of(palette);
     let screen = convert_px(&image, &pal, mode, &px, true, &hooks);

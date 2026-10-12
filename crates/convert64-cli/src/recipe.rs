@@ -119,6 +119,12 @@ pub struct SolveSpec {
     /// The solver: `reference` (png2c64's pipeline, the default) or `native`.
     #[serde(default)]
     pub solver: convert64_core::solve::SolverKind,
+    /// The reference solver's named divergences from png2c64, all off by default.
+    #[serde(
+        default,
+        skip_serializing_if = "convert64_core::solve::Divergences::none"
+    )]
+    pub divergences: convert64_core::solve::Divergences,
     /// Background: `auto` (default) or `{"fixed": n}`.
     #[serde(default)]
     pub background: convert64_core::solve::Background,
@@ -148,6 +154,7 @@ impl Default for SolveSpec {
     fn default() -> Self {
         Self {
             solver: convert64_core::solve::SolverKind::default(),
+            divergences: convert64_core::solve::Divergences::default(),
             background: convert64_core::solve::Background::default(),
             hysteresis: None,
             luma_pair_bias: 0.0,
@@ -742,6 +749,7 @@ impl Session {
         };
         let opts = SolveOptions {
             solver: self.spec.solver,
+            divergences: self.spec.divergences,
             mode,
             background: self.spec.background,
             hysteresis: self.spec.hysteresis,

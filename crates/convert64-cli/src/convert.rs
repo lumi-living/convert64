@@ -117,6 +117,37 @@ fn raw_name(path: &Path) -> Result<(PathBuf, String), Fail> {
     Ok((dir, name.to_owned()))
 }
 
+/// One `--diverge` entry, `name` or `name=value`, applied to `div`.
+fn apply_divergence(div: &mut convert64_core::solve::Divergences, entry: &str) -> Result<(), Fail> {
+    let (name, value) = match entry.split_once('=') {
+        Some((n, v)) => (n.trim(), Some(v.trim())),
+        None => (entry.trim(), None),
+    };
+    let bad = || {
+        Fail::input(format!(
+            "--diverge {entry:?}: see `convert64 convert --help`"
+        ))
+    };
+    let number = |lo: f64, hi: f64| -> Result<f64, Fail> {
+        let v: f64 = value.ok_or_else(bad)?.parse().map_err(|_| bad())?;
+        if (lo..=hi).contains(&v) {
+            Ok(v)
+        } else {
+            Err(bad())
+        }
+    };
+    match name {
+        "chroma-guard" if value.is_none() => div.chroma_guard = true,
+        "cell-clamp" if value.is_none() => div.cell_clamp = true,
+        "bridging" if value.is_none() => div.bridging = true,
+        "max-luma-diff" => div.max_luma_diff = Some(number(0.0, 8.0)? as u8),
+        "mix-levels" => div.mix_levels = Some(number(1.0, 16.0)? as u8),
+        "pair-bias" => div.pair_bias = number(-1.0, 1.0)? as f32,
+        _ => return Err(bad()),
+    }
+    Ok(())
+}
+
 /// `--solver`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -146,6 +177,12 @@ pub(crate) struct Overrides {
     /// `--mix-levels`, `--smooth`, `--ordered-semantics` and `--no-chroma-guard` act on.
     #[arg(long, value_enum)]
     pub(crate) solver: Option<SolverArg>,
+    /// A named divergence of the reference solver from png2c64, all off by default
+    /// (#181): chroma-guard, max-luma-diff=N (0–8), pair-bias=X, cell-clamp,
+    /// mix-levels=N (1–16), bridging. Repeatable or comma-separated.
+    #[arg(long, value_delimiter = ',', value_name = "NAME[=VALUE]")]
+    #[serde(default)]
+    pub(crate) diverge: Vec<String>,
     /// Target mode: koala (multicolor; also mc) or hires. Default: the project's, or the
     /// output format's, or koala.
     #[arg(long, value_enum)]
@@ -235,6 +272,11 @@ impl Overrides {
     pub(crate) fn or(self, base: &Self) -> Self {
         Self {
             solver: self.solver.or(base.solver),
+            diverge: if self.diverge.is_empty() {
+                base.diverge.clone()
+            } else {
+                self.diverge.clone()
+            },
             mode: self.mode.or(base.mode),
             palette: self.palette.or_else(|| base.palette.clone()),
             metric: self.metric.or_else(|| base.metric.clone()),
@@ -344,6 +386,9 @@ impl Overrides {
         }
         if let Some(s) = self.solver {
             file.solve.solver = s.into();
+        }
+        for d in &self.diverge {
+            apply_divergence(&mut file.solve.divergences, d)?;
         }
         if let Some(h) = self.hysteresis {
             if !(h > 0.0 && h <= 1.0) {

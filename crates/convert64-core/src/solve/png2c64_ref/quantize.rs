@@ -103,33 +103,120 @@ impl Screen {
 /// An ordered dither's threshold at `(x, y)`, already × strength (`ThresholdFn`).
 pub type Threshold<'a> = &'a (dyn Fn(usize, usize) -> f32 + Sync);
 
+/// What the divergences add to a distance (the `chroma_guard` and `max_luma_diff`
+/// penalties): more than any squared OKLab distance between palette colours.
+const PENALTY: f32 = 1.0;
+
 /// One cell's distance table: per pixel, the squared distance to each of the 16 colours
 /// (`precompute_cell_dist`, pixel-major). `bias[i]` is pixel `i`'s threshold offset `t`
-/// (png2c64's `threshold_fn(x, y) × threshold_strength`), or `None` for no bias.
+/// (png2c64's `threshold_fn(x, y) × threshold_strength`), or `None` for no bias. Also
+/// returns the OKLab L of the cell's ordered (biased) pixels, for the `bridging`
+/// divergence. The divergences' penalties are added here; with none, the table is
+/// png2c64's.
 fn cell_table(
     image: &Image,
     mode: Mode,
     cell: usize,
     pal: &[Lab; 16],
     bias: &[Option<f32>],
-) -> Vec<[f32; 16]> {
+    div: &super::Divergences,
+) -> (Vec<[f32; 16]>, Vec<f32>) {
     let (cw, ch) = mode.cell();
     let cols = mode.cells().0;
     let (px, py) = ((cell % cols) * cw, (cell / cols) * ch);
     let mut out = Vec::with_capacity(cw * ch);
+    let mut ordered = Vec::new();
     for dy in 0..ch {
         for dx in 0..cw {
             let (x, y) = (px + dx, py + dy);
-            let mut lab = linear_to_oklab(image.at(x, y));
-            if let Some(t) = bias[y * image.w + x] {
+            let plain = linear_to_oklab(image.at(x, y));
+            let mut lab = plain;
+            let b = bias[y * image.w + x];
+            if let Some(t) = b {
                 lab[0] += t * 0.15;
                 lab[1] += t * 0.03;
                 lab[2] += t * 0.03;
+                ordered.push(plain[0]);
             }
-            out.push(pal.map(|c| dist2(lab, c)));
+            let mut d = pal.map(|c| dist2(lab, c));
+            if div.chroma_guard && b.is_some() {
+                for (v, &c) in d.iter_mut().zip(pal) {
+                    if !crate::solve::ordered::guard_allows(plain, c) {
+                        *v += PENALTY;
+                    }
+                }
+            }
+            if let Some(n) = div.max_luma_diff {
+                let own = nearest_index(plain, pal);
+                for (c, v) in d.iter_mut().enumerate() {
+                    if levels_apart(c as u8, own) > n {
+                        *v += PENALTY;
+                    }
+                }
+            }
+            out.push(d);
         }
     }
-    out
+    (out, ordered)
+}
+
+/// The nearest of the 16 colours to `p` (the lowest index on a tie).
+fn nearest_index(p: Lab, pal: &[Lab; 16]) -> u8 {
+    let (mut best, mut idx) = (f32::MAX, 0u8);
+    for (c, &cl) in pal.iter().enumerate() {
+        let d = dist2(p, cl);
+        if d < best {
+            best = d;
+            idx = c as u8;
+        }
+    }
+    idx
+}
+
+/// Luma levels between two palette indices.
+fn levels_apart(a: u8, b: u8) -> u8 {
+    use crate::colour::ColourIndex;
+    crate::palette::luma::level_diff(
+        ColourIndex::new(a).expect("index below 16"),
+        ColourIndex::new(b).expect("index below 16"),
+    )
+}
+
+/// What the `pair_bias` and `bridging` divergences add to a set's search score: the
+/// bias per same-luma pair in it, and 0.01 × each ordered pixel's lightness bracket.
+fn set_extra(mask: u16, ordered: &[f32], pal: &[Lab; 16], div: &super::Divergences) -> f32 {
+    let mut extra = 0.0f32;
+    if div.pair_bias != 0.0 {
+        let set: crate::colour::ColourSet = crate::colour::ColourSet::from_bits(mask);
+        extra += crate::solve::metric::luma_pair_bias(set, div.pair_bias);
+    }
+    if div.bridging {
+        for &l in ordered {
+            let (mut lo, mut hi) = (f32::NEG_INFINITY, f32::INFINITY);
+            for c in bits(mask) {
+                let cl = pal[usize::from(c)][0];
+                if cl <= l && cl > lo {
+                    lo = cl;
+                }
+                if cl >= l && cl < hi {
+                    hi = cl;
+                }
+            }
+            extra += 0.01
+                * if lo.is_finite() && hi.is_finite() {
+                    (hi - lo) * (hi - lo)
+                } else {
+                    let end = if lo.is_finite() { lo } else { hi };
+                    0.5 + (l - end).abs()
+                };
+        }
+    }
+    extra
+}
+
+/// The bit mask of a cell's slots.
+fn mask_of(slots: &[u8]) -> u16 {
+    slots.iter().fold(0, |m, &c| m | (1 << c))
 }
 
 /// The lexicographic rank of each 4-colour set among the 1820, by bit mask.
@@ -446,6 +533,8 @@ pub struct Hooks {
     /// of an interactive re-solve (empty: none). A fixed cell is not searched and does
     /// not count towards the background choice.
     pub fixed: Vec<Option<Cell>>,
+    /// Our named extras (all off: png2c64's search).
+    pub divergences: super::Divergences,
 }
 
 impl Hooks {
@@ -527,13 +616,24 @@ pub fn quantize_px(
     let pal = palette.map(linear_to_oklab);
     let (cols, rows) = mode.cells();
     let cells: Vec<usize> = (0..cols * rows).collect();
-    let tables: Vec<Vec<[f32; 16]>> = crate::par::map(&cells, |&i| {
+    let div = &hooks.divergences;
+    let extras = div.pair_bias != 0.0 || div.bridging;
+    let tabled: Vec<(Vec<[f32; 16]>, Vec<f32>)> = crate::par::map(&cells, |&i| {
         if hooks.fixed(i).is_some() {
-            Vec::new()
+            (Vec::new(), Vec::new())
         } else {
-            cell_table(image, mode, i, &pal, bias)
+            cell_table(image, mode, i, &pal, bias, div)
         }
     });
+    let (tables, ordered): (Vec<Vec<[f32; 16]>>, Vec<Vec<f32>>) = tabled.into_iter().unzip();
+    // A set's search score: its error plus the divergences' extras (none: png2c64's).
+    let score = |i: usize, slots: &[u8], e: f32| {
+        if extras {
+            e + set_extra(mask_of(slots), &ordered[i], &pal, div)
+        } else {
+            e
+        }
+    };
     let mut screen = match mode {
         Mode::Multicolor => {
             assert!(
@@ -546,7 +646,27 @@ pub fn quantize_px(
                     return Vec::new();
                 }
                 let rule = hooks.rule(i);
-                if rule == CellRule::FREE {
+                if rule == CellRule::FREE && extras {
+                    // The divergences' extras: every 4-set's error plus its extra.
+                    let rank = rank4();
+                    let mut err4 = errors4(&tables[i]);
+                    for a in 0..16usize {
+                        for b in a + 1..16 {
+                            for c in b + 1..16 {
+                                for d in c + 1..16 {
+                                    let m = (1u16 << a) | (1 << b) | (1 << c) | (1 << d);
+                                    err4[usize::from(rank[usize::from(m)])] +=
+                                        set_extra(m, &ordered[i], &pal, div);
+                                }
+                            }
+                        }
+                    }
+                    best_triples(&err4)
+                        .iter()
+                        .enumerate()
+                        .map(|(bg, &([a, b, c], e))| (vec![bg as u8, a, b, c], e))
+                        .collect()
+                } else if rule == CellRule::FREE {
                     if let Some(b) = hooks.background {
                         // One background: only its 455 sets.
                         return (0..16u8)
@@ -572,7 +692,9 @@ pub fn quantize_px(
                             if hooks.background.is_some_and(|b| b != bg) {
                                 (Vec::new(), f32::MAX)
                             } else {
-                                constrained(&tables[i], Some(bg), 3, rule)
+                                let (slots, e) = constrained(&tables[i], Some(bg), 3, rule);
+                                let s = score(i, &slots, e);
+                                (slots, s)
                             }
                         })
                         .collect()
@@ -619,8 +741,9 @@ pub fn quantize_px(
                     let (mut best, mut pick, mut r) = (f32::MAX, (0u8, 1u8), 0);
                     for a in 0..16u8 {
                         for b in a + 1..16 {
-                            if errs[r] < best {
-                                best = errs[r];
+                            let e = score(i, &[a, b], errs[r]);
+                            if e < best {
+                                best = e;
                                 pick = (a, b);
                             }
                             r += 1;
