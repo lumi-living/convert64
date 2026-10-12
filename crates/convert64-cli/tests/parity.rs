@@ -3,9 +3,8 @@
 //! same result as running it in-process on the core (the app's path). A registry command
 //! the CLI cannot run, or that `convert64 commands` does not describe, fails this test.
 
-use convert64_cli::project::Embed;
-use convert64_cli::recipe::{JsonCommand, Session};
 use convert64_core::command::REGISTRY;
+use convert64_project::{Embed, JsonCommand, Session};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Output;

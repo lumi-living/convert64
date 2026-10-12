@@ -17,8 +17,7 @@ mod validate;
 
 use clap::{Parser, Subcommand};
 use convert::{ConvertJob, FormatArg, Overrides};
-use convert64_cli::project::Embed;
-use convert64_cli::recipe::{LayerRef, RecipeError, Session};
+use convert64_project::{Embed, LayerRef, ProjectError, Session};
 use report::{Fail, Run};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -393,9 +392,9 @@ fn usage_error(e: &clap::Error) -> ExitCode {
 
 /// A library error while writing outputs: file errors are write errors (3), the rest
 /// input errors (2).
-fn output_fail(e: RecipeError) -> Fail {
+fn output_fail(e: ProjectError) -> Fail {
     match e {
-        RecipeError::Io(path, msg) => Fail::write(&path, msg),
+        ProjectError::Io(path, msg) => Fail::write(&path, msg),
         other => Fail::input(other),
     }
 }

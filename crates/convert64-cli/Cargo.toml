@@ -12,6 +12,7 @@ publish.workspace = true
 [dependencies]
 convert64-core = { workspace = true, features = ["parallel"] }
 convert64-formats = { workspace = true }
+convert64-project = { workspace = true, features = ["fs"] }
 clap = { workspace = true }
 image = { workspace = true }
 serde = { workspace = true }
