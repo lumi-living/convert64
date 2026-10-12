@@ -154,3 +154,37 @@ fn the_card_s_multicolor_none_is_png2c64_s_global_fs_choice() {
     println!("card multicolor none: {pct:.3} %");
     assert!(pct >= 99.0, "{pct:.3} %");
 }
+
+#[test]
+fn the_card_s_diffusion_methods_are_png2c64_s() {
+    use convert64_core::solve::png2c64_ref::convert;
+    use convert64_core::solve::png2c64_ref::dither::{Method, Settings};
+    // Ostromoukhov's committed card render is not reproducible by any build of the
+    // pinned png2c64 (docs/reference/png2c64-reference.md); the parity test covers it.
+    let im = prepared(
+        "docs/reference/dither-previews/testcard.png",
+        Mode::Multicolor,
+    );
+    let pal = palette_linear(&PEPTO_HEX);
+    for m in Method::ALL
+        .into_iter()
+        .filter(|m| !m.is_ordered() && *m != Method::Ostromoukhov)
+    {
+        let s = Settings {
+            method: m,
+            strength: 1.0,
+            ..Settings::default()
+        };
+        let ours = convert(&im, &pal, Mode::Multicolor, &s).indices();
+        let theirs = render_indices(
+            &format!(
+                "docs/reference/dither-previews/png2c64-card/{}.png",
+                m.name()
+            ),
+            Mode::Multicolor,
+        );
+        let pct = percent_equal(&ours, &theirs);
+        println!("card {}: {pct:.3} %", m.name());
+        assert!(pct >= 99.0, "{}: {pct:.3} %", m.name());
+    }
+}
