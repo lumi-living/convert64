@@ -7,6 +7,8 @@
 mod json;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use convert64_cli::project::Embed;
+use convert64_cli::recipe::Session;
 use convert64_core::mode::BlockKind;
 use convert64_core::{Location, Placement, validate, validate_placement};
 use convert64_formats::{BitmapFormat, ReadError};
@@ -124,12 +126,23 @@ enum Command {
 
 #[derive(Subcommand)]
 enum RecipeAction {
-    /// Load a recipe's layers, run its commands and write the results.
+    /// Load a recipe's (or a .convert64 project's) layers, run its commands and write
+    /// the results.
     ///
-    /// Exits 0 on success, 2 when the recipe cannot be read or a command fails.
+    /// Exits 0 on success, 2 when the file cannot be read or a command fails, 3 when an
+    /// output cannot be written.
     Apply {
-        /// The recipe file (JSON).
+        /// The recipe file (JSON, version 1) or project file (.convert64).
         file: PathBuf,
+        /// Save the result as a .convert64 project (the commands' results, no commands).
+        #[arg(long, value_name = "PATH")]
+        save: Option<PathBuf>,
+        /// With --save, embed every layer's source PNG in the project.
+        #[arg(long, requires = "save", conflicts_with = "link")]
+        embed: bool,
+        /// With --save, link every layer's source by path (fails for embedded sources).
+        #[arg(long, requires = "save")]
+        link: bool,
         /// Write a layer's evaluated mask as a 16-bit greyscale PNG on the super grid:
         /// `LAYER=PATH`, where LAYER is an index or a name. Repeatable.
         #[arg(long = "mask", value_name = "LAYER=PATH")]
@@ -248,24 +261,35 @@ fn main() -> ExitCode {
         Command::Recipe { action } => match action {
             RecipeAction::Apply {
                 file,
+                save,
+                embed,
+                link,
                 masks,
                 composite,
                 attributes,
                 report,
                 json,
-            } => match run_recipe(
-                &file,
-                &masks,
-                composite.as_deref(),
-                attributes.as_deref(),
-                report.then_some(json),
-            ) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    ExitCode::from(2)
+            } => {
+                let embed = match (embed, link) {
+                    (true, _) => Embed::All,
+                    (_, true) => Embed::None,
+                    _ => Embed::Keep,
+                };
+                match run_recipe(
+                    &file,
+                    save.as_deref().map(|p| (p, embed)),
+                    &masks,
+                    composite.as_deref(),
+                    attributes.as_deref(),
+                    report.then_some(json),
+                ) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err((code, e)) => {
+                        eprintln!("error: {e}");
+                        ExitCode::from(code)
+                    }
                 }
-            },
+            }
             RecipeAction::Commands => {
                 for c in convert64_core::command::REGISTRY {
                     println!("{:<18} {}", c.name, c.summary);
@@ -276,15 +300,43 @@ fn main() -> ExitCode {
     }
 }
 
+/// Exit code 3: an output file could not be written.
+const WRITE_ERROR: u8 = 3;
+
 fn run_recipe(
+    file: &Path,
+    save: Option<(&Path, Embed)>,
+    masks: &[String],
+    composite: Option<&Path>,
+    attributes: Option<&Path>,
+    report: Option<bool>,
+) -> Result<(), (u8, String)> {
+    let mut session = Session::open(file).map_err(|e| (2, e.to_string()))?;
+    if let Some((path, embed)) = save {
+        let text = session
+            .to_project_file(path.parent().unwrap_or(Path::new("")), embed)
+            .map_err(|e| (2, e.to_string()))?
+            .to_json();
+        std::fs::write(path, text)
+            .map_err(|e| (WRITE_ERROR, format!("{}: {e}", path.display())))?;
+    }
+    run_recipe_outputs(&mut session, file, masks, composite, attributes, report)
+        .map_err(|e| (2, e))?;
+    if let Some((path, _)) = save {
+        println!("project -> {}", path.display());
+    }
+    Ok(())
+}
+
+fn run_recipe_outputs(
+    session: &mut Session,
     file: &Path,
     masks: &[String],
     composite: Option<&Path>,
     attributes: Option<&Path>,
     report: Option<bool>,
 ) -> Result<(), String> {
-    use convert64_cli::recipe::{LayerRef, Session};
-    let mut session = Session::open(file).map_err(|e| e.to_string())?;
+    use convert64_cli::recipe::LayerRef;
     println!(
         "{}: {} layer(s), {} command(s) applied",
         file.display(),
