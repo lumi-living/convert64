@@ -73,7 +73,7 @@ enum Command {
         /// The source: a PNG, a .convert64 project or a version-1 recipe (JSON).
         input: PathBuf,
         /// Output file; repeatable. The extension names the format (.kla/.koa, .art/.aas,
-        /// .prg) unless --format is given.
+        /// .prg, .png preview, .json raw set) unless --format is given.
         #[arg(short, long = "output", value_name = "PATH")]
         output: Vec<PathBuf>,
         /// Output format, for an -o whose extension says nothing.
@@ -92,6 +92,9 @@ enum Command {
         /// Print the clash summary (and, with --json, the ten worst cells).
         #[arg(long)]
         report: bool,
+        /// Zoom of .png previews, 1–8 (multicolor pixels are twice as wide).
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        zoom: u8,
     },
     /// Check a picture file against the VIC-II rules.
     ///
@@ -161,6 +164,7 @@ fn main() -> ExitCode {
             embed,
             overrides,
             report,
+            zoom,
         } => {
             let mut run = Run::new("convert", json);
             let job = ConvertJob {
@@ -171,6 +175,7 @@ fn main() -> ExitCode {
                 max_clashes,
                 save_project: save_project.as_deref().map(|p| (p, embed.embed())),
                 report,
+                zoom,
             };
             let r = convert::run(&mut run, &job);
             run.finish(r)

@@ -344,3 +344,37 @@ fn raw_sets_hold_the_same_picture() {
         convert64_core::mode::Mode::HiresBitmap
     );
 }
+
+#[test]
+fn png_previews_show_the_solved_picture_in_palette_colours() {
+    let dir = temp("convert-png");
+    source(&dir);
+    ok(&convert64(
+        &dir,
+        &args(&[
+            "convert", "in.png", "-o", "out.kla", "-o", "out.png", "--zoom", "2",
+        ]),
+    ));
+    let png = image::open(dir.join("out.png")).unwrap().to_rgb8();
+    assert_eq!(png.dimensions(), (640, 400));
+    // Every pixel is the Pepto colour of the solved picture's pixel there.
+    let kla = convert64_formats::BitmapFormat::Koala
+        .read(&std::fs::read(dir.join("out.kla")).unwrap())
+        .unwrap();
+    let indexed = kla.image.to_indexed();
+    let palette = convert64_core::Palette::default();
+    for (x, y) in [(0u32, 0u32), (37, 11), (319, 199), (160, 100)] {
+        let c = indexed.pixel((x / 2) as u16, y as u16);
+        let rgb = palette.rgb(c);
+        assert_eq!(
+            png.get_pixel(x * 2, y * 2).0,
+            [rgb.r, rgb.g, rgb.b],
+            "({x}, {y})"
+        );
+    }
+    let r = convert64(
+        &dir,
+        &args(&["convert", "in.png", "-o", "out.png", "--zoom", "9"]),
+    );
+    assert_eq!(r.status.code(), Some(2));
+}

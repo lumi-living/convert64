@@ -49,6 +49,9 @@ pub(crate) enum FormatArg {
     /// A raw set: `<name>.bitmap.bin`, `.screen.bin`, (multicolor) `.colour.bin` and
     /// `.bg.bin`, and the `<name>.json` manifest, next to each other.
     Raw,
+    /// A PNG preview: every pixel a palette colour, multicolor pixels twice as wide,
+    /// scaled by --zoom.
+    Png,
 }
 
 impl FormatArg {
@@ -61,6 +64,9 @@ impl FormatArg {
         if ext.eq_ignore_ascii_case("json") {
             return Some(Self::Raw);
         }
+        if ext.eq_ignore_ascii_case("png") {
+            return Some(Self::Png);
+        }
         BitmapFormat::from_extension(ext).map(|f| match f {
             BitmapFormat::Koala => Self::Kla,
             BitmapFormat::ArtStudio => Self::Art,
@@ -72,7 +78,7 @@ impl FormatArg {
         match self {
             Self::Kla => Some(Mode::MulticolorBitmap),
             Self::Art => Some(Mode::HiresBitmap),
-            Self::Prg | Self::Raw => None,
+            Self::Prg | Self::Raw | Self::Png => None,
         }
     }
 
@@ -82,6 +88,7 @@ impl FormatArg {
             Self::Art => "art",
             Self::Prg => "prg",
             Self::Raw => "raw",
+            Self::Png => "png",
         }
     }
 }
@@ -317,6 +324,8 @@ pub(crate) struct ConvertJob<'a> {
     pub(crate) max_clashes: Option<usize>,
     pub(crate) save_project: Option<(&'a Path, Embed)>,
     pub(crate) report: bool,
+    /// PNG preview zoom, 1–8.
+    pub(crate) zoom: u8,
 }
 
 /// Whether `path` holds a PNG (by its signature), else a project or recipe (JSON).
@@ -399,7 +408,8 @@ pub(crate) fn run(run: &mut Run, job: &ConvertJob<'_>) -> Result<u8, Fail> {
             .or_else(|| FormatArg::from_path(o))
             .ok_or_else(|| {
                 Fail::input(format!(
-                    "cannot tell the format of {}: use .kla, .art, .prg or .json (raw set), or --format",
+                    "cannot tell the format of {}: use .kla, .art, .prg, .png or .json (raw set), or \
+                     --format",
                     o.display()
                 ))
             })?;
@@ -457,6 +467,10 @@ pub(crate) fn run(run: &mut Run, job: &ConvertJob<'_>) -> Result<u8, Fail> {
             FormatArg::Kla | FormatArg::Art => file.clone(),
             FormatArg::Prg => {
                 convert64_formats::prg::display_prg(bitmap, &file).map_err(Fail::input)?
+            }
+            FormatArg::Png => {
+                convert64_formats::png::preview(&sol.image, session.palette(), job.zoom)
+                    .map_err(Fail::input)?
             }
             FormatArg::Raw => {
                 let (dir, name) = raw_name(path)?;
