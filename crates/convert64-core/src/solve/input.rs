@@ -46,7 +46,8 @@ pub(crate) struct Px {
     pub custom: u8,
     /// What the cell-set search scores this pixel as (its metric's coordinates): its
     /// colour, with a threshold pixel's lightness nudged by its pattern threshold so the
-    /// search picks colours the pattern can mix ([`SEARCH_BIAS_L`]).
+    /// search picks colours the pattern can mix ([`SEARCH_BIAS_L`]), and a diffusion
+    /// pixel's replaced by what an unconstrained diffusion of the frame makes it.
     pub search: [f32; 3],
 }
 
@@ -188,6 +189,14 @@ impl Input {
         let mut px = px;
         apply_adaptive(&mut px, frame.colour(), w, h);
         search_colours(&mut px, frame.colour(), &customs, w);
+        // Diffusion pixels are searched as the colour an unconstrained diffusion gives
+        // them, so a cell keeps the colours its dither mixes.
+        let wanted = super::dither::unconstrained(&px, tables, w, h);
+        for (q, c) in px.iter_mut().zip(wanted) {
+            if let Some(c) = c {
+                q.search = tables.colour(q.metric.space(), c);
+            }
+        }
         let intended = intended_colours(&px, tables);
         let dist = build_dist(&px, tables, w, (cw, ch), (cx, cy), &intended, only);
         let mut allowed = vec![ColourSet::ALL; cx * cy];

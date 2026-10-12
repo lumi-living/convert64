@@ -54,6 +54,28 @@ pub(crate) struct AxisMap {
     pub cov: Vec<f32>,
 }
 
+/// `sin(π·x)` for `0 ≤ x ≤ 3` with basic IEEE operations only (no platform `sin`), so
+/// resampling weights, and with them the solver's input, are the same on every OS: the
+/// argument is reduced to `|r| ≤ ½` around the nearest integer and the series summed in
+/// f64 (error far below f32's precision).
+fn sin_pi(x: f32) -> f32 {
+    let x = f64::from(x);
+    let k = (x + 0.5).floor();
+    let r = (x - k) * std::f64::consts::PI;
+    let r2 = r * r;
+    // Taylor series of sin to r^17 (|r| ≤ π/2).
+    let mut term = r;
+    let mut sum = r;
+    for n in 1..=8 {
+        let n = f64::from(n);
+        term = -term * r2 / ((2.0 * n) * (2.0 * n + 1.0));
+        sum += term;
+    }
+    #[expect(clippy::cast_possible_truncation, reason = "a sine in −1..=1")]
+    let s = sum as f32;
+    if (k as i64) % 2 == 0 { s } else { -s }
+}
+
 /// Lanczos kernel with `a = 3`.
 fn lanczos3(x: f32) -> f32 {
     let x = x.abs();
@@ -63,7 +85,7 @@ fn lanczos3(x: f32) -> f32 {
         0.0
     } else {
         let px = PI * x;
-        3.0 * px.sin() * (px / 3.0).sin() / (px * px)
+        3.0 * sin_pi(x) * sin_pi(x / 3.0) / (px * px)
     }
 }
 
@@ -636,6 +658,15 @@ pub(crate) fn resample_planes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sin_pi_matches_the_platform_sine() {
+        for i in 0..=3000 {
+            let x = i as f32 / 1000.0;
+            let want = (f64::from(x) * std::f64::consts::PI).sin();
+            assert!((f64::from(sin_pi(x)) - want).abs() < 1e-6, "{x}");
+        }
+    }
 
     fn sum_weights(m: &AxisMap, k: usize) -> f32 {
         m.taps(k).map(|(_, w)| w).sum()

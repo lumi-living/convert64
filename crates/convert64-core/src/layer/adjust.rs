@@ -48,6 +48,14 @@ impl fmt::Display for AdjustError {
 
 impl std::error::Error for AdjustError {}
 
+/// `x^y` evaluated in f64 and rounded to f32: platforms' `pow` differ in the last bit
+/// at most, which the rounding absorbs, so adjusted pixels (and the solver's input) are
+/// the same on every OS.
+#[expect(clippy::cast_possible_truncation, reason = "rounded to f32 by design")]
+fn pow(x: f32, y: f32) -> f32 {
+    f64::from(x).powf(f64::from(y)) as f32
+}
+
 fn check(what: &'static str, value: f32, lo: f32, hi: f32) -> Result<f32, AdjustError> {
     if value.is_finite() && (lo..=hi).contains(&value) {
         Ok(value)
@@ -85,7 +93,7 @@ impl Gamma {
         if self.0 == 1.0 {
             v
         } else {
-            v.max(0.0).powf(self.0)
+            pow(v.max(0.0), self.0)
         }
     }
 }
@@ -396,7 +404,7 @@ impl Levels {
         if self.gamma == 1.0 {
             t
         } else {
-            t.powf(1.0 / self.gamma)
+            pow(t, 1.0 / self.gamma)
         }
     }
 }
@@ -453,10 +461,10 @@ impl BrightnessContrast {
     fn eval(&self, v: f32) -> f32 {
         let mut v = v.max(0.0);
         if self.brightness != 0.0 {
-            v *= 4f32.powf(self.brightness);
+            v *= pow(4.0, self.brightness);
         }
         if self.contrast != 0.0 {
-            v = MID_GREY * (v / MID_GREY).powf(4f32.powf(self.contrast));
+            v = MID_GREY * pow(v / MID_GREY, pow(4.0, self.contrast));
         }
         v.clamp(0.0, 1.0)
     }

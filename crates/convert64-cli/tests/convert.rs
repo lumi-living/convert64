@@ -202,12 +202,33 @@ const THRESHOLD_IDS: &[&str] = &[
     "value-noise",
 ];
 
+/// Every diffusion id of `docs/reference/dither-methods.md` §3.
+const DIFFUSION_IDS: &[&str] = &[
+    "fs",
+    "false-fs",
+    "fs-wide",
+    "line-fs",
+    "jarvis",
+    "stucki",
+    "burkes",
+    "sierra3",
+    "sierra2",
+    "sierra-lite",
+    "atkinson",
+    "stevenson-arce",
+    "shiau-fan1",
+    "shiau-fan2",
+    "ostromoukhov",
+    "zhou-fang",
+    "riemersma",
+];
+
 #[test]
-fn convert_accepts_every_threshold_method_id() {
+fn convert_accepts_every_method_id_of_the_reference() {
     let dir = temp("convert-ids");
     let png = source(&dir);
     let out = dir.join("id.kla");
-    for id in THRESHOLD_IDS {
+    for id in THRESHOLD_IDS.iter().chain(DIFFUSION_IDS) {
         let r = convert(&[
             "convert",
             png.to_str().unwrap(),
