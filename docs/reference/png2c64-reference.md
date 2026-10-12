@@ -81,11 +81,15 @@ default. With all off the solver is png2c64's and the parity test holds. Each ha
 on the divergence sheet (`dither-previews/convert64-sheets/sheet-divergences.png`) next
 to the reference, and becomes a default only after a human has judged it there.
 
-| Option | What it does on png2c64's pipeline | From |
-|---|---|---|
-| `chroma_guard` | An ordered pixel's search and pick avoid colours that add chroma it lacks: a neutral pixel (OKLab chroma ≤ 0.02) keeps to colours within 0.03 of its chroma, a tinted one to colours within about 53° of its hue (greys always pass). Rejected colours cost +1 in the distance table. | #157 |
-| `max_luma_diff = n` | A pixel's colours other than those within `n` luma levels of its nearest colour cost +1 in the search, and diffusion picks only among the cell's colours within `n` levels of the one the pixel itself is nearest to. 0 is PAL-blend safe. | #123 |
-| `pair_bias = x` | A cell set's search score gets `x` per same-luma pair in it. | E5 |
-| `cell_clamp` | Diffused error is not passed into another cell whose colours lack the nearest colour to where it would push that pixel. png2c64 lets error flow everywhere. | E5 |
-| `mix_levels = n` | An ordered pixel's threshold is quantised to `n` levels before it biases the search, so a pair mixes at one of `n + 1` ratios. | #142 |
-| `bridging` | A cell set's search score gets, per ordered pixel, 0.01 × the squared width of the OKLab-L bracket the set gives it (½ plus the distance to the nearest end when unbracketed). | #157 |
+| Option | What it does on png2c64's pipeline | From | Verdict (2026-10-13, #189) |
+|---|---|---|---|
+| `chroma_guard` | An ordered pixel's search and pick avoid colours that add chroma it lacks: a neutral pixel (OKLab chroma ≤ 0.02) keeps to colours within 0.03 of its chroma, a tinted one to colours within about 53° of its hue (greys always pass). Rejected colours cost +1 in the distance table. | #157 | Mixed: the card is better (cleaner grey ramp), the portrait worse. Off. |
+| `max_luma_diff = n` | A pixel's colours other than those within `n` luma levels of its nearest colour cost +1 in the search, and diffusion picks only among the cell's colours within `n` levels of the one the pixel itself is nearest to. 0 is PAL-blend safe. | #123 | Worse (at 0). Off. |
+| `pair_bias = x` | A cell set's search score gets `x` per same-luma pair in it. | E5 | Same (at 0.05). Off. |
+| `cell_clamp` | Diffused error is not passed into another cell whose colours lack the nearest colour to where it would push that pixel. png2c64 lets error flow everywhere. | E5 | Same. Off. |
+| `mix_levels = n` | An ordered pixel's threshold is quantised to `n` levels before it biases the search, so a pair mixes at one of `n + 1` ratios. | #142 | Mixed (at 4): the card is worse, the portrait better. Off. |
+| `bridging` | A cell set's search score gets, per ordered pixel, 0.01 × the squared width of the OKLab-L bracket the set gives it (½ plus the distance to the nearest end when unbracketed). | #157 | Same. Off. |
+
+The first review, on #189's sheet, found none of them better on both the card and the
+portrait, so all stay off. The two mixed results suggest narrower variants for later:
+the chroma guard only for truly grey pixels, and mix levels per method.
