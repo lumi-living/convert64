@@ -32,7 +32,7 @@ use std::process::Command;
 
 use crate::repo_root;
 
-const FIXTURES: [(&str, BitmapFormat); 6] = [
+pub(crate) const FIXTURES: [(&str, BitmapFormat); 6] = [
     ("portrait", BitmapFormat::Koala),
     ("terrain", BitmapFormat::Koala),
     ("title", BitmapFormat::Koala),
@@ -42,10 +42,10 @@ const FIXTURES: [(&str, BitmapFormat); 6] = [
 ];
 
 /// Pixel agreement required to pass. Never lower this to make a fixture pass.
-const MIN_AGREEMENT: f64 = 99.5;
+pub(crate) const MIN_AGREEMENT: f64 = 99.5;
 
 /// VICE's PAL frame with normal borders, and where the 320×200 display window sits.
-const FRAME: (u32, u32) = (384, 272);
+pub(crate) const FRAME: (u32, u32) = (384, 272);
 const WINDOW: (u32, u32) = (32, 35);
 
 /// `x64sc` options, apart from the PRG and screenshot path. Neutral colour settings make
@@ -158,25 +158,7 @@ fn check(
 
     // 2. Run VICE.
     let shot = fixture.join("vice.png");
-    let out = Command::new(x64sc)
-        .args(X64SC_ARGS)
-        .arg("-autostart")
-        .arg(&prg_path)
-        .arg("-exitscreenshot")
-        .arg(&shot)
-        .output()
-        .map_err(|e| format!("{}: {e}", x64sc.display()))?;
-    let log = String::from_utf8_lossy(&out.stdout);
-    let version = log
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("*** VICE Version "))
-        .map_or_else(
-            || "unknown".to_owned(),
-            |v| v.trim_end_matches(" ***").to_owned(),
-        );
-    if !shot.exists() {
-        return Err(format!("{name}: VICE wrote no screenshot:\n{log}"));
-    }
+    let version = run_x64sc(x64sc, &prg_path, &shot).map_err(|e| format!("{name}: {e}"))?;
 
     // 3. Compare.
     let capture = image::open(&shot)
@@ -190,7 +172,34 @@ fn check(
     }
     let indexed = baseline.image.to_indexed();
     let outcome = compare(name, &capture, &indexed)?;
-    Ok((format!("VICE {version}"), outcome))
+    Ok((version, outcome))
+}
+
+/// Runs `x64sc` with [`X64SC_ARGS`] on `prg` and saves the exit screenshot to `shot`;
+/// returns the VICE version as `VICE 3.10`.
+pub(crate) fn run_x64sc(x64sc: &Path, prg: &Path, shot: &Path) -> Result<String, String> {
+    // A stale capture must not pass for a new one.
+    let _ = fs::remove_file(shot);
+    let out = Command::new(x64sc)
+        .args(X64SC_ARGS)
+        .arg("-autostart")
+        .arg(prg)
+        .arg("-exitscreenshot")
+        .arg(shot)
+        .output()
+        .map_err(|e| format!("{}: {e}", x64sc.display()))?;
+    let log = String::from_utf8_lossy(&out.stdout);
+    let version = log
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("*** VICE Version "))
+        .map_or_else(
+            || "unknown".to_owned(),
+            |v| v.trim_end_matches(" ***").to_owned(),
+        );
+    if !shot.exists() {
+        return Err(format!("VICE wrote no screenshot:\n{log}"));
+    }
+    Ok(format!("VICE {version}"))
 }
 
 /// Nearest Pepto palette index by squared RGB distance.
@@ -214,10 +223,10 @@ fn nearest(palette: &Palette, rgb: [u8; 3]) -> ColourIndex {
 }
 
 /// How a capture's display window matches a baseline.
-struct Score {
-    agreement: f64,
-    cells_total: usize,
-    cells_outside: usize,
+pub(crate) struct Score {
+    pub(crate) agreement: f64,
+    pub(crate) cells_total: usize,
+    pub(crate) cells_outside: usize,
     /// Bounding box `(min, max)` of the differing pixels, if any differ.
     differing: Option<((u32, u32), (u32, u32))>,
 }
@@ -255,7 +264,7 @@ fn compare(
 }
 
 /// Scores the 320×200 display window of a 384×272 VICE frame against a baseline.
-fn score(capture: &image::RgbImage, baseline: &IndexedBitmap) -> Score {
+pub(crate) fn score(capture: &image::RgbImage, baseline: &IndexedBitmap) -> Score {
     let palette = Palette::pepto_pal();
     let x_scale = 320 / u32::from(baseline.width());
     let spec = baseline.spec();

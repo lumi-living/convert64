@@ -290,6 +290,21 @@ Copy routine address: `$0874` (Koala), `$085C` (Art Studio). Zero page `$FB`–`
 
 **Why these destinations.** The payload occupies `$0900`–`$3012` at most. Bank 1 puts the bitmap at `$6000` and Screen RAM at `$5C00`, both above the payload, so the copies never overlap their source and a plain forward copy is safe; bank 1 also has no character-ROM shadow. The file's own load address (`$6000` Koala, `$2000` Art Studio) is ignored: the loader always copies. Whole pages are copied, so the bytes past each block land in memory the VIC-II does not show (`$7F40`–`$7FFF` after the bitmap, `$5FE8`–`$5FFF` after Screen RAM, `$DBE8`–`$DBFF` after Colour RAM).
 
+### VICE acceptance (`cargo xtask vice-check`)
+
+Every C64 file Convert64 exports is run in VICE `x64sc` through the display PRG above: PAL, the Pepto palette at neutral colour settings, no CRT filter (the exact options are in each fixture README). The capture's 320 × 200 window must agree with the picture on at least 99.5 % of pixels, with no cell showing a colour its own cell does not use. VICE is not on the CI runners, so this runs locally; checked with **VICE 3.10** (#162):
+
+| Export | Checked on | Result recorded in |
+|---|---|---|
+| Koala / Art Studio files as png2c64 wrote them (`BitmapFormat::read`, then the display PRG) | the six fixture baselines | fixture README; capture committed as `fixtures/<name>/vice.png` |
+| Koala / Art Studio as Convert64 writes them (`BitmapFormat::write`) | every fixture solved in both modes (12 solves) | fixture README, with a fingerprint of the solve |
+| the same written with each bitpair policy (`write_with`: `stable`, `frequency`, `packed`) | the 12 solves | fixture README |
+| the raw bitmap set (`raw::write`, read back with `raw::read_files`, the `.bin` files concatenated as a picture body) | the 12 solves | fixture README |
+| assembler and C sources (`asm::emit`) | not run in VICE: their data equals `write`'s byte for byte (`crates/convert64-formats/tests/asm_emit.rs`), which is | — |
+| PNG preview (`png::preview`) | not a C64 file | — |
+
+The captures of the solves go to `target/xtask/vice/exports/` and are not committed, since they follow the solver. Rerun `cargo xtask vice-check` after a change to a writer, the PRG stub or the solver; `--skip-baselines` and `--skip-exports` run one half.
+
 ## Assembler source we emit
 
 Every export can be written as source for the four common cross-assemblers. The data is identical; only directives differ.
