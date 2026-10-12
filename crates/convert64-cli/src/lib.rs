@@ -5,3 +5,4 @@
 mod base64;
 pub mod project;
 pub mod recipe;
+pub mod schema;
