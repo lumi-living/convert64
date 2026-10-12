@@ -255,16 +255,16 @@ As built in #142 (2026-10-12): calm flat areas, linear-light mixes and a fair qu
 - **Pre-smoothing** (recipe `smooth`, default off). The ratio is taken from an edge-aware 5 × 5 Gaussian (σ = 1 target pixel; neighbours ≥ 0.08 OKLab ΔE away are left out), while colours are still chosen from the unblurred composite. It is off by default because, with mix levels doing the calming, it raised the blurred error on every fixture (title past png2c64's).
 - **Levels.** `Adjustments` gains `gamma` (png2c64's `--gamma`: a per-channel power in linear light, applied first) and `match_range` (png2c64's `--match-range`: the image's 1st–99th-percentile OKLab extent mapped onto a palette's, applied last over the whole image). `suggest_range_match` is the "Auto levels" suggestion for sources whose L range covers under 60 % of the palette's. `convert64 convert` prints it as a hint and never applies it unasked (`--gamma`, `--match-range`, `--mix-levels`, `--smooth`).
 - **Fair comparison.** The golden harness solves every fixture from png2c64's preprocessed source (`Gamma::PNG2C64` as a layer adjustment) and scores both converters against that source.
-- **Blurred quality bar.** Both renderings are blurred in linear light (binomial, σ ≈ 1.4 display pixels) before the OKLab MSE. Ours must not be worse than png2c64's (`png2c64_blur_mse_vs_source`). Per-pixel MSE is still reported but is no longer a bar: against a colour the palette cannot reach, it is lowest for a flat wrong colour, which is what this issue removes. `portrait`'s olive background now dithers brown and black to the right tone, so its per-pixel MSE is 1.9× png2c64's while its blurred error is 7.6× lower.
+- **Blurred quality bar.** Both renderings are blurred in linear light (binomial, σ ≈ 1.4 display pixels) before the OKLab MSE. Ours must not be worse than png2c64's (`png2c64_blur_mse_vs_source`). Per-pixel MSE is still reported but is no longer a bar: against a colour the palette cannot reach, it is lowest for a flat wrong colour, which is what this issue removes. `portrait`'s olive background now dithers brown and black to the right tone, so its per-pixel MSE is 1.9× png2c64's while its blurred error is 10× lower.
 - **Fixture fix.** `gradient`'s swatch band held Colodore values while the solve uses Pepto. It now holds the 16 Pepto colours, as its README says. Its png2c64 baseline was regenerated (VICE check 100 %), and `flat_areas::gradient_swatches_quantise_exactly` checks every swatch pixel, solved from the raw source.
 
 | Fixture | Blurred MSE, ours | Blurred MSE, png2c64 | Per-pixel MSE, ours | Per-pixel MSE, png2c64 |
 |---|---|---|---|---|
-| portrait | 0.00191 | 0.01446 | 0.0317 | 0.0171 |
-| terrain | 0.00182 | 0.00314 | 0.0067 | 0.0082 |
-| title | 0.00290 | 0.00291 | 0.0064 | 0.0074 |
-| gradient | 0.01059 | 0.01161 | 0.0158 | 0.0135 |
-| photo | 0.00336 | 0.00376 | 0.0104 | 0.0157 |
+| portrait | 0.00144 | 0.01446 | 0.0331 | 0.0171 |
+| terrain | 0.00116 | 0.00314 | 0.0088 | 0.0082 |
+| title | 0.00226 | 0.00291 | 0.0082 | 0.0074 |
+| gradient | 0.01052 | 0.01161 | 0.0163 | 0.0135 |
+| photo | 0.00255 | 0.00376 | 0.0118 | 0.0157 |
 | lineart | 0.00031 | 0.00045 | 0.0032 | 0.0151 |
 
 ### 4.1 Image model (`convert64-core::model`)
