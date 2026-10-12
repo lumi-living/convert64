@@ -1,13 +1,20 @@
-//! `cargo xtask dither-sheet` (#116): every method id rendered on the dither-preview
-//! test card and on `fixtures/portrait/source.png`, in the layout of the png2c64 sheets
-//! in `docs/reference/dither-previews/`, plus a sheet pairing ours with png2c64's for the
-//! methods both have.
+//! `cargo xtask dither-sheet` (#116, #181): every method id rendered on the
+//! dither-preview test card and on `fixtures/portrait/source.png`, in the layout of the
+//! png2c64 sheets in `docs/reference/dither-previews/`; a sheet pairing ours with
+//! png2c64's for the 30 methods both have; and a sheet of the reference solver's named
+//! divergences, each next to the reference.
 //!
-//! Both inputs get png2c64's preprocessing (`--gamma 1.5`, its default, as the
-//! `Gamma::PNG2C64` adjustment) so the two converters solve the same picture; the card
-//! is dithered at strength 1.0 and the portrait at 0.7, the settings the png2c64 sheets
-//! were made with. Nothing here is tuned for the comparison: every method runs with its
-//! recipe defaults.
+//! - **Every method** (`convert64-card/`, `convert64-portrait/` and their sheets): the
+//!   product pipeline, compositor and default solver, from the source with png2c64's
+//!   preprocessing (`--gamma 1.5`, the `Gamma::PNG2C64` adjustment), at strength 1.0, the
+//!   settings png2c64's renders were made with. Nothing is tuned for the comparison.
+//! - **Ours next to png2c64's** (`sheet-vs-png2c64.png`): the reference solver, the
+//!   default since #181, on png2c64's own preprocessed input (`png2c64_ref::prepare`),
+//!   as the parity test runs it: equal to png2c64's by construction, with the share of
+//!   identical pixels under each pair.
+//! - **Divergences** (`sheet-divergences.png`): each named option of
+//!   `solve::Divergences` on, next to the reference, on the card and the portrait, for a
+//!   human to judge before any becomes a default.
 
 use crate::font;
 use convert64_core::geom::Vec2;
@@ -16,7 +23,7 @@ use convert64_core::layer::{
 };
 use convert64_core::mode::Mode;
 use convert64_core::palette::{LinearRgb, Palette, Rgb8, linear_to_srgb8, srgb8_to_linear};
-use convert64_core::solve::{SolveOptions, Solver, Steering};
+use convert64_core::solve::{Divergences, SolveOptions, Solver, Steering};
 use convert64_core::{Compositor, SuperGrid};
 use image::{Rgb, RgbImage};
 use std::path::{Path, PathBuf};
@@ -327,12 +334,72 @@ pub(crate) fn save(img: &RgbImage, path: &Path) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Ours next to png2c64's for every shared id, with both scores against the source
-/// under each pair.
-fn versus(
-    card: &[(DitherKind, RgbImage, Vec<Rgb8>)],
-    theirs_dir: &Path,
-) -> Result<(RgbImage, Vec<String>), String> {
+/// The reference solver's render of `path` (320 × 200) with png2c64's front end and
+/// `kind` at `strength`, with the named `divergences`, and the prepared input it solved,
+/// both as sRGB pixels.
+fn reference_render(
+    path: &Path,
+    kind: DitherKind,
+    strength: f32,
+    divergences: Divergences,
+) -> Result<(RgbImage, Vec<Rgb8>), String> {
+    use convert64_core::solve::png2c64_ref::dither::PxSettings;
+    use convert64_core::solve::png2c64_ref::quantize::{Hooks, Mode as RefMode};
+    use convert64_core::solve::png2c64_ref::{colour, convert_px, prepare, preprocess};
+    let img = image::open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?
+        .to_rgb8();
+    let rgb: Vec<[u8; 3]> = img.pixels().map(|p| p.0).collect();
+    let mode = RefMode::Multicolor;
+    let size = (img.width() as usize, img.height() as usize);
+    let prepared = prepare(&rgb, size, mode, &preprocess::Settings::default(), None);
+    let method = convert64_core::solve::reference::ref_method(kind)
+        .ok_or_else(|| format!("{kind:?} is not one of png2c64's"))?;
+    let (w, h) = mode.screen();
+    let px = vec![
+        PxSettings {
+            method,
+            strength,
+            error_clamp: 0.1,
+            adaptive: 0.0,
+            origin: (0, 0),
+        };
+        w * h
+    ];
+    let hooks = Hooks {
+        divergences,
+        ..Hooks::default()
+    };
+    let pal = colour::palette_of(&Palette::pepto_pal());
+    let screen = convert_px(&prepared, &pal, mode, &px, true, &hooks);
+    let palette = Palette::pepto_pal();
+    let out = RgbImage::from_fn(320, 200, |x, y| {
+        let c = palette.rgb(
+            convert64_core::ColourIndex::new(screen.index_at(x as usize / 2, y as usize))
+                .expect("palette index"),
+        );
+        Rgb([c.r, c.g, c.b])
+    });
+    let source = (0..200usize)
+        .flat_map(|y| (0..320usize).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let [r, g, b] = prepared.at(x / 2, y).map(linear_to_srgb8);
+            Rgb8::new(r, g, b)
+        })
+        .collect();
+    Ok((out, source))
+}
+
+/// The share of identical pixels, in percent.
+fn identical(a: &RgbImage, b: &RgbImage) -> f64 {
+    let same = a.pixels().zip(b.pixels()).filter(|(x, y)| x == y).count();
+    100.0 * same as f64 / (a.width() * a.height()) as f64
+}
+
+/// Ours (the reference solver on png2c64's input) next to png2c64's for every shared
+/// id on the card, with the share of identical pixels and both scores against the
+/// prepared card under each pair.
+fn versus(card: &Path, theirs_dir: &Path) -> Result<(RgbImage, Vec<String>), String> {
     const PAIRS: u32 = 3;
     const NOTE: u32 = 20;
     let pair_w = 2 * TILE_W + GAP;
@@ -342,27 +409,20 @@ fn versus(
     let mut img = RgbImage::from_pixel(w, h, Rgb(BACKGROUND));
     let mut lines = Vec::new();
     for (i, (theirs_id, kind)) in SHARED.iter().enumerate() {
-        let (ours, _, source) = card
-            .iter()
-            .find(|(k, _, _)| k == kind)
-            .map(|(k, img, src)| (img, k, src))
-            .expect("every kind is rendered");
+        let (ours, source) = reference_render(card, *kind, 1.0, Divergences::default())?;
         let path = theirs_dir.join(format!("{theirs_id}.png"));
         let theirs = image::open(&path)
             .map_err(|e| format!("{}: {e}", path.display()))?
             .to_rgb8();
-        let (o, ob) = mse(&to_rgb8(ours), source);
-        let (t, tb) = mse(&to_rgb8(&theirs), source);
+        let same = identical(&ours, &theirs);
+        let (o, ob) = mse(&to_rgb8(&ours), &source);
+        let (t, tb) = mse(&to_rgb8(&theirs), &source);
         let (col, row) = (i as u32 % PAIRS, i as u32 / PAIRS);
         let x = 2 * GAP + col * (pair_w + 2 * GAP);
         let y = GAP + row * (LABEL + TILE_H + NOTE + GAP);
-        let label = if kind.id() == *theirs_id {
-            format!("{theirs_id}: convert64 | png2c64")
-        } else {
-            format!("{} | png2c64 {theirs_id}", kind.id())
-        };
+        let label = format!("{theirs_id}: convert64 | png2c64");
         font::draw(&mut img, x + 2, y + 3, &label, 2, TEXT);
-        image::imageops::replace(&mut img, ours, i64::from(x), i64::from(y + LABEL));
+        image::imageops::replace(&mut img, &ours, i64::from(x), i64::from(y + LABEL));
         image::imageops::replace(
             &mut img,
             &theirs,
@@ -370,14 +430,127 @@ fn versus(
             i64::from(y + LABEL),
         );
         let (og, tg) = (
-            gradient_error(&to_rgb8(ours), source),
-            gradient_error(&to_rgb8(&theirs), source),
+            gradient_error(&to_rgb8(&ours), &source),
+            gradient_error(&to_rgb8(&theirs), &source),
         );
-        let note = format!("mse {o:.4}|{t:.4} blur {ob:.4}|{tb:.4} grad {og:.2}|{tg:.2}");
+        let note = format!("identical {same:.3}%  mse {o:.4}|{t:.4}  grad {og:.2}|{tg:.2}");
         font::draw(&mut img, x + 2, y + LABEL + TILE_H + 4, &note, 2, TEXT);
         lines.push(format!(
-            "| `{theirs_id}` | `{}` | {o:.4} | {t:.4} | {ob:.4} | {tb:.4} | {og:.2} | {tg:.2} |",
+            "| `{theirs_id}` | `{}` | {same:.3} % | {o:.4} | {t:.4} | {ob:.4} | {tb:.4} | {og:.2} | {tg:.2} |",
             kind.id()
+        ));
+    }
+    Ok((img, lines))
+}
+
+/// The divergence rows: each named option, the method it is shown with, and its setting.
+fn divergence_rows() -> [(&'static str, DitherKind, Divergences); 6] {
+    let off = Divergences::default();
+    [
+        (
+            "chroma-guard",
+            DitherKind::Bayer4,
+            Divergences {
+                chroma_guard: true,
+                ..off
+            },
+        ),
+        (
+            "max-luma-diff=0",
+            DitherKind::FloydSteinberg,
+            Divergences {
+                max_luma_diff: Some(0),
+                ..off
+            },
+        ),
+        (
+            "pair-bias=0.05",
+            DitherKind::Checker,
+            Divergences {
+                pair_bias: 0.05,
+                ..off
+            },
+        ),
+        (
+            "cell-clamp",
+            DitherKind::FloydSteinberg,
+            Divergences {
+                cell_clamp: true,
+                ..off
+            },
+        ),
+        (
+            "mix-levels=4",
+            DitherKind::Bayer8,
+            Divergences {
+                mix_levels: Some(4),
+                ..off
+            },
+        ),
+        (
+            "bridging",
+            DitherKind::Bayer4,
+            Divergences {
+                bridging: true,
+                ..off
+            },
+        ),
+    ]
+}
+
+/// One row per divergence: the reference and the option on, on the card and on the
+/// portrait, with each tile's scores against its prepared input.
+fn divergences(card: &Path, portrait: &Path) -> Result<(RgbImage, Vec<String>), String> {
+    const NOTE: u32 = 20;
+    let rows = divergence_rows();
+    let w = 4 * TILE_W + 5 * GAP + 2 * GAP;
+    let h = rows.len() as u32 * (LABEL + TILE_H + NOTE + GAP) + GAP;
+    let mut img = RgbImage::from_pixel(w, h, Rgb(BACKGROUND));
+    let mut lines = Vec::new();
+    for (r, (name, kind, div)) in rows.iter().enumerate() {
+        let y = GAP + r as u32 * (LABEL + TILE_H + NOTE + GAP);
+        let label = format!("{name} ({}): reference | on, card and portrait", kind.id());
+        font::draw(&mut img, GAP + 2, y + 3, &label, 2, TEXT);
+        let mut scores = Vec::new();
+        let mut reference: Option<RgbImage> = None;
+        for (c, (input, d)) in [
+            (card, Divergences::default()),
+            (card, *div),
+            (portrait, Divergences::default()),
+            (portrait, *div),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (tile, source) = reference_render(input, *kind, 1.0, d)?;
+            let x = GAP + c as u32 * (TILE_W + GAP) + if c >= 2 { 2 * GAP } else { 0 };
+            image::imageops::replace(&mut img, &tile, i64::from(x), i64::from(y + LABEL));
+            let (m, _) = mse(&to_rgb8(&tile), &source);
+            let g = gradient_error(&to_rgb8(&tile), &source);
+            // The option's tile also says how much of it is the reference's.
+            let note = match reference.take() {
+                Some(r) if c % 2 == 1 => {
+                    format!("mse {m:.4} grad {g:.2} same {:.1}%", identical(&tile, &r))
+                }
+                _ => {
+                    reference = Some(tile.clone());
+                    format!("mse {m:.4} grad {g:.2}")
+                }
+            };
+            font::draw(&mut img, x + 2, y + LABEL + TILE_H + 4, &note, 2, TEXT);
+            scores.push((m, g));
+        }
+        lines.push(format!(
+            "| `{name}` | `{}` | {:.4} | {:.4} | {:.2} | {:.2} | {:.4} | {:.4} | {:.2} | {:.2} |",
+            kind.id(),
+            scores[0].0,
+            scores[1].0,
+            scores[0].1,
+            scores[1].1,
+            scores[2].0,
+            scores[3].0,
+            scores[2].1,
+            scores[3].1,
         ));
     }
     Ok((img, lines))
@@ -421,7 +594,7 @@ pub(crate) fn run(
     let portrait = render_all(&Input {
         source: load(&root.join("fixtures/portrait/source.png"))?,
         mode,
-        strength: 0.7,
+        strength: 1.0,
     })?;
     let label = |k: DitherKind| format!("{} ({})", k.id(), family_name(k.family()));
     for (dir, set) in [("convert64-card", &card), ("convert64-portrait", &portrait)] {
@@ -445,19 +618,38 @@ pub(crate) fn run(
         .map(|(k, img, _)| (label(*k), img.clone()))
         .collect();
     save(&sheet(&portrait_tiles), &sheets.join("sheet-portrait.png"))?;
-    let (vs, lines) = versus(&card, &previews.join("png2c64-card"))?;
+    let card_path = previews.join("testcard.png");
+    let portrait_path = root.join("fixtures/portrait/source.png");
+    let (vs, lines) = versus(&card_path, &previews.join("png2c64-card"))?;
     save(&vs, &sheets.join("sheet-vs-png2c64.png"))?;
-    // The scores as a table, and the reason, next to the sheets.
+    let (dv, div_lines) = divergences(&card_path, &portrait_path)?;
+    save(&dv, &sheets.join("sheet-divergences.png"))?;
+    // The scores as tables, and the reason, next to the sheets.
     let mut table = String::from(
         "<!-- Written by `cargo xtask dither-sheet`; do not edit by hand. -->\n\n\
-         OKLab MSE of each render on the test card against the card with png2c64's \
-         preprocessing (gamma 1.5), per pixel and after the golden harness's blur, and \
-         the gradient-domain error on lightness (× 1000; bands and hard steps where the \
-         source is smooth, #156). None of these is a bar: the sheet is (TAD §6).\n\n\
-         | png2c64 id | Convert64 id | MSE, Convert64 | MSE, png2c64 | blurred, Convert64 | blurred, png2c64 | gradient, Convert64 | gradient, png2c64 |\n\
-         |---|---|---|---|---|---|---|---|\n",
+         ## Convert64 next to png2c64\n\n\
+         Each of png2c64's 30 methods on the test card at strength 1.0: Convert64's \
+         reference solver (the default since #181) on png2c64's preprocessed card, and \
+         png2c64's render. Identical pixels, then OKLab MSE against the prepared card, \
+         per pixel and after the golden harness's blur, and the gradient-domain error on \
+         lightness (× 1000). The parity test is the bar (≥ 99 % identical); the sheet \
+         is for the eye (TAD §6).\n\n\
+         | png2c64 id | Convert64 id | identical | MSE, Convert64 | MSE, png2c64 | blurred, Convert64 | blurred, png2c64 | gradient, Convert64 | gradient, png2c64 |\n\
+         |---|---|---|---|---|---|---|---|---|\n",
     );
     for l in &lines {
+        table.push_str(l);
+        table.push('\n');
+    }
+    table.push_str(
+        "\n## Divergences\n\n\
+         Each named option of the reference solver (`solve::Divergences`, all off by \
+         default) next to the reference, at strength 1.0: OKLab MSE and gradient error \
+         against the prepared input, reference then option.\n\n\
+         | option | method | card MSE, ref | card MSE, on | card grad, ref | card grad, on | portrait MSE, ref | portrait MSE, on | portrait grad, ref | portrait grad, on |\n\
+         |---|---|---|---|---|---|---|---|---|---|\n",
+    );
+    for l in &div_lines {
         table.push_str(l);
         table.push('\n');
     }

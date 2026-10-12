@@ -9,25 +9,33 @@ anything: png2c64's renders (our reference quality bar) and Convert64's.
 ![Convert64 next to png2c64 for the 30 shared methods](convert64-sheets/sheet-vs-png2c64.png)
 
 [`convert64-sheets/sheet-vs-png2c64.png`](convert64-sheets/sheet-vs-png2c64.png)
-pairs our render (left) with png2c64's (right) on the test card for the 30
-methods both have, with each one's OKLab MSE against the card under the pair,
-per pixel and after the golden harness's blur
-([`scores.md`](convert64-sheets/scores.md) has the same numbers as a table).
-png2c64's `sierra` is Sierra Lite and its `blue-noise` is interleaved gradient
-noise; they are paired with our `sierra-lite` and our void-and-cluster
-`blue-noise`.
+pairs ours (left) with png2c64's render (right) on the test card for the 30
+methods both have. Since #181 ours is Convert64's default solver, png2c64's
+pipeline ported, run on png2c64's own preprocessed card as the parity test runs
+it, so every pair is identical by construction; under each pair are the share of
+identical pixels, the OKLab MSE against the prepared card and the gradient-domain
+error ([`scores.md`](convert64-sheets/scores.md) has them as a table).
+
+![The reference solver's divergences, each next to the reference](convert64-sheets/sheet-divergences.png)
+
+[`convert64-sheets/sheet-divergences.png`](convert64-sheets/sheet-divergences.png)
+has one row per named divergence of the reference solver (`solve::Divergences`,
+all off by default): the reference and the option on, on the card and on the
+portrait, with the share of pixels the option leaves unchanged. A divergence
+becomes a default only after a human has judged its row.
 
 | File | What |
 |---|---|
 | `convert64-sheets/sheet-card.png` | all 58 Convert64 methods on the test card (strength 1.0) |
 | `convert64-sheets/sheet-zoom.png` | the grey ramp mid-tones of each at 4× |
-| `convert64-sheets/sheet-portrait.png` | all 58 on `fixtures/portrait/source.png` (strength 0.7) |
+| `convert64-sheets/sheet-portrait.png` | all 58 on `fixtures/portrait/source.png` (strength 1.0) |
 | `convert64-card/`, `convert64-portrait/` | the individual 320×200 renders, named by method id |
 
-Both inputs get png2c64's preprocessing (gamma 1.5, its default), so the two
-converters solve the same picture; every method runs with its recipe defaults
-and nothing is tuned for the comparison. Regenerate with
-`cargo xtask dither-sheet --reason "..."` (the reason goes into
+The 58-method sheets are the product pipeline (compositor and default solver;
+png2c64's 30 methods take the reference, the others the native solver), from the
+source with png2c64's preprocessing (gamma 1.5), so they differ from png2c64's
+renders by the front end (resampling and where gamma is applied), not the solver.
+Regenerate with `cargo xtask dither-sheet --reason "..."` (the reason goes into
 [`CHANGELOG.md`](CHANGELOG.md)); `--input <png> --out <dir>` renders any other
 picture.
 
