@@ -1,0 +1,28 @@
+[package]
+name = "convert64-project"
+description = "The .convert64 project file: schema, load and save, sources and masks, and the editing session (ADR-009)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# `FsStore` and the path-taking conveniences (`Session::open`, `Session::save`,
+# `ProjectFile::read`, the PNG writers) for the native front-ends. The app does
+# not enable it: in the browser, files come in as bytes through a `Store`.
+fs = []
+
+[dependencies]
+# No `parallel`: the wasm app builds this crate. The CLI and MCP server enable
+# the core's `parallel` feature themselves.
+convert64-core = { workspace = true }
+image = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

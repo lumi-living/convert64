@@ -12,6 +12,7 @@ publish.workspace = true
 [dependencies]
 convert64-core = { workspace = true, features = ["parallel"] }
 convert64-cli = { workspace = true }
+convert64-project = { workspace = true, features = ["fs"] }
 serde_json = { workspace = true }
 
 [dev-dependencies]
