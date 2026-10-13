@@ -140,6 +140,19 @@ fn result(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui) {
         Some(tex) => {
             let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
             painter.image(tex.id(), screen, uv, egui::Color32::WHITE);
+            // A full search running over 200 ms: the last result, slightly faded, with
+            // "Solving…" (UX §4.3, §11).
+            let now = ui.input(|i| i.time);
+            if ws.solving && ws.solve_started.is_some_and(|t| now - t > 0.2) {
+                painter.rect_filled(screen, 0.0, theme.canvas_bg.gamma_multiply(0.25));
+                painter.text(
+                    screen.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Solving…",
+                    egui::TextStyle::Small.resolve(ui.style()),
+                    ui.visuals().strong_text_color(),
+                );
+            }
         }
         None => {
             painter.rect_filled(screen, 0.0, theme.canvas_bg);

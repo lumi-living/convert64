@@ -634,6 +634,12 @@ As built in #197 (2026-10-13): position, scale and rotation in the app (UX §6 i
 
 As built for the Region tool (2026-10-13; #208's `R`, on #216's commands): a drag paints the selected region's canvas-space mask with the brush (`region_stroke`; `Alt` or Subtract erases; size, hardness and flow in its options bar), and the first stroke with no region makes one (`region_add` and the stroke as one undo step). While the tool is active the regions show as a tint in the `region` colour and the Recipe tab becomes the region panel: the list (select, add, remove) and the selected region's dither recipe and colour fitting (`region_set_recipe`), UX §7's "pseudo-layer". Toasts are one line.
 
+As built in #210 (2026-10-13): solve scheduling in the app and the E8 exit.
+
+- **Scheduling.** Drags (sliders, nudges, transforms, opacity) submit the scheduler's fast path with the previous solution, their release a full solve; nothing waits for a solve natively (worker thread) or in the browser (stepped per frame, #194). A full search past 200 ms fades the result slightly in the working view and the result panel, shows "Solving…" there and "Solving full search… n s" with Pause in the status bar (#209).
+- **Exit.** The *No Glory* workflow — two layered sources, a mask, a pin, export, VICE — ran natively and in the browser in both themes; `docs/screenshots/210/README.md` has the steps, screenshots and the VICE check (64 000 / 64 000 pixels against the exported Koala in both). Native screenshots come from `convert64-app --screenshot` with `--command` and `--export` (`native-workflow.sh`); the browser run drove the release bundle in Chromium through Playwright.
+- **Found on the way.** In the browser a second `source.png` replaced the first in the session's store (fixed in #205); a slider value merely rounded for display re-sent itself every frame and kept the solver busy (fixed in #207).
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.
