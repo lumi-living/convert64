@@ -2,14 +2,14 @@
 
 use crate::report::{Fail, NOT_LEGAL, Run};
 use clap::ValueEnum;
-use convert64_cli::project::{Embed, PaletteSpec, ProjectFile, absolute};
-use convert64_cli::recipe::Session;
 use convert64_core::layer::{
     CellMetric, DitherKind, Gamma, Metric, OrderedSemantics, RangeMatch, suggest_range_match,
 };
 use convert64_core::mode::Mode;
 use convert64_core::solve::{Background, Solution};
 use convert64_formats::BitmapFormat;
+use convert64_project::paths::{absolute, relative};
+use convert64_project::{Embed, FsStore, JsonCommand, LayerRef, PaletteSpec, ProjectFile, Session};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -258,6 +258,15 @@ pub(crate) struct Overrides {
     #[arg(long)]
     #[serde(default)]
     pub(crate) match_range: bool,
+    /// Turn every layer to this many degrees, clockwise on screen, about its anchor
+    /// (`layer_rotate`, ADR-011). The project's snap applies.
+    #[arg(long, value_name = "DEG", allow_hyphen_values = true)]
+    pub(crate) rotate: Option<f32>,
+    /// The pivot to turn about, as X,Y: 0–1 across each layer's box (0,0 its top-left;
+    /// a layer's default is 0.5,0.5, the centre). The picture stays in place while the
+    /// pivot moves.
+    #[arg(long, value_name = "X,Y")]
+    pub(crate) anchor: Option<String>,
 }
 
 /// A serde enum value from its kebab-case name.
@@ -298,7 +307,50 @@ impl Overrides {
             smooth: self.smooth || base.smooth,
             gamma: self.gamma.or(base.gamma),
             match_range: self.match_range || base.match_range,
+            rotate: self.rotate.or(base.rotate),
+            anchor: self.anchor.or_else(|| base.anchor.clone()),
         }
+    }
+
+    /// `--rotate` and `--anchor` as a `layer_rotate` per layer, run after the project's
+    /// own commands; `--anchor` alone moves the pivot and keeps the angle.
+    fn rotations(&self, layers: usize) -> Result<Vec<JsonCommand>, Fail> {
+        let anchor = match &self.anchor {
+            None => None,
+            Some(text) => {
+                let v: Vec<f32> = text
+                    .split(',')
+                    .map(|s| s.trim().parse::<f32>())
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| Fail::input(format!("--anchor must be X,Y, got {text:?}")))?;
+                let [x, y] = v[..] else {
+                    return Err(Fail::input(format!("--anchor must be X,Y, got {text:?}")));
+                };
+                if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+                    return Err(Fail::input(format!(
+                        "--anchor must be 0–1 on both axes, got {text:?}"
+                    )));
+                }
+                Some(convert64_core::Vec2::new(x, y))
+            }
+        };
+        if let Some(r) = self.rotate
+            && !r.is_finite()
+        {
+            return Err(Fail::input(format!("--rotate must be finite, got {r}")));
+        }
+        if self.rotate.is_none() && anchor.is_none() {
+            return Ok(Vec::new());
+        }
+        Ok((0..layers)
+            .map(|i| JsonCommand::LayerRotate {
+                layer: LayerRef::Index(i),
+                degrees: self.rotate.unwrap_or(0.0),
+                relative: self.rotate.is_none(),
+                anchor,
+                snap: None,
+            })
+            .collect())
     }
 
     /// The recipe fields these overrides set, as recipe JSON (`method.kind` as `kind`).
@@ -365,10 +417,7 @@ impl Overrides {
             file.palette = PaletteSpec::from_arg(p).map_err(Fail::input)?;
             if let PaletteSpec::Vpl(path) = &file.palette {
                 // A .vpl named on the command line is relative to the working directory.
-                file.palette = PaletteSpec::Vpl(convert64_cli::project::relative(
-                    &absolute(base),
-                    &absolute(path),
-                ));
+                file.palette = PaletteSpec::Vpl(relative(&absolute(base), &absolute(path)));
             }
         }
         if let Some(bg) = &self.bg {
@@ -404,7 +453,7 @@ impl Overrides {
             .transpose()
             .map_err(Fail::input)?;
         let match_range = if self.match_range {
-            let palette = file.palette.resolve(base).map_err(Fail::input)?;
+            let palette = file.palette.resolve(base, &FsStore).map_err(Fail::input)?;
             Some(
                 RangeMatch::for_palette(
                     &palette,
@@ -437,6 +486,8 @@ impl Overrides {
                 layer.adjustments.match_range = match_range;
             }
         }
+        let rotations = self.rotations(file.layers.len())?;
+        file.commands.extend(rotations);
         Ok(())
     }
 }

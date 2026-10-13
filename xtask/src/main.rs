@@ -15,6 +15,8 @@
 //!   end on every fixture, both into the reference solver).
 //! - `png2c64-previews --png2c64 <path>`: regenerate png2c64's own renders and contact
 //!   sheets in `docs/reference/dither-previews/`, the parity test's reference.
+//! - `tokens [--check]`: generate the app theme (`crates/convert64-app/src/theme/generated.rs`)
+//!   from the Figma variables in `design/tokens.json`; `--check` fails if it is stale.
 
 mod baselines;
 mod bluenoise;
@@ -23,6 +25,7 @@ mod frontend;
 mod goldens;
 mod previews;
 mod sheet;
+mod tokens;
 mod vice;
 mod vice_exports;
 
@@ -148,6 +151,17 @@ enum Command {
         #[arg(long, conflicts_with = "input")]
         reason: Option<String>,
     },
+    /// Generate the app theme from the Figma variables.
+    ///
+    /// Reads `design/tokens.json` and writes `crates/convert64-app/src/theme/generated.rs`
+    /// (egui visuals for both themes, spacing, text styles, fonts, Convert64's semantic
+    /// colours and layout constants). Fails on any variable whose Rust path egui 0.36
+    /// or the app does not have.
+    Tokens {
+        /// Write nothing; fail if the committed file differs from the generated one.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 /// `dither-sheet`'s target mode.
@@ -217,6 +231,7 @@ fn main() -> ExitCode {
             Some(n) => goldens::set_pr(&repo_root(), n),
             None => goldens::run(accept, reason.as_deref(), pr),
         },
+        Command::Tokens { check } => tokens::run(&repo_root(), check),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

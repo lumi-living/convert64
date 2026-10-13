@@ -38,34 +38,50 @@ contract: designers change values, not names.
 
 Values are egui 0.36 defaults (`Visuals::light()` / `Visuals::dark()`,
 `Spacing::default()`), so the baseline Figma file renders what an untouched
-eframe app renders. Any deviation we design becomes an override in
-`convert64-app/src/theme.rs`.
+eframe app renders. Any deviation we design is a changed variable, which
+`cargo xtask tokens` carries into the app. As exported for #195 a few values
+already differ from egui 0.36: text sizes 12.5 / 12.5 / 12 for Body /
+Button / Monospace (egui 0.36: 13 / 13 / 13), `faint_bg_color` as an opaque
+grey (egui: additive luminance 5, which a variable cannot hold) and
+`scroll/bar_width` 6 (egui: 10).
 
 Fonts: Inter stands in for egui's bundled Ubuntu-Light, JetBrains Mono for
 Hack. Sizes are egui's (9 / 12.5 / 12 / 18). If we bundle different fonts in
 the app, update `egui / Text` first.
 
 Deviation from the usual Figma convention: the WEB code syntax holds a Rust
-path, not a `var(--css)` name, because the consumer is `theme.rs`, not CSS.
+path, not a `var(--css)` name, because the consumer is `cargo xtask tokens`, not CSS.
 
 ## Reading Figma back into code
 
-1. Export variables with the Figma REST Variables API
-   (`GET /v1/files/:key/variables/local`) into `design/tokens.json`
-   (committed, so diffs are reviewable).
-2. `cargo xtask tokens` (to be written, tracked in the app epic) turns the
-   JSON into `convert64-app/src/theme/generated.rs`:
+1. Export variables into `design/tokens.json` (committed, so diffs are
+   reviewable). The REST Variables API is Enterprise-only, so the export uses
+   the Plugin API — see `design/README.md`.
+2. `cargo xtask tokens` (#195) turns the JSON into
+   `crates/convert64-app/src/theme/generated.rs`; `cargo xtask tokens --check`
+   (run in CI) fails when the committed file is stale. Each variable's Rust
+   path decides where its value goes, and an egui path that egui 0.36 does
+   not have, a wrong value type or a missing mode is an error:
    - `egui / Visuals` → `fn apply_light(v: &mut Visuals)` / `apply_dark`
-     by walking each variable's code-syntax path.
+     by walking each variable's code-syntax path (single-mode `visuals.*`
+     variables, such as `weak_text_alpha`, go into both).
    - `egui / Spacing`, `egui / Text` → `fn apply_spacing(s: &mut Spacing)`,
-     `fn text_styles() -> BTreeMap<TextStyle, FontId>`.
-   - `Convert64 / Semantic` → `impl Theme { const LIGHT; const DARK; }`.
-   - `C64 / Palette` is **not** imported; CI asserts it equals
-     `convert64_core::palette::COLODORE` and fails if Figma drifts.
-3. Layout constants under `convert64/*` land in `layout.rs` as `pub const`.
+     `fn text_styles() -> BTreeMap<TextStyle, FontId>`, and `fonts::*`, the
+     bundled files for the font names (`<Name without spaces>-Regular.ttf`
+     in `crates/convert64-app/assets/fonts/`, plus `-Medium.ttf` for the
+     proportional family).
+   - `Convert64 / Semantic` → `impl Theme { const LIGHT; const DARK; }`
+     (aliases resolved in the same mode).
+   - `C64 / Palette` is **not** imported; an xtask test asserts it equals
+     the core's Colodore palette (`Palette::colodore` at colodore.com's
+     default sliders) and fails if Figma drifts.
+3. Layout constants under `convert64/*` land in `generated.rs`'s `layout`
+   module as `pub const`.
 
-Until the xtask exists, read values from the 🎨 Foundations page (each row
-shows the Rust path next to the value) and hand-port them.
+`theme::install(ctx)` applies all of it at startup (fonts, the icon font,
+both styles; system-following), `theme::set_theme(ctx, ThemePreference)`
+switches, and `theme::Theme::current(ctx)` gives the semantic colours. Never
+edit `generated.rs`; a deviation from egui's look is a Figma variable change.
 
 ## Rules for designers and agents
 

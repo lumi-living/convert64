@@ -1,6 +1,6 @@
 # The `.convert64` project file
 
-A project file is the whole document the app and the CLI share ([ADR-009](../adr/ADR-009-project-file.md)): target mode, palette, layers, regions, cell steering and solve options, as UTF-8 JSON. `convert64 recipe apply in.convert64 --save out.convert64` reads and writes one (and reads a version-1 recipe the same way). The serde types are in `crates/convert64-cli/src/project.rs`.
+A project file is the whole document the app and the CLI share ([ADR-009](../adr/ADR-009-project-file.md)): target mode, palette, layers, regions, cell steering and solve options, as UTF-8 JSON. `convert64 recipe apply in.convert64 --save out.convert64` reads and writes one (and reads a version-1 recipe the same way). The serde types are in `crates/convert64-project/src/file.rs` (`convert64_project`, #192), which the app, the CLI and the MCP server share.
 
 Unknown fields are errors, so a typo never silently does nothing. Values are checked by the same constructors the app uses: a strength of 1.5, a scale of 0 or a mask of the wrong size is an error naming the layer.
 
@@ -8,7 +8,7 @@ Unknown fields are errors, so a typo never silently does nothing. Values are che
 
 | `schema_version` | What it is | This build |
 |---|---|---|
-| (none, `"version": 1`) | The recipe file of E4 (`crates/convert64-cli/src/recipe.rs`): layers with linked sources, commands, solve options | reads it as a project: sources linked, the default palette, its commands run after loading |
+| (none, `"version": 1`) | The recipe file of E4 (`crates/convert64-project/src/recipe.rs`): layers with linked sources, commands, solve options | reads it as a project: sources linked, the default palette, its commands run after loading |
 | `2` | This document | reads and writes |
 
 A file with `schema_version` above 2 is refused with a message naming the version. A change that old readers would misread (a renamed field, a new meaning) increments `schema_version`; adding an optional field with a default does not.
@@ -39,7 +39,8 @@ A file with `schema_version` above 2 is refused with a message naming the versio
 | `regions` | no | none | Recipe overrides over part of the canvas; see [Regions](#regions) |
 | `steering` | no | none | Pins, locks, allow and deny lists; see [Steering](#steering) |
 | `solve` | no | defaults | See [Solve options](#solve-options) |
-| `commands` | no | none | Registry commands run in order after loading, as in a recipe file (`convert64 commands` lists them). A saved project has none: their result is in the layers, masks and steering. |
+| `snap` | no | `"off"` | What `layer_set_transform` and `layer_rotate` round a transform to ([ADR-011](../adr/ADR-011-layer-transform-affine-subpixel.md)): `"off"`, `"c64-pixel"` (translate and the unrotated box's edges on whole target pixels, multicolor 2 canvas px across; rotation in 0.5° steps) or `"cell"` (cell boundaries, 8 × 8 canvas px; 15° steps). Written only when not `"off"`; set by `snap_set` (#198) |
+| `commands` | no | none | Registry commands run in order after loading, as in a recipe file (`convert64 commands` lists them; since #193 they cover every field above: layers, adjustments, recipes, `target` (`mode_set`), `palette` (`palette_set`), `solve.background` (`background_pin`), the other solve options (`solve_set`) and, since #198, `snap` (`snap_set`)). A saved project has none: their result is in the fields. |
 
 ## Palette
 
@@ -74,7 +75,7 @@ The palette is the one the picture is solved and previewed with (CLAUDE.md non-n
 | `name` | | Display name; commands can name a layer by it |
 | `source` | | Where the pixels come from (below) |
 | `visible` | `true` | Hidden layers take no part in the composite. Written only when `false`. |
-| `transform` | identity | Placement in the 320 × 200 canvas: `translate` (canvas pixels), `scale` (> 0 on both axes), `flip_h`, `flip_v` |
+| `transform` | identity | Placement in the 320 × 200 canvas: `translate` (canvas pixels, the unrotated box's top-left), `scale` (> 0 on both axes), `rotate` (degrees, clockwise on screen; default 0, written only when not 0), `anchor` (the pivot of the rotation, `{x, y}` 0–1 across the box; default the centre, written only when not the centre), `flip_h`, `flip_v`. [ADR-011](../adr/ADR-011-layer-transform-affine-subpixel.md) has the formula. Builds before #198 ignored `rotate` and `anchor`; unknown keys are now refused. |
 | `opacity` | `1.0` | 0–1 |
 | `blend` | `"normal"` | `normal`, `multiply`, `screen`, `overlay` |
 | `recipe` | Floyd–Steinberg 100 % | The dither recipe (ADR-002): `method` (`kind`, `orientation`, `custom`), `strength`, `phase`, `metric`, `allowed`, `fit_mode`, `cell_clamp`, `max_luma_diff`, `adaptive`, `mix_levels`, `smooth`, `cell_metric`, `error_clamp`. Method ids are in [dither-methods.md](dither-methods.md); defaults are in TAD §4 "E5 in summary". |
@@ -110,7 +111,7 @@ A saved raster is `{"fill": v}` when every value is the same (stored exactly) an
 { "name": "sky", "mask": { "fill": 1.0 }, "recipe": { "method": { "kind": "none" }, "strength": 1.0 } }
 ```
 
-A recipe override over part of the picture (UX §7). `mask` is a raster as above, in canvas space: 320 × 200.
+A recipe override over part of the picture (UX §7). `mask` is a raster as above, in canvas space: 320 × 200. Regions are applied in order, later ones winning where masks overlap. The `region_*` commands (`region_add`, `region_stroke`, `region_set_recipe`, …; [cli.md](cli.md#apply)) make and edit them; a saved region is exactly what they made, with the same 1/65535 rounding of a painted mask on the first save.
 
 ## Steering
 
@@ -139,4 +140,4 @@ Cells are `x` 0–39, `y` 0–24; colours are indices 0–15. A pin names 1–4 
 
 ## Round trip
 
-A project saved by the CLI reloads identically and solves to the same picture: load → save gives the same bytes again, and the reloaded project's solve is byte-identical (`crates/convert64-cli/tests/project.rs`). JSON is written pretty-printed with a trailing newline, fields in the order above.
+A project saved by the CLI reloads identically and solves to the same picture: load → save gives the same bytes again, and the reloaded project's solve is byte-identical (`crates/convert64-cli/tests/project.rs` on disk, `crates/convert64-project/tests/memory.rs` in memory, as the browser build loads them). JSON is written pretty-printed with a trailing newline, fields in the order above.

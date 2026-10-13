@@ -12,6 +12,7 @@ publish.workspace = true
 [dependencies]
 convert64-core = { workspace = true, features = ["parallel"] }
 convert64-formats = { workspace = true }
+convert64-project = { workspace = true, features = ["fs"] }
 clap = { workspace = true }
 image = { workspace = true }
 serde = { workspace = true }
@@ -21,6 +22,8 @@ toml = { workspace = true }
 [dev-dependencies]
 serde_json = { workspace = true }
 image = { workspace = true }
+# The parity test drives the MCP server's tools in-process (tests/parity.rs).
+convert64-mcp = { workspace = true }
 
 [lints]
 workspace = true

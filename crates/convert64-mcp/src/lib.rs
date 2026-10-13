@@ -7,13 +7,14 @@
 //! `rmcp` needs the `tokio` runtime, which is not yet an approved dependency; moving to
 //! `rmcp` later changes the transport, not the tools.
 //!
-//! Tools: `recipe_open`, one tool per registry command (`mask_key`, `mask_gradient`,
-//! `mask_stroke`, … with the recipe file's JSON arguments), `undo`, `redo`,
-//! `mask_export`, `composite_export` and `attributes_export`.
+//! Tools: `project_open` (alias `recipe_open`), `project_save`, one tool per registry
+//! command (`layer_add`, `recipe_set`, `mask_key`, `cell_pin`, … with a project file's
+//! JSON arguments), `undo`, `redo`, `solve`, `clash_report`, `mask_export`,
+//! `composite_export` and `attributes_export`.
 
-use convert64_cli::recipe::{JsonCommand, LayerRef, Session};
 use convert64_cli::schema::{command_schema, layer_schema, object_schema};
 use convert64_core::command::REGISTRY;
+use convert64_project::{Embed, JsonCommand, LayerRef, Session};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -27,11 +28,26 @@ pub struct Server {
 }
 
 fn tools() -> Value {
-    let mut list = vec![json!({
-        "name": "recipe_open",
-        "description": "Open a convert64 recipe file (JSON: layers and commands) and run its commands.",
-        "inputSchema": object_schema(json!({ "path": { "type": "string" } }), &["path"]),
-    })];
+    let mut list = vec![
+        json!({
+            "name": "project_open",
+            "description": "Open a .convert64 project (or a version-1 recipe file) and run its commands.",
+            "inputSchema": object_schema(json!({ "path": { "type": "string" } }), &["path"]),
+        }),
+        json!({
+            "name": "recipe_open",
+            "description": "Open a convert64 recipe file (JSON: layers and commands) and run its commands; the same as project_open.",
+            "inputSchema": object_schema(json!({ "path": { "type": "string" } }), &["path"]),
+        }),
+        json!({
+            "name": "project_save",
+            "description": "Save the open project as a .convert64 file. Sources stay linked or embedded as loaded; embed \"all\" makes it stand alone, \"none\" links every source.",
+            "inputSchema": object_schema(json!({
+                "path": { "type": "string" },
+                "embed": { "type": "string", "enum": ["keep", "all", "none"], "default": "keep" }
+            }), &["path"]),
+        }),
+    ];
     for c in REGISTRY {
         list.push(json!({
             "name": c.name,
@@ -103,8 +119,10 @@ impl Server {
                         "protocolVersion": version,
                         "capabilities": { "tools": { "listChanged": false } },
                         "serverInfo": { "name": "convert64-mcp", "version": env!("CARGO_PKG_VERSION") },
-                        "instructions": "Open a recipe with recipe_open, then edit masks with the mask_* tools \
-                                         and export results. Layers are referenced by index or name."
+                        "instructions": "Open a project with project_open, edit it with the registry tools \
+                                         (layer_*, recipe_set, adjustments_set, mode_set, palette_set, \
+                                         background_pin, solve_set, snap_set, mask_*, cell_*), solve, read the clash \
+                                         report, and save with project_save. Layers are referenced by index or name."
                     }),
                 )
             }
@@ -133,7 +151,7 @@ impl Server {
     fn session(&mut self) -> Result<&mut Session, String> {
         self.session
             .as_mut()
-            .ok_or_else(|| "no recipe is open; call recipe_open first".to_owned())
+            .ok_or_else(|| "no project is open; call project_open first".to_owned())
     }
 
     /// Runs a tool; `Err` becomes an MCP tool error (`isError: true`).
@@ -145,7 +163,7 @@ impl Server {
                 .ok_or_else(|| format!("missing string argument {k:?}"))
         };
         match name {
-            "recipe_open" => {
+            "project_open" | "recipe_open" => {
                 let path = str_arg("path")?;
                 let s = Session::open(Path::new(&path)).map_err(|e| e.to_string())?;
                 let text = format!(
@@ -160,6 +178,19 @@ impl Server {
                 );
                 self.session = Some(s);
                 Ok(text)
+            }
+            "project_save" => {
+                let path = str_arg("path")?;
+                let embed = match args.get("embed").and_then(Value::as_str).unwrap_or("keep") {
+                    "keep" => Embed::Keep,
+                    "all" => Embed::All,
+                    "none" => Embed::None,
+                    other => return Err(format!("embed must be keep, all or none, not {other:?}")),
+                };
+                self.session()?
+                    .save(Path::new(&path), embed)
+                    .map_err(|e| e.to_string())?;
+                Ok(format!("project -> {path}"))
             }
             "undo" => Ok(match self.session()?.editor_mut().undo() {
                 Some(d) => format!("undone ({d:?})"),
@@ -276,6 +307,8 @@ mod tests {
             "mask_key",
             "mask_gradient",
             "recipe_open",
+            "project_open",
+            "project_save",
             "mask_export",
             "undo",
         ] {

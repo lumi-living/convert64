@@ -2,38 +2,51 @@
 //! serde-serialisable argument struct, applied to a [`Project`] through an [`Editor`]
 //! that keeps undo/redo history as command + memento pairs.
 //!
-//! This is the first slice of the registry: the mask commands of ADR-008 (#77). The
-//! app, `convert64 recipe apply` and the MCP server all execute these same values; the
-//! JSON forms and file paths live in `convert64-cli`, since this crate does no I/O.
+//! The registry holds the mask commands of ADR-008 (#77), the cell steering commands
+//! (E5) and, since #193, every other edit the app makes: layers (add, remove, reorder,
+//! visibility, opacity, blend, transform, nudge, rename, duplicate), adjustments,
+//! recipes, the target mode, the palette, the background and the solve settings; since
+//! #216, the regions (add, remove, rename, reorder, recipe, and painting their
+//! canvas-space masks) and editing a layer mask's sources list. The
+//! app, `convert64 apply` and the MCP server all execute these same values; the JSON
+//! forms and file paths live in `convert64-project`, since this crate does no I/O.
 //!
 //! Undo mementos are the smallest state that restores the project: for paint, the
 //! [`TILE`](crate::mask::TILE)-sized raster tiles the command touched (taken before it
-//! ran), so undo is O(touched tiles); for modifier and source edits, the previous mask.
+//! ran), so undo is O(touched tiles); for modifier and source edits, the previous mask;
+//! for a property, its previous value; for a removed layer or region, the layer or region.
 
 use crate::colour::ColourIndex;
+use crate::document::SolveSettings;
 use crate::geom::{PxRect, Vec2};
-use crate::layer::{Layer, Levels};
+use crate::layer::{
+    Adjustments, Blend, BrightnessContrast, CellMetric, Curves, FitMode, Gamma, Hsl, Layer, Levels,
+    Method, Metric, OrderedSemantics, PatternPhase, RangeMatch, Recipe, RecipeError, Snap,
+    Transform,
+};
 use crate::mask::paint::{self, PaintMode};
 use crate::mask::{
     Combine, Gradient, Key, Mask, MaskError, MaskRaster, MaskSource, Modifiers, SnapToCells,
     SourceEntry, Tile,
 };
+use crate::mode::Mode;
 use crate::model::CellPos;
+use crate::palette::Palette;
 use crate::region::Region;
+use crate::solve::png2c64_ref::Divergences;
 use crate::solve::steering::{Pin, Steering, colour_set};
-use serde::{Deserialize, Serialize};
+use crate::solve::{Background, SolverKind};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 
-/// The document commands act on. E7 extends it (target mode, palette); for now it is
-/// the layer stack (bottom first), the regions and the cell steering.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Project {
-    /// Layers, bottom first.
-    pub layers: Vec<Layer>,
-    /// Region overrides, applied in order.
-    pub regions: Vec<Region>,
-    /// Cell pins, locks and allow/deny lists (UX §7).
-    pub steering: Steering,
+pub use crate::document::Project;
+
+/// `Option<Option<T>>` from JSON: absent is `None` (keep), `null` is `Some(None)`
+/// (clear), a value is `Some(Some(v))`.
+fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(d).map(Some)
 }
 
 /// Why a command could not run.
@@ -41,6 +54,8 @@ pub struct Project {
 pub enum CommandError {
     /// No layer at this index.
     NoLayer(usize),
+    /// No region at this index.
+    NoRegion(usize),
     /// An argument is out of range.
     Param {
         /// Which argument.
@@ -50,14 +65,18 @@ pub enum CommandError {
     },
     /// A mask value was rejected.
     Mask(MaskError),
+    /// A recipe value was rejected.
+    Recipe(RecipeError),
 }
 
 impl fmt::Display for CommandError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoLayer(i) => write!(f, "there is no layer {i}"),
+            Self::NoRegion(i) => write!(f, "there is no region {i}"),
             Self::Param { what, why } => write!(f, "{what}: {why}"),
             Self::Mask(e) => write!(f, "mask: {e}"),
+            Self::Recipe(e) => write!(f, "recipe: {e}"),
         }
     }
 }
@@ -67,6 +86,12 @@ impl std::error::Error for CommandError {}
 impl From<MaskError> for CommandError {
     fn from(e: MaskError) -> Self {
         Self::Mask(e)
+    }
+}
+
+impl From<RecipeError> for CommandError {
+    fn from(e: RecipeError) -> Self {
+        Self::Recipe(e)
     }
 }
 
@@ -93,6 +118,33 @@ fn check_points(what: &'static str, pts: &[Vec2], min: usize) -> Result<(), Comm
         return Err(param(what, "points must be finite"));
     }
     Ok(())
+}
+
+/// The brush arguments of `mask_stroke` and `region_stroke`.
+fn check_stroke(
+    points: &[Vec2],
+    radius: f32,
+    hardness: f32,
+    flow: f32,
+) -> Result<(), CommandError> {
+    check_points("points", points, 1)?;
+    check_range("radius", radius, 0.25, 1000.0)?;
+    check_range("hardness", hardness, 0.0, 1.0)?;
+    check_range("flow", flow, 0.0, 1.0)
+}
+
+/// The arguments of `mask_fill` and `region_fill`.
+fn check_fill(polygon: &[Vec2], value: f32) -> Result<(), CommandError> {
+    check_points("polygon", polygon, 3)?;
+    check_range("value", value, 0.0, 1.0)
+}
+
+fn check_name(name: &str) -> Result<(), CommandError> {
+    if name.is_empty() {
+        Err(param("name", "must not be empty"))
+    } else {
+        Ok(())
+    }
 }
 
 /// Paints a soft round brush along a polyline (ADR-008 `MaskStroke`).
@@ -279,6 +331,470 @@ pub struct CellDeny {
     pub colours: Vec<ColourIndex>,
 }
 
+/// Adds a layer (`layer_add`). The front-ends build it from a source they read (the
+/// JSON form names a PNG or an earlier layer's pixels); the core takes it whole.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerAdd {
+    /// Stack position, 0 = bottom; the layer count puts it on top.
+    pub index: usize,
+    /// The layer.
+    pub layer: Layer,
+}
+
+/// Removes a layer (`layer_remove`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayerRemove {
+    /// Layer index.
+    pub layer: usize,
+}
+
+/// Moves a layer so it ends up at stack position `to`, 0 = bottom (`layer_reorder`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayerReorder {
+    /// Layer index.
+    pub layer: usize,
+    /// Its new position.
+    pub to: usize,
+}
+
+/// Shows or hides a layer (`layer_set_visible`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayerSetVisible {
+    /// Layer index.
+    pub layer: usize,
+    /// Whether it takes part in the composite.
+    pub visible: bool,
+}
+
+/// Sets a layer's opacity (`layer_set_opacity`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayerSetOpacity {
+    /// Layer index.
+    pub layer: usize,
+    /// `0..=1`.
+    pub opacity: f32,
+}
+
+/// Sets a layer's blend mode (`layer_set_blend`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayerSetBlend {
+    /// Layer index.
+    pub layer: usize,
+    /// The blend mode.
+    pub blend: Blend,
+}
+
+/// Places a layer on the canvas (`layer_set_transform`): the whole transform, snapped
+/// by the project's [`Snap`] (ADR-011), or by `snap` when given (the app's Cmd-drag,
+/// which inverts the setting for one drag).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayerSetTransform {
+    /// Layer index.
+    pub layer: usize,
+    /// The whole transform: translate, scale, rotate, anchor, flips.
+    pub transform: Transform,
+    /// Snap this transform this way instead of by the project's setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snap: Option<Snap>,
+}
+
+/// Turns a layer about its anchor (`layer_rotate`, ADR-011): to `degrees`, or by them
+/// with `relative`; positive is clockwise on screen. With `anchor`, the pivot moves there
+/// first and the picture stays in place. The result is snapped as by
+/// [`LayerSetTransform`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayerRotate {
+    /// Layer index.
+    pub layer: usize,
+    /// The angle in degrees (or the change, with `relative`).
+    pub degrees: f32,
+    /// Add `degrees` to the layer's rotation instead of setting it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub relative: bool,
+    /// A new pivot, 0–1 across the layer's box (`(0, 0)` its top-left).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<Vec2>,
+    /// Snap this way instead of by the project's setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snap: Option<Snap>,
+}
+
+/// Sets the project's snap (`snap_set`, ADR-011): what `layer_set_transform` and
+/// `layer_rotate` round a transform to. The composite does not change.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapSet {
+    /// `off`, `c64-pixel` or `cell`.
+    pub snap: Snap,
+}
+
+/// Moves a layer by a (sub-pixel) offset in canvas pixels (`layer_nudge`, TAD §3.3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayerNudge {
+    /// Layer index.
+    pub layer: usize,
+    /// The offset, canvas pixels.
+    pub by: Vec2,
+}
+
+/// Renames a layer (`layer_rename`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayerRename {
+    /// Layer index.
+    pub layer: usize,
+    /// The new name, not empty.
+    pub name: String,
+}
+
+/// Copies a layer, sharing its pixels, just above it (`layer_duplicate`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayerDuplicate {
+    /// Layer index.
+    pub layer: usize,
+}
+
+/// The adjustments `adjustments_set` changes; those not named are kept.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdjustmentsChange {
+    /// Gamma.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gamma: Option<Gamma>,
+    /// Levels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub levels: Option<Levels>,
+    /// Brightness and contrast.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brightness_contrast: Option<BrightnessContrast>,
+    /// Hue, saturation, lightness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hsl: Option<Hsl>,
+    /// Tone curves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curves: Option<Curves>,
+    /// OKLab range matching; `null` turns it off.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub match_range: Option<Option<RangeMatch>>,
+}
+
+impl AdjustmentsChange {
+    /// `a` with these changes.
+    pub fn apply(&self, a: &Adjustments) -> Adjustments {
+        Adjustments {
+            gamma: self.gamma.unwrap_or(a.gamma),
+            levels: self.levels.unwrap_or(a.levels),
+            brightness_contrast: self.brightness_contrast.unwrap_or(a.brightness_contrast),
+            hsl: self.hsl.unwrap_or(a.hsl),
+            curves: self.curves.clone().unwrap_or_else(|| a.curves.clone()),
+            match_range: self.match_range.unwrap_or(a.match_range),
+        }
+    }
+}
+
+/// Sets some of a layer's colour adjustments (`adjustments_set`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AdjustmentsSet {
+    /// Layer index.
+    pub layer: usize,
+    /// What changes.
+    pub adjustments: AdjustmentsChange,
+}
+
+/// The recipe fields `recipe_set` changes; those not named are kept. The allowed colours
+/// are `allowed` (or the current set), plus `allow`, minus `deny`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecipeChange {
+    /// Dither method.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<Method>,
+    /// Strength, `0..=1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strength: Option<f32>,
+    /// Screen- or layer-locked pattern phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<PatternPhase>,
+    /// Colour metric.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric: Option<Metric>,
+    /// The allowed colours, exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed: Option<Vec<ColourIndex>>,
+    /// Colours added to the allowed set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow: Option<Vec<ColourIndex>>,
+    /// Colours taken out of the allowed set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deny: Option<Vec<ColourIndex>>,
+    /// Adaptive or Force.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit_mode: Option<FitMode>,
+    /// Native solver: keep diffused error inside a cell's colours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_clamp: Option<bool>,
+    /// Native solver: luma levels a mix may span (8 = off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_luma_diff: Option<u8>,
+    /// Native solver: adaptive strength, `0..=1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adaptive: Option<f32>,
+    /// Native solver: mix ratios per pair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mix_levels: Option<u8>,
+    /// Native solver: smooth gradients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smooth: Option<bool>,
+    /// Native solver: the cell score.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_metric: Option<CellMetric>,
+    /// Diffused error clamp per metric channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_clamp: Option<f32>,
+    /// Ordered threshold semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ordered_semantics: Option<OrderedSemantics>,
+    /// Native solver: the chroma guard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chroma_guard: Option<bool>,
+}
+
+impl RecipeChange {
+    /// `r` with these changes, through the recipe's validating constructors.
+    pub fn apply(&self, r: &Recipe) -> Result<Recipe, RecipeError> {
+        let mut allowed = self.allowed.as_deref().map_or(r.allowed(), colour_set);
+        if let Some(a) = &self.allow {
+            allowed = allowed.union(colour_set(a));
+        }
+        if let Some(d) = &self.deny {
+            allowed = allowed.difference(colour_set(d));
+        }
+        Recipe::new(
+            self.method.unwrap_or(r.method()),
+            self.strength.unwrap_or(r.strength()),
+            self.phase.unwrap_or(r.phase()),
+            self.metric.unwrap_or(r.metric()),
+            allowed,
+            self.fit_mode.unwrap_or(r.fit_mode()),
+        )?
+        .with_cell_clamp(self.cell_clamp.unwrap_or(r.cell_clamp()))
+        .with_max_luma_diff(self.max_luma_diff.unwrap_or(r.max_luma_diff()))?
+        .with_adaptive(self.adaptive.unwrap_or(r.adaptive()))?
+        .with_mix_levels(self.mix_levels.unwrap_or(r.mix_levels()))?
+        .with_smooth(self.smooth.unwrap_or(r.smooth()))
+        .with_cell_metric(self.cell_metric.unwrap_or(r.cell_metric()))
+        .with_error_clamp(self.error_clamp.unwrap_or(r.error_clamp()))
+        .map(|n| {
+            n.with_ordered_semantics(self.ordered_semantics.unwrap_or(r.ordered_semantics()))
+                .with_chroma_guard(self.chroma_guard.unwrap_or(r.chroma_guard()))
+        })
+    }
+}
+
+/// Sets some of a layer's dither recipe (`recipe_set`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecipeSet {
+    /// Layer index.
+    pub layer: usize,
+    /// What changes.
+    pub recipe: RecipeChange,
+}
+
+/// Sets the target mode (`mode_set`): one the compositor and solver support.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModeSet {
+    /// The mode.
+    pub mode: Mode,
+}
+
+/// Sets the palette the picture is solved and previewed with (`palette_set`). The
+/// front-ends resolve the JSON form (a preset, 16 colours or a `.vpl` file).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaletteSet {
+    /// The palette.
+    pub palette: Palette,
+}
+
+/// Pins the multicolor background colour, or lets the solver search (`background_pin`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackgroundPin {
+    /// `{"fixed": n}` pins colour `n`; `"auto"` searches all 16.
+    pub background: Background,
+}
+
+/// Sets some of the project-wide solve settings (`solve_set`); those not named are
+/// kept. The background has its own command, [`BackgroundPin`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SolveSet {
+    /// `reference` or `native`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solver: Option<SolverKind>,
+    /// The reference solver's divergences from png2c64, as a whole: those not named are
+    /// off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub divergences: Option<Divergences>,
+    /// Refinement hysteresis in (0, 1]; `null` turns it off.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub hysteresis: Option<Option<f32>>,
+    /// Same-luma pair bias (native solver).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub luma_pair_bias: Option<f32>,
+    /// Refinement rounds, 0–2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refinements: Option<u8>,
+    /// Backgrounds carried into dithering, 1–16.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalists: Option<u8>,
+}
+
+impl SolveSet {
+    /// `s` with these changes (unchecked; see [`SolveSettings::check`]).
+    pub fn apply(&self, s: &SolveSettings) -> SolveSettings {
+        SolveSettings {
+            solver: self.solver.unwrap_or(s.solver),
+            divergences: self.divergences.unwrap_or(s.divergences),
+            background: s.background,
+            hysteresis: self.hysteresis.unwrap_or(s.hysteresis),
+            luma_pair_bias: self.luma_pair_bias.unwrap_or(s.luma_pair_bias),
+            refinements: self.refinements.unwrap_or(s.refinements),
+            finalists: self.finalists.unwrap_or(s.finalists),
+        }
+    }
+}
+
+/// Removes one entry of a layer mask's sources list (`mask_source_remove`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MaskSourceRemove {
+    /// Layer index.
+    pub layer: usize,
+    /// Position in the sources list, 0 = first applied.
+    pub index: usize,
+}
+
+/// Sets how one of a layer mask's sources combines (`mask_source_set_combine`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MaskSourceSetCombine {
+    /// Layer index.
+    pub layer: usize,
+    /// Position in the sources list, 0 = first applied.
+    pub index: usize,
+    /// The combine mode.
+    pub combine: Combine,
+}
+
+/// Adds a region with an empty (all 0) 320 × 200 mask (`region_add`, UX §7).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionAdd {
+    /// Position, 0 = applied first; the region count puts it last (on top).
+    pub index: usize,
+    /// Display name, not empty.
+    pub name: String,
+    /// The recipe it imposes.
+    pub recipe: Recipe,
+}
+
+/// Removes a region (`region_remove`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionRemove {
+    /// Region index.
+    pub region: usize,
+}
+
+/// Renames a region (`region_rename`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionRename {
+    /// Region index.
+    pub region: usize,
+    /// The new name, not empty.
+    pub name: String,
+}
+
+/// Moves a region so it ends up at position `to`, 0 = applied first (`region_reorder`).
+/// Later regions win where masks overlap.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionReorder {
+    /// Region index.
+    pub region: usize,
+    /// Its new position.
+    pub to: usize,
+}
+
+/// Sets some of a region's recipe (`region_set_recipe`), as [`RecipeSet`] does a
+/// layer's.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionSetRecipe {
+    /// Region index.
+    pub region: usize,
+    /// What changes.
+    pub recipe: RecipeChange,
+}
+
+/// Paints a region's mask with a soft round brush along a polyline (`region_stroke`):
+/// [`MaskStroke`] in canvas pixels.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionStroke {
+    /// Region index.
+    pub region: usize,
+    /// The polyline, canvas pixels (320 × 200).
+    pub points: Vec<Vec2>,
+    /// Brush radius, canvas pixels, `0.25..=1000`.
+    pub radius: f32,
+    /// Fraction of the radius at full strength, `0..=1`.
+    pub hardness: f32,
+    /// Strength per dab, `0..=1`.
+    pub flow: f32,
+    /// Add or subtract.
+    pub mode: PaintMode,
+}
+
+/// Fills a polygon (lasso) into a region's mask (`region_fill`): [`MaskFill`] in canvas
+/// pixels.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionFill {
+    /// Region index.
+    pub region: usize,
+    /// Polygon, canvas pixels, at least 3 points.
+    pub polygon: Vec<Vec2>,
+    /// Fill value, `0..=1`.
+    pub value: f32,
+    /// Add or subtract.
+    pub mode: PaintMode,
+}
+
+/// Combines a gradient into a region's mask (`region_gradient`). A region's mask is a
+/// raster only, so the gradient is baked in (sampled at pixel centres, canvas pixels)
+/// rather than kept as an editable source.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionGradient {
+    /// Region index.
+    pub region: usize,
+    /// The gradient, canvas pixels.
+    pub gradient: Gradient,
+    /// How it combines with the mask.
+    pub combine: Combine,
+}
+
+/// Sets a region's whole mask to one value (`region_clear`): 0 clears, 1 fills.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionClear {
+    /// Region index.
+    pub region: usize,
+    /// The value, `0..=1`.
+    #[serde(default)]
+    pub value: f32,
+}
+
 /// A command (ADR-005). See [`REGISTRY`] for the names.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
@@ -310,6 +826,64 @@ pub enum Command {
     CellAllow(CellAllow),
     /// `cell_deny`.
     CellDeny(CellDeny),
+    /// `layer_add`.
+    LayerAdd(Box<LayerAdd>),
+    /// `layer_remove`.
+    LayerRemove(LayerRemove),
+    /// `layer_reorder`.
+    LayerReorder(LayerReorder),
+    /// `layer_set_visible`.
+    LayerSetVisible(LayerSetVisible),
+    /// `layer_set_opacity`.
+    LayerSetOpacity(LayerSetOpacity),
+    /// `layer_set_blend`.
+    LayerSetBlend(LayerSetBlend),
+    /// `layer_set_transform`.
+    LayerSetTransform(LayerSetTransform),
+    /// `layer_rotate`.
+    LayerRotate(LayerRotate),
+    /// `layer_nudge`.
+    LayerNudge(LayerNudge),
+    /// `layer_rename`.
+    LayerRename(LayerRename),
+    /// `layer_duplicate`.
+    LayerDuplicate(LayerDuplicate),
+    /// `adjustments_set`.
+    AdjustmentsSet(Box<AdjustmentsSet>),
+    /// `recipe_set`.
+    RecipeSet(Box<RecipeSet>),
+    /// `mode_set`.
+    ModeSet(ModeSet),
+    /// `palette_set`.
+    PaletteSet(Box<PaletteSet>),
+    /// `background_pin`.
+    BackgroundPin(BackgroundPin),
+    /// `solve_set`.
+    SolveSet(SolveSet),
+    /// `snap_set`.
+    SnapSet(SnapSet),
+    /// `mask_source_remove`.
+    MaskSourceRemove(MaskSourceRemove),
+    /// `mask_source_set_combine`.
+    MaskSourceSetCombine(MaskSourceSetCombine),
+    /// `region_add`.
+    RegionAdd(Box<RegionAdd>),
+    /// `region_remove`.
+    RegionRemove(RegionRemove),
+    /// `region_rename`.
+    RegionRename(RegionRename),
+    /// `region_reorder`.
+    RegionReorder(RegionReorder),
+    /// `region_set_recipe`.
+    RegionSetRecipe(Box<RegionSetRecipe>),
+    /// `region_stroke`.
+    RegionStroke(RegionStroke),
+    /// `region_fill`.
+    RegionFill(RegionFill),
+    /// `region_gradient`.
+    RegionGradient(RegionGradient),
+    /// `region_clear`.
+    RegionClear(RegionClear),
 }
 
 /// A command's name and a one-line description, for front-ends (CLI help, MCP tool list).
@@ -380,11 +954,132 @@ pub const REGISTRY: &[CommandInfo] = &[
         name: "cell_deny",
         summary: "Forbid colours in cells.",
     },
+    CommandInfo {
+        name: "layer_add",
+        summary: "Add a layer from a PNG (or an earlier layer's pixels) at a stack position.",
+    },
+    CommandInfo {
+        name: "layer_remove",
+        summary: "Remove a layer.",
+    },
+    CommandInfo {
+        name: "layer_reorder",
+        summary: "Move a layer to another stack position (0 = bottom).",
+    },
+    CommandInfo {
+        name: "layer_set_visible",
+        summary: "Show or hide a layer.",
+    },
+    CommandInfo {
+        name: "layer_set_opacity",
+        summary: "Set a layer's opacity (0–1).",
+    },
+    CommandInfo {
+        name: "layer_set_blend",
+        summary: "Set a layer's blend mode: normal, multiply, screen or overlay.",
+    },
+    CommandInfo {
+        name: "layer_set_transform",
+        summary: "Place a layer: translate, scale and flips, in canvas pixels.",
+    },
+    CommandInfo {
+        name: "layer_rotate",
+        summary: "Turn a layer about its anchor, to or by an angle in degrees (clockwise); \
+                  optionally move the anchor first, keeping the picture in place.",
+    },
+    CommandInfo {
+        name: "layer_nudge",
+        summary: "Move a layer by a (sub-pixel) offset in canvas pixels.",
+    },
+    CommandInfo {
+        name: "layer_rename",
+        summary: "Rename a layer.",
+    },
+    CommandInfo {
+        name: "layer_duplicate",
+        summary: "Copy a layer just above itself, sharing its pixels.",
+    },
+    CommandInfo {
+        name: "adjustments_set",
+        summary: "Set some of a layer's colour adjustments; the others are kept.",
+    },
+    CommandInfo {
+        name: "recipe_set",
+        summary: "Set some of a layer's dither recipe (method, strength, phase, metric, \
+                  allowed colours, fit mode, native knobs); the others are kept.",
+    },
+    CommandInfo {
+        name: "mode_set",
+        summary: "Set the target mode (multicolor-bitmap or hires-bitmap).",
+    },
+    CommandInfo {
+        name: "palette_set",
+        summary: "Set the palette: pepto-pal, pepto-ntsc, colodore, 16 colours or a .vpl file.",
+    },
+    CommandInfo {
+        name: "background_pin",
+        summary: "Pin the multicolor background colour ({\"fixed\": n}) or search all 16 (\"auto\").",
+    },
+    CommandInfo {
+        name: "solve_set",
+        summary: "Set some of the solve settings: solver, png2c64 divergences, hysteresis, \
+                  luma pair bias, refinements, finalists; the others are kept.",
+    },
+    CommandInfo {
+        name: "snap_set",
+        summary: "Set what transform commands snap to: off, c64-pixel (whole target pixels, \
+                  0.5°) or cell (cell boundaries, 15°).",
+    },
+    CommandInfo {
+        name: "mask_source_remove",
+        summary: "Remove one entry (a gradient or key) of a layer mask's sources list.",
+    },
+    CommandInfo {
+        name: "mask_source_set_combine",
+        summary: "Set how one of a layer mask's sources combines: max, min or multiply.",
+    },
+    CommandInfo {
+        name: "region_add",
+        summary: "Add a region: an empty 320 × 200 canvas mask carrying its own recipe.",
+    },
+    CommandInfo {
+        name: "region_remove",
+        summary: "Remove a region.",
+    },
+    CommandInfo {
+        name: "region_rename",
+        summary: "Rename a region.",
+    },
+    CommandInfo {
+        name: "region_reorder",
+        summary: "Move a region to another position (0 = applied first; later regions win).",
+    },
+    CommandInfo {
+        name: "region_set_recipe",
+        summary: "Set some of a region's recipe, as recipe_set does a layer's; the others are kept.",
+    },
+    CommandInfo {
+        name: "region_stroke",
+        summary: "Paint a region's mask with a soft round brush along a polyline, canvas pixels.",
+    },
+    CommandInfo {
+        name: "region_fill",
+        summary: "Fill a polygon (lasso) into a region's mask, canvas pixels.",
+    },
+    CommandInfo {
+        name: "region_gradient",
+        summary: "Combine a linear or radial gradient into a region's mask (baked), canvas pixels.",
+    },
+    CommandInfo {
+        name: "region_clear",
+        summary: "Set a region's whole mask to one value (0 clears, 1 fills).",
+    },
 ];
 
 /// What a command changed, for the compositor and solver: `LayerRect` maps to target
-/// cells through `composite::mask_change_cells`; the others re-solve the layer's
-/// footprint or the whole picture (`Compositor::update` finds the exact cells).
+/// cells through `composite::mask_change_cells` and `CanvasRect` through
+/// `composite::canvas_change_cells`; the others re-solve the layer's footprint or the
+/// whole picture (`Compositor::update` finds the exact cells).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dirty {
     /// Part of a layer's mask raster, layer pixels.
@@ -400,6 +1095,13 @@ pub enum Dirty {
     Stack,
     /// Steering on these cells changed: re-solve them (the composite is unchanged).
     Cells(crate::geom::CellSet),
+    /// The document's settings changed (target mode, palette, background or solve
+    /// settings): re-solve the whole picture; a new mode also needs a new grid.
+    Settings,
+    /// Part of the canvas, canvas pixels (320 × 200): a region command changed what
+    /// governs the attribute map there. Empty when nothing on the canvas changed (a new,
+    /// empty region; a rename).
+    CanvasRect(PxRect),
 }
 
 /// What undo needs.
@@ -421,6 +1123,56 @@ enum Memento {
     },
     /// Steering before a cell command, and the cells it touched.
     Steering(Box<Steering>, crate::geom::CellSet),
+    /// A layer property before the command.
+    Prop { layer: usize, before: Prop },
+    /// A layer removed from `index`.
+    Removed { index: usize, layer: Box<Layer> },
+    /// A layer moved from `from` to `to`.
+    Moved { from: usize, to: usize },
+    /// A document setting before the command.
+    Setting(Setting),
+    /// Region mask tiles before a paint command, and the canvas rectangle it changed.
+    RegionTiles {
+        region: usize,
+        tiles: Vec<Tile>,
+        rect: PxRect,
+    },
+    /// A region inserted at `index`.
+    RegionInserted { index: usize },
+    /// A region removed from `index`.
+    RegionRemoved { index: usize, region: Box<Region> },
+    /// A region moved from `from` to `to`.
+    RegionMoved { from: usize, to: usize },
+    /// A region's name or recipe before the command.
+    RegionProp { region: usize, before: RegionProp },
+}
+
+/// A region property's value, for undo.
+#[derive(Clone, Debug, PartialEq)]
+enum RegionProp {
+    Name(String),
+    Recipe(Box<Recipe>),
+}
+
+/// A layer property's value, for undo.
+#[derive(Clone, Debug, PartialEq)]
+enum Prop {
+    Visible(bool),
+    Opacity(f32),
+    Blend(Blend),
+    Transform(Transform),
+    Name(String),
+    Adjustments(Box<Adjustments>),
+    Recipe(Box<Recipe>),
+}
+
+/// A document setting's value, for undo.
+#[derive(Clone, Debug, PartialEq)]
+enum Setting {
+    Target(Mode),
+    Palette(Box<Palette>),
+    Solve(Box<SolveSettings>),
+    Snap(Snap),
 }
 
 /// The layer's mask, creating a fully opaque one if it has none. Returns whether it was
@@ -438,6 +1190,15 @@ fn mask_of(layer: &mut Layer) -> Result<(bool, &mut Mask), CommandError> {
 
 fn layer_mut(p: &mut Project, i: usize) -> Result<&mut Layer, CommandError> {
     p.layers.get_mut(i).ok_or(CommandError::NoLayer(i))
+}
+
+fn region_mut(p: &mut Project, i: usize) -> Result<&mut Region, CommandError> {
+    p.regions.get_mut(i).ok_or(CommandError::NoRegion(i))
+}
+
+/// The canvas rectangle a region governs: its mask's non-zero values.
+fn region_extent(r: &Region) -> Dirty {
+    Dirty::CanvasRect(r.mask().nonzero_rect())
 }
 
 impl Command {
@@ -458,23 +1219,49 @@ impl Command {
             Self::CellClear(_) => "cell_clear",
             Self::CellAllow(_) => "cell_allow",
             Self::CellDeny(_) => "cell_deny",
+            Self::LayerAdd(_) => "layer_add",
+            Self::LayerRemove(_) => "layer_remove",
+            Self::LayerReorder(_) => "layer_reorder",
+            Self::LayerSetVisible(_) => "layer_set_visible",
+            Self::LayerSetOpacity(_) => "layer_set_opacity",
+            Self::LayerSetBlend(_) => "layer_set_blend",
+            Self::LayerSetTransform(_) => "layer_set_transform",
+            Self::LayerRotate(_) => "layer_rotate",
+            Self::LayerNudge(_) => "layer_nudge",
+            Self::LayerRename(_) => "layer_rename",
+            Self::LayerDuplicate(_) => "layer_duplicate",
+            Self::AdjustmentsSet(_) => "adjustments_set",
+            Self::RecipeSet(_) => "recipe_set",
+            Self::ModeSet(_) => "mode_set",
+            Self::PaletteSet(_) => "palette_set",
+            Self::BackgroundPin(_) => "background_pin",
+            Self::SolveSet(_) => "solve_set",
+            Self::SnapSet(_) => "snap_set",
+            Self::MaskSourceRemove(_) => "mask_source_remove",
+            Self::MaskSourceSetCombine(_) => "mask_source_set_combine",
+            Self::RegionAdd(_) => "region_add",
+            Self::RegionRemove(_) => "region_remove",
+            Self::RegionRename(_) => "region_rename",
+            Self::RegionReorder(_) => "region_reorder",
+            Self::RegionSetRecipe(_) => "region_set_recipe",
+            Self::RegionStroke(_) => "region_stroke",
+            Self::RegionFill(_) => "region_fill",
+            Self::RegionGradient(_) => "region_gradient",
+            Self::RegionClear(_) => "region_clear",
         }
     }
 
     /// Checks the arguments without touching a project.
     fn validate(&self) -> Result<(), CommandError> {
         match self {
-            Self::MaskStroke(c) => {
-                check_points("points", &c.points, 1)?;
-                check_range("radius", c.radius, 0.25, 1000.0)?;
-                check_range("hardness", c.hardness, 0.0, 1.0)?;
-                check_range("flow", c.flow, 0.0, 1.0)
-            }
-            Self::MaskFill(c) => {
-                check_points("polygon", &c.polygon, 3)?;
-                check_range("value", c.value, 0.0, 1.0)
-            }
+            Self::MaskStroke(c) => check_stroke(&c.points, c.radius, c.hardness, c.flow),
+            Self::RegionStroke(c) => check_stroke(&c.points, c.radius, c.hardness, c.flow),
+            Self::MaskFill(c) => check_fill(&c.polygon, c.value),
+            Self::RegionFill(c) => check_fill(&c.polygon, c.value),
             Self::MaskClear(c) => check_range("value", c.value, 0.0, 1.0),
+            Self::RegionClear(c) => check_range("value", c.value, 0.0, 1.0),
+            Self::RegionAdd(c) => check_name(&c.name),
+            Self::RegionRename(c) => check_name(&c.name),
             Self::MaskSetModifier(c) => match c.modifier {
                 ModifierChange::Feather(f) => {
                     Modifiers::default().with_feather(f)?;
@@ -502,10 +1289,62 @@ impl Command {
             | Self::CellClear(CellClear { cells })
             | Self::CellAllow(CellAllow { cells, .. })
             | Self::CellDeny(CellDeny { cells, .. }) => check_cells(cells),
+            Self::LayerSetOpacity(c) => check_range("opacity", c.opacity, 0.0, 1.0),
+            Self::LayerNudge(c) => {
+                if c.by.is_finite() {
+                    Ok(())
+                } else {
+                    Err(param("by", "must be finite"))
+                }
+            }
+            Self::LayerRotate(c) => {
+                Transform::IDENTITY
+                    .with_rotation(c.degrees)
+                    .map_err(|e| param("degrees", e.to_string()))?;
+                if let Some(a) = c.anchor {
+                    Transform::IDENTITY
+                        .with_anchor(a)
+                        .map_err(|e| param("anchor", e.to_string()))?;
+                }
+                Ok(())
+            }
+            Self::LayerRename(c) => check_name(&c.name),
+            // The bitmap modes are the ones the solver solves (M1).
+            Self::ModeSet(c) => match c.mode {
+                Mode::MulticolorBitmap | Mode::HiresBitmap => Ok(()),
+                other => Err(param(
+                    "mode",
+                    format!(
+                        "{other:?} cannot be solved yet; use multicolor-bitmap or hires-bitmap"
+                    ),
+                )),
+            },
+            Self::SolveSet(c) => c
+                .apply(&SolveSettings::default())
+                .check()
+                .map_err(|e| param("solve", e)),
             Self::MaskGradient(_)
             | Self::MaskKey(_)
             | Self::MaskLoad(_)
-            | Self::MaskFromAlpha(_) => Ok(()),
+            | Self::MaskFromAlpha(_)
+            | Self::LayerAdd(_)
+            | Self::LayerRemove(_)
+            | Self::LayerReorder(_)
+            | Self::LayerSetVisible(_)
+            | Self::LayerSetBlend(_)
+            | Self::LayerSetTransform(_)
+            | Self::LayerDuplicate(_)
+            | Self::AdjustmentsSet(_)
+            | Self::RecipeSet(_)
+            | Self::PaletteSet(_)
+            | Self::BackgroundPin(_)
+            | Self::SnapSet(_)
+            | Self::MaskSourceRemove(_)
+            | Self::MaskSourceSetCombine(_)
+            | Self::RegionRemove(_)
+            | Self::RegionReorder(_)
+            | Self::RegionSetRecipe(_)
+            | Self::RegionGradient(_) => Ok(()),
         }
     }
 
@@ -623,7 +1462,363 @@ impl Command {
             Self::CellDeny(c) => steer(p, &c.cells, |s, cell| {
                 s.set_deny(cell, colour_set(&c.colours))
             }),
+            Self::LayerAdd(c) => {
+                if c.index > p.layers.len() {
+                    return Err(param(
+                        "index",
+                        format!("{} is above the top ({})", c.index, p.layers.len()),
+                    ));
+                }
+                p.layers.insert(c.index, c.layer.clone());
+                Ok((inserted(c.index), Dirty::Stack))
+            }
+            Self::LayerRemove(c) => {
+                layer_mut(p, c.layer)?;
+                let layer = Box::new(p.layers.remove(c.layer));
+                Ok((
+                    Memento::Removed {
+                        index: c.layer,
+                        layer,
+                    },
+                    Dirty::Stack,
+                ))
+            }
+            Self::LayerReorder(c) => {
+                layer_mut(p, c.layer)?;
+                if c.to >= p.layers.len() {
+                    return Err(param("to", format!("there is no position {}", c.to)));
+                }
+                let l = p.layers.remove(c.layer);
+                p.layers.insert(c.to, l);
+                Ok((
+                    Memento::Moved {
+                        from: c.layer,
+                        to: c.to,
+                    },
+                    Dirty::Stack,
+                ))
+            }
+            Self::LayerSetVisible(c) => set_prop(p, c.layer, Prop::Visible(c.visible)),
+            Self::LayerSetOpacity(c) => set_prop(p, c.layer, Prop::Opacity(c.opacity)),
+            Self::LayerSetBlend(c) => set_prop(p, c.layer, Prop::Blend(c.blend)),
+            Self::LayerSetTransform(c) => {
+                let t = snapped(p, c.layer, c.transform, c.snap)?;
+                set_prop(p, c.layer, Prop::Transform(t))
+            }
+            Self::LayerRotate(c) => {
+                let l = layer_mut(p, c.layer)?;
+                let size = l.source().size();
+                let mut t = l.transform();
+                if let Some(a) = c.anchor {
+                    t = t
+                        .reanchored(a, size)
+                        .map_err(|e| param("anchor", e.to_string()))?;
+                }
+                let degrees = if c.relative {
+                    t.rotate() + c.degrees
+                } else {
+                    c.degrees
+                };
+                let t = t
+                    .with_rotation(degrees)
+                    .map_err(|e| param("degrees", e.to_string()))?;
+                let t = snapped(p, c.layer, t, c.snap)?;
+                set_prop(p, c.layer, Prop::Transform(t))
+            }
+            Self::LayerNudge(c) => {
+                let t = layer_mut(p, c.layer)?
+                    .transform()
+                    .nudged(c.by)
+                    .map_err(|e| param("by", e.to_string()))?;
+                set_prop(p, c.layer, Prop::Transform(t))
+            }
+            Self::LayerRename(c) => set_prop(p, c.layer, Prop::Name(c.name.clone())),
+            Self::LayerDuplicate(c) => {
+                let original = layer_mut(p, c.layer)?;
+                let mut copy = original.clone();
+                copy.set_name(format!("{} copy", original.name()));
+                p.layers.insert(c.layer + 1, copy);
+                Ok((inserted(c.layer + 1), Dirty::Stack))
+            }
+            Self::AdjustmentsSet(c) => {
+                let a = c.adjustments.apply(layer_mut(p, c.layer)?.adjustments());
+                set_prop(p, c.layer, Prop::Adjustments(Box::new(a)))
+            }
+            Self::RecipeSet(c) => {
+                let r = c.recipe.apply(layer_mut(p, c.layer)?.recipe())?;
+                set_prop(p, c.layer, Prop::Recipe(Box::new(r)))
+            }
+            Self::ModeSet(c) => Ok(set_setting(p, Setting::Target(c.mode))),
+            Self::PaletteSet(c) => Ok(set_setting(
+                p,
+                Setting::Palette(Box::new(c.palette.clone())),
+            )),
+            Self::BackgroundPin(c) => {
+                let s = SolveSettings {
+                    background: c.background,
+                    ..p.solve.clone()
+                };
+                Ok(set_setting(p, Setting::Solve(Box::new(s))))
+            }
+            Self::SolveSet(c) => {
+                let s = c.apply(&p.solve);
+                s.check().map_err(|e| param("solve", e))?;
+                Ok(set_setting(p, Setting::Solve(Box::new(s))))
+            }
+            Self::SnapSet(c) => Ok(set_setting(p, Setting::Snap(c.snap))),
+            Self::MaskSourceRemove(c) => edit_mask(p, c.layer, |m| {
+                m.remove_source(c.index)?;
+                Ok(())
+            }),
+            Self::MaskSourceSetCombine(c) => edit_mask(p, c.layer, |m| {
+                m.set_combine(c.index, c.combine)?;
+                Ok(())
+            }),
+            Self::RegionAdd(c) => {
+                if c.index > p.regions.len() {
+                    return Err(param(
+                        "index",
+                        format!("{} is past the last region ({})", c.index, p.regions.len()),
+                    ));
+                }
+                let r = Region::empty(c.name.clone(), c.recipe);
+                let dirty = region_extent(&r);
+                p.regions.insert(c.index, r);
+                Ok((Memento::RegionInserted { index: c.index }, dirty))
+            }
+            Self::RegionRemove(c) => {
+                region_mut(p, c.region)?;
+                let region = Box::new(p.regions.remove(c.region));
+                let dirty = region_extent(&region);
+                Ok((
+                    Memento::RegionRemoved {
+                        index: c.region,
+                        region,
+                    },
+                    dirty,
+                ))
+            }
+            Self::RegionRename(c) => set_region_prop(p, c.region, RegionProp::Name(c.name.clone())),
+            Self::RegionReorder(c) => {
+                region_mut(p, c.region)?;
+                if c.to >= p.regions.len() {
+                    return Err(param("to", format!("there is no region position {}", c.to)));
+                }
+                let r = p.regions.remove(c.region);
+                let dirty = region_extent(&r);
+                p.regions.insert(c.to, r);
+                Ok((
+                    Memento::RegionMoved {
+                        from: c.region,
+                        to: c.to,
+                    },
+                    dirty,
+                ))
+            }
+            Self::RegionSetRecipe(c) => {
+                let r = c.recipe.apply(region_mut(p, c.region)?.recipe())?;
+                set_region_prop(p, c.region, RegionProp::Recipe(Box::new(r)))
+            }
+            Self::RegionStroke(c) => paint_region(
+                p,
+                c.region,
+                |r| paint::stroke_bounds(r, &c.points, c.radius),
+                |r| paint::stroke(r, &c.points, c.radius, c.hardness, c.flow, c.mode),
+            ),
+            Self::RegionFill(c) => paint_region(
+                p,
+                c.region,
+                |r| paint::fill_bounds(r, &c.polygon),
+                |r| paint::fill(r, &c.polygon, c.value, c.mode),
+            ),
+            Self::RegionGradient(c) => replace_region_mask(p, c.region, |r| {
+                Ok(paint::bake_gradient(r, &c.gradient, c.combine))
+            }),
+            Self::RegionClear(c) => replace_region_mask(p, c.region, |r| {
+                let (w, h) = r.size();
+                Ok(MaskRaster::filled(w, h, c.value)?)
+            }),
         }
+    }
+}
+
+/// Runs `f` on a layer's existing mask, keeping the whole mask before it for undo.
+fn edit_mask(
+    p: &mut Project,
+    i: usize,
+    f: impl FnOnce(&mut Mask) -> Result<(), CommandError>,
+) -> Result<(Memento, Dirty), CommandError> {
+    let layer = layer_mut(p, i)?;
+    let before = layer.mask().cloned();
+    let mask = layer
+        .mask_mut()
+        .ok_or_else(|| param("layer", format!("layer {i} has no mask")))?;
+    f(mask)?;
+    Ok((Memento::Mask { layer: i, before }, Dirty::Layer(i)))
+}
+
+/// Paints a region's mask: `bounds` is the rectangle `paint` can touch (its tiles are
+/// saved for undo), `paint` returns the rectangle it touched.
+fn paint_region(
+    p: &mut Project,
+    i: usize,
+    bounds: impl FnOnce(&MaskRaster) -> PxRect,
+    paint: impl FnOnce(&mut MaskRaster) -> PxRect,
+) -> Result<(Memento, Dirty), CommandError> {
+    let r = region_mut(p, i)?.mask_mut();
+    let bounds = bounds(r);
+    let tiles = r.tiles(bounds);
+    let rect = paint(r);
+    debug_assert_eq!(rect.union(bounds), bounds);
+    Ok((
+        Memento::RegionTiles {
+            region: i,
+            tiles,
+            rect,
+        },
+        Dirty::CanvasRect(rect),
+    ))
+}
+
+/// Replaces a region's mask with `new`'s result, saving the tiles of the rectangle
+/// where it differs.
+fn replace_region_mask(
+    p: &mut Project,
+    i: usize,
+    new: impl FnOnce(&MaskRaster) -> Result<MaskRaster, CommandError>,
+) -> Result<(Memento, Dirty), CommandError> {
+    let r = region_mut(p, i)?.mask_mut();
+    let new = new(r)?;
+    let rect = paint::changed_rect(r, &new);
+    let tiles = r.tiles(rect);
+    *r = new;
+    Ok((
+        Memento::RegionTiles {
+            region: i,
+            tiles,
+            rect,
+        },
+        Dirty::CanvasRect(rect),
+    ))
+}
+
+/// Sets a region's name or recipe, returning the memento of the old value.
+fn set_region_prop(
+    p: &mut Project,
+    i: usize,
+    value: RegionProp,
+) -> Result<(Memento, Dirty), CommandError> {
+    let r = region_mut(p, i)?;
+    let (before, dirty) = swap_region_prop(r, value);
+    Ok((Memento::RegionProp { region: i, before }, dirty))
+}
+
+/// Puts `value` on the region; returns the value it replaced and what changed.
+fn swap_region_prop(r: &mut Region, value: RegionProp) -> (RegionProp, Dirty) {
+    match value {
+        RegionProp::Name(n) => {
+            let old = r.name().to_owned();
+            r.set_name(n);
+            (RegionProp::Name(old), Dirty::CanvasRect(PxRect::EMPTY))
+        }
+        RegionProp::Recipe(v) => {
+            let old = Box::new(*r.recipe());
+            r.set_recipe(*v);
+            (RegionProp::Recipe(old), region_extent(r))
+        }
+    }
+}
+
+/// `t` for layer `i`, snapped by `snap` or else the project's setting (ADR-011), for
+/// the project's target mode.
+fn snapped(
+    p: &mut Project,
+    i: usize,
+    t: Transform,
+    snap: Option<Snap>,
+) -> Result<Transform, CommandError> {
+    let (snap, target) = (snap.unwrap_or(p.snap), p.target);
+    let size = layer_mut(p, i)?.source().size();
+    Ok(snap.apply(t, size, target))
+}
+
+const fn inserted(index: usize) -> Memento {
+    Memento::Inserted {
+        index,
+        original: index,
+        original_mask: None,
+    }
+}
+
+/// Sets a layer property, returning the memento of its old value.
+fn set_prop(p: &mut Project, i: usize, value: Prop) -> Result<(Memento, Dirty), CommandError> {
+    let before = swap_prop(layer_mut(p, i)?, value)?;
+    Ok((Memento::Prop { layer: i, before }, Dirty::Layer(i)))
+}
+
+/// Puts `value` on the layer and returns the value it replaced.
+fn swap_prop(l: &mut Layer, value: Prop) -> Result<Prop, CommandError> {
+    Ok(match value {
+        Prop::Visible(v) => {
+            let old = l.visible();
+            l.set_visible(v);
+            Prop::Visible(old)
+        }
+        Prop::Opacity(v) => {
+            let old = l.opacity();
+            l.set_opacity(v)
+                .map_err(|e| param("opacity", e.to_string()))?;
+            Prop::Opacity(old)
+        }
+        Prop::Blend(v) => {
+            let old = l.blend();
+            l.set_blend(v);
+            Prop::Blend(old)
+        }
+        Prop::Transform(v) => {
+            let old = l.transform();
+            l.set_transform(v);
+            Prop::Transform(old)
+        }
+        Prop::Name(v) => {
+            let old = l.name().to_owned();
+            l.set_name(v);
+            Prop::Name(old)
+        }
+        Prop::Adjustments(v) => {
+            let old = Box::new(l.adjustments().clone());
+            l.set_adjustments(*v);
+            Prop::Adjustments(old)
+        }
+        Prop::Recipe(v) => {
+            let old = Box::new(*l.recipe());
+            l.set_recipe(*v);
+            Prop::Recipe(old)
+        }
+    })
+}
+
+/// Puts a document setting in place and returns the memento of the one it replaced.
+fn set_setting(p: &mut Project, value: Setting) -> (Memento, Dirty) {
+    let dirty = setting_dirty(&value);
+    (Memento::Setting(swap_setting(p, value)), dirty)
+}
+
+/// What changing a setting dirties: the snap changes no pixel (an empty cell set);
+/// the others re-solve the whole picture.
+fn setting_dirty(s: &Setting) -> Dirty {
+    match s {
+        Setting::Snap(_) => Dirty::Cells(crate::geom::CellSet::EMPTY),
+        _ => Dirty::Settings,
+    }
+}
+
+fn swap_setting(p: &mut Project, value: Setting) -> Setting {
+    match value {
+        Setting::Target(m) => Setting::Target(std::mem::replace(&mut p.target, m)),
+        Setting::Palette(v) => Setting::Palette(Box::new(std::mem::replace(&mut p.palette, *v))),
+        Setting::Solve(v) => Setting::Solve(Box::new(std::mem::replace(&mut p.solve, *v))),
+        Setting::Snap(v) => Setting::Snap(std::mem::replace(&mut p.snap, v)),
     }
 }
 
@@ -788,6 +1983,47 @@ impl Memento {
                 p.steering = *before;
                 Dirty::Cells(touched)
             }
+            Self::Prop { layer, before } => {
+                swap_prop(&mut p.layers[layer], before).expect("was on this layer");
+                Dirty::Layer(layer)
+            }
+            Self::Removed { index, layer } => {
+                p.layers.insert(index, *layer);
+                Dirty::Stack
+            }
+            Self::Moved { from, to } => {
+                let l = p.layers.remove(to);
+                p.layers.insert(from, l);
+                Dirty::Stack
+            }
+            Self::Setting(before) => {
+                let dirty = setting_dirty(&before);
+                swap_setting(p, before);
+                dirty
+            }
+            Self::RegionTiles {
+                region,
+                tiles,
+                rect,
+            } => {
+                p.regions[region].mask_mut().restore(&tiles);
+                Dirty::CanvasRect(rect)
+            }
+            Self::RegionInserted { index } => region_extent(&p.regions.remove(index)),
+            Self::RegionRemoved { index, region } => {
+                let dirty = region_extent(&region);
+                p.regions.insert(index, *region);
+                dirty
+            }
+            Self::RegionMoved { from, to } => {
+                let r = p.regions.remove(to);
+                let dirty = region_extent(&r);
+                p.regions.insert(from, r);
+                dirty
+            }
+            Self::RegionProp { region, before } => {
+                swap_region_prop(&mut p.regions[region], before).1
+            }
         }
     }
 }
@@ -861,7 +2097,9 @@ impl Editor {
         self.done
             .iter()
             .map(|(_, m)| match m {
-                Memento::Tiles { tiles, .. } => tiles.iter().map(Tile::len).sum(),
+                Memento::Tiles { tiles, .. } | Memento::RegionTiles { tiles, .. } => {
+                    tiles.iter().map(Tile::len).sum()
+                }
                 _ => 0,
             })
             .sum()
@@ -885,8 +2123,7 @@ mod tests {
         let src = Arc::new(SourceImage::from_srgba8(300, 200, &px).unwrap());
         Project {
             layers: vec![Layer::new("photo", src)],
-            regions: Vec::new(),
-            steering: Default::default(),
+            ..Project::default()
         }
     }
 
@@ -951,8 +2188,7 @@ mod tests {
         let src2 = Arc::new(SourceImage::from_srgba8(4, 4, &opaque).unwrap());
         let mut e = Editor::new(Project {
             layers: vec![Layer::new("a", src), Layer::new("b", src2)],
-            regions: Vec::new(),
-            steering: Default::default(),
+            ..Project::default()
         });
         e.execute(Command::MaskFromAlpha(MaskFromAlpha { layer: 1 }))
             .unwrap();
@@ -1163,6 +2399,630 @@ mod tests {
         ] {
             assert!(names.contains(&c.name()));
         }
-        assert_eq!(names.len(), 14);
+        assert_eq!(names.len(), 43);
+    }
+
+    /// #198: transform commands snap by the project's setting unless told otherwise;
+    /// `layer_rotate` turns about the anchor, moves the anchor keeping the picture in
+    /// place, and adds with `relative`.
+    #[test]
+    fn transform_commands_snap_and_rotate() {
+        let mut e = Editor::new(stack());
+        let size = e.project().layers[0].source().size();
+        let proposed = Transform::new(Vec2::new(3.3, -2.6), Vec2::new(1.01, 0.97), false, false)
+            .unwrap()
+            .with_rotation(7.3)
+            .unwrap();
+        let set = |snap| {
+            Command::LayerSetTransform(LayerSetTransform {
+                layer: 0,
+                transform: proposed,
+                snap,
+            })
+        };
+        e.execute(set(None)).unwrap();
+        assert_eq!(e.project().layers[0].transform(), proposed, "snap is off");
+        assert_eq!(
+            e.execute(Command::SnapSet(SnapSet { snap: Snap::Cell }))
+                .unwrap(),
+            Dirty::Cells(crate::geom::CellSet::EMPTY),
+            "the snap changes no pixel"
+        );
+        e.execute(set(None)).unwrap();
+        let t = e.project().layers[0].transform();
+        assert_eq!(t, Snap::Cell.apply(proposed, size, Mode::MulticolorBitmap));
+        assert_eq!((t.translate(), t.rotate()), (Vec2::new(0.0, 0.0), 0.0));
+        e.execute(set(Some(Snap::Off))).unwrap();
+        assert_eq!(e.project().layers[0].transform(), proposed, "overridden");
+        e.undo();
+        e.undo();
+        e.undo();
+        assert_eq!(e.project().snap, Snap::Off, "undone");
+
+        // Rotate about a new anchor: the picture stays put, then turns about it.
+        let before = e.project().layers[0].transform();
+        let pivot = |t: Transform| t.layer_to_canvas(size, Vec2::new(0.0, size.1 as f32));
+        e.execute(Command::LayerRotate(LayerRotate {
+            layer: 0,
+            degrees: 30.0,
+            relative: true,
+            anchor: Some(Vec2::new(0.0, 1.0)),
+            snap: None,
+        }))
+        .unwrap();
+        let t = e.project().layers[0].transform();
+        assert_eq!(t.rotate(), before.rotate() + 30.0);
+        assert_eq!(t.anchor(), Vec2::new(0.0, 1.0));
+        let (a, b) = (pivot(before), pivot(t));
+        assert!(
+            (a.x - b.x).abs() < 1e-3 && (a.y - b.y).abs() < 1e-3,
+            "{a:?} {b:?}"
+        );
+        e.execute(Command::LayerRotate(LayerRotate {
+            layer: 0,
+            degrees: -5.0,
+            relative: false,
+            anchor: None,
+            snap: Some(Snap::C64Pixel),
+        }))
+        .unwrap();
+        assert_eq!(e.project().layers[0].transform().rotate(), -5.0);
+        for bad in [
+            LayerRotate {
+                layer: 0,
+                degrees: f32::NAN,
+                relative: false,
+                anchor: None,
+                snap: None,
+            },
+            LayerRotate {
+                layer: 0,
+                degrees: 1.0,
+                relative: false,
+                anchor: Some(Vec2::new(1.5, 0.0)),
+                snap: None,
+            },
+        ] {
+            assert!(e.execute(Command::LayerRotate(bad)).is_err());
+        }
+    }
+
+    /// A 320 × 200 canvas mask: `value` inside `[x0, x1) × [y0, y1)`, 0 outside.
+    fn canvas_mask(x0: u32, y0: u32, x1: u32, y1: u32, value: f32) -> MaskRaster {
+        let vals = (0..320 * 200)
+            .map(|i| {
+                let (x, y) = (i % 320, i / 320);
+                if (x0..x1).contains(&x) && (y0..y1).contains(&y) {
+                    value
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        MaskRaster::from_values(320, 200, vals).unwrap()
+    }
+
+    /// Two layers sharing pixels, the second at a different opacity, so moves and copies
+    /// show; and two overlapping regions.
+    fn stack() -> Project {
+        let mut p = project();
+        let mut top = Layer::new("top", Arc::clone(p.layers[0].source()));
+        top.set_opacity(0.75).unwrap();
+        p.layers.push(top);
+        let flat = Recipe::with_method(crate::layer::DitherKind::None, 0.5).unwrap();
+        p.regions = vec![
+            Region::new("sky", canvas_mask(0, 0, 160, 80, 1.0), flat).unwrap(),
+            Region::new(
+                "ground",
+                canvas_mask(100, 60, 320, 200, 0.5),
+                Recipe::default(),
+            )
+            .unwrap(),
+        ];
+        p
+    }
+
+    /// One of each command #193 added, each valid on [`stack`].
+    fn edits() -> Vec<Command> {
+        let small = Arc::new(SourceImage::from_srgba8(4, 4, &[90; 64]).unwrap());
+        vec![
+            Command::LayerAdd(Box::new(LayerAdd {
+                index: 1,
+                layer: Layer::new("new", small),
+            })),
+            Command::LayerRemove(LayerRemove { layer: 0 }),
+            Command::LayerReorder(LayerReorder { layer: 0, to: 1 }),
+            Command::LayerSetVisible(LayerSetVisible {
+                layer: 1,
+                visible: false,
+            }),
+            Command::LayerSetOpacity(LayerSetOpacity {
+                layer: 0,
+                opacity: 0.3,
+            }),
+            Command::LayerSetBlend(LayerSetBlend {
+                layer: 1,
+                blend: Blend::Screen,
+            }),
+            Command::LayerSetTransform(LayerSetTransform {
+                layer: 0,
+                transform: Transform::new(Vec2::new(3.0, -2.0), Vec2::new(1.5, 2.0), true, true)
+                    .unwrap(),
+                snap: None,
+            }),
+            Command::LayerRotate(LayerRotate {
+                layer: 1,
+                degrees: 12.5,
+                relative: false,
+                anchor: Some(Vec2::new(0.25, 0.0)),
+                snap: None,
+            }),
+            Command::LayerNudge(LayerNudge {
+                layer: 1,
+                by: Vec2::new(0.25, -0.5),
+            }),
+            Command::LayerRename(LayerRename {
+                layer: 1,
+                name: "renamed".into(),
+            }),
+            Command::LayerDuplicate(LayerDuplicate { layer: 0 }),
+            Command::AdjustmentsSet(Box::new(AdjustmentsSet {
+                layer: 0,
+                adjustments: AdjustmentsChange {
+                    gamma: Some(Gamma::new(1.4).unwrap()),
+                    hsl: Some(Hsl::new(10.0, 0.2, 0.0).unwrap()),
+                    ..AdjustmentsChange::default()
+                },
+            })),
+            Command::RecipeSet(Box::new(RecipeSet {
+                layer: 1,
+                recipe: RecipeChange {
+                    method: Some(Method::new(crate::layer::DitherKind::Bayer4)),
+                    strength: Some(0.5),
+                    deny: Some(vec![ColourIndex::YELLOW]),
+                    mix_levels: Some(8),
+                    ..RecipeChange::default()
+                },
+            })),
+            Command::ModeSet(ModeSet {
+                mode: Mode::HiresBitmap,
+            }),
+            Command::PaletteSet(Box::new(PaletteSet {
+                palette: Palette::colodore(50.0, 100.0, 50.0),
+            })),
+            Command::BackgroundPin(BackgroundPin {
+                background: Background::Fixed(ColourIndex::BLUE),
+            }),
+            Command::SolveSet(SolveSet {
+                solver: Some(SolverKind::Native),
+                divergences: Some(Divergences {
+                    chroma_guard: true,
+                    ..Divergences::default()
+                }),
+                hysteresis: Some(Some(0.97)),
+                refinements: Some(1),
+                ..SolveSet::default()
+            }),
+            Command::SnapSet(SnapSet {
+                snap: Snap::C64Pixel,
+            }),
+            // #216: regions.
+            Command::RegionAdd(Box::new(RegionAdd {
+                index: 1,
+                name: "faces".into(),
+                recipe: Recipe::with_method(crate::layer::DitherKind::Atkinson, 0.8).unwrap(),
+            })),
+            Command::RegionRemove(RegionRemove { region: 0 }),
+            Command::RegionRename(RegionRename {
+                region: 1,
+                name: "floor".into(),
+            }),
+            Command::RegionReorder(RegionReorder { region: 0, to: 1 }),
+            Command::RegionSetRecipe(Box::new(RegionSetRecipe {
+                region: 0,
+                recipe: RecipeChange {
+                    method: Some(Method::new(crate::layer::DitherKind::Bayer8)),
+                    deny: Some(vec![ColourIndex::RED]),
+                    ..RecipeChange::default()
+                },
+            })),
+            Command::RegionStroke(RegionStroke {
+                region: 1,
+                points: vec![Vec2::new(10.0, 150.0), Vec2::new(90.0, 190.0)],
+                radius: 6.0,
+                hardness: 0.5,
+                flow: 0.7,
+                mode: PaintMode::Add,
+            }),
+            Command::RegionFill(RegionFill {
+                region: 0,
+                polygon: vec![
+                    Vec2::new(40.0, 20.0),
+                    Vec2::new(120.0, 20.0),
+                    Vec2::new(80.0, 70.0),
+                ],
+                value: 1.0,
+                mode: PaintMode::Subtract,
+            }),
+            Command::RegionGradient(RegionGradient {
+                region: 1,
+                gradient: Gradient::new(
+                    GradientKind::Linear,
+                    Vec2::new(0.0, 100.0),
+                    Vec2::new(320.0, 100.0),
+                    1.0,
+                )
+                .unwrap(),
+                combine: Combine::Multiply,
+            }),
+            Command::RegionClear(RegionClear {
+                region: 0,
+                value: 1.0,
+            }),
+        ]
+    }
+
+    #[test]
+    fn every_edit_undoes_and_redoes_exactly() {
+        let base = stack();
+        let all = edits();
+        let names: Vec<&str> = all.iter().map(Command::name).collect();
+        for c in all {
+            let mut e = Editor::new(base.clone());
+            let dirty = e.execute(c.clone()).unwrap();
+            let after = e.project().clone();
+            assert_ne!(after, base, "{} changed nothing", c.name());
+            assert_eq!(
+                e.undo(),
+                Some(dirty),
+                "{}: undo dirties what it did",
+                c.name()
+            );
+            assert_eq!(e.project(), &base, "{}: undo", c.name());
+            e.redo().unwrap().unwrap();
+            assert_eq!(e.project(), &after, "{}: redo", c.name());
+        }
+        // Every registry command is covered here or by the mask and cell tests above.
+        for info in REGISTRY {
+            assert!(
+                names.contains(&info.name)
+                    || info.name.starts_with("mask_")
+                    || info.name.starts_with("cell_")
+                    || info.name == "layer_via_mask",
+                "{} has no undo test",
+                info.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_whole_session_of_edits_undoes_to_the_start() {
+        let base = stack();
+        let mut e = Editor::new(base.clone());
+        let mut states = vec![base.clone()];
+        for c in edits() {
+            // Later edits name layers that earlier ones moved; skip what no longer fits.
+            if e.execute(c).is_ok() {
+                states.push(e.project().clone());
+            }
+        }
+        assert!(states.len() > 10);
+        while let Some(want) = states.pop() {
+            assert_eq!(e.project(), &want);
+            if states.is_empty() {
+                break;
+            }
+            e.undo().unwrap();
+        }
+        assert_eq!(e.project(), &base);
+        assert_eq!(e.undo(), None);
+    }
+
+    #[test]
+    fn region_paint_undoes_byte_identically_and_reports_its_rectangle() {
+        let mut e = Editor::new(stack());
+        let base = e.project().clone();
+        let before = e.project().regions[1].mask().clone();
+        let dirty = e
+            .execute(Command::RegionStroke(RegionStroke {
+                region: 1,
+                points: vec![Vec2::new(20.0, 20.0), Vec2::new(150.0, 90.0)],
+                radius: 12.0,
+                hardness: 0.3,
+                flow: 0.6,
+                mode: PaintMode::Add,
+            }))
+            .unwrap();
+        assert_eq!(dirty, Dirty::CanvasRect(PxRect::new(8, 8, 162, 102)));
+        assert!(e.saved_tile_values() < 320 * 200);
+        e.undo();
+        assert_eq!(e.project().regions[1].mask(), &before);
+
+        // A gradient is baked into the raster with its combine mode; the rectangle is
+        // where values changed.
+        let g = Gradient::new(
+            GradientKind::Linear,
+            Vec2::new(0.0, 0.0),
+            Vec2::new(0.0, 200.0),
+            1.0,
+        )
+        .unwrap();
+        let dirty = e
+            .execute(Command::RegionGradient(RegionGradient {
+                region: 0,
+                gradient: g,
+                combine: Combine::Min,
+            }))
+            .unwrap();
+        // Min against a mask that is 0 outside (0..160, 0..80) changes only inside it.
+        assert_eq!(dirty, Dirty::CanvasRect(PxRect::new(0, 0, 160, 80)));
+        let m = e.project().regions[0].mask();
+        assert_eq!(m.get(10, 10), g.value(Vec2::new(10.5, 10.5)));
+        assert_eq!(m.get(200, 10), 0.0);
+        // Clearing a cleared mask changes nothing and says so.
+        e.execute(Command::RegionClear(RegionClear {
+            region: 0,
+            value: 0.0,
+        }))
+        .unwrap();
+        let dirty = e
+            .execute(Command::RegionClear(RegionClear {
+                region: 0,
+                value: 0.0,
+            }))
+            .unwrap();
+        assert_eq!(dirty, Dirty::CanvasRect(PxRect::EMPTY));
+        for _ in 0..3 {
+            e.undo();
+        }
+        assert_eq!(e.project(), &base);
+    }
+
+    #[test]
+    fn regions_are_added_empty_and_keep_their_place() {
+        let mut e = Editor::new(stack());
+        let dirty = e
+            .execute(Command::RegionAdd(Box::new(RegionAdd {
+                index: 2,
+                name: "eyes".into(),
+                recipe: Recipe::default(),
+            })))
+            .unwrap();
+        assert_eq!(dirty, Dirty::CanvasRect(PxRect::EMPTY));
+        let r = &e.project().regions[2];
+        assert_eq!(r.name(), "eyes");
+        assert_eq!(r.mask().size(), (320, 200));
+        assert!(r.mask().values().iter().all(|&v| v == 0.0));
+        let dirty = e
+            .execute(Command::RegionReorder(RegionReorder { region: 0, to: 2 }))
+            .unwrap();
+        assert_eq!(dirty, Dirty::CanvasRect(PxRect::new(0, 0, 160, 80)));
+        let names: Vec<&str> = e.project().regions.iter().map(Region::name).collect();
+        assert_eq!(names, ["ground", "eyes", "sky"]);
+    }
+
+    #[test]
+    fn mask_sources_are_removed_and_recombined_with_undo() {
+        let mut e = Editor::new(project());
+        let g = |x: f32| {
+            Gradient::new(GradientKind::Linear, Vec2::ZERO, Vec2::new(x, 0.0), 1.0).unwrap()
+        };
+        for x in [100.0, 200.0] {
+            e.execute(Command::MaskGradient(MaskGradient {
+                layer: 0,
+                gradient: g(x),
+                combine: Combine::Max,
+            }))
+            .unwrap();
+        }
+        let sources = |e: &Editor| e.project().layers[0].mask().unwrap().sources().to_vec();
+        let base = sources(&e);
+        let dirty = e
+            .execute(Command::MaskSourceSetCombine(MaskSourceSetCombine {
+                layer: 0,
+                index: 1,
+                combine: Combine::Multiply,
+            }))
+            .unwrap();
+        assert_eq!(dirty, Dirty::Layer(0));
+        assert_eq!(sources(&e)[1].combine, Combine::Multiply);
+        assert_eq!(sources(&e)[0], base[0]);
+        e.execute(Command::MaskSourceRemove(MaskSourceRemove {
+            layer: 0,
+            index: 0,
+        }))
+        .unwrap();
+        let after = sources(&e);
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].source, MaskSource::Gradient(g(200.0)));
+        assert_eq!(e.undo(), Some(Dirty::Layer(0)));
+        e.undo();
+        assert_eq!(sources(&e), base);
+        e.redo().unwrap().unwrap();
+        e.redo().unwrap().unwrap();
+        assert_eq!(sources(&e), after);
+        // A source that is not there is refused, and nothing changes.
+        let p0 = e.project().clone();
+        for bad in [
+            Command::MaskSourceRemove(MaskSourceRemove { layer: 0, index: 1 }),
+            Command::MaskSourceSetCombine(MaskSourceSetCombine {
+                layer: 0,
+                index: 4,
+                combine: Combine::Min,
+            }),
+            Command::MaskSourceRemove(MaskSourceRemove { layer: 3, index: 0 }),
+        ] {
+            assert!(e.execute(bad).is_err());
+            assert_eq!(e.project(), &p0);
+        }
+    }
+
+    #[test]
+    fn edits_change_what_they_name_and_keep_the_rest() {
+        let mut e = Editor::new(stack());
+        e.execute(Command::LayerDuplicate(LayerDuplicate { layer: 1 }))
+            .unwrap();
+        let p = e.project();
+        assert_eq!(p.layers[2].name(), "top copy");
+        assert!(Arc::ptr_eq(p.layers[1].source(), p.layers[2].source()));
+        assert_eq!(p.layers[2].opacity(), 0.75);
+        e.execute(Command::LayerReorder(LayerReorder { layer: 2, to: 0 }))
+            .unwrap();
+        assert_eq!(e.project().layers[0].name(), "top copy");
+        e.execute(Command::LayerNudge(LayerNudge {
+            layer: 0,
+            by: Vec2::new(0.5, 0.25),
+        }))
+        .unwrap();
+        e.execute(Command::LayerNudge(LayerNudge {
+            layer: 0,
+            by: Vec2::new(0.5, 0.25),
+        }))
+        .unwrap();
+        assert_eq!(
+            e.project().layers[0].transform().translate(),
+            Vec2::new(1.0, 0.5)
+        );
+        let before = *e.project().layers[0].recipe();
+        e.execute(Command::RecipeSet(Box::new(RecipeSet {
+            layer: 0,
+            recipe: RecipeChange {
+                allowed: Some(vec![ColourIndex::BLACK, ColourIndex::WHITE]),
+                allow: Some(vec![ColourIndex::RED]),
+                deny: Some(vec![ColourIndex::WHITE]),
+                ..RecipeChange::default()
+            },
+        })))
+        .unwrap();
+        let r = *e.project().layers[0].recipe();
+        assert_eq!(
+            r.allowed(),
+            colour_set(&[ColourIndex::BLACK, ColourIndex::RED])
+        );
+        assert_eq!(r.method(), before.method());
+        assert_eq!(r.strength(), before.strength());
+        // An empty change is the identity.
+        assert_eq!(RecipeChange::default().apply(&r).unwrap(), r);
+        let a = e.project().layers[0].adjustments().clone();
+        assert_eq!(AdjustmentsChange::default().apply(&a), a);
+        e.execute(Command::BackgroundPin(BackgroundPin {
+            background: Background::Fixed(ColourIndex::BLUE),
+        }))
+        .unwrap();
+        e.execute(Command::SolveSet(SolveSet {
+            finalists: Some(5),
+            ..SolveSet::default()
+        }))
+        .unwrap();
+        let s = &e.project().solve;
+        assert_eq!(s.background, Background::Fixed(ColourIndex::BLUE));
+        assert_eq!(s.finalists, 5);
+        assert_eq!(s.refinements, SolveSettings::default().refinements);
+    }
+
+    #[test]
+    fn invalid_edits_change_nothing() {
+        let mut e = Editor::new(stack());
+        let p0 = e.project().clone();
+        let small = Arc::new(SourceImage::from_srgba8(4, 4, &[90; 64]).unwrap());
+        for bad in [
+            Command::LayerAdd(Box::new(LayerAdd {
+                index: 3,
+                layer: Layer::new("x", small),
+            })),
+            Command::LayerRemove(LayerRemove { layer: 2 }),
+            Command::LayerReorder(LayerReorder { layer: 0, to: 2 }),
+            Command::LayerSetOpacity(LayerSetOpacity {
+                layer: 0,
+                opacity: 1.5,
+            }),
+            Command::LayerNudge(LayerNudge {
+                layer: 0,
+                by: Vec2::new(f32::NAN, 0.0),
+            }),
+            Command::LayerRename(LayerRename {
+                layer: 0,
+                name: String::new(),
+            }),
+            Command::LayerDuplicate(LayerDuplicate { layer: 9 }),
+            Command::RecipeSet(Box::new(RecipeSet {
+                layer: 0,
+                recipe: RecipeChange {
+                    allowed: Some(vec![ColourIndex::RED]),
+                    deny: Some(vec![ColourIndex::RED]),
+                    ..RecipeChange::default()
+                },
+            })),
+            Command::RecipeSet(Box::new(RecipeSet {
+                layer: 0,
+                recipe: RecipeChange {
+                    strength: Some(2.0),
+                    ..RecipeChange::default()
+                },
+            })),
+            Command::ModeSet(ModeSet {
+                mode: Mode::MulticolorCharset,
+            }),
+            Command::SolveSet(SolveSet {
+                finalists: Some(0),
+                ..SolveSet::default()
+            }),
+            Command::SolveSet(SolveSet {
+                hysteresis: Some(Some(1.5)),
+                ..SolveSet::default()
+            }),
+            Command::RegionAdd(Box::new(RegionAdd {
+                index: 3,
+                name: "past the end".into(),
+                recipe: Recipe::default(),
+            })),
+            Command::RegionAdd(Box::new(RegionAdd {
+                index: 0,
+                name: String::new(),
+                recipe: Recipe::default(),
+            })),
+            Command::RegionRemove(RegionRemove { region: 2 }),
+            Command::RegionRename(RegionRename {
+                region: 0,
+                name: String::new(),
+            }),
+            Command::RegionReorder(RegionReorder { region: 0, to: 2 }),
+            Command::RegionSetRecipe(Box::new(RegionSetRecipe {
+                region: 1,
+                recipe: RecipeChange {
+                    strength: Some(-0.5),
+                    ..RecipeChange::default()
+                },
+            })),
+            Command::RegionStroke(RegionStroke {
+                region: 0,
+                points: vec![Vec2::new(1.0, 1.0)],
+                radius: 0.1,
+                hardness: 0.5,
+                flow: 1.0,
+                mode: PaintMode::Add,
+            }),
+            Command::RegionFill(RegionFill {
+                region: 5,
+                polygon: vec![Vec2::ZERO, Vec2::new(9.0, 0.0), Vec2::new(0.0, 9.0)],
+                value: 1.0,
+                mode: PaintMode::Add,
+            }),
+            Command::RegionClear(RegionClear {
+                region: 0,
+                value: 2.0,
+            }),
+            // The top layer has no mask, so no sources to edit.
+            Command::MaskSourceRemove(MaskSourceRemove { layer: 1, index: 0 }),
+            Command::MaskSourceSetCombine(MaskSourceSetCombine {
+                layer: 0,
+                index: 0,
+                combine: Combine::Min,
+            }),
+        ] {
+            assert!(e.execute(bad.clone()).is_err(), "{bad:?}");
+            assert_eq!(e.project(), &p0, "{}", bad.name());
+        }
+        assert_eq!(e.undo_len(), 0);
     }
 }

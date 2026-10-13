@@ -63,8 +63,7 @@ fn in_process(source: &Path) -> Vec<u16> {
     layer.set_transform(Transform::new(Vec2::ZERO, Vec2::new(5.0, 5.0), false, false).unwrap());
     let mut e = Editor::new(Project {
         layers: vec![layer],
-        regions: Vec::new(),
-        steering: Default::default(),
+        ..Project::default()
     });
     for c in [
         Command::MaskClear(MaskClear {
@@ -157,7 +156,7 @@ fn library_session_matches_too() {
     let dir = temp("recipe-lib");
     let source = write_source(&dir);
     std::fs::write(dir.join("recipe.json"), RECIPE).unwrap();
-    let mut s = convert64_cli::recipe::Session::open(&dir.join("recipe.json")).unwrap();
+    let mut s = convert64_project::Session::open(&dir.join("recipe.json")).unwrap();
     let (_, _, got) = s.evaluated_mask(0).unwrap();
     assert_eq!(got, in_process(&source));
 }

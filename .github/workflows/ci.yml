@@ -37,6 +37,11 @@ jobs:
         run: cargo fmt --all --check
       - name: cargo clippy
         run: cargo clippy --workspace -- -D warnings
+      # The app theme is generated from design/tokens.json (#195); fail if the
+      # committed crates/convert64-app/src/theme/generated.rs is stale.
+      - name: cargo xtask tokens --check
+        if: runner.os == 'Linux'
+        run: cargo xtask tokens --check
       # The png2c64 parity test runs in its own step below, so its report shows.
       - name: cargo test
         run: cargo test --workspace -- --skip png2c64_parity
@@ -73,6 +78,15 @@ jobs:
       # not build for wasm32 outside the `parallel` feature.
       - name: cargo check core (wasm32)
         run: cargo check -p convert64-core --target wasm32-unknown-unknown
+      # The app loads projects through convert64-project (#192); neither may
+      # pull the core's `parallel` feature (rayon) into the web build.
+      - name: no rayon in the wasm app
+        run: |
+          cargo tree -p convert64-app --target wasm32-unknown-unknown -e features > app-tree.txt
+          if grep -E 'rayon|feature "parallel"' app-tree.txt; then
+            echo "convert64-app pulls rayon into wasm32" >&2
+            exit 1
+          fi
       - name: trunk build --release
         working-directory: crates/convert64-app
         run: trunk build --release

@@ -2,8 +2,8 @@
 //! solves to the same picture; version-1 recipe files migrate; sources are linked or
 //! embedded per layer.
 
-use convert64_cli::project::{Embed, ProjectFile, SourceSpec};
-use convert64_cli::recipe::Session;
+use convert64_project::file::SourceSpec;
+use convert64_project::{Embed, ProjectFile, Session};
 use std::path::{Path, PathBuf};
 
 fn temp(name: &str) -> PathBuf {

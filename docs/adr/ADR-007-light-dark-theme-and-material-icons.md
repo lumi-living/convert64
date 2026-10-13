@@ -60,6 +60,9 @@ In the Figma library the `Icon` component set has one variant per glyph, named b
 - Revisit when: a dedicated icon style for Convert64 is wanted (then a custom font or SVG set, same loader pattern).
 
 ## Action items
-- [ ] E8: `Theme` struct with per-theme semantic colours; View → Theme menu; persist choice
-- [ ] E8: add `egui_material_icons` to the workspace; icon constants in one module
+- [x] E8: `Theme` struct with per-theme semantic colours (#195: generated from `design/tokens.json` by `cargo xtask tokens`; system-following by default, `theme::set_theme` to switch)
+- [ ] E8: View → Theme menu; persist choice
+- [x] E8: add `egui_material_icons` to the workspace (#195: 0.8.0, `outline` feature only)
+- [x] E8: icon constants in one module (#203: `convert64_app::icons`)
+- [ ] Decide on the icon cut: `egui_material_icons` 0.8.0 ships Material Symbols **Rounded** (its `outline` feature is the unfilled Rounded font), not the Outlined cut the axis table and the Figma `Icon` set use (found in #195)
 - [ ] Screenshot both themes in the README (E9)

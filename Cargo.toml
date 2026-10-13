@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/convert64-core",
     "crates/convert64-formats",
+    "crates/convert64-project",
     "crates/convert64-cli",
     "crates/convert64-mcp",
     "crates/convert64-app",
@@ -23,7 +24,9 @@ publish = false
 [workspace.dependencies]
 convert64-core = { path = "crates/convert64-core" }
 convert64-formats = { path = "crates/convert64-formats" }
+convert64-project = { path = "crates/convert64-project" }
 convert64-cli = { path = "crates/convert64-cli" }
+convert64-mcp = { path = "crates/convert64-mcp" }
 rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
 proptest = "1.11.0"
@@ -33,17 +36,26 @@ insta = "1.48.0"
 serde_json = "1"
 toml = "1.1"
 # glow (OpenGL / WebGL2) renderer instead of the default wgpu: ADR-006 keeps
-# the app wgpu-free. Otherwise eframe's default feature set.
+# the app wgpu-free. Otherwise eframe's default feature set, plus `persistence` for the
+# View › Theme choice (#203).
 eframe = { version = "0.36.2", default-features = false, features = [
     "accesskit",
     "default_fonts",
     "glow",
     "links",
+    "persistence",
     "wayland",
     "web_screen_reader",
     "x11",
 ] }
 egui = "0.36.2"
+# Drag to reorder the layer list (#206; approved for E8 alongside TAD §4).
+egui_dnd = "0.17.0"
+# File dialogs (TAD §4): native dialogs (xdg-portal on Linux, no GTK) and the browser's
+# file picker in wasm.
+rfd = "0.17.2"
+# Material Symbols icon font (ADR-007): the Outlined cut only, not the default Filled.
+egui_material_icons = { version = "0.8.0", default-features = false, features = ["outline"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
