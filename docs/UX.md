@@ -76,7 +76,7 @@ The solved C64 image, for inspection and comparison.
 
 | Aspect | Decision | Why |
 |---|---|---|
-| Zoom | Integer only: 1×, 2×, 3×, 4×, 6×, 8×; same keys as above; `Cmd/Ctrl 0` fits to the largest integer zoom | nearest-neighbour texture; fractional zoom blurs pixels |
+| Zoom | Integer only: 1×, 2×, 3×, 4×, 6×, 8×; same keys as above; `Cmd/Ctrl 0` fits to the largest integer zoom, and the view opens at it: the picture with at least half the border (16 px) on each side when the border is drawn, with the Source margin when it is not | nearest-neighbour texture; fractional zoom blurs pixels |
 | Aspect | 2:1 pixels in multicolor modes rendered as 2 device px per C64 px at 1×; optional "PAL 0.936" correction toggle, off by default | what the solver optimised, then what a TV would show |
 | Pan | `Space`+drag, middle-drag, scroll, or the result panel as navigator | universal |
 | Border | 32 px-equivalent border in the chosen border colour, toggle `View › Border` | judging edge colours against the frame is part of the craft |
