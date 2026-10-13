@@ -19,7 +19,8 @@ use crate::document::SolveSettings;
 use crate::geom::{PxRect, Vec2};
 use crate::layer::{
     Adjustments, Blend, BrightnessContrast, CellMetric, Curves, FitMode, Gamma, Hsl, Layer, Levels,
-    Method, Metric, OrderedSemantics, PatternPhase, RangeMatch, Recipe, RecipeError, Transform,
+    Method, Metric, OrderedSemantics, PatternPhase, RangeMatch, Recipe, RecipeError, Snap,
+    Transform,
 };
 use crate::mask::paint::{self, PaintMode};
 use crate::mask::{
@@ -350,13 +351,49 @@ pub struct LayerSetBlend {
     pub blend: Blend,
 }
 
-/// Places a layer on the canvas (`layer_set_transform`).
+/// Places a layer on the canvas (`layer_set_transform`): the whole transform, snapped
+/// by the project's [`Snap`] (ADR-011), or by `snap` when given (the app's Cmd-drag,
+/// which inverts the setting for one drag).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LayerSetTransform {
     /// Layer index.
     pub layer: usize,
-    /// The whole transform: translate, scale, flips.
+    /// The whole transform: translate, scale, rotate, anchor, flips.
     pub transform: Transform,
+    /// Snap this transform this way instead of by the project's setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snap: Option<Snap>,
+}
+
+/// Turns a layer about its anchor (`layer_rotate`, ADR-011): to `degrees`, or by them
+/// with `relative`; positive is clockwise on screen. With `anchor`, the pivot moves there
+/// first and the picture stays in place. The result is snapped as by
+/// [`LayerSetTransform`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayerRotate {
+    /// Layer index.
+    pub layer: usize,
+    /// The angle in degrees (or the change, with `relative`).
+    pub degrees: f32,
+    /// Add `degrees` to the layer's rotation instead of setting it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub relative: bool,
+    /// A new pivot, 0–1 across the layer's box (`(0, 0)` its top-left).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<Vec2>,
+    /// Snap this way instead of by the project's setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snap: Option<Snap>,
+}
+
+/// Sets the project's snap (`snap_set`, ADR-011): what `layer_set_transform` and
+/// `layer_rotate` round a transform to. The composite does not change.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapSet {
+    /// `off`, `c64-pixel` or `cell`.
+    pub snap: Snap,
 }
 
 /// Moves a layer by a (sub-pixel) offset in canvas pixels (`layer_nudge`, TAD §3.3).
@@ -648,6 +685,8 @@ pub enum Command {
     LayerSetBlend(LayerSetBlend),
     /// `layer_set_transform`.
     LayerSetTransform(LayerSetTransform),
+    /// `layer_rotate`.
+    LayerRotate(LayerRotate),
     /// `layer_nudge`.
     LayerNudge(LayerNudge),
     /// `layer_rename`.
@@ -666,6 +705,8 @@ pub enum Command {
     BackgroundPin(BackgroundPin),
     /// `solve_set`.
     SolveSet(SolveSet),
+    /// `snap_set`.
+    SnapSet(SnapSet),
 }
 
 /// A command's name and a one-line description, for front-ends (CLI help, MCP tool list).
@@ -765,6 +806,11 @@ pub const REGISTRY: &[CommandInfo] = &[
         summary: "Place a layer: translate, scale and flips, in canvas pixels.",
     },
     CommandInfo {
+        name: "layer_rotate",
+        summary: "Turn a layer about its anchor, to or by an angle in degrees (clockwise); \
+                  optionally move the anchor first, keeping the picture in place.",
+    },
+    CommandInfo {
         name: "layer_nudge",
         summary: "Move a layer by a (sub-pixel) offset in canvas pixels.",
     },
@@ -801,6 +847,11 @@ pub const REGISTRY: &[CommandInfo] = &[
         name: "solve_set",
         summary: "Set some of the solve settings: solver, png2c64 divergences, hysteresis, \
                   luma pair bias, refinements, finalists; the others are kept.",
+    },
+    CommandInfo {
+        name: "snap_set",
+        summary: "Set what transform commands snap to: off, c64-pixel (whole target pixels, \
+                  0.5°) or cell (cell boundaries, 15°).",
     },
 ];
 
@@ -874,6 +925,7 @@ enum Setting {
     Target(Mode),
     Palette(Box<Palette>),
     Solve(Box<SolveSettings>),
+    Snap(Snap),
 }
 
 /// The layer's mask, creating a fully opaque one if it has none. Returns whether it was
@@ -918,6 +970,7 @@ impl Command {
             Self::LayerSetOpacity(_) => "layer_set_opacity",
             Self::LayerSetBlend(_) => "layer_set_blend",
             Self::LayerSetTransform(_) => "layer_set_transform",
+            Self::LayerRotate(_) => "layer_rotate",
             Self::LayerNudge(_) => "layer_nudge",
             Self::LayerRename(_) => "layer_rename",
             Self::LayerDuplicate(_) => "layer_duplicate",
@@ -927,6 +980,7 @@ impl Command {
             Self::PaletteSet(_) => "palette_set",
             Self::BackgroundPin(_) => "background_pin",
             Self::SolveSet(_) => "solve_set",
+            Self::SnapSet(_) => "snap_set",
         }
     }
 
@@ -979,6 +1033,17 @@ impl Command {
                     Err(param("by", "must be finite"))
                 }
             }
+            Self::LayerRotate(c) => {
+                Transform::IDENTITY
+                    .with_rotation(c.degrees)
+                    .map_err(|e| param("degrees", e.to_string()))?;
+                if let Some(a) = c.anchor {
+                    Transform::IDENTITY
+                        .with_anchor(a)
+                        .map_err(|e| param("anchor", e.to_string()))?;
+                }
+                Ok(())
+            }
             Self::LayerRename(c) => {
                 if c.name.is_empty() {
                     Err(param("name", "must not be empty"))
@@ -1014,7 +1079,8 @@ impl Command {
             | Self::AdjustmentsSet(_)
             | Self::RecipeSet(_)
             | Self::PaletteSet(_)
-            | Self::BackgroundPin(_) => Ok(()),
+            | Self::BackgroundPin(_)
+            | Self::SnapSet(_) => Ok(()),
         }
     }
 
@@ -1171,7 +1237,30 @@ impl Command {
             Self::LayerSetVisible(c) => set_prop(p, c.layer, Prop::Visible(c.visible)),
             Self::LayerSetOpacity(c) => set_prop(p, c.layer, Prop::Opacity(c.opacity)),
             Self::LayerSetBlend(c) => set_prop(p, c.layer, Prop::Blend(c.blend)),
-            Self::LayerSetTransform(c) => set_prop(p, c.layer, Prop::Transform(c.transform)),
+            Self::LayerSetTransform(c) => {
+                let t = snapped(p, c.layer, c.transform, c.snap)?;
+                set_prop(p, c.layer, Prop::Transform(t))
+            }
+            Self::LayerRotate(c) => {
+                let l = layer_mut(p, c.layer)?;
+                let size = l.source().size();
+                let mut t = l.transform();
+                if let Some(a) = c.anchor {
+                    t = t
+                        .reanchored(a, size)
+                        .map_err(|e| param("anchor", e.to_string()))?;
+                }
+                let degrees = if c.relative {
+                    t.rotate() + c.degrees
+                } else {
+                    c.degrees
+                };
+                let t = t
+                    .with_rotation(degrees)
+                    .map_err(|e| param("degrees", e.to_string()))?;
+                let t = snapped(p, c.layer, t, c.snap)?;
+                set_prop(p, c.layer, Prop::Transform(t))
+            }
             Self::LayerNudge(c) => {
                 let t = layer_mut(p, c.layer)?
                     .transform()
@@ -1212,8 +1301,22 @@ impl Command {
                 s.check().map_err(|e| param("solve", e))?;
                 Ok(set_setting(p, Setting::Solve(Box::new(s))))
             }
+            Self::SnapSet(c) => Ok(set_setting(p, Setting::Snap(c.snap))),
         }
     }
+}
+
+/// `t` for layer `i`, snapped by `snap` or else the project's setting (ADR-011), for
+/// the project's target mode.
+fn snapped(
+    p: &mut Project,
+    i: usize,
+    t: Transform,
+    snap: Option<Snap>,
+) -> Result<Transform, CommandError> {
+    let (snap, target) = (snap.unwrap_or(p.snap), p.target);
+    let size = layer_mut(p, i)?.source().size();
+    Ok(snap.apply(t, size, target))
 }
 
 const fn inserted(index: usize) -> Memento {
@@ -1274,7 +1377,17 @@ fn swap_prop(l: &mut Layer, value: Prop) -> Result<Prop, CommandError> {
 
 /// Puts a document setting in place and returns the memento of the one it replaced.
 fn set_setting(p: &mut Project, value: Setting) -> (Memento, Dirty) {
-    (Memento::Setting(swap_setting(p, value)), Dirty::Settings)
+    let dirty = setting_dirty(&value);
+    (Memento::Setting(swap_setting(p, value)), dirty)
+}
+
+/// What changing a setting dirties: the snap changes no pixel (an empty cell set);
+/// the others re-solve the whole picture.
+fn setting_dirty(s: &Setting) -> Dirty {
+    match s {
+        Setting::Snap(_) => Dirty::Cells(crate::geom::CellSet::EMPTY),
+        _ => Dirty::Settings,
+    }
 }
 
 fn swap_setting(p: &mut Project, value: Setting) -> Setting {
@@ -1282,6 +1395,7 @@ fn swap_setting(p: &mut Project, value: Setting) -> Setting {
         Setting::Target(m) => Setting::Target(std::mem::replace(&mut p.target, m)),
         Setting::Palette(v) => Setting::Palette(Box::new(std::mem::replace(&mut p.palette, *v))),
         Setting::Solve(v) => Setting::Solve(Box::new(std::mem::replace(&mut p.solve, *v))),
+        Setting::Snap(v) => Setting::Snap(std::mem::replace(&mut p.snap, v)),
     }
 }
 
@@ -1460,8 +1574,9 @@ impl Memento {
                 Dirty::Stack
             }
             Self::Setting(before) => {
+                let dirty = setting_dirty(&before);
                 swap_setting(p, before);
-                Dirty::Settings
+                dirty
             }
         }
     }
@@ -1836,7 +1951,92 @@ mod tests {
         ] {
             assert!(names.contains(&c.name()));
         }
-        assert_eq!(names.len(), 30);
+        assert_eq!(names.len(), 32);
+    }
+
+    /// #198: transform commands snap by the project's setting unless told otherwise;
+    /// `layer_rotate` turns about the anchor, moves the anchor keeping the picture in
+    /// place, and adds with `relative`.
+    #[test]
+    fn transform_commands_snap_and_rotate() {
+        let mut e = Editor::new(stack());
+        let size = e.project().layers[0].source().size();
+        let proposed = Transform::new(Vec2::new(3.3, -2.6), Vec2::new(1.01, 0.97), false, false)
+            .unwrap()
+            .with_rotation(7.3)
+            .unwrap();
+        let set = |snap| {
+            Command::LayerSetTransform(LayerSetTransform {
+                layer: 0,
+                transform: proposed,
+                snap,
+            })
+        };
+        e.execute(set(None)).unwrap();
+        assert_eq!(e.project().layers[0].transform(), proposed, "snap is off");
+        assert_eq!(
+            e.execute(Command::SnapSet(SnapSet { snap: Snap::Cell }))
+                .unwrap(),
+            Dirty::Cells(crate::geom::CellSet::EMPTY),
+            "the snap changes no pixel"
+        );
+        e.execute(set(None)).unwrap();
+        let t = e.project().layers[0].transform();
+        assert_eq!(t, Snap::Cell.apply(proposed, size, Mode::MulticolorBitmap));
+        assert_eq!((t.translate(), t.rotate()), (Vec2::new(0.0, 0.0), 0.0));
+        e.execute(set(Some(Snap::Off))).unwrap();
+        assert_eq!(e.project().layers[0].transform(), proposed, "overridden");
+        e.undo();
+        e.undo();
+        e.undo();
+        assert_eq!(e.project().snap, Snap::Off, "undone");
+
+        // Rotate about a new anchor: the picture stays put, then turns about it.
+        let before = e.project().layers[0].transform();
+        let pivot = |t: Transform| t.layer_to_canvas(size, Vec2::new(0.0, size.1 as f32));
+        e.execute(Command::LayerRotate(LayerRotate {
+            layer: 0,
+            degrees: 30.0,
+            relative: true,
+            anchor: Some(Vec2::new(0.0, 1.0)),
+            snap: None,
+        }))
+        .unwrap();
+        let t = e.project().layers[0].transform();
+        assert_eq!(t.rotate(), before.rotate() + 30.0);
+        assert_eq!(t.anchor(), Vec2::new(0.0, 1.0));
+        let (a, b) = (pivot(before), pivot(t));
+        assert!(
+            (a.x - b.x).abs() < 1e-3 && (a.y - b.y).abs() < 1e-3,
+            "{a:?} {b:?}"
+        );
+        e.execute(Command::LayerRotate(LayerRotate {
+            layer: 0,
+            degrees: -5.0,
+            relative: false,
+            anchor: None,
+            snap: Some(Snap::C64Pixel),
+        }))
+        .unwrap();
+        assert_eq!(e.project().layers[0].transform().rotate(), -5.0);
+        for bad in [
+            LayerRotate {
+                layer: 0,
+                degrees: f32::NAN,
+                relative: false,
+                anchor: None,
+                snap: None,
+            },
+            LayerRotate {
+                layer: 0,
+                degrees: 1.0,
+                relative: false,
+                anchor: Some(Vec2::new(1.5, 0.0)),
+                snap: None,
+            },
+        ] {
+            assert!(e.execute(Command::LayerRotate(bad)).is_err());
+        }
     }
 
     /// Two layers sharing pixels, the second smaller and masked, so moves and copies show.
@@ -1874,6 +2074,14 @@ mod tests {
                 layer: 0,
                 transform: Transform::new(Vec2::new(3.0, -2.0), Vec2::new(1.5, 2.0), true, true)
                     .unwrap(),
+                snap: None,
+            }),
+            Command::LayerRotate(LayerRotate {
+                layer: 1,
+                degrees: 12.5,
+                relative: false,
+                anchor: Some(Vec2::new(0.25, 0.0)),
+                snap: None,
             }),
             Command::LayerNudge(LayerNudge {
                 layer: 1,
@@ -1920,6 +2128,9 @@ mod tests {
                 hysteresis: Some(Some(0.97)),
                 refinements: Some(1),
                 ..SolveSet::default()
+            }),
+            Command::SnapSet(SnapSet {
+                snap: Snap::C64Pixel,
             }),
         ]
     }

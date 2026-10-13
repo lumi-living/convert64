@@ -121,7 +121,7 @@ impl Server {
                         "serverInfo": { "name": "convert64-mcp", "version": env!("CARGO_PKG_VERSION") },
                         "instructions": "Open a project with project_open, edit it with the registry tools \
                                          (layer_*, recipe_set, adjustments_set, mode_set, palette_set, \
-                                         background_pin, solve_set, mask_*, cell_*), solve, read the clash \
+                                         background_pin, solve_set, snap_set, mask_*, cell_*), solve, read the clash \
                                          report, and save with project_save. Layers are referenced by index or name."
                     }),
                 )

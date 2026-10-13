@@ -33,7 +33,7 @@ use crate::error::{ProjectError, invalid};
 use crate::recipe::RecipeFile;
 use crate::store::Store;
 use convert64_core::colour::ColourSet;
-use convert64_core::layer::{Adjustments, Blend, Recipe, Transform};
+use convert64_core::layer::{Adjustments, Blend, Recipe, Snap, Transform};
 use convert64_core::mask::{MaskRaster, Modifiers, SourceEntry};
 use convert64_core::mode::Mode;
 use convert64_core::model::CellPos;
@@ -74,6 +74,10 @@ pub struct ProjectFile {
     /// How the picture is solved.
     #[serde(default)]
     pub solve: SolveSpec,
+    /// What transform commands snap to (ADR-011): `off` (the default, not written),
+    /// `c64-pixel` or `cell`.
+    #[serde(default, skip_serializing_if = "is_off")]
+    pub snap: Snap,
     /// Registry commands run in order after loading (a recipe file's commands).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<JsonCommand>,
@@ -85,6 +89,10 @@ const fn default_supersample() -> u8 {
 
 const fn one() -> f32 {
     1.0
+}
+
+fn is_off(s: &Snap) -> bool {
+    *s == Snap::Off
 }
 
 const fn yes() -> bool {
@@ -468,6 +476,7 @@ impl ProjectFile {
             regions: Vec::new(),
             steering: SteeringSpec::default(),
             solve: SolveSpec::default(),
+            snap: Snap::Off,
             commands: Vec::new(),
         }
     }
@@ -498,6 +507,7 @@ impl ProjectFile {
             regions: Vec::new(),
             steering: SteeringSpec::default(),
             solve: r.solve,
+            snap: Snap::Off,
             commands: r.commands,
         }
     }
@@ -723,5 +733,35 @@ mod tests {
         assert_eq!(p.layers[0].source, SourceSpec::Path("a.png".into()));
         let v2 = r#"{"schema_version":2,"target":"hires-bitmap","layers":[],"surprise":1}"#;
         assert!(ProjectFile::parse(v2).is_err(), "unknown fields are errors");
+    }
+
+    /// #198: the snap setting and a layer's rotation and anchor are optional, written
+    /// only when set, and a file without them reads and writes exactly as before.
+    #[test]
+    fn snap_rotate_and_anchor_are_backward_compatible() {
+        let old = r#"{"schema_version":2,"target":"hires-bitmap","layers":[
+            {"name":"a","source":"a.png","transform":{"translate":{"x":1.5,"y":2.0},
+             "scale":{"x":2.0,"y":2.0},"flip_h":true,"flip_v":false}}]}"#;
+        let p = ProjectFile::parse(old).unwrap();
+        assert_eq!(p.snap, Snap::Off);
+        let t = p.layers[0].transform;
+        assert_eq!((t.rotate(), t.anchor()), (0.0, Transform::CENTRE));
+        let text = p.to_json();
+        for absent in ["snap", "rotate", "anchor"] {
+            assert!(!text.contains(absent), "{absent} written: {text}");
+        }
+        let mut q = p.clone();
+        q.snap = Snap::C64Pixel;
+        q.layers[0].transform = t
+            .with_rotation(-7.5)
+            .unwrap()
+            .with_anchor(convert64_core::Vec2::new(0.0, 1.0))
+            .unwrap();
+        let text = q.to_json();
+        assert!(text.contains(r#""snap": "c64-pixel""#), "{text}");
+        assert!(text.contains(r#""rotate": -7.5"#), "{text}");
+        assert_eq!(ProjectFile::parse(&text).unwrap(), q);
+        let bad = r#"{"schema_version":2,"target":"hires-bitmap","layers":[],"snap":"grid"}"#;
+        assert!(ProjectFile::parse(bad).is_err());
     }
 }
