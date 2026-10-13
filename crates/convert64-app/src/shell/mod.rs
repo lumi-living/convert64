@@ -29,17 +29,19 @@ pub use crate::view::ViewMode;
 pub use export_dialog::ExportDialog;
 pub use mask::{MaskState, MaskTool};
 
-/// The four steering tools (`docs/UX.md` §7), in toolbar order.
+/// The four steering tools (`docs/UX.md` §7), in toolbar order. Nudge (`V`, Move in
+/// Photoshop and Figma) is the default: a stray click with it selects a layer and
+/// changes nothing, where Pin would pin a cell (#242).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tool {
     /// Pin a cell's colour set.
-    #[default]
     Pin,
     /// Lock a cell.
     Lock,
     /// Paint a region.
     Region,
     /// Nudge a layer.
+    #[default]
     Nudge,
     /// Scale and rotate a layer (ADR-011).
     Transform,
@@ -313,6 +315,16 @@ impl Shell {
             .clone()
             .unwrap_or_else(|| (crate::export::Settings::default(), ws.doc.stem()));
         self.export = Some(ExportDialog { settings, name });
+    }
+
+    /// A new document starts with the default tool (Nudge) and out of mask mode, so a
+    /// first click on it changes nothing (#242).
+    pub fn reset_tool(&mut self) {
+        self.tool = Tool::default();
+        self.mask.active = false;
+        self.mask.tool = None;
+        self.drag = None;
+        self.transform_drag = None;
     }
 
     /// Fits the picture into the working view on the next frame (after an open).
