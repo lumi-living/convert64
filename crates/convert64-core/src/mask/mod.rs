@@ -178,6 +178,66 @@ impl MaskRaster {
         );
         self.data[y as usize * self.width as usize + x as usize]
     }
+
+    /// The bounding rectangle of the values above zero (empty if there are none).
+    pub fn nonzero_rect(&self) -> PxRect {
+        let (w, h) = self.size();
+        let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+        for (y, row) in (0..h).zip(self.data.chunks(w as usize)) {
+            let Some(first) = row.iter().position(|&v| v > 0.0) else {
+                continue;
+            };
+            let last = row.iter().rposition(|&v| v > 0.0).expect("one is");
+            x0 = x0.min(first as u32);
+            x1 = x1.max(last as u32 + 1);
+            y0 = y0.min(y);
+            y1 = y + 1;
+        }
+        if x1 <= x0 {
+            PxRect::EMPTY
+        } else {
+            PxRect::new(x0, y0, x1, y1)
+        }
+    }
+
+    /// Copies of the [`TILE`]-sized tiles that overlap `rect`.
+    pub(crate) fn tiles(&self, rect: PxRect) -> Vec<Tile> {
+        let (w, h) = self.size();
+        let rect = rect.intersect(PxRect::of_size(w, h));
+        let mut out = Vec::new();
+        if rect.is_empty() {
+            return out;
+        }
+        let mut ty = rect.y0 / TILE * TILE;
+        while ty < rect.y1 {
+            let mut tx = rect.x0 / TILE * TILE;
+            while tx < rect.x1 {
+                let r = PxRect::new(tx, ty, (tx + TILE).min(w), (ty + TILE).min(h));
+                let mut data = Vec::with_capacity((r.width() * r.height()) as usize);
+                for y in r.y0..r.y1 {
+                    let row = (y * w) as usize;
+                    data.extend_from_slice(&self.data[row + r.x0 as usize..row + r.x1 as usize]);
+                }
+                out.push(Tile { rect: r, data });
+                tx += TILE;
+            }
+            ty += TILE;
+        }
+        out
+    }
+
+    /// Writes saved tiles back.
+    pub(crate) fn restore(&mut self, tiles: &[Tile]) {
+        let w = self.width;
+        for t in tiles {
+            let tw = t.rect.width() as usize;
+            for (k, y) in (t.rect.y0..t.rect.y1).enumerate() {
+                let row = (y * w) as usize;
+                self.data[row + t.rect.x0 as usize..row + t.rect.x1 as usize]
+                    .copy_from_slice(&t.data[k * tw..(k + 1) * tw]);
+            }
+        }
+    }
 }
 
 /// Side of the square raster tiles that undo saves (layer pixels).
@@ -414,44 +474,21 @@ impl Mask {
 
     /// Copies of the [`TILE`]-sized tiles of the raster that overlap `rect`.
     pub(crate) fn tiles(&self, rect: PxRect) -> Vec<Tile> {
-        let (w, h) = self.raster.size();
-        let rect = rect.intersect(PxRect::of_size(w, h));
-        let mut out = Vec::new();
-        if rect.is_empty() {
-            return out;
-        }
-        let mut ty = rect.y0 / TILE * TILE;
-        while ty < rect.y1 {
-            let mut tx = rect.x0 / TILE * TILE;
-            while tx < rect.x1 {
-                let r = PxRect::new(tx, ty, (tx + TILE).min(w), (ty + TILE).min(h));
-                let mut data = Vec::with_capacity((r.width() * r.height()) as usize);
-                for y in r.y0..r.y1 {
-                    let row = (y * w) as usize;
-                    data.extend_from_slice(
-                        &self.raster.data[row + r.x0 as usize..row + r.x1 as usize],
-                    );
-                }
-                out.push(Tile { rect: r, data });
-                tx += TILE;
-            }
-            ty += TILE;
-        }
-        out
+        self.raster.tiles(rect)
     }
 
     /// Writes saved tiles back and bumps the generation.
     pub(crate) fn restore(&mut self, tiles: &[Tile]) {
-        let w = self.raster.width;
-        for t in tiles {
-            let tw = t.rect.width() as usize;
-            for (k, y) in (t.rect.y0..t.rect.y1).enumerate() {
-                let row = (y * w) as usize;
-                self.raster.data[row + t.rect.x0 as usize..row + t.rect.x1 as usize]
-                    .copy_from_slice(&t.data[k * tw..(k + 1) * tw]);
-            }
-        }
+        self.raster.restore(tiles);
         self.generation = next_generation();
+    }
+
+    /// Sets source `i`'s combine mode and returns the one it replaces.
+    pub fn set_combine(&mut self, i: usize, combine: Combine) -> Result<Combine, MaskError> {
+        let e = self.sources.get_mut(i).ok_or(MaskError::NoSource(i))?;
+        let old = std::mem::replace(&mut e.combine, combine);
+        self.generation = next_generation();
+        Ok(old)
     }
 
     /// The raster's and sources' generation: equal generations mean unchanged layer-space

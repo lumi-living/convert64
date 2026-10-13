@@ -26,6 +26,12 @@
 //! - **feather slider**: `update` after changing layer 7's feather: one mask
 //!   re-evaluated, no resample.
 //!
+//! The same four cases again with every layer **rotated** (#198, ADR-011: layer `i` by
+//! `3 + 7·i` degrees about its centre), which takes the non-separable path (inverse-mapped
+//! Catmull-Rom sampling with exact edge coverage). The budgets above were set for the
+//! axis-aligned path and are printed against these rows too, for comparison; the nudge
+//! row is a rotation drag (`update` after turning layer 4 by a further 0.25°).
+//!
 //! The budgets are for the CI macOS runner class (the `bench` workflow); the check is
 //! printed, not asserted, because shared runners are noisy.
 
@@ -52,6 +58,16 @@ fn budget(case: &str) -> Option<([f64; 2], &'static str)> {
         _ => None,
     }
 }
+/// [`scene`] with layer `i` turned `3 + 7·i` degrees about its centre (#198).
+fn rotated_scene() -> Vec<Layer> {
+    let mut layers = scene();
+    for (i, l) in layers.iter_mut().enumerate() {
+        let t = l.transform().with_rotation(3.0 + 7.0 * i as f32).unwrap();
+        l.set_transform(t);
+    }
+    layers
+}
+
 fn scene() -> Vec<Layer> {
     let blends = [
         Blend::Normal,
@@ -148,7 +164,6 @@ fn time<S>(runs: usize, mut setup: impl FnMut() -> S, mut f: impl FnMut(&mut S))
 #[test]
 #[ignore = "benchmark: run in release with --ignored --nocapture"]
 fn composite_10_masked_layers_at_4x() {
-    let layers = scene();
     let threads = if PARALLEL {
         let n = std::thread::available_parallelism().map_or(1, usize::from);
         format!("parallel, {n} threads")
@@ -158,6 +173,20 @@ fn composite_10_masked_layers_at_4x() {
     println!(
         "bench: 10 layers 320x200, masks (raster + gradient, feather 8), 4 blend modes, 4x, {threads}"
     );
+    run(&scene(), "", |_, k| {
+        Transform::translated(Vec2::new(k, 0.0)).unwrap()
+    });
+    // #198: every layer rotated; the nudge is a rotation drag on layer 4.
+    run(&rotated_scene(), " (rotated)", |t, k| {
+        t.with_rotation(31.0 + k).unwrap()
+    });
+}
+
+/// Times the four cases on `layers` for both modes and prints them, each case name
+/// followed by `suffix`. `nudge(t, k)` is layer 4's transform after `k` steps of the
+/// nudge row, from its transform `t` in `layers`.
+fn run(layers: &[Layer], suffix: &str, nudge: impl Fn(Transform, f32) -> Transform) {
+    let layers = layers.to_vec();
     let cases = [
         "cold composite",
         "warm recomposite",
@@ -192,13 +221,14 @@ fn composite_10_masked_layers_at_4x() {
         let mut nudge_c = Compositor::new(grid);
         nudge_c.update(&layers, &[]);
         let mut moved = layers.clone();
+        let t4 = layers[4].transform();
         let mut k = 0.0f32;
         rows[2][m] = time(
             21,
             || (),
             |()| {
                 k += 0.25;
-                moved[4].set_transform(Transform::translated(Vec2::new(k, 0.0)).unwrap());
+                moved[4].set_transform(nudge(t4, k));
                 nudge_c.update(&moved, &[]);
             },
         );
@@ -226,7 +256,7 @@ fn composite_10_masked_layers_at_4x() {
         format!("{w}x{h}")
     };
     println!(
-        "bench: {:<18} {:>12} {:>12}   budget",
+        "bench: {:<28} {:>12} {:>12}   budget",
         "",
         format!("mc {}", size(modes[0])),
         format!("hires {}", size(modes[1])),
@@ -241,8 +271,9 @@ fn composite_10_masked_layers_at_4x() {
                 if within { "within" } else { "OVER" }
             )
         });
+        let name = format!("{case}{suffix}");
         println!(
-            "bench: {case:<18} {:>9.2} ms {:>9.2} ms{check}",
+            "bench: {name:<28} {:>9.2} ms {:>9.2} ms{check}",
             ms(row[0].median),
             ms(row[1].median)
         );
@@ -250,8 +281,9 @@ fn composite_10_masked_layers_at_4x() {
     println!("bench: (medians; fastest and slowest run:)");
     for (case, row) in cases.iter().zip(rows) {
         let range = |s: Stat| format!("{:.1}–{:.1}", ms(s.min), ms(s.max));
+        let name = format!("{case}{suffix}");
         println!(
-            "bench: {case:<18} {:>12} {:>12}",
+            "bench: {name:<28} {:>12} {:>12}",
             range(row[0]),
             range(row[1])
         );

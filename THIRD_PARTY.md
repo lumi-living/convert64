@@ -34,3 +34,11 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Fonts
+
+`crates/convert64-app/assets/fonts/` bundles Inter (Regular, Medium; rsms/inter v4.1) and
+JetBrains Mono (Regular; JetBrains/JetBrainsMono v2.304), unmodified, under the SIL Open
+Font License 1.1. The licence texts are `OFL-Inter.txt` and `OFL-JetBrainsMono.txt` in
+that directory; its `README.md` records the release and SHA-256 of every file. The
+Material Symbols icon font is embedded by the `egui_material_icons` crate (Apache-2.0).

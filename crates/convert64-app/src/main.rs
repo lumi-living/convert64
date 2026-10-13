@@ -1,35 +1,474 @@
 //! eframe/egui user interface; native via `cargo run -p convert64-app`, web via `trunk build` (`docs/TAD.md §4`).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-/// Placeholder for the document being converted.
-///
-/// Will be replaced by `convert64_core::Project` in E2.
-#[derive(Debug, Default)]
-struct Project;
+use convert64_app::document::Document;
+use convert64_app::files::{FileEvent, Files, Purpose};
+use convert64_app::shell::{Action, Shell};
+use convert64_app::theme;
+use convert64_app::workspace::Workspace;
+use convert64_core::solve::SolveMode;
+
+/// The storage key of the View › Theme choice (eframe's app storage: a file natively,
+/// `localStorage` in the browser).
+const THEME_KEY: &str = "theme";
 
 /// Top-level UI state; every frame is drawn from the held document.
 #[derive(Debug, Default)]
 struct App {
-    /// The open document (placeholder until E2).
-    #[expect(
-        dead_code,
-        reason = "placeholder; read once E2 wires in the core Project"
-    )]
-    project: Project,
+    /// The open document and its preview, if any.
+    workspace: Option<Workspace>,
+    /// The chrome: working-view mode, tool, dock tab, what is hidden (#203).
+    shell: Shell,
     /// Solves off the frame: a worker thread natively, a stage per frame in wasm (#194).
     scheduler: convert64_app::scheduler::Scheduler,
-    /// The newest solve result, drawn every frame (once E8 wires in the preview).
-    result: Option<convert64_app::scheduler::SolveResult>,
+    /// Open, save and export dialogs, downloads and dropped files (#205).
+    files: Files,
+    /// The window title last set, so it is sent only when it changes.
+    title: String,
+    /// The egui context, for the time solves are submitted at.
+    ctx: egui::Context,
+    /// `--screenshot`: save the window to a PNG after a few frames, then quit (native).
+    #[cfg(not(target_arch = "wasm32"))]
+    screenshot: Option<screenshot::Request>,
 }
 
 impl App {
-    /// The app, with the scheduler asking `ctx` for a repaint when a result is ready.
-    fn new(ctx: &egui::Context) -> Self {
-        let mut app = Self::default();
-        let ctx = ctx.clone();
+    /// The app with the generated look installed, the theme restored from `cc`'s storage
+    /// and the scheduler asking for a repaint when a result is ready.
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        theme::install(&cc.egui_ctx);
+        let mut app = Self {
+            ctx: cc.egui_ctx.clone(),
+            ..Self::default()
+        };
+        let stored = cc
+            .storage
+            .and_then(|s| s.get_string(THEME_KEY))
+            .and_then(|s| theme_from_str(&s));
+        if let Some(preference) = stored {
+            app.set_theme(&cc.egui_ctx, preference);
+        }
+        let ctx = cc.egui_ctx.clone();
         app.scheduler
             .set_waker(std::sync::Arc::new(move || ctx.request_repaint()));
         app
+    }
+
+    fn set_theme(&mut self, ctx: &egui::Context, preference: egui::ThemePreference) {
+        self.shell.theme = preference;
+        theme::set_theme(ctx, preference);
+    }
+
+    /// Opens `doc`: the working view fits it and a full solve starts.
+    fn open(&mut self, doc: Document) {
+        self.scheduler.cancel();
+        let mut ws = Workspace::new(doc);
+        Self::submit(&mut self.scheduler, &mut ws, &self.ctx, SolveMode::Full);
+        self.workspace = Some(ws);
+        self.shell.fit_on_next_frame();
+        self.shell.last_export = None;
+        self.shell.error = None;
+    }
+
+    /// Submits `ws`'s document to the scheduler in `mode`, noting when for the
+    /// slow-solve state.
+    fn submit(
+        scheduler: &mut convert64_app::scheduler::Scheduler,
+        ws: &mut Workspace,
+        ctx: &egui::Context,
+        mode: SolveMode,
+    ) {
+        ws.solving = true;
+        ws.paused = false;
+        if mode == SolveMode::Full {
+            ws.solve_started = Some(ctx.input(|i| i.time));
+        }
+        let previous = ws.solution.clone();
+        scheduler.submit(ws.doc.snapshot(previous), mode);
+    }
+
+    /// Re-solves after an edit: the whole picture, since #205's edits change settings or
+    /// add layers (the interactive path arrives with dragging, #206).
+    fn resolve(&mut self) {
+        if let Some(ws) = &mut self.workspace {
+            Self::submit(&mut self.scheduler, ws, &self.ctx, SolveMode::Full);
+        }
+    }
+
+    /// A file arrived (picked, dropped or named on the command line): a picture dropped
+    /// on an open project becomes a new layer; anything else opens.
+    fn receive(
+        &mut self,
+        ctx: &egui::Context,
+        name: &str,
+        bytes: &[u8],
+        path: Option<&std::path::Path>,
+        dropped: bool,
+    ) {
+        if dropped
+            && !convert64_app::document::is_project(name)
+            && let Some(ws) = &mut self.workspace
+        {
+            match ws.doc.add_layer(name, bytes, path) {
+                Ok(()) => {
+                    self.shell.layer = ws.doc.session().project().layers.len() - 1;
+                    self.shell
+                        .toast(ctx, format!("Added {name} as a layer"), false);
+                    self.resolve();
+                }
+                Err(e) => self
+                    .shell
+                    .toast(ctx, format!("Can't add {name}: {e}"), true),
+            }
+            return;
+        }
+        match Document::open(name, bytes, path) {
+            Ok(doc) => self.open(doc),
+            Err(e) => self.shell.report_error(
+                format!("Can't open {name}"),
+                format!("{e}. Open a PNG or a .convert64 project."),
+            ),
+        }
+    }
+
+    /// Saves the project: natively to its file (or a new one), in the browser as a
+    /// download with every source embedded.
+    fn save(&mut self, ctx: &egui::Context, ask: bool) {
+        let Some(ws) = &mut self.workspace else {
+            return;
+        };
+        let file_name = format!("{}.convert64", ws.doc.stem());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let path = match ws.doc.path() {
+                Some(p) if !ask => Some(p.to_owned()),
+                _ => self
+                    .files
+                    .pick_save_path(&file_name, ("Convert64 project", &["convert64"])),
+            };
+            let Some(path) = path else {
+                return;
+            };
+            match ws.doc.save_to(&path) {
+                Ok(()) => self
+                    .shell
+                    .toast(ctx, format!("Saved {}", path.display()), false),
+                Err(e) => self.shell.toast(ctx, format!("Can't save: {e}"), true),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = ask;
+            match ws
+                .doc
+                .project_json(std::path::Path::new(""), convert64_project::Embed::All)
+            {
+                Ok(json) => {
+                    ws.doc.mark_saved();
+                    self.files
+                        .save_files(ctx, vec![(file_name, json.into_bytes())], "Saved");
+                }
+                Err(e) => self.shell.toast(ctx, format!("Can't save: {e}"), true),
+            }
+        }
+    }
+
+    /// Exports the result on screen.
+    fn export(
+        &mut self,
+        ctx: &egui::Context,
+        settings: convert64_app::export::Settings,
+        name: String,
+    ) {
+        let Some(ws) = &self.workspace else {
+            return;
+        };
+        let Some(solution) = ws.solution.as_ref().filter(|_| !ws.solving) else {
+            self.shell.toast(
+                ctx,
+                "Can't export yet: the full solve is still running.",
+                true,
+            );
+            return;
+        };
+        match convert64_app::export::files(
+            solution,
+            ws.doc.palette(),
+            ws.doc.mode(),
+            &name,
+            &settings,
+        ) {
+            Ok(files) => {
+                self.shell.last_export = Some((settings, name));
+                self.files.save_files(ctx, files, "Exported");
+            }
+            Err(e) => self.shell.toast(ctx, e, true),
+        }
+    }
+
+    /// Runs a registry command on the document (as part of drag `gesture`, if any) and
+    /// re-solves: the fast path during a drag, in full otherwise. Keeps the layer
+    /// selection on the layer an edit made or moved.
+    fn edit(
+        &mut self,
+        ctx: &egui::Context,
+        gesture: Option<u64>,
+        command: convert64_project::JsonCommand,
+    ) {
+        use convert64_project::{JsonCommand, LayerRef};
+        let Some(ws) = &mut self.workspace else {
+            return;
+        };
+        let select = match &command {
+            JsonCommand::LayerDuplicate {
+                layer: LayerRef::Index(i),
+            } => Some(i + 1),
+            JsonCommand::LayerRemove {
+                layer: LayerRef::Index(i),
+            } => Some(i.saturating_sub(1)),
+            _ => None,
+        };
+        let done = match gesture {
+            Some(id) => ws.doc.run_in_gesture(id, command),
+            None => ws.doc.run(command),
+        };
+        match done {
+            Ok(()) => {
+                if let Some(i) = select {
+                    self.shell.layer = i;
+                }
+                if gesture.is_some() {
+                    let dirty = convert64_core::CellSet::EMPTY;
+                    Self::submit(
+                        &mut self.scheduler,
+                        ws,
+                        &self.ctx,
+                        SolveMode::Interactive { dirty },
+                    );
+                } else {
+                    self.resolve();
+                }
+            }
+            Err(e) => self.shell.toast(ctx, format!("{e}"), true),
+        }
+    }
+
+    /// Carries out what the shell asked for.
+    fn act(&mut self, ctx: &egui::Context, action: Action) {
+        if std::env::var_os("C64_TRACE").is_some() {
+            eprintln!("action {action:?}");
+        }
+        match action {
+            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Action::SetTheme(preference) => self.set_theme(ctx, preference),
+            Action::SetMode(mode) => {
+                let Some(ws) = &mut self.workspace else {
+                    return;
+                };
+                let command =
+                    convert64_project::JsonCommand::ModeSet(convert64_core::command::ModeSet {
+                        mode,
+                    });
+                match ws.doc.run(command) {
+                    Ok(()) => {
+                        ws.solution = None;
+                        self.resolve();
+                    }
+                    Err(e) => self.shell.toast(ctx, e.to_string(), true),
+                }
+            }
+            Action::Open => self.files.pick_open(ctx, Purpose::Open),
+            Action::NewLayer if self.workspace.is_some() => {
+                self.files.pick_open(ctx, Purpose::AddLayer)
+            }
+            Action::NewLayer => self.files.pick_open(ctx, Purpose::Open),
+            Action::LoadMask => self.files.pick_open(ctx, Purpose::Mask),
+            Action::LoadPalette => self.files.pick_open(ctx, Purpose::Palette),
+            Action::PauseSolve => {
+                self.scheduler.cancel();
+                if let Some(ws) = &mut self.workspace {
+                    ws.solving = false;
+                    ws.paused = true;
+                    ws.solve_started = None;
+                }
+            }
+            Action::ResumeSolve => self.resolve(),
+            Action::Run(command) => self.edit(ctx, None, command),
+            Action::RunAll(commands, message) => {
+                let Some(ws) = &mut self.workspace else {
+                    return;
+                };
+                match ws.doc.run_all(commands) {
+                    Ok(()) => {
+                        self.shell.toast(ctx, message, false);
+                        self.resolve();
+                    }
+                    Err(e) => self.shell.toast(ctx, e.to_string(), true),
+                }
+            }
+            Action::Gesture(id, command) => self.edit(ctx, Some(id), command),
+            Action::CancelGesture => {
+                if let Some(ws) = &mut self.workspace
+                    && ws.doc.cancel_gesture()
+                {
+                    self.resolve();
+                }
+            }
+            Action::EndGesture => {
+                if let Some(ws) = &mut self.workspace {
+                    ws.doc.end_gesture();
+                }
+                // The drag's last frame got the fast path: finish with a full solve.
+                self.resolve();
+            }
+            Action::ToggleVisible(i) => {
+                let visible = self
+                    .workspace
+                    .as_ref()
+                    .and_then(|ws| ws.doc.session().project().layers.get(i))
+                    .map(|l| !l.visible());
+                if let Some(visible) = visible {
+                    let layer = convert64_project::LayerRef::Index(i);
+                    self.edit(
+                        ctx,
+                        None,
+                        convert64_project::JsonCommand::LayerSetVisible { layer, visible },
+                    );
+                }
+            }
+            Action::Undo | Action::Redo => {
+                let Some(ws) = &mut self.workspace else {
+                    return;
+                };
+                let done = if action == Action::Undo {
+                    Ok(ws.doc.undo())
+                } else {
+                    ws.doc.redo()
+                };
+                match done {
+                    Ok(true) => self.resolve(),
+                    Ok(false) => {}
+                    Err(e) => self.shell.toast(ctx, format!("Can't redo: {e}"), true),
+                }
+            }
+            Action::Save => self.save(ctx, false),
+            Action::SaveAs => self.save(ctx, true),
+            Action::Export(settings, name) => self.export(ctx, settings, name),
+        }
+    }
+
+    /// Handles finished file operations.
+    fn poll_files(&mut self, ctx: &egui::Context) {
+        self.files.take_dropped(ctx);
+        for event in self.files.poll() {
+            match event {
+                // Dialog opens replace the project; a picture dropped onto one adds a layer.
+                FileEvent::Opened {
+                    name,
+                    bytes,
+                    path,
+                    purpose: Purpose::Palette,
+                } => {
+                    if let Some(ws) = &mut self.workspace {
+                        match ws.doc.load_palette(&name, &bytes, path.as_deref()) {
+                            Ok(()) => {
+                                ws.solution = None;
+                                self.resolve();
+                            }
+                            Err(e) => self.shell.report_error(
+                                format!("Can't use {name} as the palette"),
+                                format!("{e}. A VICE .vpl file lists 16 colours as hex RGB."),
+                            ),
+                        }
+                    }
+                }
+                FileEvent::Opened {
+                    name,
+                    bytes,
+                    path,
+                    purpose: Purpose::Mask,
+                } => {
+                    let layer = self.shell.layer;
+                    if let Some(ws) = &mut self.workspace {
+                        match ws.doc.load_mask(layer, &name, &bytes, path.as_deref()) {
+                            Ok(()) => self.resolve(),
+                            Err(e) => self.shell.report_error(
+                                format!("Can't load {name} as a mask"),
+                                format!("{e}. It must be a greyscale PNG the size of the layer's picture."),
+                            ),
+                        }
+                    }
+                }
+                FileEvent::Opened {
+                    name,
+                    bytes,
+                    path,
+                    purpose,
+                } => self.receive(
+                    ctx,
+                    &name,
+                    &bytes,
+                    path.as_deref(),
+                    purpose == Purpose::AddLayer,
+                ),
+                FileEvent::Saved(files, verb) => {
+                    let list: Vec<String> = files
+                        .iter()
+                        .map(|(n, b)| format!("{n} ({} B)", group(*b)))
+                        .collect();
+                    self.shell
+                        .toast(ctx, format!("{verb} {}", list.join(", ")), false);
+                }
+                FileEvent::Failed(e) => self.shell.report_error("File error", e),
+            }
+        }
+    }
+
+    /// The window title: the document's name, `*` while it has unsaved edits (UX §9).
+    fn update_title(&mut self, ctx: &egui::Context) {
+        let title = match &self.workspace {
+            Some(ws) => format!(
+                "{}{} — Convert64",
+                ws.doc.name,
+                if ws.doc.is_dirty() { "*" } else { "" }
+            ),
+            None => "Convert64".to_owned(),
+        };
+        if title != self.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
+    }
+}
+
+/// `10003` as `10 003` (UX §9 sample strings).
+fn group(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push('\u{2009}');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// `View › Theme`'s stored form.
+fn theme_to_str(preference: egui::ThemePreference) -> &'static str {
+    match preference {
+        egui::ThemePreference::System => "system",
+        egui::ThemePreference::Light => "light",
+        egui::ThemePreference::Dark => "dark",
+    }
+}
+
+fn theme_from_str(s: &str) -> Option<egui::ThemePreference> {
+    match s {
+        "system" => Some(egui::ThemePreference::System),
+        "light" => Some(egui::ThemePreference::Light),
+        "dark" => Some(egui::ThemePreference::Dark),
+        _ => None,
     }
 }
 
@@ -39,35 +478,375 @@ impl eframe::App for App {
         if self.scheduler.tick() {
             ui.ctx().request_repaint();
         }
-        if let Some(result) = self.scheduler.poll() {
-            self.result = Some(result);
+        if let Some(result) = self.scheduler.poll()
+            && let Some(ws) = &mut self.workspace
+        {
+            ws.solve_ms = Some(result.timing.composite_ms + result.timing.solve_ms);
+            ws.solving = result.provisional;
+            if !result.provisional && result.mode == SolveMode::Full {
+                ws.solve_started = None;
+            }
+            ws.solution = Some(result.solution);
         }
 
-        egui::Panel::top("menu_bar").show(ui, |ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    if ui.button("Quit").clicked() {
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                });
-            });
-        });
+        self.poll_files(ui.ctx());
+        if let Some(ws) = &mut self.workspace {
+            self.shell.history = ws.doc.history();
+        }
+        for action in self.shell.show(ui, self.workspace.as_mut()) {
+            self.act(ui.ctx(), action);
+        }
+        self.update_title(ui.ctx());
 
-        egui::CentralPanel::default().show(ui, |_ui| {});
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(request) = &mut self.screenshot {
+            // Wait for the first full solve when a picture is open.
+            let ready = self.workspace.as_ref().is_none_or(|ws| !ws.solving);
+            if ready && let (Some(dir), Some(ws)) = (request.export.take(), &self.workspace) {
+                screenshot::export(&dir, ws);
+            }
+            request.step(ui.ctx(), ready);
+        }
+    }
+
+    fn persist_egui_memory(&self) -> bool {
+        // A screenshot run leaves the user's panel sizes and window state alone.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.screenshot.is_some() {
+            return false;
+        }
+        true
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        // A screenshot run leaves the user's stored choice alone.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.screenshot.is_some() {
+            return;
+        }
+        storage.set_string(THEME_KEY, theme_to_str(self.shell.theme).to_owned());
+    }
+}
+
+/// `--screenshot <file.png> [--theme light|dark] [--size <w>x<h>] [--view result]
+/// [--overlay grid|clashes|ghost]… [--compare split|flicker|side] [--dialog export]
+/// [--tab recipe|layers|export] [--command <json>]… [--zoom <n>] [--centre <x>,<y>]
+/// [--mask] [--tool <name>] [--export <dir>]`: draws a few frames,
+/// saves the window as a PNG and quits. The PR screenshots come from it (#203).
+#[cfg(not(target_arch = "wasm32"))]
+mod screenshot {
+    use std::path::PathBuf;
+
+    /// `--export`: the picture file and the display PRG of the result on screen, made by
+    /// the Export dialog's code, written to `dir` and listed on stdout.
+    pub(super) fn export(dir: &std::path::Path, ws: &convert64_app::workspace::Workspace) {
+        use convert64_app::export::{Format, Settings, files};
+        let Some(sol) = &ws.solution else {
+            eprintln!("convert64-app: --export: nothing solved");
+            return;
+        };
+        let _ = std::fs::create_dir_all(dir);
+        for format in [Format::Picture, Format::Prg] {
+            let settings = Settings {
+                format,
+                ..Settings::default()
+            };
+            match files(
+                sol,
+                ws.doc.palette(),
+                ws.doc.mode(),
+                &ws.doc.stem(),
+                &settings,
+            ) {
+                Ok(out) => {
+                    for (name, bytes) in out {
+                        let path = dir.join(&name);
+                        match std::fs::write(&path, &bytes) {
+                            Ok(()) => println!("exported {} ({} B)", path.display(), bytes.len()),
+                            Err(e) => eprintln!("convert64-app: {}: {e}", path.display()),
+                        }
+                    }
+                }
+                Err(e) => eprintln!("convert64-app: --export: {e}"),
+            }
+        }
+    }
+
+    /// Frames drawn before the screenshot, so fonts and panel sizes have settled.
+    const SETTLE_FRAMES: u32 = 5;
+
+    /// What `--screenshot` asked for.
+    #[derive(Debug)]
+    pub(super) struct Request {
+        pub(super) path: PathBuf,
+        pub(super) theme: Option<egui::ThemePreference>,
+        pub(super) size: [f32; 2],
+        /// `--view result`: the working view in Result mode.
+        pub(super) result: bool,
+        /// `--overlay grid|clashes|ghost` (repeatable).
+        pub(super) overlays: Vec<String>,
+        /// `--compare split|flicker|side`.
+        pub(super) compare: Option<String>,
+        /// `--dialog export`: the export dialog open.
+        pub(super) dialog: Option<String>,
+        /// `--tab recipe|layers|export`: the dock tab.
+        pub(super) tab: Option<String>,
+        /// `--command <json>` (repeatable): registry commands run after opening.
+        pub(super) commands: Vec<String>,
+        /// `--zoom <n>`: the zoom in the working view's mode (percent in Source,
+        /// times in Result).
+        pub(super) zoom: Option<f32>,
+        /// `--centre <x>,<y>`: the picture point at the centre, in screen units.
+        pub(super) centre: Option<(f32, f32)>,
+        /// `--mask`: mask mode on the selected layer.
+        pub(super) mask: bool,
+        /// `--tool pin|lock|region|nudge|transform`.
+        pub(super) tool: Option<String>,
+        /// `--export <dir>`: once the full solve is in, write the Koala (or Art Studio)
+        /// file and the self-displaying PRG there.
+        pub(super) export: Option<PathBuf>,
+        frame: u32,
+    }
+
+    /// The command line: a picture to open and an optional screenshot request.
+    #[derive(Debug, Default)]
+    pub(super) struct Args {
+        pub(super) open: Option<PathBuf>,
+        /// Further pictures, added as layers on top.
+        pub(super) layers: Vec<PathBuf>,
+        pub(super) screenshot: Option<Request>,
+    }
+
+    impl Request {
+        /// The command line: `[picture.png] [--screenshot <file.png> …]`.
+        pub(super) fn from_args() -> Result<Args, String> {
+            let mut args = std::env::args().skip(1);
+            let mut open = None;
+            let mut layers = Vec::new();
+            let mut request = None;
+            let mut theme = None;
+            let mut size = [1280.0, 800.0];
+            let mut result = false;
+            let mut overlays = Vec::new();
+            let mut compare = None;
+            let mut dialog = None;
+            let mut tab = None;
+            let mut commands = Vec::new();
+            let mut zoom = None;
+            let mut centre = None;
+            let mut mask = false;
+            let mut tool = None;
+            let mut export = None;
+            while let Some(arg) = args.next() {
+                let mut value = || args.next().ok_or(format!("{arg} needs a value"));
+                match arg.as_str() {
+                    "--screenshot" => request = Some(PathBuf::from(value()?)),
+                    "--theme" => {
+                        theme = Some(
+                            super::theme_from_str(&value()?)
+                                .ok_or("--theme is system, light or dark")?,
+                        );
+                    }
+                    "--view" => result = value()? == "result",
+                    "--overlay" => overlays.push(value()?),
+                    "--compare" => compare = Some(value()?),
+                    "--dialog" => dialog = Some(value()?),
+                    "--tab" => tab = Some(value()?),
+                    "--command" => commands.push(value()?),
+                    "--mask" => mask = true,
+                    "--tool" => tool = Some(value()?),
+                    "--export" => export = Some(PathBuf::from(value()?)),
+                    "--zoom" => zoom = Some(value()?.parse().map_err(|_| "--zoom: a number")?),
+                    "--centre" => {
+                        let v = value()?;
+                        let (x, y) = v.split_once(',').ok_or("--centre is <x>,<y>")?;
+                        centre = Some((
+                            x.parse().map_err(|_| "--centre: bad x")?,
+                            y.parse().map_err(|_| "--centre: bad y")?,
+                        ));
+                    }
+                    "--size" => {
+                        let v = value()?;
+                        let (w, h) = v.split_once('x').ok_or("--size is <w>x<h>")?;
+                        size = [
+                            w.parse().map_err(|_| "--size: bad width")?,
+                            h.parse().map_err(|_| "--size: bad height")?,
+                        ];
+                    }
+                    _ if !arg.starts_with("--") && open.is_none() => {
+                        open = Some(PathBuf::from(arg))
+                    }
+                    _ if !arg.starts_with("--") => layers.push(PathBuf::from(arg)),
+                    _ => return Err(format!("unknown argument {arg}")),
+                }
+            }
+            Ok(Args {
+                open,
+                layers,
+                screenshot: request.map(|path| Self {
+                    path,
+                    theme,
+                    size,
+                    result,
+                    overlays,
+                    compare,
+                    dialog,
+                    tab,
+                    commands,
+                    zoom,
+                    centre,
+                    mask,
+                    tool,
+                    export,
+                    frame: 0,
+                }),
+            })
+        }
+
+        /// Called every frame: asks for the screenshot once the frames have settled,
+        /// writes it when it arrives and closes the window.
+        pub(super) fn step(&mut self, ctx: &egui::Context, ready: bool) {
+            if !ready {
+                ctx.request_repaint();
+                return;
+            }
+            self.frame += 1;
+            if self.frame == SETTLE_FRAMES {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+            }
+            ctx.request_repaint();
+            let image = ctx.input(|i| {
+                i.raw.events.iter().find_map(|e| match e {
+                    egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                    _ => None,
+                })
+            });
+            if let Some(image) = image {
+                let [w, h] = image.size;
+                let rgba = image.pixels.iter().flat_map(|c| c.to_array()).collect();
+                let png = convert64_project::codec::encode_rgba8(w as u32, h as u32, rgba);
+                match std::fs::write(&self.path, png) {
+                    Ok(()) => println!("wrote {} ({w}×{h})", self.path.display()),
+                    Err(e) => eprintln!("{}: {e}", self.path.display()),
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
     }
 }
 
 /// Native entry point: opens a desktop window.
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
+    let args = match screenshot::Request::from_args() {
+        Ok(args) => args,
+        Err(e) => {
+            eprintln!("convert64-app: {e}");
+            std::process::exit(2);
+        }
+    };
+    let request = args.screenshot;
+    let size = request.as_ref().map_or([1280.0, 800.0], |r| r.size);
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([960.0, 640.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size(size)
+            .with_min_inner_size([640.0, 400.0]),
+        // A screenshot run keeps the window size it asked for.
+        persist_window: request.is_none(),
         ..Default::default()
     };
     eframe::run_native(
         "Convert64",
         native_options,
-        Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))),
+        Box::new(move |cc| {
+            let mut app = App::new(cc);
+            if let Some(path) = args.open {
+                app.files.open_path(path);
+                app.poll_files(&cc.egui_ctx);
+                for layer in args.layers {
+                    let name = layer
+                        .file_name()
+                        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                    match std::fs::read(&layer) {
+                        Ok(bytes) => app.receive(&cc.egui_ctx, &name, &bytes, Some(&layer), true),
+                        Err(e) => eprintln!("convert64-app: {}: {e}", layer.display()),
+                    }
+                }
+            }
+            if let Some(request) = request {
+                // Draw from defaults, not from what earlier runs stored.
+                cc.egui_ctx.memory_mut(|m| m.data = Default::default());
+                if request.result {
+                    app.shell.view = convert64_app::shell::ViewMode::Result;
+                }
+                let o = &mut app.shell.overlays;
+                for overlay in &request.overlays {
+                    match overlay.as_str() {
+                        "grid" => o.grid = true,
+                        "clashes" => o.clashes = true,
+                        "ghost" => o.ghost = true,
+                        _ => eprintln!("convert64-app: unknown overlay {overlay}"),
+                    }
+                }
+                for json in &request.commands {
+                    match serde_json::from_str::<convert64_project::JsonCommand>(json) {
+                        Ok(cmd) => app.act(&cc.egui_ctx, Action::Run(cmd)),
+                        Err(e) => eprintln!("convert64-app: --command: {e}"),
+                    }
+                }
+                if let Some(z) = request.zoom {
+                    match app.shell.view {
+                        convert64_app::shell::ViewMode::Result => {
+                            app.shell.camera.result_zoom = z as u8
+                        }
+                        convert64_app::shell::ViewMode::Source => {
+                            app.shell.camera.source_zoom = z / 100.0
+                        }
+                    }
+                }
+                if let Some((x, y)) = request.centre {
+                    app.shell.camera.centre = egui::pos2(x, y);
+                }
+                if let Some(name) = &request.tool {
+                    use convert64_app::shell::Tool;
+                    if let Some(t) = Tool::ALL
+                        .into_iter()
+                        .find(|t| t.label().eq_ignore_ascii_case(name))
+                    {
+                        app.shell.tool = t;
+                    }
+                }
+                if request.mask {
+                    app.shell.toggle_mask_mode();
+                }
+                if request.zoom.is_some() || request.centre.is_some() {
+                    app.shell.keep_camera();
+                }
+                use convert64_app::shell::DockTab;
+                match request.tab.as_deref() {
+                    Some("layers") => app.shell.tab = DockTab::Layers,
+                    Some("export") => app.shell.tab = DockTab::Export,
+                    _ => {}
+                }
+                if request.dialog.as_deref() == Some("export")
+                    && let Some(ws) = &app.workspace
+                {
+                    app.shell.open_export(ws);
+                }
+                use convert64_app::view::Compare;
+                app.shell.compare = match request.compare.as_deref() {
+                    Some("split") => Compare::Split,
+                    Some("flicker") => Compare::Flicker,
+                    Some("side") => Compare::SideBySide,
+                    _ => Compare::Off,
+                };
+                if let Some(preference) = request.theme {
+                    app.set_theme(&cc.egui_ctx, preference);
+                }
+                app.screenshot = Some(request);
+            }
+            Ok(Box::new(app))
+        }),
     )
 }
 
@@ -97,7 +876,7 @@ fn main() {
             .start(
                 canvas,
                 eframe::WebOptions::default(),
-                Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))),
+                Box::new(|cc| Ok(Box::new(App::new(cc)))),
             )
             .await;
 

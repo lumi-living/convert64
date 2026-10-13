@@ -33,12 +33,11 @@ use crate::error::{ProjectError, invalid};
 use crate::recipe::RecipeFile;
 use crate::store::Store;
 use convert64_core::colour::ColourSet;
-use convert64_core::layer::{Adjustments, Blend, Recipe, Transform};
+use convert64_core::layer::{Adjustments, Blend, Recipe, Snap, Transform};
 use convert64_core::mask::{MaskRaster, Modifiers, SourceEntry};
 use convert64_core::mode::Mode;
 use convert64_core::model::CellPos;
 use convert64_core::palette::{Palette, Rgb8};
-use convert64_core::solve::SolveOptions;
 use convert64_core::solve::steering::{Pin, Steering};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -75,6 +74,10 @@ pub struct ProjectFile {
     /// How the picture is solved.
     #[serde(default)]
     pub solve: SolveSpec,
+    /// What transform commands snap to (ADR-011): `off` (the default, not written),
+    /// `c64-pixel` or `cell`.
+    #[serde(default, skip_serializing_if = "is_off")]
+    pub snap: Snap,
     /// Registry commands run in order after loading (a recipe file's commands).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<JsonCommand>,
@@ -86,6 +89,10 @@ const fn default_supersample() -> u8 {
 
 const fn one() -> f32 {
     1.0
+}
+
+fn is_off(s: &Snap) -> bool {
+    *s == Snap::Off
 }
 
 const fn yes() -> bool {
@@ -174,86 +181,11 @@ fn parse_hex(text: &str) -> Result<Rgb8, ProjectError> {
 }
 
 /// Solve settings in a recipe or project file (the per-pixel knobs live in each layer's
-/// recipe).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SolveSpec {
-    /// The solver: `reference` (png2c64's pipeline, the default) or `native`.
-    #[serde(default)]
-    pub solver: convert64_core::solve::SolverKind,
-    /// The reference solver's named divergences from png2c64, all off by default.
-    #[serde(
-        default,
-        skip_serializing_if = "convert64_core::solve::Divergences::none"
-    )]
-    pub divergences: convert64_core::solve::Divergences,
-    /// Background: `auto` (default) or `{"fixed": n}`.
-    #[serde(default)]
-    pub background: convert64_core::solve::Background,
-    /// Refinement hysteresis ratio, e.g. 0.97; absent = off.
-    #[serde(default)]
-    pub hysteresis: Option<f32>,
-    /// Same-luma pair bias per pair (positive penalises, negative rewards).
-    #[serde(default)]
-    pub luma_pair_bias: f32,
-    /// Refinement rounds, 0–2.
-    #[serde(default = "default_refinements")]
-    pub refinements: u8,
-    /// Backgrounds carried from the search into dithering, at least 1.
-    #[serde(default = "default_finalists")]
-    pub finalists: u8,
-}
-
-fn default_refinements() -> u8 {
-    SolveOptions::default().refinements
-}
-
-fn default_finalists() -> u8 {
-    SolveOptions::default().finalists
-}
-
-impl Default for SolveSpec {
-    fn default() -> Self {
-        Self {
-            solver: convert64_core::solve::SolverKind::default(),
-            divergences: convert64_core::solve::Divergences::default(),
-            background: convert64_core::solve::Background::default(),
-            hysteresis: None,
-            luma_pair_bias: 0.0,
-            refinements: default_refinements(),
-            finalists: default_finalists(),
-        }
-    }
-}
-
-impl SolveSpec {
-    /// Checks the values a solve cannot take.
-    pub fn check(&self) -> Result<(), ProjectError> {
-        if let Some(h) = self.hysteresis
-            && !(h > 0.0 && h <= 1.0)
-        {
-            return Err(invalid(format!(
-                "solve: hysteresis must be in (0, 1], got {h}"
-            )));
-        }
-        if !self.luma_pair_bias.is_finite() {
-            return Err(invalid("solve: luma_pair_bias must be finite"));
-        }
-        if self.refinements > 2 {
-            return Err(invalid(format!(
-                "solve: refinements must be 0–2, got {}",
-                self.refinements
-            )));
-        }
-        if self.finalists == 0 || self.finalists > 16 {
-            return Err(invalid(format!(
-                "solve: finalists must be 1–16, got {}",
-                self.finalists
-            )));
-        }
-        Ok(())
-    }
-}
+/// recipe). Since #193 the core's document holds them ([`SolveSettings`]), so the
+/// `solve_set` and `background_pin` commands can change them; the file form is the same.
+///
+/// [`SolveSettings`]: convert64_core::document::SolveSettings
+pub type SolveSpec = convert64_core::document::SolveSettings;
 
 /// A PNG file, relative to the project file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -544,6 +476,7 @@ impl ProjectFile {
             regions: Vec::new(),
             steering: SteeringSpec::default(),
             solve: SolveSpec::default(),
+            snap: Snap::Off,
             commands: Vec::new(),
         }
     }
@@ -574,6 +507,7 @@ impl ProjectFile {
             regions: Vec::new(),
             steering: SteeringSpec::default(),
             solve: r.solve,
+            snap: Snap::Off,
             commands: r.commands,
         }
     }
@@ -799,5 +733,35 @@ mod tests {
         assert_eq!(p.layers[0].source, SourceSpec::Path("a.png".into()));
         let v2 = r#"{"schema_version":2,"target":"hires-bitmap","layers":[],"surprise":1}"#;
         assert!(ProjectFile::parse(v2).is_err(), "unknown fields are errors");
+    }
+
+    /// #198: the snap setting and a layer's rotation and anchor are optional, written
+    /// only when set, and a file without them reads and writes exactly as before.
+    #[test]
+    fn snap_rotate_and_anchor_are_backward_compatible() {
+        let old = r#"{"schema_version":2,"target":"hires-bitmap","layers":[
+            {"name":"a","source":"a.png","transform":{"translate":{"x":1.5,"y":2.0},
+             "scale":{"x":2.0,"y":2.0},"flip_h":true,"flip_v":false}}]}"#;
+        let p = ProjectFile::parse(old).unwrap();
+        assert_eq!(p.snap, Snap::Off);
+        let t = p.layers[0].transform;
+        assert_eq!((t.rotate(), t.anchor()), (0.0, Transform::CENTRE));
+        let text = p.to_json();
+        for absent in ["snap", "rotate", "anchor"] {
+            assert!(!text.contains(absent), "{absent} written: {text}");
+        }
+        let mut q = p.clone();
+        q.snap = Snap::C64Pixel;
+        q.layers[0].transform = t
+            .with_rotation(-7.5)
+            .unwrap()
+            .with_anchor(convert64_core::Vec2::new(0.0, 1.0))
+            .unwrap();
+        let text = q.to_json();
+        assert!(text.contains(r#""snap": "c64-pixel""#), "{text}");
+        assert!(text.contains(r#""rotate": -7.5"#), "{text}");
+        assert_eq!(ProjectFile::parse(&text).unwrap(), q);
+        let bad = r#"{"schema_version":2,"target":"hires-bitmap","layers":[],"snap":"grid"}"#;
+        assert!(ProjectFile::parse(bad).is_err());
     }
 }

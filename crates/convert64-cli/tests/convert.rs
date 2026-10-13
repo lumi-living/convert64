@@ -350,3 +350,61 @@ fn solver_and_divergences_from_the_command_line() {
         assert_eq!(r.status.code(), Some(2), "--diverge {bad}");
     }
 }
+
+/// #198: `--rotate` and `--anchor` turn the layer through `layer_rotate`; the saved
+/// project holds the rotation, a turn changes the output, and bad values are refused.
+#[test]
+fn rotate_and_anchor_from_the_command_line() {
+    let dir = temp("rotate");
+    let png = source(&dir);
+    let plain = dir.join("plain.kla");
+    let r = convert(&[
+        "convert",
+        png.to_str().unwrap(),
+        "-o",
+        plain.to_str().unwrap(),
+    ]);
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let out = dir.join("turned.kla");
+    let project = dir.join("turned.convert64");
+    let r = convert(&[
+        "convert",
+        png.to_str().unwrap(),
+        "--rotate",
+        "-3.5",
+        "--anchor",
+        "0,1",
+        "--save-project",
+        project.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&project).unwrap()).unwrap();
+    let t = &v["layers"][0]["transform"];
+    assert_eq!(t["rotate"], -3.5, "{t}");
+    assert_eq!(
+        t["anchor"],
+        serde_json::json!({ "x": 0.0, "y": 1.0 }),
+        "{t}"
+    );
+    assert_ne!(std::fs::read(&plain).unwrap(), std::fs::read(&out).unwrap());
+    let check = convert(&["validate", out.to_str().unwrap()]);
+    assert_eq!(String::from_utf8_lossy(&check.stdout).trim(), "legal");
+    for bad in [
+        ["--rotate", "nan"],
+        ["--anchor", "0.5"],
+        ["--anchor", "2,0"],
+    ] {
+        let r = convert(&[
+            "convert",
+            png.to_str().unwrap(),
+            bad[0],
+            bad[1],
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+        assert_eq!(r.status.code(), Some(2), "{bad:?}");
+    }
+}
