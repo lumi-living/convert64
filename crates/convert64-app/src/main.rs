@@ -502,6 +502,9 @@ impl eframe::App for App {
         if let Some(request) = &mut self.screenshot {
             // Wait for the first full solve when a picture is open.
             let ready = self.workspace.as_ref().is_none_or(|ws| !ws.solving);
+            if ready && let (Some(dir), Some(ws)) = (request.export.take(), &self.workspace) {
+                screenshot::export(&dir, ws);
+            }
             request.step(ui.ctx(), ready);
         }
     }
@@ -528,11 +531,46 @@ impl eframe::App for App {
 /// `--screenshot <file.png> [--theme light|dark] [--size <w>x<h>] [--view result]
 /// [--overlay grid|clashes|ghost]… [--compare split|flicker|side] [--dialog export]
 /// [--tab recipe|layers|export] [--command <json>]… [--zoom <n>] [--centre <x>,<y>]
-/// [--mask] [--tool <name>]`: draws a few frames,
+/// [--mask] [--tool <name>] [--export <dir>]`: draws a few frames,
 /// saves the window as a PNG and quits. The PR screenshots come from it (#203).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
     use std::path::PathBuf;
+
+    /// `--export`: the picture file and the display PRG of the result on screen, made by
+    /// the Export dialog's code, written to `dir` and listed on stdout.
+    pub(super) fn export(dir: &std::path::Path, ws: &convert64_app::workspace::Workspace) {
+        use convert64_app::export::{Format, Settings, files};
+        let Some(sol) = &ws.solution else {
+            eprintln!("convert64-app: --export: nothing solved");
+            return;
+        };
+        let _ = std::fs::create_dir_all(dir);
+        for format in [Format::Picture, Format::Prg] {
+            let settings = Settings {
+                format,
+                ..Settings::default()
+            };
+            match files(
+                sol,
+                ws.doc.palette(),
+                ws.doc.mode(),
+                &ws.doc.stem(),
+                &settings,
+            ) {
+                Ok(out) => {
+                    for (name, bytes) in out {
+                        let path = dir.join(&name);
+                        match std::fs::write(&path, &bytes) {
+                            Ok(()) => println!("exported {} ({} B)", path.display(), bytes.len()),
+                            Err(e) => eprintln!("convert64-app: {}: {e}", path.display()),
+                        }
+                    }
+                }
+                Err(e) => eprintln!("convert64-app: --export: {e}"),
+            }
+        }
+    }
 
     /// Frames drawn before the screenshot, so fonts and panel sizes have settled.
     const SETTLE_FRAMES: u32 = 5;
@@ -564,6 +602,9 @@ mod screenshot {
         pub(super) mask: bool,
         /// `--tool pin|lock|region|nudge|transform`.
         pub(super) tool: Option<String>,
+        /// `--export <dir>`: once the full solve is in, write the Koala (or Art Studio)
+        /// file and the self-displaying PRG there.
+        pub(super) export: Option<PathBuf>,
         frame: u32,
     }
 
@@ -595,6 +636,7 @@ mod screenshot {
             let mut centre = None;
             let mut mask = false;
             let mut tool = None;
+            let mut export = None;
             while let Some(arg) = args.next() {
                 let mut value = || args.next().ok_or(format!("{arg} needs a value"));
                 match arg.as_str() {
@@ -613,6 +655,7 @@ mod screenshot {
                     "--command" => commands.push(value()?),
                     "--mask" => mask = true,
                     "--tool" => tool = Some(value()?),
+                    "--export" => export = Some(PathBuf::from(value()?)),
                     "--zoom" => zoom = Some(value()?.parse().map_err(|_| "--zoom: a number")?),
                     "--centre" => {
                         let v = value()?;
@@ -654,6 +697,7 @@ mod screenshot {
                     centre,
                     mask,
                     tool,
+                    export,
                     frame: 0,
                 }),
             })
