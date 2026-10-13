@@ -7,10 +7,10 @@
 use crate::file::{PaletteSpec, SourceSpec};
 use convert64_core::command::{
     AdjustmentsChange, BackgroundPin, CellAllow, CellClear, CellDeny, CellLock, CellPin, ModeSet,
-    ModifierChange, RecipeChange, Selection, SolveSet,
+    ModifierChange, RecipeChange, Selection, SnapSet, SolveSet,
 };
 use convert64_core::geom::Vec2;
-use convert64_core::layer::{Adjustments, Blend, Recipe, Transform};
+use convert64_core::layer::{Adjustments, Blend, Recipe, Snap, Transform};
 use convert64_core::mask::{Combine, Gradient, Key, PaintMode};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -209,12 +209,31 @@ pub enum JsonCommand {
         /// `normal`, `multiply`, `screen` or `overlay`.
         blend: Blend,
     },
-    /// Place a layer.
+    /// Place a layer, snapped by the project's setting or `snap`.
     LayerSetTransform {
         /// Layer.
         layer: LayerRef,
-        /// Translate, scale, flips.
+        /// Translate, scale, rotate, anchor, flips.
         transform: Transform,
+        /// Snap this way instead of by the project's setting.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snap: Option<Snap>,
+    },
+    /// Turn a layer about its anchor, to or by `degrees` (clockwise on screen).
+    LayerRotate {
+        /// Layer.
+        layer: LayerRef,
+        /// The angle, or the change with `relative`.
+        degrees: f32,
+        /// Add `degrees` to the rotation instead of setting it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        relative: bool,
+        /// Move the pivot here first (0–1 across the box), keeping the picture in place.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor: Option<Vec2>,
+        /// Snap this way instead of by the project's setting.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snap: Option<Snap>,
     },
     /// Move a layer by an offset, canvas pixels.
     LayerNudge {
@@ -261,6 +280,8 @@ pub enum JsonCommand {
     BackgroundPin(BackgroundPin),
     /// Set some of the solve settings.
     SolveSet(SolveSet),
+    /// Set what transform commands snap to.
+    SnapSet(SnapSet),
     /// Remove one entry of a layer mask's sources list.
     MaskSourceRemove {
         /// Layer.
@@ -505,6 +526,24 @@ mod tests {
                 layer: l.clone(),
                 transform: Transform::new(Vec2::new(1.5, 2.0), Vec2::new(2.0, 2.0), true, false)
                     .unwrap(),
+                snap: None,
+            },
+            JsonCommand::LayerSetTransform {
+                layer: l.clone(),
+                transform: Transform::new(Vec2::new(1.5, 2.0), Vec2::new(2.0, 2.0), true, false)
+                    .unwrap()
+                    .with_rotation(-12.5)
+                    .unwrap()
+                    .with_anchor(Vec2::new(0.0, 1.0))
+                    .unwrap(),
+                snap: Some(Snap::Cell),
+            },
+            JsonCommand::LayerRotate {
+                layer: l.clone(),
+                degrees: 2.5,
+                relative: true,
+                anchor: Some(Vec2::new(0.25, 0.75)),
+                snap: Some(Snap::Off),
             },
             JsonCommand::LayerNudge {
                 layer: l.clone(),
@@ -544,6 +583,9 @@ mod tests {
                 solver: Some(SolverKind::Native),
                 hysteresis: Some(None),
                 ..SolveSet::default()
+            }),
+            JsonCommand::SnapSet(SnapSet {
+                snap: Snap::C64Pixel,
             }),
             JsonCommand::MaskSourceRemove {
                 layer: LayerRef::Index(0),

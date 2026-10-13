@@ -1,7 +1,8 @@
 //! Separable resampling of a layer onto the super grid.
 //!
-//! Transforms are axis-aligned (translate, scale, flip), so every resample is two 1-D
-//! passes driven by per-axis weight tables ([`AxisMap`]). Per axis, a source pixel that
+//! An axis-aligned transform (translate, scale, flip; `rotate == 0`) is resampled in two
+//! 1-D passes driven by per-axis weight tables ([`AxisMap`]); a rotated one goes through
+//! `affine` instead (#198). Per axis, a source pixel that
 //! covers at least one super pixel is sampled bilinearly; a smaller one is filtered with
 //! Lanczos-3 stretched to the footprint, so downscales do not alias. Samples clamp to the
 //! layer's edge pixels; the layer's own edge is instead expressed as **coverage**, the
@@ -18,6 +19,22 @@ pub(crate) trait Px: Copy + Send + Sync + crate::scratch::Scratch {
     const ZERO: Self;
     /// `self += w × v`.
     fn madd(&mut self, w: f32, v: Self);
+
+    /// `Σ_k wy[k] · Σ_j wx[j] · taps[k][j]`, a 4 × 4 separable kernel on a block of
+    /// pixels (the rotated path's Catmull-Rom, #198): each row summed across, then the
+    /// rows down.
+    #[inline(always)]
+    fn taps4x4(taps: &[[Self; 4]; 4], wx: [f32; 4], wy: [f32; 4]) -> Self {
+        let mut acc = Self::ZERO;
+        for (line, wy) in taps.iter().zip(wy) {
+            let mut r = Self::ZERO;
+            for (v, wx) in line.iter().zip(wx) {
+                r.madd(wx, *v);
+            }
+            acc.madd(wy, r);
+        }
+        acc
+    }
 }
 
 impl Px for f32 {
@@ -25,6 +42,22 @@ impl Px for f32 {
     #[inline]
     fn madd(&mut self, w: f32, v: Self) {
         *self += w * v;
+    }
+
+    /// For one channel, the columns are summed down first, then across.
+    #[inline(always)]
+    fn taps4x4(taps: &[[Self; 4]; 4], wx: [f32; 4], wy: [f32; 4]) -> Self {
+        let mut col = [0.0f32; 4];
+        for (line, wy) in taps.iter().zip(wy) {
+            for (c, v) in col.iter_mut().zip(line) {
+                *c += wy * v;
+            }
+        }
+        let mut acc = 0.0;
+        for (c, wx) in col.iter().zip(wx) {
+            acc += wx * c;
+        }
+        acc
     }
 }
 
@@ -241,7 +274,7 @@ pub(crate) fn resample<T: Px>(src: &[T], sw: u32, mx: &AxisMap, my: &AxisMap) ->
 }
 
 /// Output rows resampled per task.
-const CHUNK_ROWS: usize = 32;
+pub(crate) const CHUNK_ROWS: usize = 32;
 
 /// An output's taps when it has at most two (every bilinear output): source pixels and
 /// weights. A one-tap output has a second tap of weight 0 on the same pixel, which adds
@@ -574,7 +607,7 @@ impl Planes {
     }
 
     /// Grows or shrinks every plane to `len`.
-    fn sized(&mut self, len: usize) {
+    pub(crate) fn sized(&mut self, len: usize) {
         for p in [&mut self.r, &mut self.g, &mut self.b, &mut self.a] {
             sized(p, len, 0.0);
         }
