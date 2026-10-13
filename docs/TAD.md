@@ -591,6 +591,14 @@ As built in #206 (2026-10-13): the Layers tab (UX §5).
 - **Screenshot runs** neither restore nor save egui's memory (panel sizes), so they always draw the defaults; extra pictures on the command line are added as layers, and `--tab layers|export` picks the dock tab.
 - **Dependency.** `egui_dnd` 0.17.0 (MIT; brings `egui_animation` and `simple-easing`), approved for E8.
 
+As built in #207 (2026-10-13): the Recipe tab (UX §6), for the selected layer.
+
+- **Adjustments** (`adjustments_set`): brightness, contrast, saturation, lightness (−100…100), hue (±180°), png2c64's gamma (0.1–8), levels (black, mid-tones, white), curves (master, red, green, blue: drag a point, click to add, right-click to remove; the end points keep x = 0 and 1) and range matching onto the palette (png2c64's `--match-range`).
+- **Dither recipe** (`recipe_set`): the method by family (None, Ordered, Diffusion, Noise, Effects, Palette-aware), then a dropdown within it; strength; pattern phase; orientation; the error clamp for diffusion.
+- **Colour fitting** (`recipe_set`): metric, Adaptive or Force with UX's one-line help, and the 16 allowed colours as toggles (a disallowed colour is hatched; `allow`/`deny` change one colour).
+- **Advanced**, collapsed (`solve_set`): ADR-010's divergences from png2c64 — chroma guard, cell clamp, bridging, max luma diff, mix levels, pair bias — all off by default, then the solver (reference or native), refinements and finalists; with the native solver also its luma-pair bias and the layer's smooth and adaptive settings.
+- **Conventions.** Label, slider and value field on one row; a dot before a changed label; a double click on a label resets that value; each group has Reset and its title takes the accent colour when anything in it changed. A drag is one undo step and takes the fast path until release (#206's gestures). The Transform group is #197 and the Mask group #78.
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.

@@ -10,6 +10,7 @@ mod dock;
 mod export_dialog;
 mod layers;
 mod menu;
+mod recipe;
 pub mod shortcuts;
 mod status;
 mod toolbar;
@@ -167,6 +168,8 @@ pub struct Shell {
     pub layer: usize,
     /// The layer being renamed and the name typed so far.
     renaming: Option<(usize, String)>,
+    /// The curve the Recipe tab's curves editor shows: master, red, green, blue.
+    curve_channel: usize,
     /// Whether Edit › Undo and Redo have something to do (set by the app each frame).
     pub history: (bool, bool),
     /// `\` is held: the working view shows the other image.
@@ -202,6 +205,7 @@ impl Default for Shell {
             theme: egui::ThemePreference::System,
             layer: 0,
             renaming: None,
+            curve_channel: 0,
             history: (false, false),
             flip_held: false,
             fit_pending: true,
@@ -510,5 +514,82 @@ mod tests {
         assert_eq!(shell.camera.source_zoom, 3.0);
         assert!(shell.overlays.grid && shell.overlays.clashes);
         assert_eq!(shell.compare, Compare::Split);
+    }
+
+    /// Every tab and view draws with an open document, in both themes, without panics
+    /// and without commands nobody asked for.
+    #[test]
+    fn every_tab_draws_with_a_document() {
+        let rgba = (0..64 * 40)
+            .flat_map(|i| [(i % 64 * 4) as u8, (i / 64 * 6) as u8, 90, 255])
+            .collect();
+        let png = convert64_project::codec::encode_rgba8(64, 40, rgba);
+        let doc = crate::document::Document::from_png("ramp.png", &png).unwrap();
+        let mut ws = crate::workspace::Workspace::new(doc);
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        for theme in [egui::ThemePreference::Light, egui::ThemePreference::Dark] {
+            ctx.set_theme(theme);
+            for tab in DockTab::ALL {
+                for view in [ViewMode::Source, ViewMode::Result] {
+                    let mut shell = Shell {
+                        tab,
+                        view,
+                        ..Shell::default()
+                    };
+                    let mut actions = Vec::new();
+                    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                        actions = shell.show(ui, Some(&mut ws));
+                    });
+                    output.textures_delta.clear();
+                    assert!(actions.is_empty(), "{tab:?} {view:?}: {actions:?}");
+                }
+            }
+        }
+    }
+
+    /// Values a slider can only show rounded (strength 0.6 → 60.000004 %, opacity ⅓ →
+    /// 33 %) must not count as edits, or the form re-sends them every frame.
+    #[test]
+    fn rounded_values_are_not_edits() {
+        use convert64_core::command::RecipeChange;
+        use convert64_project::{JsonCommand, LayerRef};
+        let rgba = (0..64 * 40)
+            .flat_map(|i| [(i % 64 * 4) as u8, 90, 90, 255])
+            .collect();
+        let png = convert64_project::codec::encode_rgba8(64, 40, rgba);
+        let mut doc = crate::document::Document::from_png("ramp.png", &png).unwrap();
+        let layer = LayerRef::Index(0);
+        let recipe = RecipeChange {
+            strength: Some(0.6),
+            ..Default::default()
+        };
+        doc.run(JsonCommand::RecipeSet {
+            layer: layer.clone(),
+            recipe,
+        })
+        .unwrap();
+        doc.run(JsonCommand::LayerSetOpacity {
+            layer,
+            opacity: 1.0 / 3.0,
+        })
+        .unwrap();
+        let mut ws = crate::workspace::Workspace::new(doc);
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        for tab in [DockTab::Recipe, DockTab::Layers] {
+            let mut shell = Shell {
+                tab,
+                ..Shell::default()
+            };
+            for _ in 0..3 {
+                let mut actions = Vec::new();
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    actions = shell.show(ui, Some(&mut ws));
+                });
+                out.textures_delta.clear();
+                assert!(actions.is_empty(), "{tab:?}: {actions:?}");
+            }
+        }
     }
 }
