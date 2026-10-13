@@ -21,6 +21,9 @@ pub struct Document {
     saved: u64,
     /// Where the project was opened from or last saved to (native).
     path: Option<PathBuf>,
+    /// The gesture (a slider or field drag) the last command belongs to: the next
+    /// command of the same gesture replaces it, so a drag is one undo step (UX §11).
+    gesture: Option<u64>,
 }
 
 /// Whether `name` is a project file rather than a picture.
@@ -71,6 +74,7 @@ impl Document {
             revision: 0,
             saved: 0,
             path,
+            gesture: None,
         }
     }
 
@@ -180,9 +184,61 @@ impl Document {
 
     /// Runs a registry command (ADR-005): the app edits only through these.
     pub fn run(&mut self, command: JsonCommand) -> Result<(), ProjectError> {
+        self.gesture = None;
         self.session.run(command)?;
         self.revision += 1;
         Ok(())
+    }
+
+    /// Runs a command that is part of the drag `gesture` (any id unique to the control):
+    /// it replaces the gesture's previous command in the history, so the whole drag
+    /// undoes in one step. [`Self::end_gesture`] when the drag ends.
+    pub fn run_in_gesture(
+        &mut self,
+        gesture: u64,
+        command: JsonCommand,
+    ) -> Result<(), ProjectError> {
+        if self.gesture == Some(gesture) {
+            self.session.editor_mut().undo();
+        }
+        self.session.run(command)?;
+        self.gesture = Some(gesture);
+        self.revision += 1;
+        Ok(())
+    }
+
+    /// Ends the current drag, so the next command starts a new undo step.
+    pub fn end_gesture(&mut self) {
+        self.gesture = None;
+    }
+
+    /// Undoes the last command (`Cmd Z`); false if there is nothing to undo.
+    pub fn undo(&mut self) -> bool {
+        self.gesture = None;
+        let done = self.session.editor_mut().undo().is_some();
+        if done {
+            self.revision += 1;
+        }
+        done
+    }
+
+    /// Redoes the last undone command (`Shift Cmd Z`, `Cmd Y`).
+    pub fn redo(&mut self) -> Result<bool, ProjectError> {
+        self.gesture = None;
+        match self.session.editor_mut().redo() {
+            None => Ok(false),
+            Some(Ok(_)) => {
+                self.revision += 1;
+                Ok(true)
+            }
+            Some(Err(e)) => Err(ProjectError::Invalid(e.to_string())),
+        }
+    }
+
+    /// Whether there is something to undo and to redo.
+    pub fn history(&mut self) -> (bool, bool) {
+        let e = self.session.editor_mut();
+        (e.undo_len() > 0, e.redo_len() > 0)
     }
 
     /// Changes with every edit.
@@ -343,5 +399,25 @@ mod tests {
         let layers = &doc.session().project().layers;
         assert_eq!(layers[0].source().size(), (64, 40));
         assert_eq!(layers[1].source().size(), (8, 4));
+    }
+
+    #[test]
+    fn a_drag_is_one_undo_step() {
+        let mut doc = Document::from_png("ramp.png", &png()).unwrap();
+        let layer = convert64_project::LayerRef::Index(0);
+        for opacity in [0.9, 0.7, 0.5] {
+            let cmd = JsonCommand::LayerSetOpacity {
+                layer: layer.clone(),
+                opacity,
+            };
+            doc.run_in_gesture(7, cmd).unwrap();
+        }
+        doc.end_gesture();
+        assert_eq!(doc.session().project().layers[0].opacity(), 0.5);
+        assert!(doc.undo());
+        assert_eq!(doc.session().project().layers[0].opacity(), 1.0);
+        assert!(!doc.undo());
+        assert!(doc.redo().unwrap());
+        assert_eq!(doc.session().project().layers[0].opacity(), 0.5);
     }
 }

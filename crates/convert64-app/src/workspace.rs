@@ -24,6 +24,8 @@ pub struct Workspace {
     pub solving: bool,
     source: Option<(u64, TextureHandle)>,
     result: Option<(*const Solution, TextureHandle)>,
+    /// One thumbnail per layer, bottom first, keyed by the source it shows.
+    thumbs: Vec<(*const convert64_core::SourceImage, TextureHandle)>,
 }
 
 impl std::fmt::Debug for Workspace {
@@ -61,6 +63,7 @@ impl Workspace {
             solving: true,
             source: None,
             result: None,
+            thumbs: Vec::new(),
         }
     }
 
@@ -78,6 +81,21 @@ impl Workspace {
             let tex = ctx.load_texture("source", image, options);
             self.source = Some((rev, tex));
         }
+        let layers = &self.doc.session().project().layers;
+        let mut thumbs = Vec::with_capacity(layers.len());
+        for layer in layers {
+            let ptr = Arc::as_ptr(layer.source());
+            let tex = match self.thumbs.iter().find(|(p, _)| *p == ptr) {
+                Some((_, tex)) => tex.clone(),
+                None => {
+                    let (w, h, rgba) = thumbnail(layer.source(), THUMB);
+                    let image = ColorImage::from_rgba_unmultiplied([w, h], &rgba);
+                    ctx.load_texture("layer", image, TextureOptions::LINEAR)
+                }
+            };
+            thumbs.push((ptr, tex));
+        }
+        self.thumbs = thumbs;
         if let Some(sol) = &self.solution {
             let ptr = Arc::as_ptr(sol);
             if self.result.as_ref().is_none_or(|(p, _)| *p != ptr) {
@@ -88,6 +106,11 @@ impl Workspace {
                 self.result = Some((ptr, tex));
             }
         }
+    }
+
+    /// Layer `i`'s thumbnail (stack index, bottom first).
+    pub fn thumbnail(&self, i: usize) -> Option<&TextureHandle> {
+        self.thumbs.get(i).map(|(_, t)| t)
     }
 
     /// The source composite's texture.
@@ -185,4 +208,47 @@ impl Workspace {
 
 fn rgb(c: convert64_core::palette::Rgb8) -> Color32 {
     Color32::from_rgb(c.r, c.g, c.b)
+}
+
+/// The longest side of a layer thumbnail's texture, in pixels (drawn smaller, sharp on
+/// high-density screens).
+const THUMB: u32 = 64;
+
+/// `src` box-filtered to fit `side` × `side`, as sRGB8 RGBA. Width and height first.
+fn thumbnail(src: &convert64_core::SourceImage, side: u32) -> (usize, usize, Vec<u8>) {
+    use convert64_core::palette::linear_to_srgb8;
+    let (w, h) = src.size();
+    let s = (side as f32 / w.max(h) as f32).min(1.0);
+    let (tw, th) = (
+        ((w as f32 * s).round() as u32).max(1),
+        ((h as f32 * s).round() as u32).max(1),
+    );
+    let px = src.pixels();
+    let mut out = Vec::with_capacity((tw * th * 4) as usize);
+    for ty in 0..th {
+        let (y0, y1) = (ty * h / th, ((ty + 1) * h / th).max(ty * h / th + 1));
+        for tx in 0..tw {
+            let (x0, x1) = (tx * w / tw, ((tx + 1) * w / tw).max(tx * w / tw + 1));
+            let mut sum = [0.0f32; 4];
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let p = px[(y * w + x) as usize];
+                    // Straight alpha: weight colour by coverage.
+                    for c in 0..3 {
+                        sum[c] += p[c] * p[3];
+                    }
+                    sum[3] += p[3];
+                }
+            }
+            let n = ((y1 - y0) * (x1 - x0)) as f32;
+            let a = sum[3] / n;
+            let rgb = if sum[3] > 0.0 {
+                [0, 1, 2].map(|c| linear_to_srgb8(sum[c] / sum[3]))
+            } else {
+                [0; 3]
+            };
+            out.extend([rgb[0], rgb[1], rgb[2], (a * 255.0).round() as u8]);
+        }
+    }
+    (tw as usize, th as usize, out)
 }

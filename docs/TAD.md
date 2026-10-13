@@ -107,7 +107,7 @@ convert64/                      cargo workspace only (Rust 2024)
 └─ docs/                        PDD, TAD, adr/, reference/, TOOLING, github/
 ```
 
-Crates: `image` (decode; PNG preview export in `convert64-formats`), own OKLab code, `rayon` behind a `parallel` feature, `serde` (project file + command args), `clap`, `serde_json` (CLI/MCP JSON output, Figma token import, the raw bitmap set's manifest in `convert64-formats`), `toml` (fixture thresholds, project config), `rmcp`, `eframe`/`egui`, `egui_material_icons` (icons, ADR-007), `rfd` (file dialogs), `insta` + `proptest` (tests). No `std::fs` in core.
+Crates: `image` (decode; PNG preview export in `convert64-formats`), own OKLab code, `rayon` behind a `parallel` feature, `serde` (project file + command args), `clap`, `serde_json` (CLI/MCP JSON output, Figma token import, the raw bitmap set's manifest in `convert64-formats`), `toml` (fixture thresholds, project config), `rmcp`, `eframe`/`egui`, `egui_material_icons` (icons, ADR-007), `egui_dnd` (drag to reorder layers, #206), `rfd` (file dialogs), `insta` + `proptest` (tests). No `std::fs` in core.
 
 As built in E1 (2026-10-11): `eframe` runs on the **`glow`** (OpenGL / WebGL2) renderer, not its default `wgpu`, keeping ADR-006's no-wgpu rule; `rust-toolchain.toml` pins stable with `rustfmt`, `clippy` and the `wasm32-unknown-unknown` target; the app's web build uses the eframe web template with no extra JS-side crates (eframe re-exports what it needs). See [ADR-005](adr/ADR-005-command-engine-with-cli-json-mcp.md) and [ADR-006](adr/ADR-006-egui-single-rust-workspace.md).
 
@@ -582,6 +582,14 @@ As built in #205 (2026-10-13): open, save and export in the app.
 - **Save.** `Cmd S` writes the project back to its file (natively; links relative to it, as the CLI's `--save-project`), `Shift Cmd S` asks where. In the browser both download the project with every source embedded. The title shows `*` while there are unsaved edits (UX §9).
 - **Export.** `convert64_app::export::files` makes the E6 outputs from the result on screen with the same `convert64-formats` calls as the CLI: Koala or Art Studio, the self-displaying PRG, the PNG preview (zoom 1–8), the raw set and source for KickAssembler, ACME, 64tass, ca65 and C (inline bytes or includes). The dialog (`Cmd E`, or the dock's Export tab) remembers its settings for Export Again (`Shift Cmd E`). One file gets a Save dialog natively, several a folder; in the browser each is a download (`rfd`'s wasm backend). Export waits for the full solve. A toast reports `Exported title.kla (10 003 B)`; failures name cause and remedy.
 - **Dependency.** `rfd` 0.17 (TAD §4's file dialogs), default features.
+
+As built in #206 (2026-10-13): the Layers tab (UX §5).
+
+- **Rows.** Top layer first: a drag handle (`egui_dnd` 0.17, egui 0.36; reordering ends in one `layer_reorder`), the eye (`layer_set_visible`), a thumbnail (box-filtered to 64 px from the layer's source, cached per source), a chain icon when the layer has a mask, the name (click selects, double click renames with `layer_rename`), the recipe badge (`FS 100%`; the tooltip has method, metric and fitting mode) and the opacity. Blend mode (`layer_set_blend`) and opacity (`layer_set_opacity`) of the selected layer sit above the list; the strip below has New from file, Duplicate, Layer via mask and Add mask (disabled until the mask tools, #78) and Delete. With no layers the tab shows UX §5's empty state.
+- **Undo.** `Cmd Z`, `Shift Cmd Z` and `Cmd Y` run the editor's history. A drag (the opacity slider now, nudges and transforms later) is one undo step: `Document::run_in_gesture` undoes the gesture's previous command before running the next, and the drag's frames take the scheduler's fast path, its release a full solve.
+- **Shortcuts and menus.** `Shift Cmd N` new layer from file, `Cmd J` duplicate, `Cmd ,` show or hide, `Delete`/`Backspace` delete; Layer and Edit menus match. A picture dropped on an open project becomes a layer (#205).
+- **Screenshot runs** neither restore nor save egui's memory (panel sizes), so they always draw the defaults; extra pictures on the command line are added as layers, and `--tab layers|export` picks the dock tab.
+- **Dependency.** `egui_dnd` 0.17.0 (MIT; brings `egui_animation` and `simple-easing`), approved for E8.
 
 ### 4.1 Image model (`convert64-core::model`)
 

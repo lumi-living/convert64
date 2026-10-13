@@ -15,8 +15,10 @@ convert64-formats = { workspace = true }
 convert64-project = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
+egui_dnd = { workspace = true }
 egui_material_icons = { workspace = true }
 rfd = { workspace = true }
+serde_json = { workspace = true }
 
 # The solve scheduler's worker thread uses the core's data parallelism natively; the
 # web build stays single-threaded (CLAUDE.md non-negotiable 2).

@@ -92,6 +92,7 @@ impl App {
         {
             match ws.doc.add_layer(name, bytes, path) {
                 Ok(()) => {
+                    self.shell.layer = ws.doc.session().project().layers.len() - 1;
                     self.shell
                         .toast(ctx, format!("Added {name} as a layer"), false);
                     self.resolve();
@@ -187,6 +188,51 @@ impl App {
         }
     }
 
+    /// Runs a registry command on the document (as part of drag `gesture`, if any) and
+    /// re-solves: the fast path during a drag, in full otherwise. Keeps the layer
+    /// selection on the layer an edit made or moved.
+    fn edit(
+        &mut self,
+        ctx: &egui::Context,
+        gesture: Option<u64>,
+        command: convert64_project::JsonCommand,
+    ) {
+        use convert64_project::{JsonCommand, LayerRef};
+        let Some(ws) = &mut self.workspace else {
+            return;
+        };
+        let select = match &command {
+            JsonCommand::LayerDuplicate {
+                layer: LayerRef::Index(i),
+            } => Some(i + 1),
+            JsonCommand::LayerRemove {
+                layer: LayerRef::Index(i),
+            } => Some(i.saturating_sub(1)),
+            _ => None,
+        };
+        let done = match gesture {
+            Some(id) => ws.doc.run_in_gesture(id, command),
+            None => ws.doc.run(command),
+        };
+        match done {
+            Ok(()) => {
+                if let Some(i) = select {
+                    self.shell.layer = i;
+                }
+                if gesture.is_some() {
+                    ws.solving = true;
+                    let previous = ws.solution.clone();
+                    let dirty = convert64_core::CellSet::EMPTY;
+                    self.scheduler
+                        .submit(ws.doc.snapshot(previous), SolveMode::Interactive { dirty });
+                } else {
+                    self.resolve();
+                }
+            }
+            Err(e) => self.shell.toast(ctx, format!("{e}"), true),
+        }
+    }
+
     /// Carries out what the shell asked for.
     fn act(&mut self, ctx: &egui::Context, action: Action) {
         match action {
@@ -208,7 +254,48 @@ impl App {
                     Err(e) => self.shell.toast(ctx, e.to_string(), true),
                 }
             }
-            Action::Open => self.files.pick_open(ctx),
+            Action::Open => self.files.pick_open(ctx, false),
+            Action::NewLayer if self.workspace.is_some() => self.files.pick_open(ctx, true),
+            Action::NewLayer => self.files.pick_open(ctx, false),
+            Action::Run(command) => self.edit(ctx, None, command),
+            Action::Gesture(id, command) => self.edit(ctx, Some(id), command),
+            Action::EndGesture => {
+                if let Some(ws) = &mut self.workspace {
+                    ws.doc.end_gesture();
+                }
+                // The drag's last frame got the fast path: finish with a full solve.
+                self.resolve();
+            }
+            Action::ToggleVisible(i) => {
+                let visible = self
+                    .workspace
+                    .as_ref()
+                    .and_then(|ws| ws.doc.session().project().layers.get(i))
+                    .map(|l| !l.visible());
+                if let Some(visible) = visible {
+                    let layer = convert64_project::LayerRef::Index(i);
+                    self.edit(
+                        ctx,
+                        None,
+                        convert64_project::JsonCommand::LayerSetVisible { layer, visible },
+                    );
+                }
+            }
+            Action::Undo | Action::Redo => {
+                let Some(ws) = &mut self.workspace else {
+                    return;
+                };
+                let done = if action == Action::Undo {
+                    Ok(ws.doc.undo())
+                } else {
+                    ws.doc.redo()
+                };
+                match done {
+                    Ok(true) => self.resolve(),
+                    Ok(false) => {}
+                    Err(e) => self.shell.toast(ctx, format!("Can't redo: {e}"), true),
+                }
+            }
             Action::Save => self.save(ctx, false),
             Action::SaveAs => self.save(ctx, true),
             Action::Export(settings, name) => self.export(ctx, settings, name),
@@ -303,6 +390,9 @@ impl eframe::App for App {
         }
 
         self.poll_files(ui.ctx());
+        if let Some(ws) = &mut self.workspace {
+            self.shell.history = ws.doc.history();
+        }
         for action in self.shell.show(ui, self.workspace.as_mut()) {
             self.act(ui.ctx(), action);
         }
@@ -316,6 +406,15 @@ impl eframe::App for App {
         }
     }
 
+    fn persist_egui_memory(&self) -> bool {
+        // A screenshot run leaves the user's panel sizes and window state alone.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.screenshot.is_some() {
+            return false;
+        }
+        true
+    }
+
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         // A screenshot run leaves the user's stored choice alone.
         #[cfg(not(target_arch = "wasm32"))]
@@ -327,7 +426,8 @@ impl eframe::App for App {
 }
 
 /// `--screenshot <file.png> [--theme light|dark] [--size <w>x<h>] [--view result]
-/// [--overlay grid|clashes|ghost]… [--compare split|flicker|side] [--dialog export]`: draws a few frames,
+/// [--overlay grid|clashes|ghost]… [--compare split|flicker|side] [--dialog export]
+/// [--tab recipe|layers|export]`: draws a few frames,
 /// saves the window as a PNG and quits. The PR screenshots come from it (#203).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
@@ -350,6 +450,8 @@ mod screenshot {
         pub(super) compare: Option<String>,
         /// `--dialog export`: the export dialog open.
         pub(super) dialog: Option<String>,
+        /// `--tab recipe|layers|export`: the dock tab.
+        pub(super) tab: Option<String>,
         frame: u32,
     }
 
@@ -357,6 +459,8 @@ mod screenshot {
     #[derive(Debug, Default)]
     pub(super) struct Args {
         pub(super) open: Option<PathBuf>,
+        /// Further pictures, added as layers on top.
+        pub(super) layers: Vec<PathBuf>,
         pub(super) screenshot: Option<Request>,
     }
 
@@ -365,6 +469,7 @@ mod screenshot {
         pub(super) fn from_args() -> Result<Args, String> {
             let mut args = std::env::args().skip(1);
             let mut open = None;
+            let mut layers = Vec::new();
             let mut request = None;
             let mut theme = None;
             let mut size = [1280.0, 800.0];
@@ -372,6 +477,7 @@ mod screenshot {
             let mut overlays = Vec::new();
             let mut compare = None;
             let mut dialog = None;
+            let mut tab = None;
             while let Some(arg) = args.next() {
                 let mut value = || args.next().ok_or(format!("{arg} needs a value"));
                 match arg.as_str() {
@@ -386,6 +492,7 @@ mod screenshot {
                     "--overlay" => overlays.push(value()?),
                     "--compare" => compare = Some(value()?),
                     "--dialog" => dialog = Some(value()?),
+                    "--tab" => tab = Some(value()?),
                     "--size" => {
                         let v = value()?;
                         let (w, h) = v.split_once('x').ok_or("--size is <w>x<h>")?;
@@ -397,11 +504,13 @@ mod screenshot {
                     _ if !arg.starts_with("--") && open.is_none() => {
                         open = Some(PathBuf::from(arg))
                     }
+                    _ if !arg.starts_with("--") => layers.push(PathBuf::from(arg)),
                     _ => return Err(format!("unknown argument {arg}")),
                 }
             }
             Ok(Args {
                 open,
+                layers,
                 screenshot: request.map(|path| Self {
                     path,
                     theme,
@@ -410,6 +519,7 @@ mod screenshot {
                     overlays,
                     compare,
                     dialog,
+                    tab,
                     frame: 0,
                 }),
             })
@@ -475,8 +585,19 @@ fn main() -> eframe::Result {
             if let Some(path) = args.open {
                 app.files.open_path(path);
                 app.poll_files(&cc.egui_ctx);
+                for layer in args.layers {
+                    let name = layer
+                        .file_name()
+                        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                    match std::fs::read(&layer) {
+                        Ok(bytes) => app.receive(&cc.egui_ctx, &name, &bytes, Some(&layer), true),
+                        Err(e) => eprintln!("convert64-app: {}: {e}", layer.display()),
+                    }
+                }
             }
             if let Some(request) = request {
+                // Draw from defaults, not from what earlier runs stored.
+                cc.egui_ctx.memory_mut(|m| m.data = Default::default());
                 if request.result {
                     app.shell.view = convert64_app::shell::ViewMode::Result;
                 }
@@ -488,6 +609,12 @@ fn main() -> eframe::Result {
                         "ghost" => o.ghost = true,
                         _ => eprintln!("convert64-app: unknown overlay {overlay}"),
                     }
+                }
+                use convert64_app::shell::DockTab;
+                match request.tab.as_deref() {
+                    Some("layers") => app.shell.tab = DockTab::Layers,
+                    Some("export") => app.shell.tab = DockTab::Export,
+                    _ => {}
                 }
                 if request.dialog.as_deref() == Some("export")
                     && let Some(ws) = &app.workspace

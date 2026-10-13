@@ -55,3 +55,15 @@ pub const WARNING: Icon = m::ICON_WARNING;
 pub const LIGHT_MODE: Icon = m::ICON_LIGHT_MODE;
 /// Dark theme.
 pub const DARK_MODE: Icon = m::ICON_DARK_MODE;
+/// Drag handle (reorder).
+pub const DRAG: Icon = m::ICON_DRAG_INDICATOR;
+/// New layer from file.
+pub const ADD: Icon = m::ICON_ADD;
+/// Duplicate layer.
+pub const DUPLICATE: Icon = m::ICON_CONTENT_COPY;
+/// Delete layer.
+pub const DELETE: Icon = m::ICON_DELETE;
+/// Add mask / layer via mask.
+pub const MASK: Icon = m::ICON_MASKS;
+/// Mask linked to its layer (the chain beside a mask thumbnail).
+pub const LINK: Icon = m::ICON_LINK;

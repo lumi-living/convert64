@@ -8,6 +8,7 @@
 
 mod dock;
 mod export_dialog;
+mod layers;
 mod menu;
 pub mod shortcuts;
 mod status;
@@ -99,7 +100,7 @@ impl DockTab {
 }
 
 /// Something the user asked for that the shell cannot do itself.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     /// Close the app (native) or do nothing (web).
     Quit,
@@ -117,6 +118,20 @@ pub enum Action {
     /// Export with these settings, files named after the stem (the dialog, or Export
     /// Again).
     Export(crate::export::Settings, String),
+    /// Run a registry command (ADR-005).
+    Run(convert64_project::JsonCommand),
+    /// Run a command that is part of a drag: one undo step per drag (UX §11).
+    Gesture(u64, convert64_project::JsonCommand),
+    /// The drag ended.
+    EndGesture,
+    /// Undo (`Cmd Z`).
+    Undo,
+    /// Redo (`Shift Cmd Z`, `Cmd Y`).
+    Redo,
+    /// Layer › New Layer from File… (`Shift Cmd N`): pick a picture, add it on top.
+    NewLayer,
+    /// Show or hide the selected layer (`Cmd ,`).
+    ToggleVisible(usize),
 }
 
 /// The smallest and largest dock width (`docs/UX.md` §3: 260–420 px). Not a Figma
@@ -147,6 +162,13 @@ pub struct Shell {
     pub split: f32,
     /// The theme preference View › Theme shows as chosen.
     pub theme: egui::ThemePreference,
+    /// The selected layer (stack index, bottom first): what the Recipe tab edits and
+    /// nudging moves.
+    pub layer: usize,
+    /// The layer being renamed and the name typed so far.
+    renaming: Option<(usize, String)>,
+    /// Whether Edit › Undo and Redo have something to do (set by the app each frame).
+    pub history: (bool, bool),
     /// `\` is held: the working view shows the other image.
     flip_held: bool,
     /// Fit the picture once the working view's size is known (after an open).
@@ -178,6 +200,9 @@ impl Default for Shell {
             compare: Compare::default(),
             split: 0.5,
             theme: egui::ThemePreference::System,
+            layer: 0,
+            renaming: None,
+            history: (false, false),
             flip_held: false,
             fit_pending: true,
             view_rect: None,
@@ -343,6 +368,24 @@ impl Shell {
             if i.consume_shortcut(&s::OPEN) {
                 actions.push(Action::Open);
             }
+            // Redo before Undo: Shift Cmd Z also matches Cmd Z.
+            if i.consume_shortcut(&s::REDO) || i.consume_shortcut(&s::REDO_ALT) {
+                actions.push(Action::Redo);
+            } else if i.consume_shortcut(&s::UNDO) {
+                actions.push(Action::Undo);
+            }
+            if i.consume_shortcut(&s::NEW_LAYER) {
+                actions.push(Action::NewLayer);
+            }
+            if i.consume_shortcut(&s::DUPLICATE_LAYER) {
+                let layer = convert64_project::LayerRef::Index(self.layer);
+                actions.push(Action::Run(
+                    convert64_project::JsonCommand::LayerDuplicate { layer },
+                ));
+            }
+            if i.consume_shortcut(&s::TOGGLE_VISIBLE) {
+                actions.push(Action::ToggleVisible(self.layer));
+            }
             // Shift Cmd S before Cmd S, as with Tab.
             if i.consume_shortcut(&s::SAVE_AS) {
                 actions.push(Action::SaveAs);
@@ -374,6 +417,12 @@ impl Shell {
             }
             if i.consume_shortcut(&s::COMPARE) {
                 self.compare = self.compare.next();
+            }
+            if i.consume_shortcut(&s::DELETE_LAYER) || i.consume_shortcut(&s::DELETE_LAYER_ALT) {
+                let layer = convert64_project::LayerRef::Index(self.layer);
+                actions.push(Action::Run(convert64_project::JsonCommand::LayerRemove {
+                    layer,
+                }));
             }
             for tool in Tool::ALL {
                 if i.consume_key(egui::Modifiers::NONE, tool.key()) {

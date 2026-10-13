@@ -32,6 +32,14 @@ pub const QUIT: KeyboardShortcut = cmd(Key::Q);
 pub const UNDO: KeyboardShortcut = cmd(Key::Z);
 /// Redo.
 pub const REDO: KeyboardShortcut = shift_cmd(Key::Z);
+/// Redo, as GIMP users press it.
+pub const REDO_ALT: KeyboardShortcut = cmd(Key::Y);
+/// Delete the selected layer.
+pub const DELETE_LAYER: KeyboardShortcut = bare(Key::Delete);
+/// Delete the selected layer (Backspace).
+pub const DELETE_LAYER_ALT: KeyboardShortcut = bare(Key::Backspace);
+/// Show or hide the selected layer.
+pub const TOGGLE_VISIBLE: KeyboardShortcut = cmd(Key::Comma);
 /// New layer from file.
 pub const NEW_LAYER: KeyboardShortcut = shift_cmd(Key::N);
 /// Duplicate layer.
