@@ -11,14 +11,16 @@
 //!
 //! Version-1 recipe files ([`crate::recipe::RecipeFile`], `"version": 1`) are read too:
 //! [`ProjectFile::from_recipe`] maps one onto a project, so every recipe opens and saves
-//! as a project. The schema is documented in `docs/reference/project-file.md`.
+//! as a project. An older project file is migrated on load ([`ProjectFile::migrate`])
+//! and says so once ([`ProjectFile::migration_note`]). The schema is documented in
+//! `docs/reference/project-file.md`.
 //!
 //! Nothing here opens a file: linked sources, masks and `.vpl` palettes are read through
 //! a [`Store`], so the browser build loads projects from bytes it was handed (#192).
 //!
 //! ```json
 //! {
-//!   "schema_version": 2,
+//!   "schema_version": 3,
 //!   "target": "multicolor-bitmap",
 //!   "palette": "pepto-pal",
 //!   "layers": [{ "name": "title", "source": { "path": "title.png" },
@@ -42,9 +44,18 @@ use convert64_core::solve::steering::{Pin, Steering};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// The project-file schema version this build reads and writes. Version 1 is the recipe
-/// file, which has `"version"` instead of `"schema_version"`.
-pub const SCHEMA_VERSION: u32 = 2;
+/// The project-file schema version this build writes. Version 1 is the recipe file, which
+/// has `"version"` instead of `"schema_version"`; project files from
+/// [`OLDEST_SCHEMA_VERSION`] up are read and migrated ([`ProjectFile::migrate`]).
+///
+/// - 2 (#163): the project file.
+/// - 3 (#236): `supersample` as ADR-012 made it. Every version-2 file was saved while
+///   the default was 4 and wrote it, so loading one sets `supersample` to 1, the default
+///   since #227: one look for every project.
+pub const SCHEMA_VERSION: u32 = 3;
+
+/// The oldest project-file `schema_version` this build reads.
+pub const OLDEST_SCHEMA_VERSION: u32 = 2;
 
 /// The project file's extension.
 pub const EXTENSION: &str = "convert64";
@@ -53,7 +64,7 @@ pub const EXTENSION: &str = "convert64";
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectFile {
-    /// Must be [`SCHEMA_VERSION`].
+    /// [`SCHEMA_VERSION`] once loaded: an older file is migrated ([`Self::migrate`]).
     pub schema_version: u32,
     /// Target mode.
     pub target: Mode,
@@ -81,6 +92,11 @@ pub struct ProjectFile {
     /// Registry commands run in order after loading (a recipe file's commands).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<JsonCommand>,
+    /// The `schema_version` the file had before [`Self::migrate`] updated it, if it was
+    /// older (#236). Neither read nor written: it is how a loaded file says it was
+    /// migrated ([`Self::migration_note`]).
+    #[serde(skip)]
+    pub migrated_from: Option<u32>,
 }
 
 const fn default_supersample() -> u8 {
@@ -443,6 +459,14 @@ pub enum Embed {
     None,
 }
 
+/// The error for a `schema_version` this build does not read.
+fn unsupported(n: impl std::fmt::Display) -> ProjectError {
+    invalid(format!(
+        "project schema_version {n} is not supported (this build reads \
+         {OLDEST_SCHEMA_VERSION}–{SCHEMA_VERSION}, and version-1 recipe files)"
+    ))
+}
+
 impl ProjectFile {
     /// A project of one PNG layer scaled to fill the 320 × 200 canvas, the default
     /// recipe and the default palette.
@@ -478,6 +502,7 @@ impl ProjectFile {
             solve: SolveSpec::default(),
             snap: Snap::Off,
             commands: Vec::new(),
+            migrated_from: None,
         }
     }
 
@@ -509,22 +534,60 @@ impl ProjectFile {
             solve: r.solve,
             snap: Snap::Off,
             commands: r.commands,
+            migrated_from: None,
         }
     }
 
-    /// Parses a project file, or a version-1 recipe file (migrated with
-    /// [`Self::from_recipe`]).
+    /// Brings a file of an older `schema_version` up to [`SCHEMA_VERSION`] and notes the
+    /// version it had in [`Self::migrated_from`]; a current file is left as it is.
+    /// [`Self::parse`] and [`Session::load`](crate::Session::load) call it.
+    ///
+    /// 2 → 3 (#236): `supersample` becomes 1, whatever it was. Version-2 files were saved
+    /// while the default was 4, so a stored 4 meant "the default"; nothing is released
+    /// yet, and one look for every project is simpler than a setting. Version-1 recipe
+    /// files are not migrated: they are written by hand, and write `supersample` only
+    /// when they mean it.
+    ///
+    /// # Errors
+    /// A `schema_version` this build does not read.
+    pub fn migrate(&mut self) -> Result<(), ProjectError> {
+        let from = self.schema_version;
+        if !(OLDEST_SCHEMA_VERSION..=SCHEMA_VERSION).contains(&from) {
+            return Err(unsupported(from));
+        }
+        if from < 3 {
+            // ADR-012's 1× resampling for every project.
+            self.supersample = default_supersample();
+        }
+        if from < SCHEMA_VERSION {
+            self.schema_version = SCHEMA_VERSION;
+            self.migrated_from = Some(from);
+        }
+        Ok(())
+    }
+
+    /// What loading changed, to tell the user once (the CLI's `notes`, the app's status
+    /// bar): `Some` for a file [`Self::migrate`] updated.
+    pub fn migration_note(&self) -> Option<String> {
+        self.migrated_from
+            .map(|v| format!("Updated project from v{v}: now uses 1× resampling"))
+    }
+
+    /// Parses a project file (migrated with [`Self::migrate`] if older), or a version-1
+    /// recipe file (mapped with [`Self::from_recipe`]).
     pub fn parse(text: &str) -> Result<Self, ProjectError> {
         let json = |e: serde_json::Error| ProjectError::Json(e.to_string());
         let v: serde_json::Value = serde_json::from_str(text).map_err(json)?;
         if let Some(n) = v.get("schema_version") {
-            if n.as_u64() != Some(u64::from(SCHEMA_VERSION)) {
-                return Err(invalid(format!(
-                    "project schema_version {n} is not supported (this build reads \
-                     {SCHEMA_VERSION}, and version-1 recipe files)"
-                )));
+            let readable = |n: &u64| {
+                (u64::from(OLDEST_SCHEMA_VERSION)..=u64::from(SCHEMA_VERSION)).contains(n)
+            };
+            if !n.as_u64().is_some_and(|n| readable(&n)) {
+                return Err(unsupported(n));
             }
-            serde_json::from_value(v).map_err(json)
+            let mut file: Self = serde_json::from_value(v).map_err(json)?;
+            file.migrate()?;
+            Ok(file)
         } else if v.get("version").is_some() {
             let r: RecipeFile = serde_json::from_value(v).map_err(json)?;
             if r.version != crate::recipe::VERSION {
@@ -719,20 +782,65 @@ mod tests {
     #[test]
     fn version_detection() {
         assert!(ProjectFile::parse(r#"{"target":"hires-bitmap","layers":[]}"#).is_err());
-        let newer = r#"{"schema_version":3,"target":"hires-bitmap","layers":[]}"#;
-        assert!(
-            ProjectFile::parse(newer)
-                .unwrap_err()
-                .to_string()
-                .contains("schema_version 3")
-        );
-        let v1 =
-            r#"{"version":1,"target":"hires-bitmap","layers":[{"name":"a","source":"a.png"}]}"#;
+        for unknown in [1, 4] {
+            let text =
+                format!(r#"{{"schema_version":{unknown},"target":"hires-bitmap","layers":[]}}"#);
+            let e = ProjectFile::parse(&text).unwrap_err().to_string();
+            assert!(e.contains(&format!("schema_version {unknown}")), "{e}");
+        }
+        let v1 = r#"{"version":1,"target":"hires-bitmap","supersample":2,
+            "layers":[{"name":"a","source":"a.png"}]}"#;
         let p = ProjectFile::parse(v1).unwrap();
         assert_eq!(p.schema_version, SCHEMA_VERSION);
         assert_eq!(p.layers[0].source, SourceSpec::Path("a.png".into()));
+        assert_eq!(p.supersample, 2, "a recipe's factor is kept");
+        assert_eq!(p.migration_note(), None);
         let v2 = r#"{"schema_version":2,"target":"hires-bitmap","layers":[],"surprise":1}"#;
         assert!(ProjectFile::parse(v2).is_err(), "unknown fields are errors");
+        let v3 = r#"{"schema_version":3,"target":"hires-bitmap","layers":[],"migrated_from":2}"#;
+        assert!(
+            ProjectFile::parse(v3).is_err(),
+            "migrated_from is never read"
+        );
+    }
+
+    /// #236: a version-2 file's `supersample` (4, the default it was saved with) becomes
+    /// 1, and the file says so once; a version-3 file loads as written.
+    #[test]
+    fn version_2_files_migrate_to_1x() {
+        for (stored, field) in [
+            (4, r#""supersample":4,"#),
+            (2, r#""supersample":2,"#),
+            (4, ""),
+        ] {
+            let text =
+                format!(r#"{{"schema_version":2,"target":"hires-bitmap",{field}"layers":[]}}"#);
+            let p = ProjectFile::parse(&text).unwrap();
+            assert_eq!(p.supersample, 1, "v2 with {stored}");
+            assert_eq!(p.schema_version, SCHEMA_VERSION);
+            assert_eq!(p.migrated_from, Some(2));
+            assert_eq!(
+                p.migration_note().as_deref(),
+                Some("Updated project from v2: now uses 1× resampling")
+            );
+            let saved = p.to_json();
+            assert!(saved.contains(r#""schema_version": 3"#), "{saved}");
+            assert!(saved.contains(r#""supersample": 1"#), "{saved}");
+            assert!(!saved.contains("migrated"), "{saved}");
+            let again = ProjectFile::parse(&saved).unwrap();
+            assert_eq!(again.migration_note(), None, "reported once");
+        }
+        let v3 = r#"{"schema_version":3,"target":"hires-bitmap","supersample":4,"layers":[]}"#;
+        let p = ProjectFile::parse(v3).unwrap();
+        assert_eq!((p.supersample, p.migrated_from), (4, None));
+        assert_eq!(p.migration_note(), None);
+        // A file built in memory with an old version migrates the same way.
+        let mut q = p.clone();
+        q.schema_version = 2;
+        q.migrate().unwrap();
+        assert_eq!((q.supersample, q.migrated_from), (1, Some(2)));
+        q.schema_version = 9;
+        assert!(q.migrate().is_err());
     }
 
     /// #198: the snap setting and a layer's rotation and anchor are optional, written
@@ -751,6 +859,8 @@ mod tests {
             assert!(!text.contains(absent), "{absent} written: {text}");
         }
         let mut q = p.clone();
+        // A saved file is current, so it says nothing about a migration.
+        q.migrated_from = None;
         q.snap = Snap::C64Pixel;
         q.layers[0].transform = t
             .with_rotation(-7.5)

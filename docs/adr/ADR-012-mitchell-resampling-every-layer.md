@@ -111,8 +111,9 @@ them; the preprocessing round trip clamps.
   included (TAD §7).
 - Harder: the app's Source view needs its own finer compositor (`Session::PREVIEW_N`,
   4×) to stay sharp when zoomed in, so an edit composites three times in the app.
-  Projects saved before #227 store `"supersample": 4` and keep the softer 4×
-  composite until it is set to 1.
+  Projects saved before #227 store `"supersample": 4`; since #236 they are migrated
+  to 1× on load (project `schema_version` 3, ADR-009), so every project gets the
+  same look.
 - Revisit when: the sheet shows a downscaled layer aliasing (widen the kernel as an
   option); the invariant has held long enough to drop the compatibility branch.
 
@@ -120,4 +121,5 @@ them; the preprocessing round trip clamps.
 - [x] Mitchell for both paths, the 1× default, the per-layer front end, mask
       supersampling (#227)
 - [x] `cargo xtask front-end-sheet` row: nudged, masked and rotated, old against new
+- [x] Older projects' `"supersample": 4` migrated to 1× on load (#236)
 - [ ] Drop the compatibility branch and the unused mip machinery of the rotated path

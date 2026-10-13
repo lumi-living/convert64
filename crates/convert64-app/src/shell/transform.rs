@@ -16,8 +16,9 @@ use egui::{Pos2, Rect, Response, Ui, pos2};
 /// Gesture id of a transform drag.
 const GESTURE: u64 = 0x7472_616e;
 
-/// Handle hit radius, in points.
-const HANDLE: f32 = 6.0;
+/// Handle hit radius, in points: larger than the 7 pt square drawn, so a handle is
+/// easy to catch (Figma's handles have a larger invisible hit area too; #239).
+const HANDLE: f32 = 9.0;
 
 /// How far outside a corner the rotate zone reaches, in points.
 const ROTATE_ZONE: f32 = 22.0;
@@ -222,8 +223,13 @@ pub(super) fn interact(
             }
         }
     }
+    // What was grabbed is decided where the button went down: egui reports the drag only
+    // once the pointer has moved past its drag threshold, by which time it can be off
+    // the handle (#239).
     if response.drag_started_by(egui::PointerButton::Primary)
-        && let Some(p) = response.interact_pointer_pos()
+        && let Some(p) = ui
+            .input(|i| i.pointer.press_origin())
+            .or_else(|| response.interact_pointer_pos())
         && let Some(grab) = grab_at(&quad, &mid, anchor, p)
     {
         shell.transform_drag = Some(TransformDrag {
@@ -335,6 +341,164 @@ mod tests {
         assert_eq!(after.rotate(), 90.0);
         let free = dragged(&d, pos2(36.0, 60.0), size, false).unwrap();
         assert!((free.rotate() - 90.0).abs() > 0.5);
+    }
+
+    /// A layer of 64×40 placed at (100, 60) at 2×: a 128×80 box well inside the screen.
+    fn workspace() -> Workspace {
+        let rgba = (0..64 * 40)
+            .flat_map(|i| [(i % 64 * 4) as u8, 90, 90, 255])
+            .collect();
+        let png = convert64_project::codec::encode_rgba8(64, 40, rgba);
+        let mut doc = crate::document::Document::from_png("ramp.png", &png).unwrap();
+        let transform =
+            Transform::new(Vec2::new(100.0, 60.0), Vec2::new(2.0, 2.0), false, false).unwrap();
+        doc.run(JsonCommand::LayerSetTransform {
+            layer: LayerRef::Index(0),
+            transform,
+            snap: None,
+        })
+        .unwrap();
+        Workspace::new(doc)
+    }
+
+    /// The working view in the headless runs, in points.
+    fn view() -> Rect {
+        Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(800.0, 600.0))
+    }
+
+    /// Presses the primary button at `from`, moves through `path` one frame per point
+    /// (as a real mouse does: the first steps stay inside egui's drag threshold) and
+    /// releases; returns the transform the last gesture command set, if any.
+    fn drag(ws: &Workspace, from: Pos2, path: &[Pos2]) -> Option<Transform> {
+        let ctx = egui::Context::default();
+        let mut shell = Shell {
+            tool: super::super::Tool::Transform,
+            ..Shell::default()
+        };
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let last = *path.last().unwrap_or(&from);
+        let mut frames = vec![
+            vec![egui::Event::PointerMoved(from)],
+            vec![button(from, true)],
+        ];
+        frames.extend(path.iter().map(|p| vec![egui::Event::PointerMoved(*p)]));
+        frames.push(vec![button(last, false)]);
+        frames.push(vec![]);
+        let mut set = None;
+        for (n, events) in frames.into_iter().enumerate() {
+            let input = egui::RawInput {
+                screen_rect: Some(view()),
+                time: Some(n as f64 / 60.0),
+                events,
+                ..Default::default()
+            };
+            let mut actions = Vec::new();
+            let mut output = ctx.run_ui(input, |ui| {
+                let response = ui.allocate_rect(view(), egui::Sense::click_and_drag());
+                interact(&mut shell, ws, ui, &response, view(), &mut actions);
+            });
+            output.textures_delta.clear();
+            for a in actions {
+                if let Action::Gesture(GESTURE, JsonCommand::LayerSetTransform { transform, .. }) =
+                    a
+                {
+                    set = Some(transform);
+                }
+            }
+        }
+        set
+    }
+
+    /// The handles of the test layer, in points.
+    fn test_handles(ws: &Workspace) -> ([Pos2; 4], [Pos2; 4], Pos2) {
+        let l = &ws.doc.session().project().layers[0];
+        handles(&Shell::default(), view(), &l.transform(), l.source().size())
+    }
+
+    /// A path from `from` towards `to`: two small steps inside egui's 6 pt drag threshold,
+    /// then one past the 9 pt handle radius (where the old code decided the grab), then
+    /// the target.
+    fn path(from: Pos2, to: Pos2) -> Vec<Pos2> {
+        let dir = (to - from).normalized();
+        vec![from + dir * 2.0, from + dir * 4.0, from + dir * 12.0, to]
+    }
+
+    #[test]
+    fn a_corner_drag_from_the_press_point_scales_about_the_anchor() {
+        let ws = workspace();
+        let before = ws.doc.session().project().layers[0].transform();
+        let size = (64, 40);
+        let (quad, _, _) = test_handles(&ws);
+        // Grab the bottom-right corner 3 pt off its centre and pull it outwards; the
+        // drag starts only once the pointer is 12 pt away, off the handle.
+        let from = quad[2] + egui::vec2(3.0, 2.0);
+        let after = drag(&ws, from, &path(from, from + egui::vec2(64.0, 40.0))).unwrap();
+        // Uniform: both axes grow by the same factor, and the layer did not just move.
+        let (s0, s1) = (before.scale(), after.scale());
+        assert!(s1.x > s0.x * 1.2, "{after:?}");
+        assert!((s1.x / s0.x - s1.y / s0.y).abs() < 1e-3, "{after:?}");
+        // About the anchor (the centre): it stays where it was on the canvas.
+        let pivot = |t: &Transform| t.layer_to_canvas(size, Vec2::new(32.0, 20.0));
+        let (a, b) = (pivot(&before), pivot(&after));
+        assert!(
+            (a.x - b.x).abs() < 1e-3 && (a.y - b.y).abs() < 1e-3,
+            "{a:?} {b:?}"
+        );
+    }
+
+    #[test]
+    fn an_edge_drag_from_the_press_point_scales_one_axis() {
+        let ws = workspace();
+        let before = ws.doc.session().project().layers[0].transform();
+        let (_, mid, _) = test_handles(&ws);
+        // The right edge's handle, pulled outwards.
+        let from = mid[1] + egui::vec2(-2.0, 3.0);
+        let after = drag(&ws, from, &path(from, from + egui::vec2(60.0, 0.0))).unwrap();
+        assert!(after.scale().x > before.scale().x * 1.2, "{after:?}");
+        assert_eq!(after.scale().y, before.scale().y);
+        // The bottom edge, pulled up: only H changes.
+        let from = mid[2];
+        let after = drag(&ws, from, &path(from, from - egui::vec2(0.0, 40.0))).unwrap();
+        assert!(after.scale().y < before.scale().y * 0.8, "{after:?}");
+        assert_eq!(after.scale().x, before.scale().x);
+    }
+
+    #[test]
+    fn a_drag_from_inside_the_box_moves_by_the_whole_distance() {
+        let ws = workspace();
+        let before = ws.doc.session().project().layers[0].transform();
+        let (quad, _, _) = test_handles(&ws);
+        // A quarter of the way in from the top-left corner: inside, off every handle.
+        let from = quad[0].lerp(quad[2], 0.25);
+        let after = drag(&ws, from, &path(from, from + egui::vec2(40.0, 20.0))).unwrap();
+        assert_eq!(after.scale(), before.scale());
+        // 40 × 20 points at the default 2× zoom is 20 × 10 screen units, counted from
+        // where the button went down.
+        let moved = after.translate() - before.translate();
+        assert!(
+            (moved.x - 20.0).abs() < 1e-3 && (moved.y - 10.0).abs() < 1e-3,
+            "{moved:?}"
+        );
+    }
+
+    #[test]
+    fn handles_catch_the_pointer_within_their_hit_radius() {
+        let ws = workspace();
+        let (quad, mid, anchor) = test_handles(&ws);
+        let off = egui::vec2(6.0, 5.0); // 7.8 pt: outside the old 6 pt radius.
+        assert_eq!(
+            grab_at(&quad, &mid, anchor, quad[1] + off),
+            Some(Grab::Corner(1))
+        );
+        assert_eq!(
+            grab_at(&quad, &mid, anchor, mid[3] - off),
+            Some(Grab::Edge(3))
+        );
     }
 
     #[test]
