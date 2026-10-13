@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 use convert64_app::document::Document;
-use convert64_app::files::{FileEvent, Files};
+use convert64_app::files::{FileEvent, Files, Purpose};
 use convert64_app::shell::{Action, Shell};
 use convert64_app::theme;
 use convert64_app::workspace::Workspace;
@@ -254,9 +254,12 @@ impl App {
                     Err(e) => self.shell.toast(ctx, e.to_string(), true),
                 }
             }
-            Action::Open => self.files.pick_open(ctx, false),
-            Action::NewLayer if self.workspace.is_some() => self.files.pick_open(ctx, true),
-            Action::NewLayer => self.files.pick_open(ctx, false),
+            Action::Open => self.files.pick_open(ctx, Purpose::Open),
+            Action::NewLayer if self.workspace.is_some() => {
+                self.files.pick_open(ctx, Purpose::AddLayer)
+            }
+            Action::NewLayer => self.files.pick_open(ctx, Purpose::Open),
+            Action::LoadMask => self.files.pick_open(ctx, Purpose::Mask),
             Action::Run(command) => self.edit(ctx, None, command),
             Action::RunAll(commands, message) => {
                 let Some(ws) = &mut self.workspace else {
@@ -324,8 +327,28 @@ impl App {
                     name,
                     bytes,
                     path,
-                    dropped,
-                } => self.receive(ctx, &name, &bytes, path.as_deref(), dropped),
+                    purpose: Purpose::Mask,
+                } => {
+                    let layer = self.shell.layer;
+                    if let Some(ws) = &mut self.workspace {
+                        match ws.doc.load_mask(layer, &name, &bytes, path.as_deref()) {
+                            Ok(()) => self.resolve(),
+                            Err(e) => self.shell.toast(ctx, format!("Can't load {name} as a mask: {e}. It must be a greyscale PNG the layer's size."), true),
+                        }
+                    }
+                }
+                FileEvent::Opened {
+                    name,
+                    bytes,
+                    path,
+                    purpose,
+                } => self.receive(
+                    ctx,
+                    &name,
+                    &bytes,
+                    path.as_deref(),
+                    purpose == Purpose::AddLayer,
+                ),
                 FileEvent::Saved(files, verb) => {
                     let list: Vec<String> = files
                         .iter()
@@ -439,7 +462,8 @@ impl eframe::App for App {
 
 /// `--screenshot <file.png> [--theme light|dark] [--size <w>x<h>] [--view result]
 /// [--overlay grid|clashes|ghost]… [--compare split|flicker|side] [--dialog export]
-/// [--tab recipe|layers|export] [--command <json>]… [--zoom <n>] [--centre <x>,<y>]`: draws a few frames,
+/// [--tab recipe|layers|export] [--command <json>]… [--zoom <n>] [--centre <x>,<y>]
+/// [--mask]`: draws a few frames,
 /// saves the window as a PNG and quits. The PR screenshots come from it (#203).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
@@ -471,6 +495,8 @@ mod screenshot {
         pub(super) zoom: Option<f32>,
         /// `--centre <x>,<y>`: the picture point at the centre, in screen units.
         pub(super) centre: Option<(f32, f32)>,
+        /// `--mask`: mask mode on the selected layer.
+        pub(super) mask: bool,
         frame: u32,
     }
 
@@ -500,6 +526,7 @@ mod screenshot {
             let mut commands = Vec::new();
             let mut zoom = None;
             let mut centre = None;
+            let mut mask = false;
             while let Some(arg) = args.next() {
                 let mut value = || args.next().ok_or(format!("{arg} needs a value"));
                 match arg.as_str() {
@@ -516,6 +543,7 @@ mod screenshot {
                     "--dialog" => dialog = Some(value()?),
                     "--tab" => tab = Some(value()?),
                     "--command" => commands.push(value()?),
+                    "--mask" => mask = true,
                     "--zoom" => zoom = Some(value()?.parse().map_err(|_| "--zoom: a number")?),
                     "--centre" => {
                         let v = value()?;
@@ -555,6 +583,7 @@ mod screenshot {
                     commands,
                     zoom,
                     centre,
+                    mask,
                     frame: 0,
                 }),
             })
@@ -663,6 +692,9 @@ fn main() -> eframe::Result {
                 }
                 if let Some((x, y)) = request.centre {
                     app.shell.camera.centre = egui::pos2(x, y);
+                }
+                if request.mask {
+                    app.shell.toggle_mask_mode();
                 }
                 if request.zoom.is_some() || request.centre.is_some() {
                     app.shell.keep_camera();

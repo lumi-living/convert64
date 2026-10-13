@@ -9,6 +9,7 @@
 mod dock;
 mod export_dialog;
 mod layers;
+mod mask;
 mod menu;
 mod recipe;
 pub mod shortcuts;
@@ -25,6 +26,7 @@ use convert64_core::mode::Mode;
 
 pub use crate::view::ViewMode;
 pub use export_dialog::ExportDialog;
+pub use mask::{MaskState, MaskTool};
 
 /// The four steering tools (`docs/UX.md` §7), in toolbar order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -136,6 +138,8 @@ pub enum Action {
     NewLayer,
     /// Show or hide the selected layer (`Cmd ,`).
     ToggleVisible(usize),
+    /// Load a greyscale PNG as the selected layer's mask.
+    LoadMask,
 }
 
 /// The smallest and largest dock width (`docs/UX.md` §3: 260–420 px). Not a Figma
@@ -181,6 +185,10 @@ pub struct Shell {
     nav_cell: Option<crate::workspace::Cell>,
     /// `Shift Cmd ]` (true) or `[` (false) this frame.
     nav_request: Option<bool>,
+    /// Mask mode, the mask tools and the selection (UX §7a).
+    pub mask: MaskState,
+    /// This frame's quick-mask overlay texture, in mask mode.
+    mask_overlay: Option<egui::TextureId>,
     /// Whether Edit › Undo and Redo have something to do (set by the app each frame).
     pub history: (bool, bool),
     /// `\` is held: the working view shows the other image.
@@ -221,6 +229,8 @@ impl Default for Shell {
             menu_cell: None,
             nav_cell: None,
             nav_request: None,
+            mask: MaskState::default(),
+            mask_overlay: None,
             history: (false, false),
             flip_held: false,
             fit_pending: true,
@@ -255,6 +265,17 @@ impl Shell {
     /// Fits the picture into the working view on the next frame (after an open).
     pub fn fit_on_next_frame(&mut self) {
         self.fit_pending = true;
+    }
+
+    /// Enters or leaves mask mode on the selected layer (`M`); entering picks the brush.
+    pub fn toggle_mask_mode(&mut self) {
+        self.mask.active = !self.mask.active;
+        if self.mask.active {
+            self.mask.tool.get_or_insert(MaskTool::Brush);
+            self.mask.selection = None;
+        } else {
+            self.mask.tool = None;
+        }
     }
 
     /// Keeps the camera as set instead of fitting after an open (screenshots).
@@ -333,6 +354,12 @@ impl Shell {
             if let Some(forward) = self.nav_request.take() {
                 self.step_worst(ws, forward);
             }
+            self.mask_overlay = if self.mask.active {
+                ws.mask_overlay(ui.ctx(), self.layer, self.mask.alone)
+                    .map(egui::TextureHandle::id)
+            } else {
+                None
+            };
         }
         self.export_requested = false;
         self.nav_request = None;
@@ -343,6 +370,13 @@ impl Shell {
             egui::Panel::top("toolbar")
                 .exact_size(layout::TOOLBAR_HEIGHT)
                 .show(ui, |ui| toolbar::show(self, ui));
+            if self.mask.tool.is_some() {
+                egui::Panel::top("mask_options")
+                    .exact_size(layout::TOOLBAR_HEIGHT)
+                    .show(ui, |ui| {
+                        mask::options_bar(self, ws.as_deref(), ui, &mut actions)
+                    });
+            }
             egui::Panel::bottom("status_bar")
                 .exact_size(layout::STATUS_HEIGHT)
                 .show(ui, |ui| status::show(self, ws.as_deref(), ui));
@@ -489,7 +523,35 @@ impl Shell {
             for tool in Tool::ALL {
                 if i.consume_key(egui::Modifiers::NONE, tool.key()) {
                     self.tool = tool;
+                    self.mask.tool = None;
+                    self.mask.active = false;
                 }
+            }
+            for tool in MaskTool::ALL {
+                if i.consume_key(egui::Modifiers::NONE, tool.key()) {
+                    self.mask.tool = Some(tool);
+                }
+            }
+            if i.consume_shortcut(&s::MASK_MODE) {
+                self.toggle_mask_mode();
+            }
+            if self.mask.tool.is_some() && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+                self.mask.active = false;
+                self.mask.tool = None;
+                self.mask.polygon.clear();
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::X) {
+                use convert64_core::mask::PaintMode;
+                self.mask.mode = match self.mask.mode {
+                    PaintMode::Add => PaintMode::Subtract,
+                    PaintMode::Subtract => PaintMode::Add,
+                };
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::OpenBracket) {
+                self.mask.size = (self.mask.size / 1.25).max(0.5);
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::CloseBracket) {
+                self.mask.size = (self.mask.size * 1.25).min(64.0);
             }
             // Arrows nudge the selected layer: 10 px with Shift, 0.25 px with Alt (UX §6).
             for (key, dx, dy) in [

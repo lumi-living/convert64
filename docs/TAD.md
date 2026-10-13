@@ -608,6 +608,15 @@ As built in #208 (2026-10-13): the steering tools (UX §7).
 - **Not here.** The Region tool (`R`) paints a mask carrying its own recipe: the registry has no region commands yet, so it arrives with the mask tools (#78), which add them with CLI and MCP parity.
 - **Screenshots** take `--command <json>` (registry commands run after opening), `--zoom` and `--centre`.
 
+As built in #78 (2026-10-13): the mask tools (UX §7a, ADR-008).
+
+- **Mask mode** (`M`, Edit mask in the Recipe tab's Mask group, or a click on a layer's mask thumbnail; `Esc` or `M` leaves) swaps the toolbar to Brush `B`, Lasso `W`, Gradient `G` and Key `K` and shows the selected layer's evaluated mask (`Session::evaluated_mask`, modifiers applied) as a red quick-mask overlay at 50 % where the mask hides the layer; `Alt`-click on the thumbnail, or Alone in the options bar, shows the mask in grey.
+- **Tools.** Brush: one `mask_stroke` per drag (or a dab per click), radius in C64 pixels converted to layer pixels, hardness and flow, `X` swaps Add/Subtract, `Alt` subtracts while held, `[`/`]` size. Lasso: a freehand drag or vertices clicked and closed with a double click or `Enter`, one `mask_fill`. Gradient: drag from→to, `Shift` to 45°, `mask_gradient` with linear/radial, softness and combine. Key: a click samples the layer's pixel, a drag widens the range, `mask_key` with luma/chroma/colour. Points go from screen to layer pixels through `Transform::canvas_to_layer`.
+- **Options bar** under the toolbar: the tool's options, then Snap to cells, Feather (0–32 px, one gesture per drag), Invert, Clear, Fill, Load PNG… (`mask_load`: linked natively, through the session's store in the browser), From alpha, Alone.
+- **Selection.** With mask mode off the same tools (except the brush) build a `Selection` (lasso polygons, gradients, keys); Layer via mask (`Cmd J`, the strip's button) and via cut (`Shift Cmd J`) run `layer_via_mask`; Deselect drops it.
+- **Panels.** The Layers rows show the mask thumbnail (raster with invert) beside the chain icon; the strip's Add mask runs `mask_from_alpha` when the picture has transparency, else `mask_clear` to 1. The Recipe tab's Mask group has Edit mask, feather, invert, snap and levels (Reset is one undo step), and lists the sources.
+- **Not yet.** Removing a source or changing its combine mode needs `mask_source_remove` / `mask_source_set_combine` (#216). "Re-solved N cells" and the feathered-edge clash hint wait for the scheduler to report re-solved cells.
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.

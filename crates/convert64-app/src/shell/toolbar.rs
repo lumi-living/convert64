@@ -2,10 +2,10 @@
 //! compare as 24 px icon buttons in three groups, and a hint on the right naming the
 //! working view.
 
-use super::{Shell, Tool, ViewMode, icon};
+use super::{MaskTool, Shell, Tool, ViewMode, icon};
 use crate::icons;
 use crate::view::Compare;
-use egui::{Button, Ui};
+use egui::{Button, RichText, Ui};
 
 /// A toolbar button: an icon, a tooltip, `selected` drawn as the toggle's on state.
 fn button(ui: &mut Ui, glyph: icons::Icon, tooltip: &str, selected: bool, enabled: bool) -> bool {
@@ -20,10 +20,29 @@ fn button(ui: &mut Ui, glyph: icons::Icon, tooltip: &str, selected: bool, enable
 pub(super) fn show(shell: &mut Shell, ui: &mut Ui) {
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        for tool in Tool::ALL {
-            let tip = format!("{} ({})", tool.label(), tool.key().name());
-            if button(ui, tool.icon(), &tip, shell.tool == tool, true) {
-                shell.tool = tool;
+        if shell.mask.active {
+            // Mask mode: the toolbar swaps to the mask tools (UX §7a).
+            for tool in MaskTool::ALL {
+                let tip = format!("{} ({})", tool.label(), tool.key().name());
+                if button(ui, tool.icon(), &tip, shell.mask.tool == Some(tool), true) {
+                    shell.mask.tool = Some(tool);
+                }
+            }
+            if ui
+                .button(RichText::new("Done").small())
+                .on_hover_text("Leave mask mode (M or Esc)")
+                .clicked()
+            {
+                shell.toggle_mask_mode();
+            }
+        } else {
+            for tool in Tool::ALL {
+                let tip = format!("{} ({})", tool.label(), tool.key().name());
+                let on = shell.tool == tool && shell.mask.tool.is_none();
+                if button(ui, tool.icon(), &tip, on, true) {
+                    shell.tool = tool;
+                    shell.mask.tool = None;
+                }
             }
         }
         ui.separator();

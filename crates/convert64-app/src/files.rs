@@ -9,6 +9,17 @@ use std::sync::{Arc, Mutex};
 /// The files Open… offers.
 pub const OPEN_FILTER: (&str, &[&str]) = ("Images and projects", &["png", "convert64", "json"]);
 
+/// What a picked or dropped file is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    /// Open it (File › Open…).
+    Open,
+    /// Add it as a layer (New Layer from File…, or dropped on an open project).
+    AddLayer,
+    /// Load it as the selected layer's mask (the mask options bar's Load PNG…).
+    Mask,
+}
+
 /// A finished file operation.
 #[derive(Debug)]
 pub enum FileEvent {
@@ -20,8 +31,8 @@ pub enum FileEvent {
         bytes: Vec<u8>,
         /// Where it is (native only).
         path: Option<PathBuf>,
-        /// Dropped on the window rather than picked in a dialog.
-        dropped: bool,
+        /// What it is for.
+        purpose: Purpose,
     },
     /// Files written or downloaded, with their sizes in bytes, and the verb for the toast
     /// ("Exported", "Saved").
@@ -52,7 +63,7 @@ impl Files {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for f in dropped {
             #[cfg(not(target_arch = "wasm32"))]
-            self.read_path(f.path().to_owned(), true);
+            self.read_path(f.path().to_owned(), Purpose::AddLayer);
             #[cfg(target_arch = "wasm32")]
             {
                 let this = self.clone();
@@ -64,7 +75,7 @@ impl Files {
                             name,
                             bytes,
                             path: None,
-                            dropped: true,
+                            purpose: Purpose::AddLayer,
                         }),
                         Err(e) => this.push(FileEvent::Failed(format!("Can't read {name}: {e}."))),
                     }
@@ -77,11 +88,11 @@ impl Files {
     /// Reads `path` (native) into an `Opened` event, as if picked in Open….
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open_path(&self, path: PathBuf) {
-        self.read_path(path, false);
+        self.read_path(path, Purpose::Open);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn read_path(&self, path: PathBuf, dropped: bool) {
+    fn read_path(&self, path: PathBuf, purpose: Purpose) {
         let name = path
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -90,7 +101,7 @@ impl Files {
                 name,
                 bytes,
                 path: Some(path),
-                dropped,
+                purpose,
             }),
             Err(e) => self.push(FileEvent::Failed(format!(
                 "Can't open {}: {e}.",
@@ -99,9 +110,9 @@ impl Files {
         }
     }
 
-    /// Open… (`Cmd O`): the native dialog or the browser's file picker. `as_layer`
-    /// marks the result to be added as a layer (New Layer from File…).
-    pub fn pick_open(&self, ctx: &egui::Context, as_layer: bool) {
+    /// Open… (`Cmd O`): the native dialog or the browser's file picker, the result
+    /// tagged with what it is for.
+    pub fn pick_open(&self, ctx: &egui::Context, purpose: Purpose) {
         let dialog = rfd::AsyncFileDialog::new().add_filter(OPEN_FILTER.0, OPEN_FILTER.1);
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -111,7 +122,7 @@ impl Files {
                 .pick_file();
             drop(dialog);
             if let Some(path) = picked {
-                self.read_path(path, as_layer);
+                self.read_path(path, purpose);
             }
         }
         #[cfg(target_arch = "wasm32")]
@@ -125,7 +136,7 @@ impl Files {
                         name: file.file_name(),
                         bytes,
                         path: None,
-                        dropped: as_layer,
+                        purpose,
                     });
                     ctx.request_repaint();
                 }
