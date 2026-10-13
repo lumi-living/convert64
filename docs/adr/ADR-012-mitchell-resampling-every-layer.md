@@ -111,8 +111,9 @@ them; the preprocessing round trip clamps.
   included (TAD §7).
 - Harder: the app's Source view needs its own finer compositor (`Session::PREVIEW_N`,
   4×) to stay sharp when zoomed in, so an edit composites three times in the app.
-  Projects saved before #227 store `"supersample": 4` and keep the softer 4×
-  composite until it is set to 1.
+  Projects saved before #227 store `"supersample": 4`; since #236 they are migrated
+  to 1× on load (project `schema_version` 3, ADR-009), so every project gets the
+  same look.
 - Revisit when: the sheet shows a downscaled layer aliasing (widen the kernel as an
   option); the invariant has held long enough to drop the compatibility branch.
 
@@ -120,6 +121,7 @@ them; the preprocessing round trip clamps.
 - [x] Mitchell for both paths, the 1× default, the per-layer front end, mask
       supersampling (#227)
 - [x] `cargo xtask front-end-sheet` row: nudged, masked and rotated, old against new
+- [x] Older projects' `"supersample": 4` migrated to 1× on load (#236)
 - [ ] Drop the compatibility branch (the rotated path's mip machinery is used again
       since #235, below)
 
@@ -187,6 +189,6 @@ source area-averaged in linear light first (2.5 % averaged on the sRGB values, a
 evidence did). On the zone plate Auto's frame beyond the centre is grey within a
 standard deviation of 0.027 against Exact's 0.262 (unit test). Building the 512 px level
 of a 4096 × 2560 source (three reductions) takes 5.8 ms single-threaded and 2.2 ms with
-`parallel` natively (Apple M-series, `tests/bench.rs`); the app logs it to the browser
-console in wasm. The cold composite of that layer is 8.8 ms single-threaded, since the
+`parallel` natively (Apple M-series, `tests/bench.rs`), and 9–23 ms in the browser build
+(headless Chrome, the first page load slowest); the app logs it to the console. The cold composite of that layer is 8.8 ms single-threaded, since the
 source is no longer premultiplied whole.

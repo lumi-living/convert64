@@ -68,6 +68,8 @@ pub struct Session {
     store: Box<dyn Store>,
     /// The clock the compositors time their mip builds with ([`Session::set_clock`]).
     clock: Option<convert64_core::composite::Clock>,
+    /// What loading changed in an older file (#236), for the front-end to say once.
+    notes: Vec<String>,
 }
 
 impl std::fmt::Debug for Session {
@@ -91,17 +93,15 @@ impl Session {
 
     /// Builds a session from a parsed project, reading the files it links from `store`
     /// relative to `base`, and runs its commands.
+    /// An older file is migrated first ([`ProjectFile::migrate`]); [`Self::notes`] then
+    /// says what changed.
     pub fn load(
-        file: ProjectFile,
+        mut file: ProjectFile,
         base: &Path,
         store: Box<dyn Store>,
     ) -> Result<Self, ProjectError> {
-        if file.schema_version != SCHEMA_VERSION {
-            return Err(invalid(format!(
-                "project schema_version {} is not supported (this build reads {SCHEMA_VERSION})",
-                file.schema_version
-            )));
-        }
+        file.migrate()?;
+        let notes = file.migration_note().into_iter().collect();
         let grid = SuperGrid::new(file.target, file.supersample).map_err(invalid)?;
         file.solve
             .check()
@@ -189,6 +189,7 @@ impl Session {
             dirty: convert64_core::CellSet::all(),
             store,
             clock: None,
+            notes,
         };
         for (i, cmd) in file.commands.into_iter().enumerate() {
             session
@@ -275,6 +276,7 @@ impl Session {
             solve: p.solve.clone(),
             snap: p.snap,
             commands: Vec::new(),
+            migrated_from: None,
         })
     }
 
@@ -307,6 +309,14 @@ impl Session {
         let dir = path.parent().map(Path::to_owned).unwrap_or_default();
         let text = self.to_project_file(&dir, embed)?.to_json();
         self.store.write(path, text.as_bytes())
+    }
+
+    /// What loading changed, for the front-end to tell the user once: for a project file
+    /// of an older `schema_version`, e.g. "Updated project from v2: now uses 1×
+    /// resampling" ([`ProjectFile::migration_note`]). Empty for a current file or a
+    /// recipe. Saving writes the current version, so the saved file has none.
+    pub fn notes(&self) -> &[String] {
+        &self.notes
     }
 
     /// The store the session reads and writes files through.
