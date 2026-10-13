@@ -321,6 +321,7 @@ pub(crate) fn run(run: &mut Run, job: &BatchJob<'_>) -> Result<u8, Fail> {
         if code != 0 {
             failed += 1;
         }
+        run.echo_notes(&t.name, v);
         for f in v["files_written"].as_array().into_iter().flatten() {
             if let Some(f) = f.as_str() {
                 run.wrote(Path::new(f));

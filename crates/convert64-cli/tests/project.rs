@@ -72,7 +72,8 @@ fn a_saved_project_reloads_identically_and_solves_the_same() {
     from_recipe.save(&first, Embed::Keep).unwrap();
     let text_a = std::fs::read_to_string(&first).unwrap();
     let file: ProjectFile = serde_json::from_str(&text_a).unwrap();
-    assert_eq!(file.schema_version, 2);
+    assert_eq!(file.schema_version, convert64_project::SCHEMA_VERSION);
+    assert_eq!(file.supersample, 2, "a recipe's explicit factor is kept");
     assert_eq!(file.layers.len(), 2);
     assert!(
         matches!(&file.layers[0].source, SourceSpec::Linked(l) if l.path == Path::new("photo.png"))
@@ -145,7 +146,7 @@ fn hand_written_projects_with_regions_palettes_and_masks() {
     let mask = image::ImageBuffer::from_fn(64, 40, |x, _| image::Luma([(x * 4) as u8]));
     mask.save(dir.join("mask.png")).unwrap();
     let text = r##"{
-      "schema_version": 2,
+      "schema_version": 3,
       "target": "hires-bitmap",
       "supersample": 2,
       "palette": "colodore",
@@ -167,6 +168,8 @@ fn hand_written_projects_with_regions_palettes_and_masks() {
     std::fs::write(dir.join("hand.convert64"), text).unwrap();
     let mut s = Session::open(&dir.join("hand.convert64")).unwrap();
     assert_eq!(s.palette().name(), "Colodore");
+    assert_eq!(s.grid().n(), 2, "a version-3 file keeps its factor");
+    assert!(s.notes().is_empty());
     let p = s.project();
     assert!(!p.layers[1].visible());
     assert!(std::sync::Arc::ptr_eq(
@@ -256,4 +259,68 @@ fn the_cli_saves_projects() {
         "no/such/dir/x.convert64",
     ]);
     assert_eq!(r.status.code(), Some(3), "write errors exit 3");
+}
+
+/// #236: a version-2 project with the old default `"supersample": 4` is migrated to 1×
+/// on load and the CLI says so once: a `note:` line on stderr, or `notes` in the
+/// `--json` report. The saved project is version 3, and it has no note.
+#[test]
+fn the_cli_reports_a_version_2_project_s_migration_once() {
+    const NOTE: &str = "Updated project from v2: now uses 1× resampling";
+    let dir = temp("project-migration");
+    write_source(&dir.join("photo.png"));
+    let v2 = r#"{
+      "schema_version": 2,
+      "target": "hires-bitmap",
+      "supersample": 4,
+      "layers": [
+        { "name": "photo", "source": { "path": "photo.png" },
+          "transform": { "scale": { "x": 5.0, "y": 5.0 } } }
+      ]
+    }"#;
+    std::fs::write(dir.join("old.convert64"), v2).unwrap();
+    let run = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_convert64"))
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let json = |r: &std::process::Output| -> serde_json::Value {
+        assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+        serde_json::from_slice(&r.stdout).unwrap()
+    };
+
+    let r = run(&[
+        "recipe",
+        "apply",
+        "old.convert64",
+        "--save",
+        "new.convert64",
+    ]);
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let stderr = String::from_utf8_lossy(&r.stderr);
+    assert_eq!(stderr.matches(NOTE).count(), 1, "{stderr}");
+    assert!(stderr.contains(&format!("note: {NOTE}")), "{stderr}");
+    let saved = ProjectFile::read(&dir.join("new.convert64")).unwrap();
+    assert_eq!(saved.schema_version, 3);
+    assert_eq!(saved.supersample, 1);
+
+    let v = json(&run(&["--json", "recipe", "apply", "old.convert64"]));
+    assert_eq!(v["notes"], serde_json::json!([NOTE]));
+    for args in [
+        &["--json", "apply", "old.convert64"][..],
+        &["--json", "convert", "old.convert64", "-o", "old.art"],
+        &["--json", "validate", "old.convert64"],
+    ] {
+        let v = json(&run(args));
+        assert_eq!(v["notes"], serde_json::json!([NOTE]), "{args:?}");
+    }
+
+    // The migrated, saved project is current: no note, in either form.
+    let r = run(&["recipe", "apply", "new.convert64"]);
+    assert!(r.status.success());
+    assert!(!String::from_utf8_lossy(&r.stderr).contains("note:"));
+    let v = json(&run(&["--json", "recipe", "apply", "new.convert64"]));
+    assert_eq!(v["notes"], serde_json::json!([]));
 }
