@@ -207,6 +207,8 @@ pub struct Shell {
     snap_cycle: bool,
     /// The Transform group's W/H chain: uniform scale (the default).
     pub scale_linked: bool,
+    /// The region the Region tool paints and the Recipe tab edits.
+    pub region: usize,
     /// The cell the right-click menu is for.
     menu_cell: Option<crate::workspace::Cell>,
     /// The cell worst-cell navigation last went to.
@@ -217,6 +219,8 @@ pub struct Shell {
     pub mask: MaskState,
     /// This frame's quick-mask overlay texture, in mask mode.
     mask_overlay: Option<egui::TextureId>,
+    /// This frame's region tint texture, with the Region tool.
+    region_overlay: Option<egui::TextureId>,
     /// `H`: the hand tool, a primary drag pans.
     pub hand: bool,
     /// The clash hint was dismissed (UX §11: suggested once).
@@ -264,11 +268,13 @@ impl Default for Shell {
             scale_request: None,
             snap_cycle: false,
             scale_linked: true,
+            region: 0,
             menu_cell: None,
             nav_cell: None,
             nav_request: None,
             mask: MaskState::default(),
             mask_overlay: None,
+            region_overlay: None,
             hand: false,
             clash_hint_dismissed: false,
             error: None,
@@ -431,6 +437,11 @@ impl Shell {
                     ));
                 }
             }
+            self.region_overlay = if self.tool == Tool::Region && self.mask.tool.is_none() {
+                ws.region_overlay(ui.ctx()).map(egui::TextureHandle::id)
+            } else {
+                None
+            };
             self.mask_overlay = if self.mask.active {
                 ws.mask_overlay(ui.ctx(), self.layer, self.mask.alone)
                     .map(egui::TextureHandle::id)
@@ -451,6 +462,11 @@ impl Shell {
                 .show(ui, |ui| {
                     toolbar::show(self, ws.as_deref(), ui, &mut actions)
                 });
+            if self.tool == Tool::Region && self.mask.tool.is_none() {
+                egui::Panel::top("region_options")
+                    .exact_size(layout::TOOLBAR_HEIGHT)
+                    .show(ui, |ui| mask::region_bar(self, ui));
+            }
             if self.mask.tool.is_some() {
                 egui::Panel::top("mask_options")
                     .exact_size(layout::TOOLBAR_HEIGHT)
@@ -504,7 +520,9 @@ impl Shell {
             .interactable(false)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.colored_label(colour, message.as_str());
+                    // One line, however long: a wrapped toast reads badly.
+                    let text = egui::RichText::new(message.as_str()).color(colour);
+                    ui.add(egui::Label::new(text).extend());
                 });
             });
     }
@@ -934,5 +952,50 @@ mod tests {
             !shell.mask.active,
             "a mask tool without mask mode makes a selection"
         );
+    }
+
+    /// Values a slider can only show rounded (strength 0.6 → 60.000004 %, opacity ⅓ →
+    /// 33 %) must not count as edits, or the form re-sends them every frame.
+    #[test]
+    fn rounded_values_are_not_edits() {
+        use convert64_core::command::RecipeChange;
+        use convert64_project::{JsonCommand, LayerRef};
+        let rgba = (0..64 * 40)
+            .flat_map(|i| [(i % 64 * 4) as u8, 90, 90, 255])
+            .collect();
+        let png = convert64_project::codec::encode_rgba8(64, 40, rgba);
+        let mut doc = crate::document::Document::from_png("ramp.png", &png).unwrap();
+        let layer = LayerRef::Index(0);
+        let recipe = RecipeChange {
+            strength: Some(0.6),
+            ..Default::default()
+        };
+        doc.run(JsonCommand::RecipeSet {
+            layer: layer.clone(),
+            recipe,
+        })
+        .unwrap();
+        doc.run(JsonCommand::LayerSetOpacity {
+            layer,
+            opacity: 1.0 / 3.0,
+        })
+        .unwrap();
+        let mut ws = crate::workspace::Workspace::new(doc);
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        for tab in [DockTab::Recipe, DockTab::Layers] {
+            let mut shell = Shell {
+                tab,
+                ..Shell::default()
+            };
+            for _ in 0..3 {
+                let mut actions = Vec::new();
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    actions = shell.show(ui, Some(&mut ws));
+                });
+                out.textures_delta.clear();
+                assert!(actions.is_empty(), "{tab:?}: {actions:?}");
+            }
+        }
     }
 }

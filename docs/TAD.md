@@ -616,7 +616,7 @@ As built in #78 (2026-10-13): the mask tools (UX §7a, ADR-008).
 - **Selection.** With mask mode off the same tools (except the brush) build a `Selection` (lasso polygons, gradients, keys); Layer via mask (`Cmd J`, the strip's button) and via cut (`Shift Cmd J`) run `layer_via_mask`; Deselect drops it.
 - **Panels.** The Layers rows show the mask thumbnail (raster with invert) beside the chain icon; the strip's Add mask runs `mask_from_alpha` when the picture has transparency, else `mask_clear` to 1. The Recipe tab's Mask group has Edit mask, feather, invert, snap and levels (Reset is one undo step), and lists the sources.
 - **Sources list.** Each gradient or key has its combine mode (`mask_source_set_combine`) and a delete (`mask_source_remove`), both from #216.
-- **Not yet.** The Region tool (UX §7, #208) follows in its own PR on #216's region commands. "Re-solved N cells" and the feathered-edge clash hint wait for the scheduler to report re-solved cells.
+- **Not yet.** "Re-solved N cells" and the feathered-edge clash hint wait for the scheduler to report re-solved cells.
 
 As built in #209 (2026-10-13): palette, shortcuts, states and accessibility basics (UX §8, §11, §12).
 
@@ -631,6 +631,8 @@ As built in #197 (2026-10-13): position, scale and rotation in the app (UX §6 i
 - **Transform tool** (`S`, `Cmd T`): the selected layer's rotated box (`canvas_quad`) with four corner and four edge handles and the anchor. Inside moves, a corner scales uniformly (`Shift`: free aspect), an edge scales one axis, just outside a corner rotates about the anchor (`Shift`: 15° steps), the anchor drags the pivot, the wheel over the box scales ±1 %. Holding `Cmd` inverts the project's Snap for that drag (`snap` on the command). `Esc` during a drag reverts it (`Document::cancel_gesture`). The status bar reads X, Y, W %, H % and the angle.
 - **Snap** (`snap_set`) is in the toolbar beside the tools and in the Transform group; `Shift Cmd ;` cycles Off → C64 pixel → Cell.
 - **Keys.** `Cmd Alt [` / `]` rotate ∓0.1° (`Shift`: 1°, `layer_rotate` relative); `Cmd [` / `]` scale ∓1 %. UX §8 gives `Shift Cmd [` / `]` both to ±10 % scale and to worst-cell navigation: with the Transform tool they scale, otherwise they walk the worst cells.
+
+As built for the Region tool (2026-10-13; #208's `R`, on #216's commands): a drag paints the selected region's canvas-space mask with the brush (`region_stroke`; `Alt` or Subtract erases; size, hardness and flow in its options bar), and the first stroke with no region makes one (`region_add` and the stroke as one undo step). While the tool is active the regions show as a tint in the `region` colour and the Recipe tab becomes the region panel: the list (select, add, remove) and the selected region's dither recipe and colour fitting (`region_set_recipe`), UX §7's "pseudo-layer". Toasts are one line.
 
 ### 4.1 Image model (`convert64-core::model`)
 
