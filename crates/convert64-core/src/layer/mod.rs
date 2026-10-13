@@ -19,7 +19,6 @@ pub use snap::{Snap, snap_transform};
 
 use crate::geom::Vec2;
 use crate::mask::{Mask, MaskError};
-use crate::palette::srgb8_to_linear;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
@@ -127,12 +126,11 @@ impl SourceImage {
             .0
             .iter()
             .map(|p| {
-                [
-                    srgb8_to_linear(p[0]),
-                    srgb8_to_linear(p[1]),
-                    srgb8_to_linear(p[2]),
-                    f32::from(p[3]) / 255.0,
-                ]
+                // png2c64's own decode table (ADR-012): ours differs from it in the last
+                // bit for most values, which is enough to move a dither decision.
+                let [r, g, b] =
+                    crate::solve::png2c64_ref::colour::srgb8_to_linear(p[0], p[1], p[2]);
+                [r, g, b, f32::from(p[3]) / 255.0]
             })
             .collect();
         let chunks = rgba.as_chunks::<4>().0;

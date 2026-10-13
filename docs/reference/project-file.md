@@ -19,7 +19,7 @@ A file with `schema_version` above 2 is refused with a message naming the versio
 {
   "schema_version": 2,
   "target": "multicolor-bitmap",
-  "supersample": 4,
+  "supersample": 1,
   "palette": "pepto-pal",
   "layers": [ … ],
   "regions": [ … ],
@@ -33,7 +33,7 @@ A file with `schema_version` above 2 is refused with a message naming the versio
 |---|---|---|---|
 | `schema_version` | yes | | `2` |
 | `target` | yes | | `"multicolor-bitmap"` or `"hires-bitmap"` (the M1 modes; the other names in `convert64_core::mode::Mode` parse but cannot be solved yet) |
-| `supersample` | no | `4` | Composite factor, 1–8 |
+| `supersample` | no | `1` | Composite factor, 1–8. Since ADR-012 (#227) 1: colour is resampled straight to the target grid with png2c64's Mitchell bicubic, masks at 4× and box-reduced. A higher factor resamples colour onto the finer grid and box-filters it down, which is softer; projects saved before #227 store `4` and keep it |
 | `palette` | no | `"pepto-pal"` | See [Palette](#palette) |
 | `layers` | yes | | Bottom first; see [Layers](#layers) |
 | `regions` | no | none | Recipe overrides over part of the canvas; see [Regions](#regions) |

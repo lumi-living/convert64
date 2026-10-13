@@ -1,4 +1,5 @@
-//! The supersampled compositor (`docs/TAD.md` §2, ADR-002).
+//! The compositor (`docs/TAD.md` §2, ADR-002, ADR-012): every layer resampled with
+//! png2c64's Mitchell bicubic onto the super grid, 1× the target by default.
 //!
 //! Every visible layer is resampled onto the [`SuperGrid`] (`n ×` the target grid, the
 //! 2:1 multicolor aspect included) and blended bottom to top into an f32 linear
@@ -231,7 +232,9 @@ struct Spare {
 }
 
 /// The source pixels premultiplied, with the source they came from.
-type Premultiplied = (Arc<SourceImage>, Vec<[f32; 4]>);
+/// A source's pixels premultiplied, and whether every one is opaque (its resampled
+/// alpha is then its coverage, exactly).
+type Premultiplied = (Arc<SourceImage>, Vec<[f32; 4]>, bool);
 
 /// A mip of the premultiplied pixels: its level, pixels and size.
 type ColourMip = ((u32, u32), Vec<[f32; 4]>, (u32, u32));
@@ -332,10 +335,11 @@ impl LayerCache {
         self.update_mask_mip(m, layer.source(), &place);
         let (src, size) = self.mask_input(m, layer.source().size(), &place);
         let rect = raster.rect;
+        let fine = mask_placement(layer, grid);
         evaluate_mask(
             src,
             size,
-            &place,
+            (&place, fine.as_ref()),
             rect,
             grid,
             &modifiers,
@@ -467,19 +471,20 @@ impl LayerCache {
         let adj = layer.adjustments();
         // Adjustments apply after resampling, in png2c64's order (#190): the source is
         // only premultiplied here.
-        if !matches!(&self.premul, Some((s, _)) if Arc::ptr_eq(s, src)) {
+        if !matches!(&self.premul, Some((s, _, _)) if Arc::ptr_eq(s, src)) {
             let premul = src
                 .pixels()
                 .iter()
                 .map(|p| [p[0] * p[3], p[1] * p[3], p[2] * p[3], p[3]])
                 .collect();
-            self.premul = Some((Arc::clone(src), premul));
+            let opaque = src.pixels().iter().all(|p| p[3] == 1.0);
+            self.premul = Some((Arc::clone(src), premul, opaque));
             self.colour_mip = None;
         }
         if let Some(level) = place.mip_level()
             && self.colour_mip.as_ref().is_none_or(|(l, _, _)| *l != level)
         {
-            let (_, premul) = self.premul.as_ref().expect("filled above");
+            let (_, premul, _) = self.premul.as_ref().expect("filled above");
             let (px, size) = affine::mip(premul, sw, sh, level.0, level.1);
             self.colour_mip = Some((level, px, size));
         }
@@ -491,7 +496,8 @@ impl LayerCache {
             self.update_mask_mip(m, src, &place);
         }
         let mask_src = mask.map(|m| self.mask_input(m, (sw, sh), &place));
-        let (_, premul) = self.premul.as_ref().expect("filled above");
+        let (_, premul, opaque) = self.premul.as_ref().expect("filled above");
+        let opaque = *opaque;
         debug_assert_eq!(sh as usize * sw as usize, premul.len());
         // A rotated layer scaled down samples a mip of the pixels.
         let colour = match (&self.colour_mip, place.mip_level()) {
@@ -504,7 +510,7 @@ impl LayerCache {
                 let mut extent = Vec::new();
                 match &place {
                     Placement::Axis(mx, my) => {
-                        resample_planes(premul, sw, mx, my, &mut rgba, &mut extent);
+                        resample_planes(premul, sw, mx, my, &mut rgba, &mut extent, opaque);
                     }
                     Placement::Affine(map) => {
                         affine::resample_planes_affine(
@@ -521,10 +527,11 @@ impl LayerCache {
             || {
                 let (m, (mask_src, size)) = mask.zip(mask_src)?;
                 let modifiers = m.modifiers();
+                let fine = mask_placement(layer, grid);
                 evaluate_mask(
                     mask_src,
                     size,
-                    &place,
+                    (&place, fine.as_ref()),
                     rect,
                     grid,
                     &modifiers,
@@ -534,10 +541,7 @@ impl LayerCache {
                 Some(values)
             },
         );
-        if !adj.is_identity() {
-            let size = (rect.width() as usize, rect.height() as usize);
-            adjust_planes(&mut rgba, size, adj, grid.n());
-        }
+        adjust_planes(&mut rgba, rect.width() as usize, adj, grid.n());
         let raster = LayerRaster {
             rect,
             rgba,
@@ -547,24 +551,79 @@ impl LayerCache {
     }
 }
 
-/// A layer's adjustments applied to its resampled, premultiplied planes (`w × h`, on a
-/// grid `n ×` the target's; #190: after resampling, where png2c64 applies its gamma,
-/// sharpen and range matching). Fully transparent pixels stay transparent, so the planes'
-/// extents still hold; the sharpen weights its blur by alpha and stays inside the
-/// layer's rectangle, so the cells an adjustment can change are the rectangle's (#228).
-fn adjust_planes(planes: &mut Planes, size: (usize, usize), adj: &Adjustments, n: u8) {
-    let mut px: Vec<[f32; 4]> = (0..planes.a.len())
-        .map(|i| {
-            let a = planes.a[i];
-            if a > 0.0 {
-                [planes.r[i] / a, planes.g[i] / a, planes.b[i] / a, a]
-            } else {
-                [0.0; 4]
-            }
-        })
-        .collect();
-    adj.apply_image(&mut px, size, u32::from(n));
-    for (i, p) in px.iter().enumerate() {
+/// A layer's front end on its resampled, premultiplied planes (`width` wide): png2c64's
+/// preprocessing, then the layer's own adjustments, in png2c64's order (#190, ADR-012).
+///
+/// 1. png2c64's preprocessing with the layer's gamma and sharpen and its other settings
+///    neutral: the gamma (an exact `powf`), the sharpen (#228; png2c64's 3 × 3 at the
+///    target grid, its taps `n` super pixels apart on an `n ×` grid, or a Gaussian, the
+///    blur weighted by alpha so a transparent surround pulls in no halo), then the OKLab
+///    round trip and clamp png2c64 puts every pixel through.
+/// 2. The rest of the layer's adjustments (levels, brightness and contrast, hue,
+///    saturation and lightness, curves), which png2c64 does not have.
+/// 3. Range matching, png2c64's `match_range_to` over the layer's covered pixels.
+///
+/// A layer fitted to the screen therefore leaves this step as png2c64's prepared image
+/// (`png2c64_ref::prepare`), and every frame counts as prepared: the reference solver
+/// does not repeat the round trip. Fully transparent pixels stay transparent, so the
+/// planes' extents still hold; the sharpen stays inside the layer's rectangle, so the
+/// cells an adjustment can change are the rectangle's.
+fn adjust_planes(planes: &mut Planes, width: usize, adj: &Adjustments, n: u8) {
+    use crate::solve::png2c64_ref::{Image, preprocess};
+    let len = planes.a.len();
+    if len == 0 {
+        return;
+    }
+    let straight = |i: usize| {
+        let a = planes.a[i];
+        if a > 0.0 {
+            [planes.r[i] / a, planes.g[i] / a, planes.b[i] / a]
+        } else {
+            [0.0; 3]
+        }
+    };
+    let height = len / width;
+    let mut im = Image::new(width, height, (0..len).map(straight).collect());
+    // png2c64's order: gamma, sharpen, then the round trip (`preprocess::apply` with
+    // gamma 1 skips the power and, with no sharpen, does the rest).
+    preprocess::apply_gamma(&mut im, adj.gamma.get());
+    adj.sharpen
+        .apply_rgb(&mut im.px, &planes.a, (width, height), u32::from(n));
+    preprocess::apply(
+        &mut im,
+        &preprocess::Settings {
+            gamma: 1.0,
+            ..preprocess::Settings::default()
+        },
+    );
+    let rest = Adjustments {
+        gamma: crate::layer::Gamma::IDENTITY,
+        sharpen: crate::layer::Sharpen::default(),
+        match_range: None,
+        ..adj.clone()
+    }
+    .plan();
+    if !rest.is_identity() {
+        crate::par::for_each(&mut im.px, |p| {
+            let mut q = [p[0], p[1], p[2], 1.0];
+            rest.apply(&mut q);
+            *p = [q[0], q[1], q[2]];
+        });
+    }
+    if let Some(m) = &adj.match_range {
+        // Over the covered pixels only: a transparent surround has no colour to match.
+        let covered: Vec<usize> = (0..len).filter(|&i| planes.a[i] > 0.0).collect();
+        let mut cov = Image::new(
+            covered.len(),
+            usize::from(!covered.is_empty()),
+            covered.iter().map(|&i| im.px[i]).collect(),
+        );
+        preprocess::match_range_to(&mut cov, m.percentile(), m.targets());
+        for (&i, p) in covered.iter().zip(&cov.px) {
+            im.px[i] = *p;
+        }
+    }
+    for (i, p) in im.px.iter().enumerate() {
         let a = planes.a[i];
         if a > 0.0 {
             planes.r[i] = (p[0] * a).max(0.0);
@@ -670,9 +729,61 @@ fn axis_maps(layer: &Layer, grid: SuperGrid) -> (AxisMap, AxisMap, PxRect) {
     (mx, my, rect)
 }
 
+/// The supersample factor a mask's edge is resampled at, at least (ADR-012): measured
+/// against 8×, a hard raster edge on the 1× grid is off by up to 0.3 in coverage, at 4×
+/// by at most 0.014.
+const MASK_N: u8 = 4;
+
+/// Where a layer's mask is resampled when `grid` is coarser than [`MASK_N`]: the
+/// placement on the grid `k` times finer and the rectangle it touches there, and `k`.
+fn mask_placement(layer: &Layer, grid: SuperGrid) -> Option<(Placement, PxRect, u32)> {
+    let n = grid.n();
+    if n >= MASK_N {
+        return None;
+    }
+    let k = MASK_N.div_ceil(n);
+    let fine = SuperGrid::new(grid.target(), n * k).expect("a factor of at most 8");
+    // Rotated, the fine grid is sampled bilinearly (`affine::resample_mask_affine`):
+    // Mitchell's sixteen taps per fine pixel cost a rotated layer 60–130 ms more than
+    // bilinear's four, and after the box reduction the edge is still within 0.014 of
+    // an 8× composite (0.006 with Mitchell).
+    let (place, rect) = placement(layer, fine);
+    Some((place, rect, u32::from(k)))
+}
+
+/// Box-reduces `fine` (a mask on `frect` of the grid `k` times finer) onto `rect`: each
+/// pixel the mean of its `k × k` fine pixels that the layer reaches (`frect`), or 0.
+fn reduce_mask(fine: &[f32], frect: PxRect, k: u32, rect: PxRect, out: &mut Vec<f32>) {
+    let (w, h) = (rect.width() as usize, rect.height() as usize);
+    resample::sized(out, w * h, 0.0);
+    let fw = frect.width() as usize;
+    let mut rows: Vec<_> = out.chunks_mut(w.max(1)).enumerate().collect();
+    crate::par::for_each(&mut rows, |(j, row)| {
+        let y = rect.y0 + *j as u32;
+        let (fy0, fy1) = ((y * k).max(frect.y0), ((y + 1) * k).min(frect.y1));
+        for (i, v) in row.iter_mut().enumerate() {
+            let x = rect.x0 + i as u32;
+            let (fx0, fx1) = ((x * k).max(frect.x0), ((x + 1) * k).min(frect.x1));
+            if fx0 >= fx1 || fy0 >= fy1 {
+                continue;
+            }
+            let mut sum = 0.0f32;
+            for fy in fy0..fy1 {
+                let r = (fy - frect.y0) as usize * fw;
+                for fx in fx0..fx1 {
+                    sum += fine[r + (fx - frect.x0) as usize];
+                }
+            }
+            *v = sum / ((fx1 - fx0) * (fy1 - fy0)) as f32;
+        }
+    });
+}
+
 /// Resamples a mask's layer-space values (`size`) onto `rect` of `grid` through `place`
 /// into `out` and applies `modifiers`: a rotated layer's mask goes through the same
-/// affine map as its colour (ADR-008), then its modifiers. On the separable path, a
+/// affine map as its colour (ADR-008), then its modifiers. With a finer placement
+/// ([`mask_placement`]) the mask is resampled there, inverted and levelled, box-reduced
+/// to `grid`, then snapped and feathered on `grid` (σ in target px either way). On the separable path, a
 /// feather blurred at half resolution with no snap before it reduces the resampled rows
 /// to half resolution as they are made ([`resample::resample_half`]), so the
 /// full-resolution mask is never stored before the feather writes it (#139); the values
@@ -684,7 +795,7 @@ fn axis_maps(layer: &Layer, grid: SuperGrid) -> (AxisMap, AxisMap, PxRect) {
 fn evaluate_mask(
     values: &[f32],
     size: (u32, u32),
-    place: &Placement,
+    (place, fine): (&Placement, Option<&(Placement, PxRect, u32)>),
     rect: PxRect,
     grid: SuperGrid,
     modifiers: &Modifiers,
@@ -692,6 +803,19 @@ fn evaluate_mask(
     out: &mut Vec<f32>,
 ) {
     use crate::mask::eval;
+    if let Some((fplace, frect, k)) = fine {
+        let mut fv = Vec::new();
+        match fplace {
+            Placement::Axis(mx, my) => resample_mask(values, size.0, mx, my, &mut fv),
+            Placement::Affine(map) => {
+                affine::resample_mask_affine(values, size, map, true, &mut fv);
+            }
+        }
+        eval::point_ops(&mut fv, modifiers);
+        reduce_mask(&fv, *frect, *k, rect, out);
+        eval::spatial_ops(out, rect, grid, modifiers, full_res);
+        return;
+    }
     let (mx, my) = match place {
         Placement::Axis(mx, my) => (mx, my),
         Placement::Affine(map) => {
@@ -706,7 +830,7 @@ fn evaluate_mask(
                     eval::blur_and_up(out, w, h, sigma, half);
                 });
             } else {
-                affine::resample_mask_affine(values, size, map, out);
+                affine::resample_mask_affine(values, size, map, false, out);
                 eval::apply_modifiers_with(out, rect, grid, modifiers, full_res);
             }
             return;
@@ -954,6 +1078,8 @@ impl Compositor {
     pub fn composite_with(&mut self, layers: &[Layer], regions: &[Region]) -> &Canvas {
         let state = self.prepare(layers);
         self.recomposite(layers, regions, state, self.grid.bounds(), 0);
+        // Every layer went through png2c64's preprocessing (ADR-012).
+        self.frame.set_prepared(None);
         &self.canvas
     }
 
@@ -1541,13 +1667,14 @@ pub fn mask_change_cells(grid: SuperGrid, layer: &Layer, layer_rect: PxRect) -> 
             corner(layer_rect.x0, layer_rect.y0),
             corner(layer_rect.x1, layer_rect.y1),
         );
-        // Resampling reaches one source pixel (bilinear) or three super pixels (Lanczos).
-        let reach_x = (t.scale().x / step.x).max(3.0).ceil() as u32 + 1;
-        let reach_y = (t.scale().y / step.y).max(3.0).ceil() as u32 + 1;
+        // Mitchell reaches two source pixels each way (ADR-012); three super pixels at
+        // least, for the edge.
+        let reach_x = (2.0 * t.scale().x / step.x).max(3.0).ceil() as u32 + 1;
+        let reach_y = (2.0 * t.scale().y / step.y).max(3.0).ceil() as u32 + 1;
         (a, b, reach_x, reach_y)
     } else {
         // Rotated (#198): the bounding box of the rect's four corners, grown by what a
-        // source pixel reaches through the mip and the kernel, plus the antialiased edge.
+        // source pixel reaches through the kernel, plus the antialiased edge.
         let q = [
             corner(layer_rect.x0, layer_rect.y0),
             corner(layer_rect.x1, layer_rect.y0),
@@ -1679,6 +1806,65 @@ mod tests {
         l
     }
 
+    /// ADR-012's invariant: a plain layer through the general path (the compatibility
+    /// branch off) is png2c64's prepared image, bit for bit, at the default 1× grid, with
+    /// and without gamma and range matching.
+    #[test]
+    fn the_general_path_is_png2c64_s_front_end_for_a_plain_layer() {
+        use crate::layer::{Gamma, RangeMatch, Sharpen};
+        use crate::solve::png2c64_ref::{prepare, preprocess, quantize::Mode as RefMode};
+        for (mode, rm) in [
+            (Mode::MulticolorBitmap, RefMode::Multicolor),
+            (Mode::HiresBitmap, RefMode::Hires),
+        ] {
+            // With #228's sharpen too: png2c64's kernel, both ways.
+            for (gamma, range, sharpen) in [
+                (1.0, false, 0.0),
+                (1.5, false, 0.0),
+                (1.5, true, 0.0),
+                (1.5, false, 0.5),
+                (1.5, false, -0.5),
+                (1.0, true, 0.5),
+            ] {
+                let mut layer = plain();
+                let mut adj = layer.adjustments().clone();
+                adj.gamma = Gamma::new(gamma).unwrap();
+                adj.sharpen = Sharpen::png2c64(sharpen).unwrap();
+                let targets = [(0.1, 0.9), (-0.2, 0.2), (-0.25, 0.25)];
+                adj.match_range = range.then(|| {
+                    RangeMatch::new(0.01, [0.1, 0.9], [-0.2, 0.2], [-0.25, 0.25]).unwrap()
+                });
+                layer.set_adjustments(adj);
+                let mut c = Compositor::new(SuperGrid::with_default_factor(mode).unwrap());
+                c.set_png2c64_front_end(false);
+                c.update(std::slice::from_ref(&layer), &[]);
+                assert!(c.frame().png2c64_prepared());
+                let src = layer.source();
+                let mut want = prepare(
+                    src.srgb8().unwrap(),
+                    (200, 125),
+                    rm,
+                    &preprocess::Settings {
+                        gamma,
+                        sharpen,
+                        ..preprocess::Settings::default()
+                    },
+                    None,
+                );
+                if range {
+                    preprocess::match_range_to(&mut want, 0.01, targets);
+                }
+                let got = c.frame().colour();
+                let same = got.iter().zip(&want.px).filter(|(a, b)| a == b).count();
+                assert_eq!(
+                    same,
+                    want.px.len(),
+                    "{mode} gamma {gamma} range {range} sharpen {sharpen}"
+                );
+            }
+        }
+    }
+
     /// #190: a plain layer's frame is png2c64's prepared image; a nudge leaves the
     /// compatibility path (and recomposites everything), a nudge back returns to it.
     #[test]
@@ -1718,10 +1904,7 @@ mod tests {
                 .unwrap(),
             );
             let dirty = c.update(std::slice::from_ref(&nudged), &[]);
-            assert!(
-                !c.frame().png2c64_prepared(),
-                "{mode}: a nudged layer is composited"
-            );
+            assert!(c.front.is_none(), "{mode}: a nudged layer is composited");
             assert_eq!(dirty.len(), 1000);
             let mut fresh = Compositor::new(grid(mode, 4));
             fresh.update(std::slice::from_ref(&nudged), &[]);
@@ -1736,10 +1919,11 @@ mod tests {
                 "no change, no dirt"
             );
 
-            // Switched off, the same layer is composited like any other.
+            // Switched off, the same layer is composited like any other (at n = 1 to the
+            // same frame: `the_general_path_is_png2c64_s_front_end_for_a_plain_layer`).
             c.set_png2c64_front_end(false);
             c.update(std::slice::from_ref(&layer), &[]);
-            assert!(!c.frame().png2c64_prepared());
+            assert!(c.front.is_none());
         }
     }
 
@@ -1772,7 +1956,7 @@ mod tests {
         ] {
             let mut c = Compositor::new(g);
             c.update(&layers, &regions);
-            assert!(!c.frame().png2c64_prepared(), "{what}");
+            assert!(c.front.is_none(), "{what}");
         }
     }
 
@@ -1797,7 +1981,7 @@ mod tests {
             let layer = with(Sharpen::png2c64(amount).unwrap());
             let mut c = Compositor::new(g);
             c.update(std::slice::from_ref(&layer), &[]);
-            assert!(c.frame().png2c64_prepared(), "{amount}");
+            assert!(c.front.is_some(), "{amount}");
             let want = prepare(
                 layer.source().srgb8().unwrap(),
                 (200, 125),
@@ -1820,7 +2004,7 @@ mod tests {
         ] {
             let mut c = Compositor::new(g);
             c.update(&[with(s)], &[]);
-            assert!(!c.frame().png2c64_prepared(), "{s:?}");
+            assert!(c.front.is_none(), "{s:?}");
         }
     }
 
@@ -2064,7 +2248,7 @@ mod tests {
 
     #[test]
     fn scaled_layer_fills_its_box() {
-        // A 2000-wide source scaled to 320: Lanczos downscale of a flat field stays flat.
+        // A 2000-wide source scaled to 320: a downscaled flat field stays flat.
         let mut c = Compositor::new(grid(Mode::MulticolorBitmap, 4));
         let mut l = Layer::new("big", solid(2000, 1250, [0.3, 0.6, 0.9, 1.0]));
         l.set_transform(Transform::new(Vec2::ZERO, Vec2::new(0.16, 0.16), false, false).unwrap());
@@ -2847,10 +3031,8 @@ mod tests {
     /// #198: a full turn (360°) takes the rotated path and reproduces the unrotated
     /// layer: exactly on a 1× hi-res grid (every sample on a pixel centre, the coverage
     /// exact), and within 0.006 per channel (1.5 8-bit steps) of the target frame on a
-    /// smooth source where
-    /// the rotated path's filters meet the separable path's (Catmull-Rom against
-    /// bilinear at 4×; a mip against Lanczos-3 for multicolor's 2-px-wide super pixels at
-    /// 1×).
+    /// smooth source, where the rotated path's inverse-mapped Mitchell meets the
+    /// separable path's (ADR-012).
     #[test]
     fn a_full_turn_is_the_identity() {
         let (w, h) = (40, 30);
@@ -2884,10 +3066,10 @@ mod tests {
     }
 
     /// #198: turning a layer 90° about its centre composites what the source's pixels,
-    /// turned and placed axis-aligned, do: exactly (to 1e-6) on a 1× grid, mask, feather
+    /// turned and placed axis-aligned, do: to 1e-6 on a 1× grid, mask, feather
     /// and attribute map included (masks transform with their layer, ADR-008), and within
-    /// 0.006 per channel of the target frame at 4× on a smooth source (Catmull-Rom against
-    /// the reference's bilinear).
+    /// 0.006 per channel of the target frame at 4× on a smooth source (both Mitchell,
+    /// ADR-012, inverse-mapped against separable).
     #[test]
     fn a_quarter_turn_matches_the_pixels_turned() {
         let (w, h) = (40u32, 24u32);
@@ -2935,7 +3117,15 @@ mod tests {
                         .map(|(a, b)| (a - b).abs())
                         .fold(0.0, f32::max);
                     assert!(dm <= 1e-6, "{n}× feather {feather}: mask {dm}");
-                    assert_eq!(ca.attribute_map(), cb.attribute_map());
+                    // The mask is resampled at 4× (ADR-012), where the two kernels
+                    // agree to rounding: the same sources, strengths to 1e-6.
+                    let (am, bm) = (ca.attribute_map(), cb.attribute_map());
+                    let (tw, th) = g.target_size();
+                    for (x, y) in (0..th).flat_map(|y| (0..tw).map(move |x| (x, y))) {
+                        let (a, b) = (am.get(x, y), bm.get(x, y));
+                        assert_eq!(a.source, b.source, "{n}× feather {feather}: ({x}, {y})");
+                        assert!((a.strength - b.strength).abs() <= 1e-6);
+                    }
                 } else {
                     let d = max_diff(&ca.canvas().downsample(), &cb.canvas().downsample());
                     assert!(d <= tol, "{n}× feather {feather}: colour {d}");

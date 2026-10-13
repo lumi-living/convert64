@@ -12,7 +12,9 @@ pub enum Kernel {
     CatmullRom,
 }
 
-fn mitchell(x: f32) -> f32 {
+/// The Mitchell–Netravali kernel, B = C = 1/3: the compositor resamples every layer with it
+/// too (ADR-012), so a layer fitted to the screen is scaled bit for bit as png2c64 scales.
+pub(crate) fn mitchell(x: f32) -> f32 {
     let x = x.abs();
     if x < 1.0 {
         (7.0 * x * x * x - 12.0 * x * x + 16.0 / 3.0) / 6.0

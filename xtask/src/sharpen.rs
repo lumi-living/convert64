@@ -6,7 +6,8 @@
 //! reference solver. Defaults stay off: amount 0 is today's output.
 //!
 //! The project path is the product's: a plain picture with png2c64's kernel takes
-//! png2c64's front end (#190), the Gaussian the compositor.
+//! png2c64's front end (#190), the Gaussian the general path, which resamples alike
+//! since ADR-012 (#227).
 
 use crate::font;
 use crate::frontend::{FIXTURES, render_with};

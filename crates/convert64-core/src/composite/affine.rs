@@ -4,15 +4,12 @@
 //! rotated one cannot, so each super pixel is inverse-mapped to layer space and sampled
 //! there:
 //!
-//! - **Kernel.** Catmull-Rom (bicubic, B = 0, C = ½), 4 × 4 taps on the premultiplied
-//!   source; samples clamp to the layer's edge pixels, as on the separable path.
-//! - **Prefilter.** Where the layer is scaled down, the source is first reduced to a
-//!   box-filtered mip level chosen once per layer and axis (a rip-map: halved along u
-//!   and v independently, an odd last pixel paired with itself). An affine map has the
-//!   same footprint everywhere, so one level fits the whole layer: the level is
-//!   `round(log2(footprint))` along each layer axis, where the footprint is how many
-//!   source pixels one super pixel spans along it. The kernel then reads at most
-//!   √2 mip pixels per super pixel, so it neither aliases much nor blurs much.
+//! - **Kernel.** png2c64's Mitchell bicubic (B = C = ⅓, ADR-012, #227), the separable
+//!   path's kernel: 4 × 4 taps on the premultiplied source around the inverse-mapped
+//!   position, weights normalised to sum to 1; samples clamp to the layer's edge pixels.
+//!   Like png2c64's scaler and the separable path, it is not widened when the layer is
+//!   scaled down (no prefilter), so a turned layer is as crisp as an upright one. The
+//!   mip machinery #198 used for that prefilter stays, at level 0.
 //! - **Coverage.** The layer's edge is antialiased by the fraction of each super pixel
 //!   inside the rotated quad, computed **exactly**: the super pixel's footprint is a
 //!   parallelogram in layer space, clipped against the box `[0, w] × [0, h]`
@@ -28,17 +25,26 @@ use crate::geom::{PxRect, SuperGrid};
 use crate::layer::Transform;
 use crate::scratch;
 
-/// Catmull-Rom weights for the four taps around a sample `t` (0–1) past the second.
+/// Mitchell weights for the four taps around a sample `t` (0–1) past the second,
+/// normalised to sum to 1.
+#[cfg(test)]
+fn mitchell4(t: f32) -> [f32; 4] {
+    weights(t + 1.0, [0, 1, 2, 3])
+}
+
+/// Mitchell weights of the taps at source pixels `taps` (clamped) for a sample at `pos`,
+/// normalised to sum to 1: png2c64's `sample` weighting.
 #[inline(always)]
-fn catmull_rom(t: f32) -> [f32; 4] {
-    let t2 = t * t;
-    let t3 = t2 * t;
-    [
-        0.5 * (-t3 + 2.0 * t2 - t),
-        0.5 * (3.0 * t3 - 5.0 * t2 + 2.0),
-        0.5 * (-3.0 * t3 + 4.0 * t2 + t),
-        0.5 * (t3 - t2),
-    ]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "pixel indices are far below 2^24"
+)]
+fn weights(pos: f32, taps: [i64; 4]) -> [f32; 4] {
+    use crate::solve::png2c64_ref::scale::mitchell;
+    let w = taps.map(|s| mitchell(pos - s as f32));
+    let sum = w[0] + w[1] + w[2] + w[3];
+    let inv = if sum > 0.0 { 1.0 / sum } else { 1.0 };
+    w.map(|v| v * inv)
 }
 
 /// A rotated layer's placement on the super grid: the inverse map from super pixels to
@@ -60,6 +66,13 @@ pub(crate) struct AffineMap {
     half: (f64, f64),
     /// The super pixels the layer's quad can touch: its bounding box on the grid.
     pub rect: PxRect,
+    /// Every super pixel's centre lands on a source pixel's centre at 1:1 (a turn by a
+    /// multiple of 90° on whole pixels): samples are copies, as the separable path copies
+    /// an axis at 1:1 (ADR-012).
+    lattice: bool,
+    /// The map turns by a multiple of 90° (any scale): separable, so a mask's 4× grid
+    /// samples it with Mitchell like the separable path, not bilinearly.
+    pub(crate) quarter: bool,
 }
 
 impl AffineMap {
@@ -78,14 +91,8 @@ impl AffineMap {
         let v = [d * sx, e * sy, d * sx * 0.5 + e * sy * 0.5 + f];
         // The footprint (one super pixel) spans u[0] + u[1] along u, v[0] + v[1] along v.
         let span = (u[0].abs() + u[1].abs(), v[0].abs() + v[1].abs());
-        let level = |s: f64| {
-            let mut l = 0;
-            while l < 14 && s / f64::from(1u32 << l) > std::f64::consts::SQRT_2 {
-                l += 1;
-            }
-            l
-        };
-        let (lu, lv) = (level(span.0), level(span.1));
+        // No prefilter (ADR-012): level 0 along both axes.
+        let (lu, lv) = (0, 0);
         let (lo, hi) = t.canvas_bounds(size);
         let a0 = grid.canvas_to_super(lo);
         let a1 = grid.canvas_to_super(hi);
@@ -97,7 +104,20 @@ impl AffineMap {
             clamp(a1.x, gw).ceil() as u32,
             clamp(a1.y, gh).ceil() as u32,
         );
+        // A signed permutation at 1:1 whose centres land on source centres.
+        let unit = |x: f64| x == 0.0 || x.abs() == 1.0;
+        let centred = |x: f64| (x - 0.5).fract() == 0.0;
+        // A turn by a multiple of 90°: each axis of the grid maps onto one of the layer's.
+        let quarter = (u[0] == 0.0) != (u[1] == 0.0)
+            && (v[0] == 0.0) != (v[1] == 0.0)
+            && (u[0] == 0.0) == (v[1] == 0.0);
+        let lattice = quarter
+            && [u[0], u[1], v[0], v[1]].into_iter().all(unit)
+            && centred(u[2])
+            && centred(v[2]);
         Self {
+            lattice,
+            quarter,
             u,
             v,
             size,
@@ -109,7 +129,7 @@ impl AffineMap {
     }
 
     /// How far (in source pixels of level 0) one source pixel's change can reach through
-    /// the mip and the kernel: two mip pixels each way.
+    /// the kernel: two pixels each way (the mip stays at level 0, ADR-012).
     pub fn reach_src(&self) -> f64 {
         f64::from(2u32 << self.level.0.max(self.level.1))
     }
@@ -199,7 +219,7 @@ impl AffineMap {
         }
     }
 
-    /// The Catmull-Rom sample of `src` (mip level [`Self::level`], `mw × mh`) at layer
+    /// The Mitchell sample of `src` (mip level [`Self::level`], `mw × mh`) at layer
     /// `(u, v)` (level-0 coordinates), edges clamped. The 4 × 4 taps are summed row by
     /// row, `0 + w0·v0 + … + w3·v3`, the same way whether or not they needed clamping.
     #[inline(always)]
@@ -209,26 +229,52 @@ impl AffineMap {
         reason = "coordinates are clamped to the source before indexing"
     )]
     fn sample<T: Px>(&self, src: &[T], mw: u32, mh: u32, u: f64, v: f64) -> T {
-        let x = u * self.inv_mip.0 - 0.5;
-        let y = v * self.inv_mip.1 - 0.5;
+        // An edge output's centre can lie past the layer: it samples the edge, as on the
+        // separable path.
+        let x = (u * self.inv_mip.0 - 0.5).clamp(-0.5, f64::from(mw) - 0.5);
+        let y = (v * self.inv_mip.1 - 0.5).clamp(-0.5, f64::from(mh) - 0.5);
         let (fx, fy) = (x.floor(), y.floor());
-        let wx = catmull_rom((x - fx) as f32);
-        let wy = catmull_rom((y - fy) as f32);
+        if self.lattice {
+            let (mw, mh) = (i64::from(mw), i64::from(mh));
+            let (cx, cy) = ((fx as i64).clamp(0, mw - 1), (fy as i64).clamp(0, mh - 1));
+            return src[cy as usize * mw as usize + cx as usize];
+        }
         let (x0, y0) = (fx as i64 - 1, fy as i64 - 1);
         let (mw, mh) = (i64::from(mw), i64::from(mh));
+        // png2c64's edge rule, as on the separable path: a tap clamped to the edge is
+        // weighted by its distance to the pixel it reads.
+        let xs: [i64; 4] = std::array::from_fn(|k| (x0 + k as i64).clamp(0, mw - 1));
+        let ys: [i64; 4] = std::array::from_fn(|k| (y0 + k as i64).clamp(0, mh - 1));
+        let wx = weights(x as f32, xs);
+        let wy = weights(y as f32, ys);
         let taps: [[T; 4]; 4] = if x0 >= 0 && y0 >= 0 && x0 + 3 < mw && y0 + 3 < mh {
             // Inside: four runs of four pixels.
             let w = mw as usize;
             let base = y0 as usize * w + x0 as usize;
             std::array::from_fn(|k| src[base + k * w..][..4].try_into().expect("four taps"))
         } else {
-            let xs: [usize; 4] = std::array::from_fn(|k| (x0 + k as i64).clamp(0, mw - 1) as usize);
             std::array::from_fn(|k| {
-                let r = (y0 + k as i64).clamp(0, mh - 1) as usize * mw as usize;
-                xs.map(|x| src[r + x])
+                let r = ys[k] as usize * mw as usize;
+                xs.map(|x| src[r + x as usize])
             })
         };
         T::taps4x4(&taps, wx, wy)
+    }
+
+    /// [`Self::sample`] with a bilinear kernel: what a mask's 4× grid samples on the
+    /// rotated path (ADR-012), where Mitchell's sixteen taps per fine pixel cost more
+    /// than the box reduction after them can tell apart.
+    fn sample_bilinear(&self, src: &[f32], mw: u32, mh: u32, u: f64, v: f64) -> f32 {
+        let x = (u * self.inv_mip.0 - 0.5).clamp(0.0, f64::from(mw) - 1.0);
+        let y = (v * self.inv_mip.1 - 0.5).clamp(0.0, f64::from(mh) - 1.0);
+        let (fx, fy) = (x.floor(), y.floor());
+        let (tx, ty) = ((x - fx) as f32, (y - fy) as f32);
+        let (x0, y0) = (fx as usize, fy as usize);
+        let (x1, y1) = ((x0 + 1).min(mw as usize - 1), (y0 + 1).min(mh as usize - 1));
+        let w = mw as usize;
+        let row = |r: usize| src[r * w + x0] + (src[r * w + x1] - src[r * w + x0]) * tx;
+        let (a, b) = (row(y0), row(y1));
+        a + (b - a) * ty
     }
 }
 
@@ -279,8 +325,9 @@ pub(crate) fn mip<T: Px>(src: &[T], w: u32, h: u32, lx: u32, ly: u32) -> (Vec<T>
 }
 
 /// Resamples premultiplied colour (the mip level `map` samples, `mw × mh`) onto
-/// `map.rect` into planes, scaled by coverage, alpha clamped to `0..=1` and colour to
-/// `≥ 0` (Catmull-Rom rings): the rotated counterpart of `resample::resample_planes`,
+/// `map.rect` into planes, scaled by coverage, alpha clamped to `0..=1` and colour
+/// left with Mitchell's rings (png2c64 keeps them; the front end's round trip clamps):
+/// the rotated counterpart of `resample::resample_planes`,
 /// with the same per-row `extent`.
 pub(crate) fn resample_planes_affine(
     src: &[[f32; 4]],
@@ -352,13 +399,16 @@ pub(crate) fn resample_planes_affine(
 }
 
 /// Resamples a mask's layer-space values (the mip level `map` samples, `mw × mh`) onto
-/// `map.rect` into `out`, clamped to `0..=1`. Like the separable path, no coverage is
+/// `map.rect` into `out`, clamped to `0..=1`, with Mitchell or, for a mask's 4× grid,
+/// `bilinear`ly ([`AffineMap::sample_bilinear`]) unless the map turns by a multiple of
+/// 90° (then it matches the separable path's Mitchell). Like the separable path, no coverage is
 /// applied: outside the quad the mask continues its edge values, and the colour's
 /// coverage hides it.
 pub(crate) fn resample_mask_affine(
     src: &[f32],
     (mw, mh): (u32, u32),
     map: &AffineMap,
+    bilinear: bool,
     out: &mut Vec<f32>,
 ) {
     let (ow, oh) = (map.rect.width() as usize, map.rect.height() as usize);
@@ -370,9 +420,15 @@ pub(crate) fn resample_mask_affine(
     crate::par::for_each(&mut chunks, |(c, rows)| {
         for (i, row) in rows.chunks_mut(ow).enumerate() {
             let j = map.rect.y0 + u32::try_from(*c * CHUNK_ROWS + i).expect("rows fit u32");
-            map.row(j, 0..ow, |k, u, v| {
-                row[k] = map.sample(src, mw, mh, u, v).clamp(0.0, 1.0);
-            });
+            if bilinear && !map.quarter {
+                map.row(j, 0..ow, |k, u, v| {
+                    row[k] = map.sample_bilinear(src, mw, mh, u, v).clamp(0.0, 1.0);
+                });
+            } else {
+                map.row(j, 0..ow, |k, u, v| {
+                    row[k] = map.sample(src, mw, mh, u, v).clamp(0.0, 1.0);
+                });
+            }
         }
     });
 }
@@ -421,11 +477,14 @@ mod tests {
     use crate::mode::Mode;
 
     #[test]
-    fn catmull_rom_interpolates_and_sums_to_one() {
-        assert_eq!(catmull_rom(0.0), [0.0, 1.0, 0.0, 0.0]);
+    fn mitchell_weights_sum_to_one_and_keep_a_ramp() {
+        // png2c64's kernel at t = 0: 1/18, 16/18, 1/18 (it smooths; it does not
+        // interpolate).
+        let w = mitchell4(0.0);
+        assert!((w[0] - 1.0 / 18.0).abs() < 1e-6 && (w[1] - 16.0 / 18.0).abs() < 1e-6);
         for i in 0..=16 {
             let t = i as f32 / 16.0;
-            let w = catmull_rom(t);
+            let w = mitchell4(t);
             assert!((w.iter().sum::<f32>() - 1.0).abs() < 1e-6, "{t}");
             // Reproduces a linear ramp exactly.
             let lin: f32 = w.iter().enumerate().map(|(k, w)| w * k as f32).sum();
@@ -477,9 +536,10 @@ mod tests {
     }
 
     #[test]
-    fn mip_level_follows_the_downscale() {
+    /// ADR-012: no prefilter, at any scale (png2c64's scaler has none either).
+    fn no_mip_at_any_scale() {
         let grid = SuperGrid::new(Mode::HiresBitmap, 1).unwrap();
-        for (scale, want) in [(1.0, 0), (0.5, 1), (0.3, 2), (0.1, 3), (2.0, 0)] {
+        for (scale, want) in [(1.0, 0), (0.5, 0), (0.3, 0), (0.1, 0), (2.0, 0)] {
             let t = Transform::new(Vec2::ZERO, Vec2::new(scale, 1.0), false, false)
                 .unwrap()
                 .with_rotation(90.0)

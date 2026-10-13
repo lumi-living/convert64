@@ -1,7 +1,8 @@
 //! #198 (ADR-011): a sub-degree rotation of a real fixture reaches the solver. The
 //! `gradient` fixture's source fills the screen; turned by 0.25° about its centre, at
 //! least one cell's statistics (the mean of its target pixels' colour and coverage)
-//! must change, or a fine rotation could not steer the solve.
+//! must change, or a fine rotation could not steer the solve. Likewise a 0.25-px nudge
+//! on the 1× grid (ADR-012).
 
 use convert64_core::geom::Vec2;
 use convert64_core::layer::{Layer, SourceImage, Transform};
@@ -75,5 +76,39 @@ fn a_quarter_degree_turn_changes_cell_statistics_on_gradient() {
             .count();
         println!("{mode}: {changed} of 1000 cells changed by more than 1e-4");
         assert!(changed >= 1, "{mode}: a 0.25° turn changed no cell");
+    }
+}
+
+/// ADR-012: on the 1× grid, sub-pixel placement comes from the kernel's phase, so a
+/// 0.25-px nudge of the same fixture must still change cell statistics.
+#[test]
+fn a_quarter_pixel_nudge_changes_cell_statistics_at_1x() {
+    for mode in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
+        let grid = SuperGrid::with_default_factor(mode).expect("bitmap grid");
+        assert_eq!(grid.n(), 1);
+        let layer = gradient();
+        let mut nudged = layer.clone();
+        let t = layer.transform();
+        nudged.set_transform(
+            Transform::new(
+                t.translate() + Vec2::new(0.25, 0.0),
+                t.scale(),
+                false,
+                false,
+            )
+            .expect("finite"),
+        );
+        let mut c = Compositor::new(grid);
+        c.composite(&[layer]);
+        let before = cell_stats(grid, c.frame());
+        c.composite(&[nudged]);
+        let after = cell_stats(grid, c.frame());
+        let changed = before
+            .iter()
+            .zip(&after)
+            .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| (x - y).abs() > 1e-4))
+            .count();
+        println!("{mode}: {changed} of 1000 cells changed by more than 1e-4");
+        assert!(changed >= 1, "{mode}: a 0.25-px nudge changed no cell");
     }
 }

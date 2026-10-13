@@ -40,6 +40,17 @@ impl Default for Settings {
     }
 }
 
+/// The gamma step of `preprocess::apply`: every channel to the power `gamma` (skipped at
+/// 1), a negative value first raised to 0.
+pub fn apply_gamma(image: &mut Image, gamma: f32) {
+    if gamma != 1.0 {
+        for p in &mut image.px {
+            // `std::max(v, 0.0f)`: a negative value becomes 0.
+            *p = p.map(|v| powf(if v < 0.0 { 0.0 } else { v }, gamma));
+        }
+    }
+}
+
 /// `apply_sharpen`: png2c64's unsharp mask on OKLab L ([`unsharp_box`] at its own
 /// 3 × 3, every pixel weighted alike), then every pixel back to linear and clamped.
 pub(crate) fn apply_sharpen(image: &mut Image, strength: f32) {
@@ -160,12 +171,7 @@ fn apply_levels(image: &mut Image, black_point: f32, white_point: f32) {
 /// hue in OKLab. As png2c64, every pixel goes through the OKLab round trip and the clamp
 /// even at the default settings.
 pub fn apply(image: &mut Image, s: &Settings) {
-    if s.gamma != 1.0 {
-        for p in &mut image.px {
-            // `std::max(v, 0.0f)`: a negative value becomes 0.
-            *p = p.map(|v| powf(if v < 0.0 { 0.0 } else { v }, s.gamma));
-        }
-    }
+    apply_gamma(image, s.gamma);
     apply_sharpen(image, s.sharpen);
     apply_levels(image, s.black_point, s.white_point);
     let hue = s.hue_shift * (std::f32::consts::PI / 180.0);

@@ -719,30 +719,52 @@ impl Sharpen {
     }
 
     /// Sharpens `px` (straight-alpha linear RGBA, `w × h`, row-major) in place on a grid
-    /// `scale ×` the target grid, so the radius stays in target pixels. Pixels of alpha 0
-    /// are neither used nor changed; alpha is untouched. Each pixel the kernel changes
-    /// goes through png2c64's OKLab round trip and clamp, as in png2c64.
-    pub fn apply(&self, px: &mut [[f32; 4]], (w, h): (usize, usize), scale: u32) {
+    /// `scale ×` the target grid, so the radius stays in target pixels; alpha is
+    /// untouched. See [`Self::apply_rgb`].
+    pub fn apply(&self, px: &mut [[f32; 4]], size: (usize, usize), scale: u32) {
+        if self.is_off() || px.is_empty() {
+            return;
+        }
+        let alpha: Vec<f32> = px.iter().map(|p| p[3]).collect();
+        let mut rgb: Vec<[f32; 3]> = px.iter().map(|p| [p[0], p[1], p[2]]).collect();
+        self.apply_rgb(&mut rgb, &alpha, size, scale);
+        for (p, c) in px.iter_mut().zip(&rgb) {
+            p[..3].copy_from_slice(c);
+        }
+    }
+
+    /// Sharpens `px` (straight linear RGB, `w × h`, row-major, with its `alpha`) in place
+    /// on a grid `scale ×` the target grid. Pixels of alpha 0 are neither used nor
+    /// changed. Each pixel the kernel changes goes through png2c64's OKLab round trip and
+    /// clamp, as in png2c64; with every alpha 1 and `scale` 1, png2c64's radius is
+    /// png2c64's `apply_sharpen` bit for bit.
+    pub fn apply_rgb(
+        &self,
+        px: &mut [[f32; 3]],
+        alpha: &[f32],
+        (w, h): (usize, usize),
+        scale: u32,
+    ) {
         use crate::solve::png2c64_ref::colour::{clamped, linear_to_oklab, oklab_to_linear};
         use crate::solve::png2c64_ref::preprocess::unsharp_box;
         if self.is_off() || px.is_empty() {
             return;
         }
         debug_assert_eq!(px.len(), w * h);
-        let rgb = |p: &[f32; 4]| [p[0], p[1], p[2]];
-        let mut l: Vec<f32> = crate::par::map(px, |p| {
-            if p[3] > 0.0 {
-                linear_to_oklab(rgb(p))[0]
-            } else {
-                0.0
-            }
-        });
-        let alpha: Vec<f32> = px.iter().map(|p| p[3]).collect();
+        debug_assert_eq!(alpha.len(), w * h);
+        let lit: Vec<([f32; 3], f32)> = px.iter().copied().zip(alpha.iter().copied()).collect();
+        let mut l: Vec<f32> =
+            crate::par::map(
+                &lit,
+                |&(p, a)| {
+                    if a > 0.0 { linear_to_oklab(p)[0] } else { 0.0 }
+                },
+            );
         let step = scale.max(1) as usize;
         let skipped = match self.radius {
             Radius::Png2c64 => unsharp_box(
                 &mut l,
-                Some(&alpha),
+                Some(alpha),
                 (w, h),
                 step,
                 self.amount,
@@ -750,7 +772,7 @@ impl Sharpen {
             ),
             Radius::Gaussian(sigma) => unsharp_gaussian(
                 &mut l,
-                &alpha,
+                alpha,
                 (w, h),
                 sigma * step as f32,
                 self.amount,
@@ -767,10 +789,9 @@ impl Sharpen {
                 if skip {
                     continue;
                 }
-                let mut lab = linear_to_oklab(rgb(p));
+                let mut lab = linear_to_oklab(*p);
                 lab[0] = lv.clamp(0.0, 1.0);
-                let [r, g, b] = clamped(oklab_to_linear(lab));
-                p[..3].copy_from_slice(&[r, g, b]);
+                *p = clamped(oklab_to_linear(lab));
             }
         });
     }
