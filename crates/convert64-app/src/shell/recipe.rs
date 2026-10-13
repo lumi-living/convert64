@@ -116,9 +116,12 @@ fn slider(
                 .suffix(suffix)
                 .fixed_decimals(decimals),
         );
+        // The slider rounds to its decimals: a value it merely snapped (0.6 × 100 is not
+        // exactly 60) is not an edit, or it would be re-sent every frame.
+        let step = 0.5 * 10f32.powi(-(decimals as i32));
         if lab.double_clicked() {
             edit = Edit::Set(default);
-        } else if r.changed() {
+        } else if r.changed() && (v - value).abs() > step {
             edit = if r.dragged() {
                 Edit::Drag(v)
             } else {
