@@ -135,7 +135,7 @@ pub(super) fn interact(
             Tool::Pin => pin(ws, &cells, actions),
             Tool::Lock => lock(ws, &cells, actions),
             Tool::Nudge => actions.push(Action::EndGesture),
-            Tool::Region => {}
+            Tool::Region | Tool::Transform => {}
         }
     }
     if response.clicked()
@@ -147,7 +147,7 @@ pub(super) fn interact(
             Tool::Pin if alt => pin_pixel(ws, p, actions),
             Tool::Pin => pin(ws, &cells_between(ws, p, p), actions),
             Tool::Lock => lock(ws, &cells_between(ws, p, p), actions),
-            Tool::Nudge => {
+            Tool::Nudge | Tool::Transform => {
                 if let Some(i) = layer_at(ws, p) {
                     shell.layer = i;
                 }

@@ -202,6 +202,7 @@ pub(super) fn show(shell: &mut Shell, ws: &Workspace, ui: &mut Ui, actions: &mut
             .weak(),
     );
 
+    transform_group(&mut f, shell, ws, layer, ui);
     adjustments(&mut f, shell, ws, layer, ui);
     mask_group(&mut f, shell, ws, layer, ui);
     dither(&mut f, layer.recipe(), ui);
@@ -715,6 +716,255 @@ fn picture(f: &mut Form, ws: &Workspace, ui: &mut Ui) {
         });
     });
     ui.separator();
+}
+
+/// `t` with translate, scale and flips replaced; rotation and anchor kept.
+fn rebuilt(
+    t: &convert64_core::Transform,
+    translate: convert64_core::Vec2,
+    scale: convert64_core::Vec2,
+    flips: (bool, bool),
+) -> Option<convert64_core::Transform> {
+    convert64_core::Transform::new(translate, scale, flips.0, flips.1)
+        .and_then(|n| n.with_rotation(t.rotate()))
+        .and_then(|n| n.with_anchor(t.anchor()))
+        .ok()
+}
+
+/// The Transform group (UX §6 item 1, ADR-011): X, Y, W %, H % (chained by default),
+/// rotation, the anchor, Snap, presets and flips, in C64 (canvas) pixels, sub-pixel.
+fn transform_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, ui: &mut Ui) {
+    use convert64_core::Vec2;
+    let t = layer.transform();
+    let size = layer.source().size();
+    let (w, h) = (size.0 as f32, size.1 as f32);
+    let changed = t.rotate() != 0.0 || t.flip_h() || t.flip_v();
+    let set = |f: &mut Form, g: Option<&str>, transform: convert64_core::Transform| {
+        let layer = LayerRef::Index(f.layer);
+        f.emit(
+            g,
+            JsonCommand::LayerSetTransform {
+                layer,
+                transform,
+                snap: None,
+            },
+        );
+    };
+    /// A labelled drag value; returns the new value and whether it was a drag.
+    fn field(
+        ui: &mut Ui,
+        name: &str,
+        v: f32,
+        speed: f64,
+        range: std::ops::RangeInclusive<f32>,
+        suffix: &str,
+    ) -> (Option<(f32, bool)>, bool) {
+        let mut x = v;
+        let mut out = None;
+        let mut stopped = false;
+        ui.horizontal(|ui| {
+            label(ui, name, false);
+            let r = ui.add(
+                egui::DragValue::new(&mut x)
+                    .speed(speed)
+                    .range(range)
+                    .fixed_decimals(2)
+                    .suffix(suffix),
+            );
+            if r.changed() {
+                out = Some((x, r.dragged()));
+            }
+            stopped = r.drag_stopped();
+        });
+        (out, stopped)
+    }
+    let _ = group(ui, "Transform", changed, true, |ui| {
+        let p = t.translate();
+        let sc = t.scale();
+        let flips = (t.flip_h(), t.flip_v());
+        for (name, axis) in [("X", 0), ("Y", 1)] {
+            let v = if axis == 0 { p.x } else { p.y };
+            let (edit, stopped) = field(ui, name, v, 0.05, -640.0..=640.0, " px");
+            if let Some((x, drag)) = edit {
+                let np = if axis == 0 {
+                    Vec2::new(x, p.y)
+                } else {
+                    Vec2::new(p.x, x)
+                };
+                if let Some(n) = rebuilt(&t, np, sc, flips) {
+                    set(f, drag.then_some("transform position"), n);
+                }
+            }
+            if stopped {
+                f.end();
+            }
+        }
+        ui.horizontal(|ui| {
+            label(ui, "W / H", false);
+            let mut wp = sc.x * 100.0;
+            let mut hp = sc.y * 100.0;
+            let rw = ui.add(
+                egui::DragValue::new(&mut wp)
+                    .speed(0.1)
+                    .range(1.0..=1000.0)
+                    .fixed_decimals(2)
+                    .suffix(" %"),
+            );
+            let glyph = if shell.scale_linked {
+                crate::icons::CHAIN
+            } else {
+                crate::icons::CHAIN_OFF
+            };
+            let tip = if shell.scale_linked {
+                "Uniform: W and H together"
+            } else {
+                "Free aspect"
+            };
+            if ui
+                .add(egui::Button::new(super::icon(glyph)).frame(false))
+                .on_hover_text(tip)
+                .clicked()
+            {
+                shell.scale_linked = !shell.scale_linked;
+            }
+            let rh = ui.add(
+                egui::DragValue::new(&mut hp)
+                    .speed(0.1)
+                    .range(1.0..=1000.0)
+                    .fixed_decimals(2)
+                    .suffix(" %"),
+            );
+            let linked = shell.scale_linked;
+            let target = if rw.changed() {
+                Some((
+                    wp / 100.0,
+                    if linked {
+                        sc.y * wp / 100.0 / sc.x
+                    } else {
+                        sc.y
+                    },
+                    rw.dragged(),
+                ))
+            } else if rh.changed() {
+                Some((
+                    if linked {
+                        sc.x * hp / 100.0 / sc.y
+                    } else {
+                        sc.x
+                    },
+                    hp / 100.0,
+                    rh.dragged(),
+                ))
+            } else {
+                None
+            };
+            if let Some((sx, sy, drag)) = target
+                && let Ok(n) = t.scaled_about_anchor(Vec2::new(sx, sy), size)
+            {
+                set(f, drag.then_some("transform scale"), n);
+            }
+            if rw.drag_stopped() || rh.drag_stopped() {
+                f.end();
+            }
+        });
+        let (edit, stopped) = field(ui, "Rotate", t.rotate(), 0.05, -180.0..=180.0, "°");
+        if let Some((deg, drag)) = edit
+            && let Ok(n) = t.with_rotation(deg)
+        {
+            set(f, drag.then_some("transform rotate"), n);
+        }
+        if stopped {
+            f.end();
+        }
+        ui.horizontal(|ui| {
+            label(ui, "Anchor", t.anchor() != Vec2::new(0.5, 0.5));
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
+                for ay in [0.0, 0.5, 1.0] {
+                    ui.horizontal(|ui| {
+                        for ax in [0.0, 0.5, 1.0] {
+                            let on = t.anchor() == Vec2::new(ax, ay);
+                            let (rect, resp) = ui
+                                .allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
+                            let v = ui.visuals();
+                            let stroke = if resp.hovered() {
+                                v.widgets.hovered.fg_stroke
+                            } else {
+                                v.widgets.inactive.fg_stroke
+                            };
+                            if on {
+                                ui.painter().rect_filled(
+                                    rect,
+                                    2.0,
+                                    Theme::current(ui.ctx()).accent,
+                                );
+                            } else {
+                                ui.painter().rect_stroke(
+                                    rect.shrink(1.0),
+                                    2.0,
+                                    stroke,
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
+                            if resp.on_hover_text("Pivot for scale and rotate").clicked()
+                                && !on
+                                && let Ok(n) = t.reanchored(Vec2::new(ax, ay), size)
+                            {
+                                set(f, None, n);
+                            }
+                        }
+                    });
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            label(ui, "Snap", false);
+            super::toolbar::snap_menu(Some(ws), ui, f.actions);
+        });
+        ui.horizontal(|ui| {
+            label(ui, "Flip", flips.0 || flips.1);
+            for (name, fl) in [
+                ("Horizontal", (!flips.0, flips.1)),
+                ("Vertical", (flips.0, !flips.1)),
+            ] {
+                let on = if name == "Horizontal" {
+                    flips.0
+                } else {
+                    flips.1
+                };
+                if ui.selectable_label(on, name).clicked()
+                    && let Some(n) = rebuilt(&t, p, sc, fl)
+                {
+                    set(f, None, n);
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            label(ui, "Presets", false);
+            ui.menu_button("Fit…", |ui| {
+                let (sw, sh) = (320.0, 200.0);
+                let centred = |s: f32| Vec2::new((sw - w * s) / 2.0, (sh - h * s) / 2.0);
+                let presets: [(&str, f32); 7] = [
+                    ("Fit width", sw / w),
+                    ("Fit height", sh / h),
+                    ("Fit screen", (sw / w).min(sh / h)),
+                    ("Fill screen", (sw / w).max(sh / h)),
+                    ("1 source px = 1 C64 px", 1.0),
+                    ("2 source px = 1 C64 px", 0.5),
+                    ("100 %", 1.0),
+                ];
+                for (name, s) in presets {
+                    if ui.button(name).clicked() {
+                        if let Some(n) = rebuilt(&t, centred(s), Vec2::new(s, s), flips) {
+                            set(f, None, n);
+                        }
+                        ui.close();
+                    }
+                }
+            });
+        });
+        false
+    });
 }
 
 /// The Mask group (UX §6 item 3): modifiers, the sources list and Edit mask; a layer

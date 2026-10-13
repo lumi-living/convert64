@@ -81,3 +81,11 @@ pub const INVERT: Icon = m::ICON_INVERT_COLORS;
 pub const FILL: Icon = m::ICON_FORMAT_COLOR_FILL;
 /// Close / dismiss.
 pub const CLOSE: Icon = m::ICON_CLOSE;
+/// Tool: transform — scale and rotate (`S`, `Cmd T`).
+pub const TRANSFORM: Icon = m::ICON_TRANSFORM;
+/// Flip a layer.
+pub const FLIP: Icon = m::ICON_FLIP;
+/// Uniform scale (the W/H chain), linked and unlinked.
+pub const CHAIN: Icon = m::ICON_LINK;
+/// Unlinked W/H.
+pub const CHAIN_OFF: Icon = m::ICON_LINK_OFF;

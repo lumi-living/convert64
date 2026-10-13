@@ -78,6 +78,12 @@ pub(super) fn show(
             }
         }
         ui.label(small(format!("{}%", shell.camera.percent(shell.view))));
+        if shell.tool == super::Tool::Transform
+            && shell.mask.tool.is_none()
+            && let Some(l) = ws.doc.session().project().layers.get(shell.layer)
+        {
+            ui.label(small(super::transform::readout(&l.transform())));
+        }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let now = ui.input(|i| i.time);

@@ -283,6 +283,16 @@ impl Document {
         Ok(())
     }
 
+    /// Reverts the drag in progress (its one step), if any.
+    pub fn cancel_gesture(&mut self) -> bool {
+        if self.gesture.take().is_some() && self.undo_steps.pop().is_some() {
+            self.session.editor_mut().undo();
+            self.revision += 1;
+            return true;
+        }
+        false
+    }
+
     /// Ends the current drag, so the next command starts a new undo step.
     pub fn end_gesture(&mut self) {
         self.gesture = None;
