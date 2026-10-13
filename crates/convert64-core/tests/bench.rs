@@ -1,6 +1,7 @@
 //! Compositor benchmark (#87, #98): 10 full-canvas layers, each with a mask (raster plus
-//! a gradient source) feathered at σ = 8 target px, in all four blend modes, at 4× on a
-//! multicolor and a hi-res target. `criterion` is not an approved dependency, so this is
+//! a gradient source) feathered at σ = 8 target px, in all four blend modes, on a multicolor and a hi-res
+//! target, at the default supersample factor (1×, ADR-012; set `BENCH_N` for another,
+//! e.g. `BENCH_N=4` for the pre-ADR-012 grid). `criterion` is not an approved dependency, so this is
 //! an ignored test timed with `std::time::Instant`. Run it in release, with and without
 //! the `parallel` feature:
 //!
@@ -28,7 +29,7 @@
 //!
 //! The same four cases again with every layer **rotated** (#198, ADR-011: layer `i` by
 //! `3 + 7·i` degrees about its centre), which takes the non-separable path (inverse-mapped
-//! Catmull-Rom sampling with exact edge coverage). The budgets above were set for the
+//! Mitchell sampling with exact edge coverage, ADR-012). The budgets above were set for the
 //! axis-aligned path and are printed against these rows too, for comparison; the nudge
 //! row is a rotation drag (`update` after turning layer 4 by a further 0.25°).
 //!
@@ -163,7 +164,7 @@ fn time<S>(runs: usize, mut setup: impl FnMut() -> S, mut f: impl FnMut(&mut S))
 
 #[test]
 #[ignore = "benchmark: run in release with --ignored --nocapture"]
-fn composite_10_masked_layers_at_4x() {
+fn composite_10_masked_layers() {
     let threads = if PARALLEL {
         let n = std::thread::available_parallelism().map_or(1, usize::from);
         format!("parallel, {n} threads")
@@ -171,7 +172,8 @@ fn composite_10_masked_layers_at_4x() {
         "sequential".to_owned()
     };
     println!(
-        "bench: 10 layers 320x200, masks (raster + gradient, feather 8), 4 blend modes, 4x, {threads}"
+        "bench: 10 layers 320x200, masks (raster + gradient, feather 8), 4 blend modes, {}x, {threads}",
+        factor()
     );
     run(&scene(), "", |_, k| {
         Transform::translated(Vec2::new(k, 0.0)).unwrap()
@@ -185,6 +187,14 @@ fn composite_10_masked_layers_at_4x() {
 /// Times the four cases on `layers` for both modes and prints them, each case name
 /// followed by `suffix`. `nudge(t, k)` is layer 4's transform after `k` steps of the
 /// nudge row, from its transform `t` in `layers`.
+/// The supersample factor: `BENCH_N`, or the default.
+fn factor() -> u8 {
+    std::env::var("BENCH_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(SuperGrid::DEFAULT_N)
+}
+
 fn run(layers: &[Layer], suffix: &str, nudge: impl Fn(Transform, f32) -> Transform) {
     let layers = layers.to_vec();
     let cases = [
@@ -196,7 +206,7 @@ fn run(layers: &[Layer], suffix: &str, nudge: impl Fn(Transform, f32) -> Transfo
     let mut rows = [[Stat::default(); 2]; 4];
     let modes = [Mode::MulticolorBitmap, Mode::HiresBitmap];
     for (m, mode) in modes.into_iter().enumerate() {
-        let grid = SuperGrid::new(mode, 4).unwrap();
+        let grid = SuperGrid::new(mode, factor()).unwrap();
 
         rows[0][m] = time(
             7,
@@ -252,7 +262,7 @@ fn run(layers: &[Layer], suffix: &str, nudge: impl Fn(Transform, f32) -> Transfo
         );
     }
     let size = |mode: Mode| {
-        let (w, h) = SuperGrid::new(mode, 4).unwrap().size();
+        let (w, h) = SuperGrid::new(mode, factor()).unwrap().size();
         format!("{w}x{h}")
     };
     println!(

@@ -48,6 +48,9 @@ enum Origin {
 pub struct Session {
     editor: Editor,
     compositor: Compositor,
+    /// The Source view's compositor at [`Session::PREVIEW_N`], built on first use, when
+    /// the project's factor is below it (ADR-012: the solve's grid is 1× by default).
+    preview: Option<Compositor>,
     base: PathBuf,
     /// Every palette the session has resolved with the spec it came from, latest last,
     /// so a saved project names its palette as it was given (preset, colours, `.vpl`).
@@ -63,6 +66,8 @@ pub struct Session {
     /// Cells changed since the last solve (from the compositor's dirty-cell API).
     dirty: convert64_core::CellSet,
     store: Box<dyn Store>,
+    /// What loading changed in an older file (#236), for the front-end to say once.
+    notes: Vec<String>,
 }
 
 impl std::fmt::Debug for Session {
@@ -86,17 +91,15 @@ impl Session {
 
     /// Builds a session from a parsed project, reading the files it links from `store`
     /// relative to `base`, and runs its commands.
+    /// An older file is migrated first ([`ProjectFile::migrate`]); [`Self::notes`] then
+    /// says what changed.
     pub fn load(
-        file: ProjectFile,
+        mut file: ProjectFile,
         base: &Path,
         store: Box<dyn Store>,
     ) -> Result<Self, ProjectError> {
-        if file.schema_version != SCHEMA_VERSION {
-            return Err(invalid(format!(
-                "project schema_version {} is not supported (this build reads {SCHEMA_VERSION})",
-                file.schema_version
-            )));
-        }
+        file.migrate()?;
+        let notes = file.migration_note().into_iter().collect();
         let grid = SuperGrid::new(file.target, file.supersample).map_err(invalid)?;
         file.solve
             .check()
@@ -172,6 +175,7 @@ impl Session {
                 snap: file.snap,
             }),
             compositor: Compositor::new(grid),
+            preview: None,
             base: base.to_owned(),
             solver: Solver::new(&palette),
             solver_palette: palette.clone(),
@@ -181,6 +185,7 @@ impl Session {
             origins,
             dirty: convert64_core::CellSet::all(),
             store,
+            notes,
         };
         for (i, cmd) in file.commands.into_iter().enumerate() {
             session
@@ -266,6 +271,7 @@ impl Session {
             solve: p.solve.clone(),
             snap: p.snap,
             commands: Vec::new(),
+            migrated_from: None,
         })
     }
 
@@ -298,6 +304,14 @@ impl Session {
         let dir = path.parent().map(Path::to_owned).unwrap_or_default();
         let text = self.to_project_file(&dir, embed)?.to_json();
         self.store.write(path, text.as_bytes())
+    }
+
+    /// What loading changed, for the front-end to tell the user once: for a project file
+    /// of an older `schema_version`, e.g. "Updated project from v2: now uses 1×
+    /// resampling" ([`ProjectFile::migration_note`]). Empty for a current file or a
+    /// recipe. Saving writes the current version, so the saved file has none.
+    pub fn notes(&self) -> &[String] {
+        &self.notes
     }
 
     /// The store the session reads and writes files through.
@@ -787,12 +801,35 @@ impl Session {
         self.compositor.grid()
     }
 
-    /// The composite on the super grid (square pixels, `n` per hi-res pixel) as RGBA8:
-    /// straight sRGB, alpha = coverage. The app's Source view draws it. Width and height
-    /// first.
+    /// The supersample factor the Source view is drawn at, at least: with the solve on
+    /// the 1× grid (ADR-012), the view composites on its own grid so a zoomed-in layer
+    /// still shows its detail and its sub-pixel placement.
+    pub const PREVIEW_N: u8 = 4;
+
+    /// The composite at [`Session::PREVIEW_N`] or the project's factor, whichever is
+    /// larger, as RGBA8: straight sRGB, alpha = coverage. The app's Source view draws it.
+    /// Width and height first; a multicolor super pixel is two hi-res pixels wide.
     pub fn canvas_rgba(&mut self) -> (u32, u32, Vec<u8>) {
         self.composite();
-        let canvas = self.compositor.canvas();
+        let canvas = if self.compositor.grid().n() >= Self::PREVIEW_N {
+            self.preview = None;
+            self.compositor.canvas()
+        } else {
+            let p = self.editor.project();
+            let grid = SuperGrid::new(p.target, Self::PREVIEW_N).expect("a bitmap grid");
+            // Only the canvas is drawn, so png2c64's front end (a frame) is skipped.
+            let fresh = || {
+                let mut c = Compositor::new(grid);
+                c.set_png2c64_front_end(false);
+                c
+            };
+            let preview = self.preview.get_or_insert_with(fresh);
+            if preview.grid() != grid {
+                *preview = fresh();
+            }
+            preview.update(&p.layers, &p.regions);
+            preview.canvas()
+        };
         let (w, h) = canvas.grid().size();
         let rgba = canvas
             .pixels()

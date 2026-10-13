@@ -106,6 +106,7 @@ pub(crate) fn run(run: &mut Run, path: &Path, format: Option<ReadFormat>) -> Res
             let mut session = run.time("load", || {
                 convert64_project::Session::open(path).map_err(Fail::input)
             })?;
+            run.notes_of(&session);
             let sol = run.time("solve", || session.solve(true).clone());
             run.set("clashes", sol.report.summary().clashes);
             run.time("validate", || Report {

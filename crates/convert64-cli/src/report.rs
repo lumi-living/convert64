@@ -10,7 +10,8 @@
 //! | 3 | An output cannot be written |
 //!
 //! Every JSON report has `command`, `ok`, `exit_code`, `error` (a message or `null`),
-//! `timing_ms` (`total` plus the phases the command ran) and `files_written`, then the
+//! `timing_ms` (`total` plus the phases the command ran), `files_written` and `notes`
+//! (what loading changed, such as an older project's migration, #236), then the
 //! command's own fields.
 
 use serde::Serialize;
@@ -59,6 +60,7 @@ pub(crate) struct Run {
     fields: Map<String, Value>,
     files: Vec<String>,
     timing: Map<String, Value>,
+    notes: Vec<String>,
 }
 
 impl Run {
@@ -71,6 +73,31 @@ impl Run {
             fields: Map::new(),
             files: Vec::new(),
             timing: Map::new(),
+            notes: Vec::new(),
+        }
+    }
+
+    /// Records what loading `session` changed (an older project's migration, #236) and
+    /// prints it once on stderr, unless the report is JSON, where it is in `notes`.
+    pub(crate) fn notes_of(&mut self, session: &convert64_project::Session) {
+        for n in session.notes() {
+            if !self.json {
+                eprintln!("note: {n}");
+            }
+            self.notes.push(n.clone());
+        }
+    }
+
+    /// Prints the `notes` of a per-file `report` (batch, export) on stderr, prefixed by
+    /// `name`, unless the report is JSON, where they are in that file's report.
+    pub(crate) fn echo_notes(&self, name: &str, report: &Value) {
+        if self.json {
+            return;
+        }
+        for n in report["notes"].as_array().into_iter().flatten() {
+            if let Some(n) = n.as_str() {
+                eprintln!("{name}: note: {n}");
+            }
         }
     }
 
@@ -128,6 +155,7 @@ impl Run {
         v.insert("error".to_owned(), json!(error));
         v.insert("timing_ms".to_owned(), Value::Object(timing));
         v.insert("files_written".to_owned(), json!(self.files));
+        v.insert("notes".to_owned(), json!(self.notes));
         for (k, f) in &self.fields {
             v.insert(k.clone(), f.clone());
         }

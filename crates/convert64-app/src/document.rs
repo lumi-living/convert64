@@ -236,6 +236,14 @@ impl Document {
         &self.session
     }
 
+    /// What opening the file changed, for the status bar to say once after the open:
+    /// an older project's migration (#236), e.g. "Updated project from v2: now uses 1×
+    /// resampling". `None` for a current project or a picture.
+    pub fn open_message(&self) -> Option<String> {
+        let notes = self.session.notes();
+        (!notes.is_empty()).then(|| notes.join(" · "))
+    }
+
     /// Runs a registry command (ADR-005): the app edits only through these.
     pub fn run(&mut self, command: JsonCommand) -> Result<(), ProjectError> {
         self.run_all(vec![command])
@@ -406,8 +414,13 @@ mod tests {
         assert_eq!(doc.session().project().layers.len(), 1);
         let mut session_doc = doc;
         let (w, h, rgba) = session_doc.source_rgba();
-        let (sw, sh) = session_doc.grid().size();
-        assert_eq!((w, h), (sw, sh));
+        // The Source view's own grid, finer than the 1× solve (ADR-012).
+        assert_eq!(session_doc.grid().n(), 1);
+        let preview = SuperGrid::new(
+            Mode::MulticolorBitmap,
+            convert64_project::Session::PREVIEW_N,
+        );
+        assert_eq!((w, h), preview.unwrap().size());
         assert_eq!(rgba.len(), (w * h * 4) as usize);
         // Solve the snapshot the scheduler would get, synchronously.
         let mut scheduler = crate::scheduler::Scheduler::stepping(Default::default());
@@ -451,6 +464,32 @@ mod tests {
         assert_eq!(back.mode(), Mode::HiresBitmap);
         assert_eq!(back.session().project(), doc.session().project());
         assert_eq!(back.stem(), "ramp");
+        assert_eq!(back.open_message(), None, "a current project");
+    }
+
+    /// #236: a version-2 project saved with the old default 4× opens on the 1× grid,
+    /// with the message the status bar shows once; saved, it is version 3 and opens
+    /// without one.
+    #[test]
+    fn a_version_2_project_opens_at_1x_and_says_so() {
+        let doc = Document::from_png("ramp.png", &png()).unwrap();
+        assert_eq!(doc.open_message(), None, "a picture");
+        let current = doc.project_json(Path::new(""), Embed::All).unwrap();
+        assert!(current.contains(r#""schema_version": 3,"#), "{current}");
+        let v2 = current
+            .replace(r#""schema_version": 3,"#, r#""schema_version": 2,"#)
+            .replace(r#""supersample": 1,"#, r#""supersample": 4,"#);
+        let old = Document::open("old.convert64", v2.as_bytes(), None).unwrap();
+        assert_eq!(old.grid().n(), 1);
+        assert_eq!(
+            old.open_message().as_deref(),
+            Some("Updated project from v2: now uses 1× resampling")
+        );
+        assert!(!old.is_dirty());
+        let saved = old.project_json(Path::new(""), Embed::All).unwrap();
+        assert_eq!(saved, current);
+        let again = Document::open("old.convert64", saved.as_bytes(), None).unwrap();
+        assert_eq!(again.open_message(), None);
     }
 
     /// The native save: links relative to the project, reopened from its path.

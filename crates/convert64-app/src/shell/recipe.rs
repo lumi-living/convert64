@@ -15,7 +15,7 @@ use convert64_core::SolveSettings;
 use convert64_core::command::{AdjustmentsChange, RecipeChange, SolveSet};
 use convert64_core::layer::{
     Adjustments, BrightnessContrast, Curve, Curves, DitherFamily, DitherKind, FitMode, Gamma, Hsl,
-    Layer, Levels, Method, Metric, Orientation, PatternPhase, RangeMatch, Recipe,
+    Layer, Levels, Method, Metric, Orientation, PatternPhase, Radius, RangeMatch, Recipe, Sharpen,
 };
 use convert64_core::solve::{Divergences, SolverKind};
 use convert64_project::{JsonCommand, LayerRef};
@@ -67,6 +67,11 @@ impl Form<'_> {
 
 /// A row's label: a dot when `changed`, the text; a double click on it resets.
 fn label(ui: &mut Ui, text: &str, changed: bool) -> Response {
+    label_tip(ui, text, changed, None)
+}
+
+/// [`label`] with `tip` (what the value does, its unit and range) above the reset hint.
+fn label_tip(ui: &mut Ui, text: &str, changed: bool, tip: Option<&str>) -> Response {
     let accent = Theme::current(ui.ctx()).accent;
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(6.0, layout::SWATCH_SIZE), egui::Sense::hover());
@@ -88,7 +93,10 @@ fn label(ui: &mut Ui, text: &str, changed: bool) -> Response {
         },
     )
     .inner
-    .on_hover_text("Double-click to reset")
+    .on_hover_text(match tip {
+        Some(tip) => format!("{tip}\nDouble-click to reset"),
+        None => "Double-click to reset".to_owned(),
+    })
 }
 
 /// What a slider row did this frame.
@@ -111,19 +119,37 @@ fn slider(
     suffix: &str,
     decimals: usize,
 ) -> (Edit, bool) {
+    slider_tip(ui, name, None, value, default, range, suffix, decimals)
+}
+
+/// [`slider`] with `tip` on its label and on the slider.
+#[allow(clippy::too_many_arguments)]
+fn slider_tip(
+    ui: &mut Ui,
+    name: &str,
+    tip: Option<&str>,
+    value: f32,
+    default: f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+    decimals: usize,
+) -> (Edit, bool) {
     let mut v = value;
     let mut edit = Edit::None;
     let mut stopped = false;
     ui.horizontal(|ui| {
-        let lab = label(ui, name, (value - default).abs() > 1e-6);
+        let lab = label_tip(ui, name, (value - default).abs() > 1e-6, tip);
         let value_box = 3.0 * ui.spacing().interact_size.x / 2.0;
         ui.spacing_mut().slider_width =
             (ui.available_width() - value_box).max(ui.spacing().interact_size.x);
-        let r = ui.add(
+        let mut r = ui.add(
             egui::Slider::new(&mut v, range)
                 .suffix(suffix)
                 .fixed_decimals(decimals),
         );
+        if let Some(tip) = tip {
+            r = r.on_hover_text(tip);
+        }
         // The slider rounds to its decimals: a value it merely snapped (0.6 × 100 is not
         // exactly 60) is not an edit, or it would be re-sent every frame.
         let step = 0.5 * 10f32.powi(-(decimals as i32));
@@ -224,224 +250,229 @@ pub(super) fn show(shell: &mut Shell, ws: &Workspace, ui: &mut Ui, actions: &mut
 
     transform_group(&mut f, shell, ws, layer, ui);
     adjustments(&mut f, shell, ws, layer, ui);
+    sharpen(&mut f, layer.adjustments().sharpen, ui);
     mask_group(&mut f, shell, ws, layer, ui);
     dither(&mut f, layer.recipe(), ui);
     fitting(&mut f, layer.recipe(), ws, ui);
     advanced(&mut f, layer, &project.solve, ui);
 }
 
+/// The Adjustments group (UX §6 item 2): tone and colour, Levels, Curves and Range.
+/// Sharpen has its own group after this one, with its own Reset.
 fn adjustments(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, ui: &mut Ui) {
     let a = layer.adjustments();
     let d = Adjustments::default();
-    let changed = *a != d;
-    let reset =
-        group(ui, "Adjustments", changed, true, |ui| {
-            let bc = a.brightness_contrast;
-            let hsl = a.hsl;
-            let lv = a.levels;
-            let pct = |v: f32| v * 100.0;
-            commit(
-                f,
-                "brightness",
-                slider(
-                    ui,
-                    "Brightness",
-                    pct(bc.brightness()),
-                    0.0,
-                    -100.0..=100.0,
-                    "",
-                    0,
-                ),
-                |f, g, v| {
-                    let x = BrightnessContrast::new(v / 100.0, bc.contrast()).unwrap_or(bc);
-                    f.adjust(
-                        g,
-                        AdjustmentsChange {
-                            brightness_contrast: Some(x),
-                            ..Default::default()
-                        },
-                    );
-                },
-            );
-            commit(
-                f,
-                "contrast",
-                slider(
-                    ui,
-                    "Contrast",
-                    pct(bc.contrast()),
-                    0.0,
-                    -100.0..=100.0,
-                    "",
-                    0,
-                ),
-                |f, g, v| {
-                    let x = BrightnessContrast::new(bc.brightness(), v / 100.0).unwrap_or(bc);
-                    f.adjust(
-                        g,
-                        AdjustmentsChange {
-                            brightness_contrast: Some(x),
-                            ..Default::default()
-                        },
-                    );
-                },
-            );
-            commit(
-                f,
-                "saturation",
-                slider(
-                    ui,
-                    "Saturation",
-                    pct(hsl.saturation()),
-                    0.0,
-                    -100.0..=100.0,
-                    "",
-                    0,
-                ),
-                |f, g, v| {
-                    let x = Hsl::new(hsl.hue(), v / 100.0, hsl.lightness()).unwrap_or(hsl);
-                    f.adjust(
-                        g,
-                        AdjustmentsChange {
-                            hsl: Some(x),
-                            ..Default::default()
-                        },
-                    );
-                },
-            );
-            commit(
-                f,
-                "hue",
-                slider(ui, "Hue", hsl.hue(), 0.0, -180.0..=180.0, "°", 0),
-                |f, g, v| {
-                    let x = Hsl::new(v, hsl.saturation(), hsl.lightness()).unwrap_or(hsl);
-                    f.adjust(
-                        g,
-                        AdjustmentsChange {
-                            hsl: Some(x),
-                            ..Default::default()
-                        },
-                    );
-                },
-            );
-            commit(
-                f,
-                "lightness",
-                slider(
-                    ui,
-                    "Lightness",
-                    pct(hsl.lightness()),
-                    0.0,
-                    -100.0..=100.0,
-                    "",
-                    0,
-                ),
-                |f, g, v| {
-                    let x = Hsl::new(hsl.hue(), hsl.saturation(), v / 100.0).unwrap_or(hsl);
-                    f.adjust(
-                        g,
-                        AdjustmentsChange {
-                            hsl: Some(x),
-                            ..Default::default()
-                        },
-                    );
-                },
-            );
-            commit(
-                f,
-                "gamma",
-                slider(ui, "Gamma", a.gamma.get(), 1.0, 0.1..=8.0, "", 2),
-                |f, g, v| {
-                    let x = Gamma::new(v).unwrap_or(a.gamma);
-                    f.adjust(
-                        g,
-                        AdjustmentsChange {
-                            gamma: Some(x),
-                            ..Default::default()
-                        },
-                    );
-                },
-            );
-            ui.label(RichText::new("Levels").small().weak());
-            commit(
-                f,
-                "levels black",
-                slider(ui, "Black", lv.black() * 255.0, 0.0, 0.0..=254.0, "", 0),
-                |f, g, v| {
-                    let black = (v / 255.0).min(lv.white() - 1.0 / 255.0);
-                    let x = Levels::new(black, lv.white(), lv.gamma()).unwrap_or(lv);
-                    f.adjust(
-                        g,
-                        AdjustmentsChange {
-                            levels: Some(x),
-                            ..Default::default()
-                        },
-                    );
-                },
-            );
-            commit(
-                f,
-                "levels gamma",
-                slider(ui, "Mid-tones", lv.gamma(), 1.0, 0.1..=10.0, "", 2),
-                |f, g, v| {
-                    let x = Levels::new(lv.black(), lv.white(), v).unwrap_or(lv);
-                    f.adjust(
-                        g,
-                        AdjustmentsChange {
-                            levels: Some(x),
-                            ..Default::default()
-                        },
-                    );
-                },
-            );
-            commit(
-                f,
-                "levels white",
-                slider(ui, "White", lv.white() * 255.0, 255.0, 1.0..=255.0, "", 0),
-                |f, g, v| {
-                    let white = (v / 255.0).max(lv.black() + 1.0 / 255.0);
-                    let x = Levels::new(lv.black(), white, lv.gamma()).unwrap_or(lv);
-                    f.adjust(
-                        g,
-                        AdjustmentsChange {
-                            levels: Some(x),
-                            ..Default::default()
-                        },
-                    );
-                },
-            );
-            curves(f, shell, &a.curves, ui);
-            ui.horizontal(|ui| {
-                let on = a.match_range.is_some();
-                let lab = label(ui, "Range", on);
-                let mut v = on;
-                let r = ui.checkbox(&mut v, "Match the palette's range").on_hover_text(
-                "png2c64's --match-range: the picture's OKLab range stretched to the palette's",
-            );
-                if r.changed() || (lab.double_clicked() && on) {
-                    let m = (v && !lab.double_clicked()).then(|| {
-                        RangeMatch::for_palette(
-                            ws.doc.palette(),
-                            RangeMatch::DEFAULT_PERCENTILE,
-                            RangeMatch::DEFAULT_MARGIN,
-                        )
-                    });
-                    f.adjust(
-                        None,
-                        AdjustmentsChange {
-                            match_range: Some(m.and_then(Result::ok)),
-                            ..Default::default()
-                        },
-                    );
-                }
-            });
-            reset_button(ui, changed)
+    let changed = !adjustments_default(a);
+    let reset = group(ui, "Adjustments", changed, true, |ui| {
+        let bc = a.brightness_contrast;
+        let hsl = a.hsl;
+        let lv = a.levels;
+        let pct = |v: f32| v * 100.0;
+        commit(
+            f,
+            "brightness",
+            slider(
+                ui,
+                "Brightness",
+                pct(bc.brightness()),
+                0.0,
+                -100.0..=100.0,
+                "",
+                0,
+            ),
+            |f, g, v| {
+                let x = BrightnessContrast::new(v / 100.0, bc.contrast()).unwrap_or(bc);
+                f.adjust(
+                    g,
+                    AdjustmentsChange {
+                        brightness_contrast: Some(x),
+                        ..Default::default()
+                    },
+                );
+            },
+        );
+        commit(
+            f,
+            "contrast",
+            slider(
+                ui,
+                "Contrast",
+                pct(bc.contrast()),
+                0.0,
+                -100.0..=100.0,
+                "",
+                0,
+            ),
+            |f, g, v| {
+                let x = BrightnessContrast::new(bc.brightness(), v / 100.0).unwrap_or(bc);
+                f.adjust(
+                    g,
+                    AdjustmentsChange {
+                        brightness_contrast: Some(x),
+                        ..Default::default()
+                    },
+                );
+            },
+        );
+        commit(
+            f,
+            "saturation",
+            slider(
+                ui,
+                "Saturation",
+                pct(hsl.saturation()),
+                0.0,
+                -100.0..=100.0,
+                "",
+                0,
+            ),
+            |f, g, v| {
+                let x = Hsl::new(hsl.hue(), v / 100.0, hsl.lightness()).unwrap_or(hsl);
+                f.adjust(
+                    g,
+                    AdjustmentsChange {
+                        hsl: Some(x),
+                        ..Default::default()
+                    },
+                );
+            },
+        );
+        commit(
+            f,
+            "hue",
+            slider(ui, "Hue", hsl.hue(), 0.0, -180.0..=180.0, "°", 0),
+            |f, g, v| {
+                let x = Hsl::new(v, hsl.saturation(), hsl.lightness()).unwrap_or(hsl);
+                f.adjust(
+                    g,
+                    AdjustmentsChange {
+                        hsl: Some(x),
+                        ..Default::default()
+                    },
+                );
+            },
+        );
+        commit(
+            f,
+            "lightness",
+            slider(
+                ui,
+                "Lightness",
+                pct(hsl.lightness()),
+                0.0,
+                -100.0..=100.0,
+                "",
+                0,
+            ),
+            |f, g, v| {
+                let x = Hsl::new(hsl.hue(), hsl.saturation(), v / 100.0).unwrap_or(hsl);
+                f.adjust(
+                    g,
+                    AdjustmentsChange {
+                        hsl: Some(x),
+                        ..Default::default()
+                    },
+                );
+            },
+        );
+        commit(
+            f,
+            "gamma",
+            slider(ui, "Gamma", a.gamma.get(), 1.0, 0.1..=8.0, "", 2),
+            |f, g, v| {
+                let x = Gamma::new(v).unwrap_or(a.gamma);
+                f.adjust(
+                    g,
+                    AdjustmentsChange {
+                        gamma: Some(x),
+                        ..Default::default()
+                    },
+                );
+            },
+        );
+        ui.label(RichText::new("Levels").small().weak());
+        commit(
+            f,
+            "levels black",
+            slider(ui, "Black", lv.black() * 255.0, 0.0, 0.0..=254.0, "", 0),
+            |f, g, v| {
+                let black = (v / 255.0).min(lv.white() - 1.0 / 255.0);
+                let x = Levels::new(black, lv.white(), lv.gamma()).unwrap_or(lv);
+                f.adjust(
+                    g,
+                    AdjustmentsChange {
+                        levels: Some(x),
+                        ..Default::default()
+                    },
+                );
+            },
+        );
+        commit(
+            f,
+            "levels gamma",
+            slider(ui, "Mid-tones", lv.gamma(), 1.0, 0.1..=10.0, "", 2),
+            |f, g, v| {
+                let x = Levels::new(lv.black(), lv.white(), v).unwrap_or(lv);
+                f.adjust(
+                    g,
+                    AdjustmentsChange {
+                        levels: Some(x),
+                        ..Default::default()
+                    },
+                );
+            },
+        );
+        commit(
+            f,
+            "levels white",
+            slider(ui, "White", lv.white() * 255.0, 255.0, 1.0..=255.0, "", 0),
+            |f, g, v| {
+                let white = (v / 255.0).max(lv.black() + 1.0 / 255.0);
+                let x = Levels::new(lv.black(), white, lv.gamma()).unwrap_or(lv);
+                f.adjust(
+                    g,
+                    AdjustmentsChange {
+                        levels: Some(x),
+                        ..Default::default()
+                    },
+                );
+            },
+        );
+        curves(f, shell, &a.curves, ui);
+        // Range is applied last, after the curves (composite::adjust_planes), so its
+        // row comes last, in this group and not under Sharpen (#237).
+        ui.horizontal(|ui| {
+            let on = a.match_range.is_some();
+            let lab = label_tip(ui, "Range", on, Some(RANGE_TIP));
+            let mut v = on;
+            let r = ui
+                .checkbox(&mut v, "Match the palette's range")
+                .on_hover_text(RANGE_TIP);
+            if r.changed() || (lab.double_clicked() && on) {
+                let m = (v && !lab.double_clicked()).then(|| {
+                    RangeMatch::for_palette(
+                        ws.doc.palette(),
+                        RangeMatch::DEFAULT_PERCENTILE,
+                        RangeMatch::DEFAULT_MARGIN,
+                    )
+                });
+                f.adjust(
+                    None,
+                    AdjustmentsChange {
+                        match_range: Some(m.and_then(Result::ok)),
+                        ..Default::default()
+                    },
+                );
+            }
         });
+        reset_button(ui, changed)
+    });
     if reset {
         f.adjust(
             None,
             AdjustmentsChange {
                 gamma: Some(d.gamma),
+                sharpen: None,
                 levels: Some(d.levels),
                 brightness_contrast: Some(d.brightness_contrast),
                 hsl: Some(d.hsl),
@@ -450,6 +481,163 @@ fn adjustments(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, u
             },
         );
     }
+}
+
+/// The Range row's tooltip.
+const RANGE_TIP: &str = "png2c64's --match-range: the picture's OKLab range stretched to the \
+                         palette's, after the curves";
+
+/// Whether the Adjustments group's values (everything but Sharpen, which has its own
+/// group) are at their defaults.
+fn adjustments_default(a: &Adjustments) -> bool {
+    let d = Adjustments::default();
+    Adjustments {
+        sharpen: d.sharpen,
+        ..a.clone()
+    } == d
+}
+
+/// The Sharpen group (UX §6, #228, #237): after Adjustments, with its own changed dot
+/// and Reset. Amount −100…300 %, Radius (png2c64's 3 × 3 or a Gaussian σ of 0.3–3 C64
+/// px, the σ beside the segment) and Threshold 0–10 % of lightness. Each label resets
+/// its value on a double click.
+fn sharpen(f: &mut Form, s: Sharpen, ui: &mut Ui) {
+    let d = Sharpen::default();
+    let changed = s != d;
+    let set = |f: &mut Form, g: Option<&str>, amount: f32, radius: Radius, threshold: f32| {
+        if let Ok(x) = Sharpen::new(amount, radius, threshold) {
+            f.adjust(
+                g,
+                AdjustmentsChange {
+                    sharpen: Some(x),
+                    ..Default::default()
+                },
+            );
+        }
+    };
+    let reset = group(ui, "Sharpen", changed, true, |ui| {
+        commit(
+            f,
+            "sharpen amount",
+            slider_tip(
+                ui,
+                "Amount",
+                Some(AMOUNT_TIP),
+                s.amount() * 100.0,
+                d.amount() * 100.0,
+                -100.0..=300.0,
+                " %",
+                0,
+            ),
+            |f, g, v| set(f, g, v / 100.0, s.radius(), s.threshold()),
+        );
+        let (radius, stopped) = radius_row(ui, s.radius(), d.radius());
+        if let Some((radius, gesture)) = radius {
+            set(f, gesture, s.amount(), radius, s.threshold());
+        }
+        if stopped {
+            f.end();
+        }
+        commit(
+            f,
+            "sharpen threshold",
+            slider_tip(
+                ui,
+                "Threshold",
+                Some(THRESHOLD_TIP),
+                s.threshold() * 100.0,
+                d.threshold() * 100.0,
+                0.0..=10.0,
+                " %",
+                1,
+            ),
+            |f, g, v| set(f, g, s.amount(), s.radius(), (v / 100.0).clamp(0.0, 0.1)),
+        );
+        reset_button(ui, changed)
+    });
+    if reset {
+        f.adjust(
+            None,
+            AdjustmentsChange {
+                sharpen: Some(d),
+                ..Default::default()
+            },
+        );
+    }
+}
+
+/// The Amount row's tooltip.
+const AMOUNT_TIP: &str = "An unsharp mask on lightness at the C64 grid, after gamma. \
+                          −100…300 %: 0 is off, negative softens (for noisy photos)";
+/// The Radius row's tooltip.
+const RADIUS_TIP: &str = "The blur the sharpen compares against: png2c64's 3×3 kernel, \
+                          or a Gaussian of σ 0.30–3.00 C64 pixels";
+/// The Threshold row's tooltip (#237).
+const THRESHOLD_TIP: &str = "Skip changes smaller than this, so noise isn't sharpened. \
+                             0–10 % of lightness; 0 sharpens every change";
+/// The σ field's tooltip.
+const SIGMA_TIP: &str = "σ of the Gaussian in C64 pixels, 0.30–3.00; drag or type";
+/// The σ a click on Gaussian starts from, in C64 pixels.
+const GAUSSIAN_START: f32 = 1.0;
+
+/// The Radius row: its label, the segment *png2c64 · Gaussian* (always both, the
+/// chosen one selected) and, with Gaussian, the σ field beside it (#237). Returns the
+/// new radius with the drag gesture's name when it is a drag, and whether a drag
+/// stopped.
+fn radius_row(
+    ui: &mut Ui,
+    radius: Radius,
+    default: Radius,
+) -> (Option<(Radius, Option<&'static str>)>, bool) {
+    let gaussian = |sigma: f32| Radius::gaussian(sigma.clamp(0.3, 3.0)).unwrap_or(Radius::Png2c64);
+    let mut out = None;
+    let mut stopped = false;
+    // The segment's words are short ("3×3" and "σ" live in the tooltips) so the σ field
+    // fits beside it in the dock at its default width; in a narrower dock it wraps
+    // under the segment rather than past the edge.
+    ui.horizontal_wrapped(|ui| {
+        let lab = label_tip(ui, "Radius", radius != default, Some(RADIUS_TIP));
+        if lab.double_clicked() && radius != default {
+            out = Some((default, None));
+        }
+        let png2c64 = radius == Radius::Png2c64;
+        ui.spacing_mut().item_spacing.x = 2.0;
+        if ui
+            .selectable_label(png2c64, "png2c64")
+            .on_hover_text("png2c64's own 3×3 kernel, bit for bit")
+            .clicked()
+            && !png2c64
+        {
+            out = Some((Radius::Png2c64, None));
+        }
+        if ui
+            .selectable_label(!png2c64, "Gaussian")
+            .on_hover_text("A Gaussian blur of σ C64 pixels, 0.30–3.00")
+            .clicked()
+            && png2c64
+        {
+            out = Some((gaussian(GAUSSIAN_START), None));
+        }
+        if let Radius::Gaussian(sigma) = radius {
+            ui.add_space(2.0);
+            let mut x = sigma;
+            let r = ui
+                .add(
+                    egui::DragValue::new(&mut x)
+                        .speed(0.01)
+                        .range(0.3..=3.0)
+                        .fixed_decimals(2)
+                        .suffix(" px"),
+                )
+                .on_hover_text(SIGMA_TIP);
+            // As the sliders: a value merely rounded for display is not an edit.
+            if r.changed() && (x - sigma).abs() > 0.005 {
+                out = Some((gaussian(x), r.dragged().then_some("sharpen radius")));
+            }
+            stopped = r.drag_stopped();
+        }
+    });
+    (out, stopped)
 }
 
 /// The curves editor: a channel picker and a square with the curve over a diagonal;
@@ -1794,4 +1982,157 @@ fn optional(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::Document;
+
+    /// A workspace with one 64 × 40 ramp layer and `sharpen` on it.
+    fn workspace(sharpen: Sharpen) -> Workspace {
+        let rgba = (0..64 * 40)
+            .flat_map(|i| [(i % 64 * 4) as u8, (i / 64 * 6) as u8, 90, 255])
+            .collect();
+        let png = convert64_project::codec::encode_rgba8(64, 40, rgba);
+        let mut doc = Document::from_png("ramp.png", &png).unwrap();
+        doc.run(JsonCommand::AdjustmentsSet {
+            layer: LayerRef::Index(0),
+            adjustments: AdjustmentsChange {
+                sharpen: Some(sharpen),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        Workspace::new(doc)
+    }
+
+    /// The window's width in [`draw`].
+    const WINDOW: f32 = 1280.0;
+
+    /// One frame of the shell with the Recipe tab, in a window tall enough for every
+    /// group and the dock at its default width: each text drawn with its rectangle, and
+    /// the actions the form asked for.
+    fn draw(mut ws: Workspace) -> (Vec<(String, egui::Rect)>, Vec<Action>) {
+        fn collect(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+            match shape {
+                egui::Shape::Text(t) => {
+                    out.push((t.galley.text().to_owned(), t.visual_bounding_rect()));
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(WINDOW, 3000.0),
+            )),
+            ..Default::default()
+        };
+        let mut shell = Shell {
+            tab: super::super::DockTab::Recipe,
+            ..Shell::default()
+        };
+        let mut actions = Vec::new();
+        let mut output = ctx.run_ui(input, |ui| actions = shell.show(ui, Some(&mut ws)));
+        output.textures_delta.clear();
+        let mut texts = Vec::new();
+        for clipped in &output.shapes {
+            collect(&clipped.shape, &mut texts);
+        }
+        (texts, actions)
+    }
+
+    /// The rectangle of the first text that reads `text`.
+    fn find(texts: &[(String, egui::Rect)], text: &str) -> egui::Rect {
+        texts
+            .iter()
+            .find(|(t, _)| t == text)
+            .unwrap_or_else(|| panic!("no {text:?} in {texts:?}"))
+            .1
+    }
+
+    /// #237: Sharpen is a group of its own after Adjustments (after Levels and Curves,
+    /// UX §6), and Range stays in Adjustments, above the Sharpen heading.
+    #[test]
+    fn sharpen_is_its_own_group_after_levels_curves_and_range() {
+        let (texts, actions) = draw(workspace(Sharpen::default()));
+        assert!(actions.is_empty(), "{actions:?}");
+        let y = |t: &str| find(&texts, t).center().y;
+        assert!(y("Adjustments") < y("Mid-tones"));
+        assert!(y("Mid-tones") < y("Curves"));
+        assert!(y("Curves") < y("Range"));
+        assert!(y("Range") < y("Sharpen"));
+        assert!(y("Sharpen") < y("Amount"));
+        assert!(y("Amount") < y("Radius") && y("Radius") < y("Threshold"));
+        assert!(y("Threshold") < y("Mask"));
+        // Adjustments' Reset sits between Range and the Sharpen heading; Sharpen's
+        // own after Threshold.
+        let resets: Vec<f32> = texts
+            .iter()
+            .filter(|(t, _)| t == "Reset group")
+            .map(|(_, r)| r.center().y)
+            .collect();
+        assert!(resets.iter().any(|&r| y("Range") < r && r < y("Sharpen")));
+        assert!(resets.iter().any(|&r| y("Threshold") < r && r < y("Mask")));
+    }
+
+    /// #237: with Gaussian chosen both segment labels stay visible and the σ field sits
+    /// beside them on the Radius row, to their right, inside the dock.
+    #[test]
+    fn gaussian_keeps_the_segment_and_puts_sigma_beside_it() {
+        let s = Sharpen::new(0.8, Radius::gaussian(1.2).unwrap(), 0.02).unwrap();
+        let (texts, actions) = draw(workspace(s));
+        assert!(actions.is_empty(), "rounded σ re-sent: {actions:?}");
+        let radius = find(&texts, "Radius");
+        let png2c64 = find(&texts, "png2c64");
+        let gaussian = find(&texts, "Gaussian");
+        let sigma = find(&texts, "1.20");
+        for r in [png2c64, gaussian, sigma] {
+            assert!((r.center().y - radius.center().y).abs() < 4.0, "{texts:?}");
+        }
+        assert!(radius.right() < png2c64.left());
+        assert!(png2c64.right() < gaussian.left());
+        assert!(gaussian.right() < sigma.left());
+        // Its unit too, and inside the dock (the Reset buttons end at its edge).
+        let unit = texts
+            .iter()
+            .find(|(t, r)| t == " px" && (r.center().y - radius.center().y).abs() < 4.0)
+            .expect("σ's unit on the Radius row")
+            .1;
+        let edge = find(&texts, "Reset group").right();
+        assert!(
+            sigma.right() < unit.left() && unit.right() <= edge,
+            "{unit:?}"
+        );
+        assert!(edge < WINDOW);
+    }
+
+    /// With png2c64's kernel there is no σ to show, and Gaussian is still offered.
+    #[test]
+    fn png2c64_radius_shows_no_sigma() {
+        let (texts, _) = draw(workspace(Sharpen::png2c64(0.5).unwrap()));
+        let radius = find(&texts, "Radius");
+        find(&texts, "png2c64");
+        let gaussian = find(&texts, "Gaussian");
+        let after = texts.iter().filter(|(_, r)| {
+            (r.center().y - radius.center().y).abs() < 4.0 && r.left() > gaussian.right()
+        });
+        assert_eq!(after.count(), 0, "{texts:?}");
+    }
+
+    /// Adjustments' dot and Reset ignore Sharpen, which has its own.
+    #[test]
+    fn the_adjustments_group_leaves_sharpen_to_its_own_group() {
+        let mut a = Adjustments {
+            sharpen: Sharpen::png2c64(0.5).unwrap(),
+            ..Default::default()
+        };
+        assert!(adjustments_default(&a));
+        a.gamma = Gamma::new(1.5).unwrap();
+        assert!(!adjustments_default(&a));
+    }
 }

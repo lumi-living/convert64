@@ -33,6 +33,17 @@ pub(crate) fn apply_modifiers_with(
     full_res: bool,
 ) {
     point_ops(values, m);
+    spatial_ops(values, rect, grid, m, full_res);
+}
+
+/// Snap then feather: the modifiers that need neighbours, after [`point_ops`].
+pub(crate) fn spatial_ops(
+    values: &mut [f32],
+    rect: PxRect,
+    grid: SuperGrid,
+    m: &Modifiers,
+    full_res: bool,
+) {
     if m.snap() != SnapToCells::Off {
         snap(values, rect, grid, m.snap());
     }

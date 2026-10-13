@@ -9,17 +9,20 @@ Unknown fields are errors, so a typo never silently does nothing. Values are che
 | `schema_version` | What it is | This build |
 |---|---|---|
 | (none, `"version": 1`) | The recipe file of E4 (`crates/convert64-project/src/recipe.rs`): layers with linked sources, commands, solve options | reads it as a project: sources linked, the default palette, its commands run after loading |
-| `2` | This document | reads and writes |
+| `2` | This document as saved before #236, when the default `supersample` was 4 (and every save wrote it) | reads it and migrates it to 3: `supersample` becomes 1, whatever it was |
+| `3` | This document (#236) | reads and writes |
 
-A file with `schema_version` above 2 is refused with a message naming the version. A change that old readers would misread (a renamed field, a new meaning) increments `schema_version`; adding an optional field with a default does not.
+A file with `schema_version` above 3 or below 2 is refused with a message naming the version. A change that old readers would misread (a renamed field, a new meaning) increments `schema_version`, with a migration from the old version; adding an optional field with a default does not.
+
+**Migration from 2 (#236).** ADR-012 made 1× the default composite factor, png2c64's look; a version-2 project stores the 4× it was saved with and would keep the softer composite. Loading one sets `supersample` to 1 (the field stays and is written, `"supersample": 1`), so every project looks the same, and reports it once with the note **"Updated project from v2: now uses 1× resampling"**: a `note:` line on stderr and the `notes` array of `--json` reports ([cli.md](cli.md#--json)), a message in the app's status bar, a `note:` line in the MCP server's `project_open` reply. Saving writes version 3, which loads as written and without a note. Version-1 recipe files are not migrated: a recipe states `supersample` only when it means it. (`ProjectFile::migrate`, `ProjectFile::migration_note`, `Session::notes`.)
 
 ## Top level
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "target": "multicolor-bitmap",
-  "supersample": 4,
+  "supersample": 1,
   "palette": "pepto-pal",
   "layers": [ … ],
   "regions": [ … ],
@@ -31,9 +34,9 @@ A file with `schema_version` above 2 is refused with a message naming the versio
 
 | Field | Required | Default | Meaning |
 |---|---|---|---|
-| `schema_version` | yes | | `2` |
+| `schema_version` | yes | | `3` (`2` is read and migrated, above) |
 | `target` | yes | | `"multicolor-bitmap"` or `"hires-bitmap"` (the M1 modes; the other names in `convert64_core::mode::Mode` parse but cannot be solved yet) |
-| `supersample` | no | `4` | Composite factor, 1–8 |
+| `supersample` | no | `1` | Composite factor, 1–8. Since ADR-012 (#227) 1: colour is resampled straight to the target grid with png2c64's Mitchell bicubic, masks at 4× and box-reduced. A higher factor resamples colour onto the finer grid and box-filters it down, which is softer. Projects saved before #227 (version 2) store `4`; loading migrates them to `1` (above) |
 | `palette` | no | `"pepto-pal"` | See [Palette](#palette) |
 | `layers` | yes | | Bottom first; see [Layers](#layers) |
 | `regions` | no | none | Recipe overrides over part of the canvas; see [Regions](#regions) |
@@ -79,7 +82,7 @@ The palette is the one the picture is solved and previewed with (CLAUDE.md non-n
 | `opacity` | `1.0` | 0–1 |
 | `blend` | `"normal"` | `normal`, `multiply`, `screen`, `overlay` |
 | `recipe` | Floyd–Steinberg 100 % | The dither recipe (ADR-002): `method` (`kind`, `orientation`, `custom`), `strength`, `phase`, `metric`, `allowed`, `fit_mode`, `cell_clamp`, `max_luma_diff`, `adaptive`, `mix_levels`, `smooth`, `cell_metric`, `error_clamp`. Method ids are in [dither-methods.md](dither-methods.md); defaults are in TAD §4 "E5 in summary". |
-| `adjustments` | identity | `gamma`, `levels`, `brightness_contrast`, `hsl`, `curves`, `match_range` |
+| `adjustments` | identity | `gamma`, `sharpen` (#228: `amount` −1–3, `radius` `"png2c64"` or a σ of 0.3–3 C64 px, `threshold` 0–0.1 in OKLab L; written only when not off, so older files load unchanged), `levels`, `brightness_contrast`, `hsl`, `curves`, `match_range`. Applied in that order, after the layer is resampled (#190) |
 | `mask` | none (opaque) | The layer mask (ADR-008), below |
 
 ### Sources

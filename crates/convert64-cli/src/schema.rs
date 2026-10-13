@@ -279,6 +279,20 @@ fn adjustments_properties() -> Value {
                         "description": "Control points [x, y], 0–1" });
     json!({
         "gamma": { "type": "number", "minimum": 0.1, "maximum": 8, "default": 1 },
+        "sharpen": object_schema(json!({
+            "amount": { "type": "number", "minimum": -1, "maximum": 3, "default": 0,
+                        "description": "png2c64's --sharpen: positive sharpens lightness, negative blends toward a blur; |amount| < 0.01 is off" },
+            "radius": {
+                "description": "The blur: png2c64's 3×3 box, or a Gaussian σ in C64 pixels",
+                "default": "png2c64",
+                "oneOf": [
+                    { "type": "string", "enum": ["png2c64"] },
+                    { "type": "number", "minimum": 0.3, "maximum": 3 }
+                ]
+            },
+            "threshold": { "type": "number", "minimum": 0, "maximum": 0.1, "default": 0,
+                           "description": "OKLab L difference from the blur below which a pixel is not sharpened" }
+        }), &[]),
         "levels": levels_schema(),
         "brightness_contrast": object_schema(json!({
             "brightness": signed("Brightness, linear light"),
@@ -656,6 +670,7 @@ pub fn example(name: &str) -> Option<Value> {
         "layer_rename" => json!({ "layer": 0, "name": "background" }),
         "layer_duplicate" => json!({ "layer": 0 }),
         "adjustments_set" => json!({ "layer": 0, "adjustments": { "gamma": 1.4,
+            "sharpen": { "amount": 0.5, "radius": 0.8, "threshold": 0.01 },
             "brightness_contrast": { "brightness": 0.1, "contrast": 0.2 } } }),
         "recipe_set" => json!({ "layer": 0, "recipe": { "method": { "kind": "bayer4" },
             "strength": 0.75, "deny": [7] } }),
