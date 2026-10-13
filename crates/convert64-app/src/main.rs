@@ -520,6 +520,13 @@ impl eframe::App for App {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if let Some(request) = &mut self.screenshot {
+            request.inject(raw_input);
+        }
+    }
+
     fn persist_egui_memory(&self) -> bool {
         // A screenshot run leaves the user's panel sizes and window state alone.
         #[cfg(not(target_arch = "wasm32"))]
@@ -542,8 +549,9 @@ impl eframe::App for App {
 /// `--screenshot <file.png> [--theme light|dark] [--size <w>x<h>] [--view result]
 /// [--overlay grid|clashes|ghost]… [--compare split|flicker|side] [--dialog export]
 /// [--tab recipe|layers|export] [--command <json>]… [--zoom <n>] [--centre <x>,<y>]
-/// [--mask] [--tool <name>] [--export <dir>] [--hide-ui]`: draws a few frames,
-/// saves the window as a PNG and quits. The PR screenshots come from it (#203).
+/// [--mask] [--tool <name>] [--drag <x0>,<y0>:<x1>,<y1>] [--export <dir>] [--hide-ui]`:
+/// draws a few frames, saves the window as a PNG and quits. The PR screenshots come from
+/// it (#203).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
     use std::path::PathBuf;
@@ -586,6 +594,12 @@ mod screenshot {
     /// Frames drawn before the screenshot, so fonts and panel sizes have settled.
     const SETTLE_FRAMES: u32 = 5;
 
+    /// `--drag`: frames of pointer movement between the press and the release.
+    const DRAG_STEPS: u32 = 8;
+
+    /// `--drag`: frames the whole drag takes (move, press, the steps, release).
+    const DRAG_FRAMES: u32 = DRAG_STEPS + 3;
+
     /// What `--screenshot` asked for.
     #[derive(Debug)]
     pub(super) struct Request {
@@ -613,6 +627,12 @@ mod screenshot {
         pub(super) mask: bool,
         /// `--tool pin|lock|region|nudge|transform`.
         pub(super) tool: Option<String>,
+        /// `--drag <x0>,<y0>:<x1>,<y1>`: a primary-button drag in window points, made of
+        /// synthetic pointer events once the first frame is drawn, before the screenshot
+        /// (to show what a drag does, e.g. on a transform handle; #239).
+        pub(super) drag: Option<(egui::Pos2, egui::Pos2)>,
+        /// Frames of the drag injected so far.
+        drag_frame: u32,
         /// `--export <dir>`: once the full solve is in, write the Koala (or Art Studio)
         /// file and the self-displaying PRG there.
         pub(super) export: Option<PathBuf>,
@@ -649,6 +669,7 @@ mod screenshot {
             let mut centre = None;
             let mut mask = false;
             let mut tool = None;
+            let mut drag = None;
             let mut export = None;
             let mut hide_ui = false;
             while let Some(arg) = args.next() {
@@ -670,6 +691,19 @@ mod screenshot {
                     "--mask" => mask = true,
                     "--hide-ui" => hide_ui = true,
                     "--tool" => tool = Some(value()?),
+                    "--drag" => {
+                        let v = value()?;
+                        let point = |s: &str| -> Option<egui::Pos2> {
+                            let (x, y) = s.split_once(',')?;
+                            Some(egui::pos2(x.parse().ok()?, y.parse().ok()?))
+                        };
+                        let (a, b) = v.split_once(':').ok_or("--drag is <x0>,<y0>:<x1>,<y1>")?;
+                        drag = Some(
+                            point(a)
+                                .zip(point(b))
+                                .ok_or("--drag is <x0>,<y0>:<x1>,<y1>")?,
+                        );
+                    }
                     "--export" => export = Some(PathBuf::from(value()?)),
                     "--zoom" => zoom = Some(value()?.parse().map_err(|_| "--zoom: a number")?),
                     "--centre" => {
@@ -712,11 +746,39 @@ mod screenshot {
                     centre,
                     mask,
                     tool,
+                    drag,
+                    drag_frame: 0,
                     export,
                     hide_ui,
                     frame: 0,
                 }),
             })
+        }
+
+        /// Called before every frame: adds `--drag`'s pointer events, one step a frame,
+        /// once the first frame has been drawn.
+        pub(super) fn inject(&mut self, raw: &mut egui::RawInput) {
+            let Some((from, to)) = self.drag else { return };
+            if self.frame == 0 || self.drag_frame >= DRAG_FRAMES {
+                return;
+            }
+            let button = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            let event = match self.drag_frame {
+                0 => egui::Event::PointerMoved(from),
+                1 => button(from, true),
+                n if n < DRAG_FRAMES - 1 => {
+                    let t = (n - 1) as f32 / DRAG_STEPS as f32;
+                    egui::Event::PointerMoved(from.lerp(to, t))
+                }
+                _ => button(to, false),
+            };
+            raw.events.push(event);
+            self.drag_frame += 1;
         }
 
         /// Called every frame: asks for the screenshot once the frames have settled,
@@ -727,7 +789,8 @@ mod screenshot {
                 return;
             }
             self.frame += 1;
-            if self.frame == SETTLE_FRAMES {
+            let drag = if self.drag.is_some() { DRAG_FRAMES } else { 0 };
+            if self.frame == SETTLE_FRAMES + drag {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             }
             ctx.request_repaint();
