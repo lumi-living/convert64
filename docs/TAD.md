@@ -36,7 +36,9 @@ Fixed 16 colours. Reference values Pepto / Colodore. Nine luminance levels (0, 8
 
 ```
  Source layers (f32 linear RGBA, any size)
-        │  per-layer: float transform, mask, feather, levels/curves/HSL, blend, opacity,
+        │  per-layer: float transform → resample onto the super grid, then the layer's
+        │             adjustments (gamma, levels/curves/HSL, range matching — after the
+        │             resample, png2c64's order, #190), mask, feather, blend, opacity,
         │             dither recipe (method, strength, phase, metric, allowed set, force/adaptive)
         ▼
  Composite at N× supersample (default 4× → 1280×800 for a 320×200 target)
@@ -51,6 +53,8 @@ Fixed 16 colours. Reference values Pepto / Colodore. Nine luminance levels (0, 8
         ├─► Preview renderer (palette object, border, aspect, optional PAL shader)
         └─► Exporters (formats crate)
 ```
+
+**A plain project takes png2c64's front end (#190).** One visible, fully opaque 8-bit layer filling the screen exactly, with no mask, no regions and no adjustment but gamma and range matching, skips the supersampled composite. Its colour is png2c64's prepared image: the bytes scaled straight to the target grid with png2c64's Mitchell bicubic, then gamma, then png2c64's preprocessing (`solve::png2c64_ref::prepare`), then range matching. The frame is marked prepared, so the reference solver does not repeat the OKLab round trip. `convert64 convert picture.png` is therefore png2c64's output end to end. Anything more (a nudge, a mask, a second layer) uses the composite, which differs from png2c64's front end only in its resampler. `Compositor::set_png2c64_front_end(false)` turns the compatibility path off.
 
 **Dithering is a per-pixel attribute carried through compositing, not an operation per layer** ([ADR-002](adr/ADR-002-dither-as-per-pixel-attribute.md)). Palette indices cannot be blended; layers stay in float and control only the recipe.
 
@@ -664,7 +668,7 @@ The public data model every front-end, solver, reader and writer shares. Constru
 
 ## 6. Testing
 - Unit tests per solver stage; property tests that every solver output passes the validator.
-- **png2c64 parity (#181), the standing bar of the default solver.** `tests/png2c64_parity.rs`: the reference solver on png2c64's 30 ids on the test card and the portrait, and on all six fixtures, must be ≥ 99 % pixel-identical to png2c64's renders from its reference build ([reference/png2c64-reference.md](reference/png2c64-reference.md)). CI runs it as its own step and prints every percentage. The default solver's golden MSE scores are reported, not gated; the native solver's goldens (`expected_native.png`) keep their gate.
+- **png2c64 parity (#181, #190), the standing bar of the default solver and of `convert`.** `crates/convert64-core/tests/png2c64_parity.rs`: the reference solver on png2c64's 30 ids on the test card and the portrait, and on all six fixtures, must be ≥ 99 % pixel-identical to png2c64's renders from its reference build ([reference/png2c64-reference.md](reference/png2c64-reference.md)). `crates/convert64-cli/tests/png2c64_convert.rs`: `convert64 convert` on every fixture source with its baseline's settings must be ≥ 99 % identical to `baseline.png` (all 100 % but `title`, 99.997 %). CI runs both as its own step and prints every percentage. The default solver's golden MSE scores are reported, not gated; the native solver's goldens (`expected_native.png`) keep their gate.
 - Golden fixtures: `fixtures/<name>/source.png` + expected `.kla/.art/.png`; compared bit-exact for formats, perceptually (OKLab MSE threshold) for solver output.
 - Baseline comparison against png2c64 output on the same fixtures: both are scored against the source with png2c64's preprocessing (gamma 1.5), from which ours is solved too, with png2c64's own settings (`checker` 0.7). Per-pixel and blurred OKLab MSE (`png2c64_mse_vs_source`, `png2c64_blur_mse_vs_source` in `thresholds.toml`) are reported, not gated (#156).
 - **Human review gate for solver changes (#156).** Both numeric bars have said we beat png2c64 while the side-by-side sheet showed png2c64 winning by eye. A PR that changes solver output carries the regenerated `sheet-vs-png2c64.png` in its description, with the author's per-id verdict, and merges only after a human (not the authoring agent) says it is at least as good as png2c64 on every shared id (CONTRIBUTING.md). The sheet's gradient-domain error (lightness gradients after a 1-px blur) is printed for reading, not as a bar.

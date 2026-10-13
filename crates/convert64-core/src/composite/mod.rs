@@ -47,7 +47,7 @@ pub use attr::{AttrSource, AttributeMap, TargetAttr, debug_colour};
 pub use frame::TargetFrame;
 
 use crate::geom::{CellSet, PxRect, SuperGrid, Vec2};
-use crate::layer::{AdjustCache, Adjustments, Blend, Layer, SourceImage, Transform};
+use crate::layer::{Adjustments, Blend, Layer, SourceImage, Transform};
 use crate::mask::{Mask, Modifiers, SnapToCells};
 use crate::region::Region;
 use crate::scratch;
@@ -230,8 +230,8 @@ struct Spare {
     values: Vec<f32>,
 }
 
-/// The adjusted pixels premultiplied, with the source and adjustments they came from.
-type Premultiplied = (Arc<SourceImage>, Adjustments, Vec<[f32; 4]>);
+/// The source pixels premultiplied, with the source they came from.
+type Premultiplied = (Arc<SourceImage>, Vec<[f32; 4]>);
 
 /// A mip of the premultiplied pixels: its level, pixels and size.
 type ColourMip = ((u32, u32), Vec<[f32; 4]>, (u32, u32));
@@ -265,9 +265,8 @@ impl Placement {
 
 #[derive(Debug, Default)]
 struct LayerCache {
-    adjust: AdjustCache,
-    /// The adjusted pixels premultiplied, keyed by the source's identity and the
-    /// adjustments.
+    /// The source pixels premultiplied, keyed by the source's identity (adjustments
+    /// apply after resampling, #190).
     premul: Option<Premultiplied>,
     /// A rotated layer's mip of `premul` (#198): its level, pixels and size; dropped
     /// with `premul`.
@@ -466,26 +465,21 @@ impl LayerCache {
             return (raster, None);
         }
         let adj = layer.adjustments();
-        if !matches!(&self.premul, Some((s, a, _)) if Arc::ptr_eq(s, src) && a == adj) {
-            let premultiply = |px: &[[f32; 4]]| {
-                px.iter()
-                    .map(|p| [p[0] * p[3], p[1] * p[3], p[2] * p[3], p[3]])
-                    .collect()
-            };
-            // Identity adjustments premultiply the source itself, without the adjust
-            // cache's copy of it (#139).
-            let premul = if adj.is_identity() {
-                premultiply(src.pixels())
-            } else {
-                premultiply(&self.adjust.get(src, adj))
-            };
-            self.premul = Some((Arc::clone(src), adj.clone(), premul));
+        // Adjustments apply after resampling, in png2c64's order (#190): the source is
+        // only premultiplied here.
+        if !matches!(&self.premul, Some((s, _)) if Arc::ptr_eq(s, src)) {
+            let premul = src
+                .pixels()
+                .iter()
+                .map(|p| [p[0] * p[3], p[1] * p[3], p[2] * p[3], p[3]])
+                .collect();
+            self.premul = Some((Arc::clone(src), premul));
             self.colour_mip = None;
         }
         if let Some(level) = place.mip_level()
             && self.colour_mip.as_ref().is_none_or(|(l, _, _)| *l != level)
         {
-            let (_, _, premul) = self.premul.as_ref().expect("filled above");
+            let (_, premul) = self.premul.as_ref().expect("filled above");
             let (px, size) = affine::mip(premul, sw, sh, level.0, level.1);
             self.colour_mip = Some((level, px, size));
         }
@@ -497,7 +491,7 @@ impl LayerCache {
             self.update_mask_mip(m, src, &place);
         }
         let mask_src = mask.map(|m| self.mask_input(m, (sw, sh), &place));
-        let (_, _, premul) = self.premul.as_ref().expect("filled above");
+        let (_, premul) = self.premul.as_ref().expect("filled above");
         debug_assert_eq!(sh as usize * sw as usize, premul.len());
         // A rotated layer scaled down samples a mip of the pixels.
         let colour = match (&self.colour_mip, place.mip_level()) {
@@ -540,6 +534,9 @@ impl LayerCache {
                 Some(values)
             },
         );
+        if !adj.is_identity() {
+            adjust_planes(&mut rgba, adj);
+        }
         let raster = LayerRaster {
             rect,
             rgba,
@@ -547,6 +544,105 @@ impl LayerCache {
         };
         (raster, values)
     }
+}
+
+/// A layer's adjustments applied to its resampled, premultiplied planes (#190: after
+/// resampling, where png2c64 applies its gamma and range matching). Fully transparent
+/// pixels stay transparent, so the planes' extents still hold.
+fn adjust_planes(planes: &mut Planes, adj: &Adjustments) {
+    let mut px: Vec<[f32; 4]> = (0..planes.a.len())
+        .map(|i| {
+            let a = planes.a[i];
+            if a > 0.0 {
+                [planes.r[i] / a, planes.g[i] / a, planes.b[i] / a, a]
+            } else {
+                [0.0; 4]
+            }
+        })
+        .collect();
+    let plan = adj.plan();
+    if !plan.is_identity() {
+        crate::par::for_each(&mut px, |p| {
+            if p[3] > 0.0 {
+                plan.apply(p);
+            }
+        });
+    }
+    if let Some(m) = &adj.match_range {
+        m.apply(&mut px);
+    }
+    for (i, p) in px.iter().enumerate() {
+        let a = planes.a[i];
+        if a > 0.0 {
+            planes.r[i] = (p[0] * a).max(0.0);
+            planes.g[i] = (p[1] * a).max(0.0);
+            planes.b[i] = (p[2] * a).max(0.0);
+        }
+    }
+}
+
+/// The one layer a plain project consists of, if it is plain (#190): a bitmap mode, no
+/// regions, one visible layer that is fully opaque 8-bit sRGB, filling the screen
+/// exactly (no offset, no flip, no rotation: #198), at full opacity, Normal blend, with no mask and no
+/// adjustment but gamma and range matching. Such a project gets png2c64's front end.
+fn plain_layer<'a>(layers: &'a [Layer], regions: &[Region], grid: SuperGrid) -> Option<&'a Layer> {
+    use crate::mode::Mode;
+    if !matches!(grid.target(), Mode::MulticolorBitmap | Mode::HiresBitmap) || !regions.is_empty() {
+        return None;
+    }
+    let mut visible = layers.iter().filter(|l| l.visible());
+    let layer = visible.next()?;
+    if visible.next().is_some() {
+        return None;
+    }
+    let src = layer.source();
+    let (w, h) = src.size();
+    let t = layer.transform();
+    let tone_only = Adjustments {
+        gamma: crate::layer::Gamma::IDENTITY,
+        match_range: None,
+        ..layer.adjustments().clone()
+    };
+    (src.srgb8().is_some()
+        && layer.opacity() == 1.0
+        && layer.blend() == Blend::Normal
+        && layer.mask().is_none()
+        && t.translate() == Vec2::ZERO
+        && t.scale() == Vec2::new(320.0 / w as f32, 200.0 / h as f32)
+        && t.rotate() == 0.0
+        && !t.flip_h()
+        && !t.flip_v()
+        && tone_only.is_identity())
+    .then_some(layer)
+}
+
+/// png2c64's front end for a plain layer: its 8-bit source scaled straight to the
+/// target with its Mitchell bicubic, then its preprocessing with the layer's gamma, then
+/// range matching onto the layer's targets (`solve::png2c64_ref::prepare`).
+fn png2c64_front_end(layer: &Layer, grid: SuperGrid) -> Vec<[f32; 3]> {
+    use crate::solve::png2c64_ref::{prepare, preprocess, quantize::Mode as RefMode};
+    let src = layer.source();
+    let (w, h) = src.size();
+    let mode = if grid.target() == crate::mode::Mode::HiresBitmap {
+        RefMode::Hires
+    } else {
+        RefMode::Multicolor
+    };
+    let adj = layer.adjustments();
+    let mut im = prepare(
+        src.srgb8().expect("a plain layer has its bytes"),
+        (w as usize, h as usize),
+        mode,
+        &preprocess::Settings {
+            gamma: adj.gamma.get(),
+            ..preprocess::Settings::default()
+        },
+        None,
+    );
+    if let Some(m) = &adj.match_range {
+        preprocess::match_range_to(&mut im, m.percentile(), m.targets());
+    }
+    im.px
 }
 
 /// Where `layer` lands on `grid` and the super rectangle it touches: the separable axis
@@ -727,6 +823,20 @@ pub struct Compositor {
     full_res_feather: bool,
     resamples: u64,
     mask_evals: u64,
+    /// png2c64's prepared image of the last plain layer (#190), with what it was made
+    /// from.
+    front: Option<FrontEnd>,
+    /// Whether a plain layer takes png2c64's front end ([`Self::set_png2c64_front_end`]).
+    front_end: bool,
+}
+
+/// png2c64's front end for one plain layer: its source and adjustments, and the
+/// prepared colour on the target grid.
+#[derive(Debug)]
+struct FrontEnd {
+    source: Arc<SourceImage>,
+    adjustments: Adjustments,
+    colour: Vec<[f32; 3]>,
 }
 
 impl std::fmt::Debug for Blendable {
@@ -751,6 +861,20 @@ impl Compositor {
             full_res_feather: false,
             resamples: 0,
             mask_evals: 0,
+            front: None,
+            front_end: true,
+        }
+    }
+
+    /// Whether a plain project (one opaque 8-bit layer filling the screen, no mask, no
+    /// regions, no adjustment but gamma and range matching) takes png2c64's front end
+    /// (#190; on by default) or the supersampled composite like any other. The next
+    /// update recomposites everything when this changes.
+    pub fn set_png2c64_front_end(&mut self, on: bool) {
+        if on != self.front_end {
+            self.front_end = on;
+            self.front = None;
+            self.last = None;
         }
     }
 
@@ -767,6 +891,7 @@ impl Compositor {
                 resamples: self.resamples,
                 mask_evals: self.mask_evals,
                 full_res_feather: self.full_res_feather,
+                front_end: self.front_end,
                 ..Self::new(grid)
             };
         }
@@ -840,6 +965,47 @@ impl Compositor {
     /// Only the layers from the lowest changed one up are re-blended: the ones below come
     /// from a cached fold of them, kept while they stay unchanged.
     pub fn update(&mut self, layers: &[Layer], regions: &[Region]) -> CellSet {
+        let plain = plain_layer(layers, regions, self.grid).filter(|_| self.front_end);
+        if plain.is_none() && self.front.take().is_some() {
+            // The frame held png2c64's image: composite everything afresh.
+            self.last = None;
+        }
+        let mut cells = self.update_composite(layers, regions);
+        let Some(layer) = plain else {
+            self.frame.set_prepared(None);
+            return cells;
+        };
+        let src = layer.source();
+        let adj = layer.adjustments();
+        let fresh =
+            !matches!(&self.front, Some(f) if Arc::ptr_eq(&f.source, src) && f.adjustments == *adj);
+        if fresh {
+            let colour = png2c64_front_end(layer, self.grid);
+            let (w, _) = self.grid.target_size();
+            let (cw, ch) = self.grid.cell_size();
+            for (i, c) in colour.iter().enumerate() {
+                let changed = self.front.as_ref().is_none_or(|f| f.colour[i] != *c);
+                if changed {
+                    let (x, y) = ((i as u32) % w, (i as u32) / w);
+                    if let Some(cell) = self.grid.target_px_to_cell(x / cw * cw, y / ch * ch) {
+                        cells.insert(cell);
+                    }
+                }
+            }
+            self.front = Some(FrontEnd {
+                source: Arc::clone(src),
+                adjustments: adj.clone(),
+                colour,
+            });
+        }
+        let colour = &self.front.as_ref().expect("filled above").colour;
+        self.frame.set_prepared(Some(colour));
+        cells
+    }
+
+    /// [`Self::update`]'s compositing proper: blends the changed layers and returns the
+    /// cells whose target pixels changed.
+    fn update_composite(&mut self, layers: &[Layer], regions: &[Region]) -> CellSet {
         let state = self.prepare(layers);
         let grid = self.grid;
         let (area, lowest) = match &self.last {
@@ -1478,6 +1644,137 @@ mod tests {
 
     fn grid(mode: Mode, n: u8) -> SuperGrid {
         SuperGrid::new(mode, n).unwrap()
+    }
+
+    /// A 200 × 125 opaque 8-bit picture filling the screen, gamma 1.5: a plain layer.
+    fn plain() -> Layer {
+        let (w, h) = (200u32, 125u32);
+        let rgba: Vec<u8> = (0..w * h)
+            .flat_map(|i| {
+                let (x, y) = (i % w, i / w);
+                [
+                    (x * 255 / w) as u8,
+                    (y * 255 / h) as u8,
+                    ((x + y) % 256) as u8,
+                    255,
+                ]
+            })
+            .collect();
+        let mut l = Layer::new(
+            "p",
+            Arc::new(SourceImage::from_srgba8(w, h, &rgba).unwrap()),
+        );
+        l.set_transform(
+            Transform::new(
+                Vec2::ZERO,
+                Vec2::new(320.0 / w as f32, 200.0 / h as f32),
+                false,
+                false,
+            )
+            .unwrap(),
+        );
+        l.set_adjustments(Adjustments {
+            gamma: crate::layer::Gamma::PNG2C64,
+            ..Adjustments::default()
+        });
+        l
+    }
+
+    /// #190: a plain layer's frame is png2c64's prepared image; a nudge leaves the
+    /// compatibility path (and recomposites everything), a nudge back returns to it.
+    #[test]
+    fn a_plain_layer_takes_png2c64_s_front_end() {
+        use crate::solve::png2c64_ref::{prepare, preprocess, quantize::Mode as RefMode};
+        for (mode, rm) in [
+            (Mode::MulticolorBitmap, RefMode::Multicolor),
+            (Mode::HiresBitmap, RefMode::Hires),
+        ] {
+            let layer = plain();
+            let mut c = Compositor::new(grid(mode, 4));
+            let dirty = c.update(std::slice::from_ref(&layer), &[]);
+            assert_eq!(
+                dirty.len(),
+                1000,
+                "{mode}: the first update dirties everything"
+            );
+            assert!(c.frame().png2c64_prepared());
+            let src = layer.source();
+            let want = prepare(
+                src.srgb8().unwrap(),
+                (200, 125),
+                rm,
+                &preprocess::Settings::default(),
+                None,
+            );
+            assert_eq!(c.frame().colour(), &want.px[..], "{mode}");
+
+            let mut nudged = layer.clone();
+            nudged.set_transform(
+                Transform::new(
+                    Vec2::new(0.25, 0.0),
+                    layer.transform().scale(),
+                    false,
+                    false,
+                )
+                .unwrap(),
+            );
+            let dirty = c.update(std::slice::from_ref(&nudged), &[]);
+            assert!(
+                !c.frame().png2c64_prepared(),
+                "{mode}: a nudged layer is composited"
+            );
+            assert_eq!(dirty.len(), 1000);
+            let mut fresh = Compositor::new(grid(mode, 4));
+            fresh.update(std::slice::from_ref(&nudged), &[]);
+            assert_eq!(c.frame(), fresh.frame(), "{mode}: as a cold composite");
+
+            let dirty = c.update(std::slice::from_ref(&layer), &[]);
+            assert!(c.frame().png2c64_prepared());
+            assert!(!dirty.is_empty());
+            assert_eq!(c.frame().colour(), &want.px[..]);
+            assert!(
+                c.update(std::slice::from_ref(&layer), &[]).is_empty(),
+                "no change, no dirt"
+            );
+
+            // Switched off, the same layer is composited like any other.
+            c.set_png2c64_front_end(false);
+            c.update(std::slice::from_ref(&layer), &[]);
+            assert!(!c.frame().png2c64_prepared());
+        }
+    }
+
+    /// A translucent or 8-bit-less source, a mask, a second layer or a region keep the
+    /// supersampled composite.
+    #[test]
+    fn anything_beyond_a_plain_layer_is_composited() {
+        let layer = plain();
+        let g = grid(Mode::MulticolorBitmap, 4);
+        let half = Arc::new(SourceImage::from_srgba8(1, 1, &[10, 20, 30, 128]).unwrap());
+        let mut translucent = Layer::new("t", half);
+        translucent.set_transform(
+            Transform::new(Vec2::ZERO, Vec2::new(320.0, 200.0), false, false).unwrap(),
+        );
+        let mut masked = layer.clone();
+        masked
+            .set_mask(Some(Mask::new(MaskRaster::filled(200, 125, 1.0).unwrap())))
+            .unwrap();
+        let region = Region::new(
+            "r",
+            MaskRaster::filled(320, 200, 1.0).unwrap(),
+            *layer.recipe(),
+        )
+        .unwrap();
+        for (what, layers, regions) in [
+            ("translucent", vec![translucent], vec![]),
+            ("masked", vec![masked], vec![]),
+            ("two layers", vec![layer.clone(), layer.clone()], vec![]),
+            ("region", vec![layer.clone()], vec![region]),
+        ] {
+            let mut c = Compositor::new(g);
+            c.update(&layers, &regions);
+            assert!(!c.frame().png2c64_prepared(), "{what}");
+        }
     }
 
     fn at(layer: Layer, x: f32, y: f32) -> Layer {

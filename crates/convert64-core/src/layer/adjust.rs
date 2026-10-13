@@ -147,6 +147,15 @@ impl TryFrom<RangeMatchData> for RangeMatch {
 }
 
 impl RangeMatch {
+    /// The OKLab target ranges `(lo, hi)` of L, a and b.
+    pub const fn targets(&self) -> [(f32, f32); 3] {
+        [
+            (self.l[0], self.l[1]),
+            (self.a[0], self.a[1]),
+            (self.b[0], self.b[1]),
+        ]
+    }
+
     /// png2c64's tail fraction ignored at each end, 1 %.
     pub const DEFAULT_PERCENTILE: f32 = 0.01;
 
