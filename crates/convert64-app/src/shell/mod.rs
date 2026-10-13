@@ -15,36 +15,11 @@ mod working;
 
 use crate::icons::Icon;
 use crate::theme::layout;
+use crate::view::{Camera, Compare, Overlays};
+use crate::workspace::Workspace;
+use convert64_core::mode::Mode;
 
-pub use status::Status;
-
-/// What the working view shows (`Q` switches; `docs/UX.md` §4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ViewMode {
-    /// The layer composite, at full precision. The default on open.
-    #[default]
-    Source,
-    /// The C64 result, zoomed, with overlays.
-    Result,
-}
-
-impl ViewMode {
-    /// The other mode.
-    pub fn flipped(self) -> Self {
-        match self {
-            Self::Source => Self::Result,
-            Self::Result => Self::Source,
-        }
-    }
-
-    /// The mode's name, as the status bar and the toolbar hint show it.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Source => "Source",
-            Self::Result => "Result",
-        }
-    }
-}
+pub use crate::view::ViewMode;
 
 /// The four steering tools (`docs/UX.md` §7), in toolbar order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -128,17 +103,17 @@ pub enum Action {
     Quit,
     /// Follow the system theme, or force light or dark (View › Theme).
     SetTheme(egui::ThemePreference),
+    /// Change the target mode (the result header's dropdown): `mode_set`, then a full
+    /// solve.
+    SetMode(Mode),
 }
 
 /// The smallest and largest dock width (`docs/UX.md` §3: 260–420 px). Not a Figma
 /// variable yet; see the #203 follow-ups.
 pub const DOCK_WIDTH_RANGE: std::ops::RangeInclusive<f32> = 260.0..=420.0;
 
-/// The zoom steps of the working view, in percent (`Cmd =` / `Cmd −`).
-const ZOOM_STEPS: [u32; 10] = [25, 50, 100, 200, 300, 400, 600, 800, 1200, 1600];
-
-/// What the chrome shows: the working view's mode and zoom, the tool, the dock tab and
-/// what is hidden. Everything else lives in the project.
+/// What the chrome shows: the working view's mode, camera, compare mode and overlays,
+/// the tool, the dock tab and what is hidden. Everything else lives in the project.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shell {
     /// Source or Result.
@@ -151,15 +126,24 @@ pub struct Shell {
     pub chrome_hidden: bool,
     /// `Shift Tab`: the dock (and with it the result) hidden.
     pub dock_hidden: bool,
-    /// The cell grid overlay (`Cmd '`).
-    pub grid: bool,
-    /// The working view's zoom, in percent.
-    pub zoom: u32,
-    /// Whether a project is open: without one the dock's groups are disabled, not hidden
-    /// (`docs/UX.md` §11).
-    pub has_project: bool,
+    /// Where the working view looks and how close.
+    pub camera: Camera,
+    /// The working view's overlays.
+    pub overlays: Overlays,
+    /// How the working view compares source and result.
+    pub compare: Compare,
+    /// The split divider's position, as a fraction of the view's width.
+    pub split: f32,
     /// The theme preference View › Theme shows as chosen.
     pub theme: egui::ThemePreference,
+    /// `\` is held: the working view shows the other image.
+    flip_held: bool,
+    /// Fit the picture once the working view's size is known (after an open).
+    fit_pending: bool,
+    /// The working view's rectangle last frame, for fit.
+    view_rect: Option<egui::Rect>,
+    /// The picture point under the pointer, in screen units.
+    hover: Option<egui::Pos2>,
 }
 
 impl Default for Shell {
@@ -170,37 +154,65 @@ impl Default for Shell {
             tab: DockTab::default(),
             chrome_hidden: false,
             dock_hidden: false,
-            grid: false,
-            zoom: 400,
-            has_project: false,
+            camera: Camera::default(),
+            overlays: Overlays::default(),
+            compare: Compare::default(),
+            split: 0.5,
             theme: egui::ThemePreference::System,
+            flip_held: false,
+            fit_pending: true,
+            view_rect: None,
+            hover: None,
         }
     }
 }
 
 impl Shell {
-    /// The next zoom step in, or the largest.
-    pub fn zoom_in(&mut self) {
-        self.zoom = ZOOM_STEPS
-            .into_iter()
-            .find(|&z| z > self.zoom)
-            .unwrap_or(ZOOM_STEPS[ZOOM_STEPS.len() - 1]);
+    /// Fits the picture into the working view on the next frame (after an open).
+    pub fn fit_on_next_frame(&mut self) {
+        self.fit_pending = true;
     }
 
-    /// The next zoom step out, or the smallest.
-    pub fn zoom_out(&mut self) {
-        self.zoom = ZOOM_STEPS
-            .into_iter()
-            .rev()
-            .find(|&z| z < self.zoom)
-            .unwrap_or(ZOOM_STEPS[0]);
+    /// The image the working view shows now: the view mode, flipped while `\` is held.
+    pub fn shown(&self) -> ViewMode {
+        if self.flip_held {
+            self.view.flipped()
+        } else {
+            self.view
+        }
+    }
+
+    /// Zooms one step in or out in the current mode.
+    pub fn zoom_step(&mut self, zoom_in: bool) {
+        self.camera.step(self.view, zoom_in);
+    }
+
+    /// Fits the picture into the working view.
+    pub fn fit(&mut self) {
+        match self.view_rect {
+            Some(rect) => self.camera.fit(rect, self.view),
+            None => self.fit_pending = true,
+        }
+    }
+
+    /// Shows the worst clash: Clashes overlay on, Result mode, centred on that cell (the
+    /// result header's clash button; UX §4.3).
+    pub fn show_worst(&mut self, ws: &Workspace) {
+        self.overlays.clashes = true;
+        self.view = ViewMode::Result;
+        if let Some(cell) = ws.worst() {
+            self.camera.centre = crate::view::cell_rect(ws.doc.grid(), cell).center();
+        }
     }
 
     /// Draws the whole shell into `ui` (the app's root) and returns what the user asked
     /// for. Keyboard shortcuts are read first, unless a text field has focus.
-    pub fn show(&mut self, ui: &mut egui::Ui, status: &Status) -> Vec<Action> {
+    pub fn show(&mut self, ui: &mut egui::Ui, mut ws: Option<&mut Workspace>) -> Vec<Action> {
         let mut actions = Vec::new();
         self.handle_shortcuts(ui.ctx(), &mut actions);
+        if let Some(ws) = ws.as_deref_mut() {
+            ws.prepare(ui.ctx());
+        }
 
         if !self.chrome_hidden {
             egui::Panel::top("menu_bar").show(ui, |ui| menu::show(self, ui, &mut actions));
@@ -209,21 +221,25 @@ impl Shell {
                 .show(ui, |ui| toolbar::show(self, ui));
             egui::Panel::bottom("status_bar")
                 .exact_size(layout::STATUS_HEIGHT)
-                .show(ui, |ui| status::show(self, status, ui));
+                .show(ui, |ui| status::show(self, ws.as_deref(), ui));
             if !self.dock_hidden {
                 egui::Panel::right("dock")
                     .resizable(true)
                     .default_size(layout::DOCK_WIDTH)
                     .size_range(DOCK_WIDTH_RANGE)
                     .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(0))
-                    .show(ui, |ui| dock::show(self, status, ui));
+                    .show(ui, |ui| dock::show(self, ws.as_deref(), ui, &mut actions));
             }
         }
 
         let canvas = crate::theme::Theme::current(ui.ctx()).canvas_bg;
         egui::CentralPanel::default()
-            .frame(egui::Frame::central_panel(ui.style()).fill(canvas))
-            .show(ui, |ui| working::show(self, ui));
+            .frame(
+                egui::Frame::central_panel(ui.style())
+                    .fill(canvas)
+                    .inner_margin(0),
+            )
+            .show(ui, |ui| working::show(self, ui, ws.as_deref()));
         actions
     }
 
@@ -234,22 +250,32 @@ impl Shell {
         let typing = ctx.egui_wants_keyboard_input();
         ctx.input_mut(|i| {
             if i.consume_shortcut(&s::ZOOM_IN) {
-                self.zoom_in();
+                self.zoom_step(true);
             }
             if i.consume_shortcut(&s::ZOOM_OUT) {
-                self.zoom_out();
+                self.zoom_step(false);
+            }
+            if i.consume_shortcut(&s::ZOOM_FIT) {
+                self.fit();
             }
             if i.consume_shortcut(&s::ZOOM_100) {
-                self.zoom = 100;
+                self.camera.actual(self.view);
             }
             if i.consume_shortcut(&s::GRID) {
-                self.grid = !self.grid;
+                self.overlays.grid = !self.overlays.grid;
+            }
+            if i.consume_shortcut(&s::BORDER) {
+                self.overlays.border = !self.overlays.border;
             }
             if i.consume_shortcut(&s::QUIT) {
                 actions.push(Action::Quit);
             }
+            self.flip_held = !typing && i.key_down(egui::Key::Backslash);
             if typing {
                 return;
+            }
+            if i.consume_shortcut(&s::CLASHES) {
+                self.overlays.clashes = !self.overlays.clashes;
             }
             // Shift Tab before Tab: a plain-Tab pattern also matches with Shift held.
             if i.consume_shortcut(&s::HIDE_DOCK) {
@@ -259,6 +285,9 @@ impl Shell {
             }
             if i.consume_shortcut(&s::SOURCE_RESULT) {
                 self.view = self.view.flipped();
+            }
+            if i.consume_shortcut(&s::COMPARE) {
+                self.compare = self.compare.next();
             }
             for tool in Tool::ALL {
                 if i.consume_key(egui::Modifiers::NONE, tool.key()) {
@@ -278,25 +307,6 @@ pub(crate) fn icon(icon: Icon) -> egui::RichText {
 mod tests {
     use super::*;
 
-    #[test]
-    fn zoom_steps_clamp_at_both_ends() {
-        let mut shell = Shell::default();
-        assert_eq!(shell.zoom, 400);
-        shell.zoom_in();
-        assert_eq!(shell.zoom, 600);
-        for _ in 0..20 {
-            shell.zoom_in();
-        }
-        assert_eq!(shell.zoom, 1600);
-        for _ in 0..20 {
-            shell.zoom_out();
-        }
-        assert_eq!(shell.zoom, 25);
-        shell.zoom = 150;
-        shell.zoom_out();
-        assert_eq!(shell.zoom, 100);
-    }
-
     /// Runs one frame of the shell with `events` and returns the shell afterwards.
     fn frame(mut shell: Shell, events: Vec<egui::Event>) -> (Shell, Vec<Action>) {
         let ctx = egui::Context::default();
@@ -307,7 +317,7 @@ mod tests {
         };
         let mut actions = Vec::new();
         let mut output = ctx.run_ui(input, |ui| {
-            actions = shell.show(ui, &Status::default());
+            actions = shell.show(ui, None);
         });
         // No renderer here: drop the font atlas uploads deliberately.
         output.textures_delta.clear();
@@ -352,15 +362,18 @@ mod tests {
     }
 
     #[test]
-    fn command_shortcuts_zoom_and_toggle_the_grid() {
+    fn command_shortcuts_zoom_and_toggle_overlays() {
         let (shell, _) = frame(
             Shell::default(),
             vec![
                 key(egui::Key::Equals, egui::Modifiers::COMMAND),
                 key(egui::Key::Quote, egui::Modifiers::COMMAND),
+                key(egui::Key::C, egui::Modifiers::SHIFT),
+                key(egui::Key::Comma, egui::Modifiers::NONE),
             ],
         );
-        assert_eq!(shell.zoom, 600);
-        assert!(shell.grid);
+        assert_eq!(shell.camera.source_zoom, 3.0);
+        assert!(shell.overlays.grid && shell.overlays.clashes);
+        assert_eq!(shell.compare, Compare::Split);
     }
 }

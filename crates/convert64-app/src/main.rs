@@ -1,34 +1,27 @@
 //! eframe/egui user interface; native via `cargo run -p convert64-app`, web via `trunk build` (`docs/TAD.md §4`).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-use convert64_app::shell::{Action, Shell, Status};
+use convert64_app::document::Document;
+use convert64_app::shell::{Action, Shell};
 use convert64_app::theme;
+use convert64_app::workspace::Workspace;
+use convert64_core::solve::SolveMode;
 
 /// The storage key of the View › Theme choice (eframe's app storage: a file natively,
 /// `localStorage` in the browser).
 const THEME_KEY: &str = "theme";
 
-/// Placeholder for the document being converted.
-///
-/// Will be replaced by `convert64_core::Project` in E2.
-#[derive(Debug, Default)]
-struct Project;
-
 /// Top-level UI state; every frame is drawn from the held document.
 #[derive(Debug, Default)]
 struct App {
-    /// The open document (placeholder until E2).
-    #[expect(
-        dead_code,
-        reason = "placeholder; read once E2 wires in the core Project"
-    )]
-    project: Project,
+    /// The open document and its preview, if any.
+    workspace: Option<Workspace>,
+    /// The last thing that went wrong, shown until the next open (#209 adds toasts).
+    error: Option<String>,
     /// The chrome: working-view mode, tool, dock tab, what is hidden (#203).
     shell: Shell,
     /// Solves off the frame: a worker thread natively, a stage per frame in wasm (#194).
     scheduler: convert64_app::scheduler::Scheduler,
-    /// The newest solve result, drawn every frame (once E8 wires in the preview).
-    result: Option<convert64_app::scheduler::SolveResult>,
     /// `--screenshot`: save the window to a PNG after a few frames, then quit (native).
     #[cfg(not(target_arch = "wasm32"))]
     screenshot: Option<screenshot::Request>,
@@ -58,15 +51,55 @@ impl App {
         theme::set_theme(ctx, preference);
     }
 
-    /// What the status bar reports. Filled from the project and the result once they
-    /// reach the app (#204, #205).
-    fn status(&self) -> Status {
-        Status {
-            solve_ms: self
-                .result
-                .as_ref()
-                .map(|r| (r.timing.composite_ms + r.timing.solve_ms) as f32),
-            ..Status::default()
+    /// Opens `doc`: the working view fits it and a full solve starts.
+    fn open(&mut self, doc: Document) {
+        self.scheduler.cancel();
+        let ws = Workspace::new(doc);
+        self.scheduler
+            .submit(ws.doc.snapshot(None), SolveMode::Full);
+        self.workspace = Some(ws);
+        self.shell.fit_on_next_frame();
+        self.error = None;
+    }
+
+    /// Opens the PNG at `path` (native; File › Open arrives with #205).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_path(&mut self, path: &std::path::Path) {
+        let name = path.file_name().map_or_else(
+            || "image.png".to_owned(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let opened = std::fs::read(path)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| Document::from_png(&name, &bytes).map_err(|e| e.to_string()));
+        match opened {
+            Ok(doc) => self.open(doc),
+            Err(e) => self.error = Some(format!("{}: {e}", path.display())),
+        }
+    }
+
+    /// Carries out what the shell asked for.
+    fn act(&mut self, ctx: &egui::Context, action: Action) {
+        match action {
+            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Action::SetTheme(preference) => self.set_theme(ctx, preference),
+            Action::SetMode(mode) => {
+                let Some(ws) = &mut self.workspace else {
+                    return;
+                };
+                let command =
+                    convert64_project::JsonCommand::ModeSet(convert64_core::command::ModeSet {
+                        mode,
+                    });
+                match ws.doc.run(command) {
+                    Ok(()) => {
+                        ws.solving = true;
+                        self.scheduler
+                            .submit(ws.doc.snapshot(None), SolveMode::Full);
+                    }
+                    Err(e) => self.error = Some(e.to_string()),
+                }
+            }
         }
     }
 }
@@ -95,21 +128,32 @@ impl eframe::App for App {
         if self.scheduler.tick() {
             ui.ctx().request_repaint();
         }
-        if let Some(result) = self.scheduler.poll() {
-            self.result = Some(result);
+        if let Some(result) = self.scheduler.poll()
+            && let Some(ws) = &mut self.workspace
+        {
+            ws.solve_ms = Some(result.timing.composite_ms + result.timing.solve_ms);
+            ws.solving = result.provisional;
+            ws.solution = Some(result.solution);
         }
 
-        let status = self.status();
-        for action in self.shell.show(ui, &status) {
-            match action {
-                Action::Quit => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
-                Action::SetTheme(preference) => self.set_theme(ui.ctx(), preference),
-            }
+        for action in self.shell.show(ui, self.workspace.as_mut()) {
+            self.act(ui.ctx(), action);
+        }
+        if let Some(error) = &self.error {
+            egui::Area::new(egui::Id::new("error"))
+                .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -40.0])
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.colored_label(theme::Theme::current(ui.ctx()).error, error);
+                    });
+                });
         }
 
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(request) = &mut self.screenshot {
-            request.step(ui.ctx());
+            // Wait for the first full solve when a picture is open.
+            let ready = self.workspace.as_ref().is_none_or(|ws| !ws.solving);
+            request.step(ui.ctx(), ready);
         }
     }
 
@@ -123,7 +167,8 @@ impl eframe::App for App {
     }
 }
 
-/// `--screenshot <file.png> [--theme light|dark] [--size <w>x<h>]`: draws a few frames,
+/// `--screenshot <file.png> [--theme light|dark] [--size <w>x<h>] [--view result]
+/// [--overlay grid|clashes|ghost]… [--compare split|flicker|side]`: draws a few frames,
 /// saves the window as a PNG and quits. The PR screenshots come from it (#203).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
@@ -138,16 +183,33 @@ mod screenshot {
         pub(super) path: PathBuf,
         pub(super) theme: Option<egui::ThemePreference>,
         pub(super) size: [f32; 2],
+        /// `--view result`: the working view in Result mode.
+        pub(super) result: bool,
+        /// `--overlay grid|clashes|ghost` (repeatable).
+        pub(super) overlays: Vec<String>,
+        /// `--compare split|flicker|side`.
+        pub(super) compare: Option<String>,
         frame: u32,
     }
 
+    /// The command line: a picture to open and an optional screenshot request.
+    #[derive(Debug, Default)]
+    pub(super) struct Args {
+        pub(super) open: Option<PathBuf>,
+        pub(super) screenshot: Option<Request>,
+    }
+
     impl Request {
-        /// The request in the command line, if any.
-        pub(super) fn from_args() -> Result<Option<Self>, String> {
+        /// The command line: `[picture.png] [--screenshot <file.png> …]`.
+        pub(super) fn from_args() -> Result<Args, String> {
             let mut args = std::env::args().skip(1);
+            let mut open = None;
             let mut request = None;
             let mut theme = None;
             let mut size = [1280.0, 800.0];
+            let mut result = false;
+            let mut overlays = Vec::new();
+            let mut compare = None;
             while let Some(arg) = args.next() {
                 let mut value = || args.next().ok_or(format!("{arg} needs a value"));
                 match arg.as_str() {
@@ -158,6 +220,9 @@ mod screenshot {
                                 .ok_or("--theme is system, light or dark")?,
                         );
                     }
+                    "--view" => result = value()? == "result",
+                    "--overlay" => overlays.push(value()?),
+                    "--compare" => compare = Some(value()?),
                     "--size" => {
                         let v = value()?;
                         let (w, h) = v.split_once('x').ok_or("--size is <w>x<h>")?;
@@ -166,20 +231,33 @@ mod screenshot {
                             h.parse().map_err(|_| "--size: bad height")?,
                         ];
                     }
+                    _ if !arg.starts_with("--") && open.is_none() => {
+                        open = Some(PathBuf::from(arg))
+                    }
                     _ => return Err(format!("unknown argument {arg}")),
                 }
             }
-            Ok(request.map(|path| Self {
-                path,
-                theme,
-                size,
-                frame: 0,
-            }))
+            Ok(Args {
+                open,
+                screenshot: request.map(|path| Self {
+                    path,
+                    theme,
+                    size,
+                    result,
+                    overlays,
+                    compare,
+                    frame: 0,
+                }),
+            })
         }
 
         /// Called every frame: asks for the screenshot once the frames have settled,
         /// writes it when it arrives and closes the window.
-        pub(super) fn step(&mut self, ctx: &egui::Context) {
+        pub(super) fn step(&mut self, ctx: &egui::Context, ready: bool) {
+            if !ready {
+                ctx.request_repaint();
+                return;
+            }
             self.frame += 1;
             if self.frame == SETTLE_FRAMES {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
@@ -208,13 +286,14 @@ mod screenshot {
 /// Native entry point: opens a desktop window.
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
-    let request = match screenshot::Request::from_args() {
-        Ok(request) => request,
+    let args = match screenshot::Request::from_args() {
+        Ok(args) => args,
         Err(e) => {
             eprintln!("convert64-app: {e}");
             std::process::exit(2);
         }
     };
+    let request = args.screenshot;
     let size = request.as_ref().map_or([1280.0, 800.0], |r| r.size);
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -229,7 +308,29 @@ fn main() -> eframe::Result {
         native_options,
         Box::new(move |cc| {
             let mut app = App::new(cc);
+            if let Some(path) = &args.open {
+                app.open_path(path);
+            }
             if let Some(request) = request {
+                if request.result {
+                    app.shell.view = convert64_app::shell::ViewMode::Result;
+                }
+                let o = &mut app.shell.overlays;
+                for overlay in &request.overlays {
+                    match overlay.as_str() {
+                        "grid" => o.grid = true,
+                        "clashes" => o.clashes = true,
+                        "ghost" => o.ghost = true,
+                        _ => eprintln!("convert64-app: unknown overlay {overlay}"),
+                    }
+                }
+                use convert64_app::view::Compare;
+                app.shell.compare = match request.compare.as_deref() {
+                    Some("split") => Compare::Split,
+                    Some("flicker") => Compare::Flicker,
+                    Some("side") => Compare::SideBySide,
+                    _ => Compare::Off,
+                };
                 if let Some(preference) = request.theme {
                     app.set_theme(&cc.egui_ctx, preference);
                 }

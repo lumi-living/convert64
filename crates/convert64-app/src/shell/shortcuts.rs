@@ -46,6 +46,12 @@ pub const ZOOM_FIT: KeyboardShortcut = cmd(Key::Num0);
 pub const ZOOM_100: KeyboardShortcut = cmd(Key::Num1);
 /// Cell grid overlay.
 pub const GRID: KeyboardShortcut = cmd(Key::Quote);
+/// Clash heatmap overlay.
+pub const CLASHES: KeyboardShortcut = KeyboardShortcut::new(Modifiers::SHIFT, Key::C);
+/// Border around the result.
+pub const BORDER: KeyboardShortcut = cmd(Key::B);
+/// Compare: cycle split, A/B flicker, side by side, off.
+pub const COMPARE: KeyboardShortcut = bare(Key::Comma);
 /// Working view: Source ⇄ Result.
 pub const SOURCE_RESULT: KeyboardShortcut = bare(Key::Q);
 /// Hide all chrome.

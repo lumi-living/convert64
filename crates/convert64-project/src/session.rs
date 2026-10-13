@@ -686,6 +686,33 @@ impl Session {
         (w, h, rgba)
     }
 
+    /// The super grid the session composites on: the target mode and the supersample
+    /// factor.
+    pub fn grid(&self) -> convert64_core::SuperGrid {
+        self.compositor.grid()
+    }
+
+    /// The composite on the super grid (square pixels, `n` per hi-res pixel) as RGBA8:
+    /// straight sRGB, alpha = coverage. The app's Source view draws it. Width and height
+    /// first.
+    pub fn canvas_rgba(&mut self) -> (u32, u32, Vec<u8>) {
+        self.composite();
+        let canvas = self.compositor.canvas();
+        let (w, h) = canvas.grid().size();
+        let rgba = canvas
+            .pixels()
+            .iter()
+            .flat_map(|&[r, g, b, a]| {
+                if a <= 0.0 {
+                    return [0; 4];
+                }
+                let [r, g, b] = [r, g, b].map(|c| linear_to_srgb8(c / a));
+                [r, g, b, (a.min(1.0) * 255.0).round() as u8]
+            })
+            .collect();
+        (w, h, rgba)
+    }
+
     /// The attribute map's debug render on the target grid as RGBA8 (hue = dither
     /// method, lightness = strength).
     pub fn attributes_rgba(&mut self) -> (u32, u32, Vec<u8>) {
