@@ -52,7 +52,7 @@ Consensus across the surveyed editors: menu bar → options/tool bar → canvas 
 
 Heights and the dock width are the Figma `convert64/*` layout variables (`theme::layout`); the Figma `App Shell / Light` and `/ Dark` frames are the reference.
 
-- **Right dock: the result, then tabs.** **Result** (header and the C64 result at 1×, fixed height, never scrolls away), then the **Recipe**, **Layers** and **Export** tabs (Figma `Dock Tabs`; the Recipe tab also lists the layers, so the common case needs no tab switch). Default width 320 px = one C64 result at 1×; resizable 260–420, and the result scales down (never up) if the dock is narrower than 320. `Tab` hides all chrome, `Shift+Tab` hides only the dock (Photoshop/GIMP convention); when the dock is hidden the result is gone too, which is the point of `Tab` — full-screen working. (Until #203 this section stacked Recipe and Layers with a draggable divider and collapsed them to tabs below ~700 px; the Figma frames chose tabs at every width.)
+- **Right dock: the result, then tabs.** **Result** (header and the C64 result at 1×, fixed height, never scrolls away), then the **Recipe**, **Layers** and **Export** tabs (Figma `Dock Tabs`; the Recipe tab also lists the layers, so the common case needs no tab switch). Default width 320 px = one C64 result at 1×; resizable 260–420, and the result scales down (never up) if the dock is narrower than 320. `Cmd \` hides all chrome (Figma's Show/Hide UI) and `Shift Cmd \` only the dock; when the dock is hidden the result is gone too, which is the point — full-screen working. Hiding the UI shows a toast, "UI hidden — press Cmd \ or Esc to show it", and `Esc` always shows it again. `Tab` is left to focus traversal (§12); until #240 it hid the chrome (Photoshop's convention), which trapped new users with no way back. (Until #203 this section stacked Recipe and Layers with a draggable divider and collapsed them to tabs below ~700 px; the Figma frames chose tabs at every width.)
 - **Working view** gets all remaining space and has two modes, **Source** and **Result**, switched with `Q` or the toolbar's Source/Result button. Source is the default on open. The status bar always names the current mode.
 - **The result panel is also a navigator:** when the working view is in Result mode and zoomed, the panel shows the visible rectangle; clicking or dragging on the panel pans the working view there (Photoshop Navigator behaviour). In Source mode a click on the panel switches the working view to Result and centres on that spot.
 - **No docking framework in v1.** Fixed `egui::Panel`s with persisted sizes; egui_tiles only if users ask to rearrange.
@@ -197,7 +197,7 @@ Mask thumbnails in the Layers panel (§5) show the raster with modifiers applied
 | Hold-to-compare (flips to the other image) | `\` (hold) | Photoshop |
 | Split / A-B / side-by-side | `,` cycles | Affinity's "split view cycle" |
 | Next / previous worst cell | `Shift Cmd ]` / `[` | ours |
-| Hide dock / hide all chrome | `Shift Tab` / `Tab` | GIMP / Photoshop |
+| Hide dock / show or hide UI (all chrome); `Esc` shows the UI | `Shift Cmd \` / `Cmd \` | Figma (`Tab` is focus traversal, §12) |
 | Theme | menu only | — |
 | Command palette | `Cmd K` (v2) | PhotoCraft, every modern tool |
 
