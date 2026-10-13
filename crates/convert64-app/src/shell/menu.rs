@@ -3,6 +3,7 @@
 //! final shape (`docs/UX.md` §11: disabled, not hidden).
 
 use super::{Action, Shell, ViewMode, shortcuts as s};
+use crate::view::Compare;
 use egui::{Button, KeyboardShortcut, Ui};
 
 /// A menu item with its accelerator; `enabled` false until its feature lands.
@@ -60,22 +61,49 @@ fn view_menu(shell: &mut Shell, ui: &mut Ui, actions: &mut Vec<Action>) {
             shell.view = mode;
         }
     }
+    ui.menu_button("Compare", |ui| {
+        for compare in [
+            Compare::Off,
+            Compare::Split,
+            Compare::Flicker,
+            Compare::SideBySide,
+        ] {
+            let button = Button::selectable(shell.compare == compare, compare.label())
+                .shortcut_text(ui.ctx().format_shortcut(&s::COMPARE));
+            if ui.add(button).clicked() {
+                shell.compare = compare;
+            }
+        }
+    });
     ui.separator();
     if item(ui, "Zoom In", Some(&s::ZOOM_IN), true) {
-        shell.zoom_in();
+        shell.zoom_step(true);
     }
     if item(ui, "Zoom Out", Some(&s::ZOOM_OUT), true) {
-        shell.zoom_out();
+        shell.zoom_step(false);
     }
-    item(ui, "Zoom to Fit", Some(&s::ZOOM_FIT), false);
+    if item(ui, "Zoom to Fit", Some(&s::ZOOM_FIT), true) {
+        shell.fit();
+    }
     if item(ui, "Actual Pixels", Some(&s::ZOOM_100), true) {
-        shell.zoom = 100;
+        shell.camera.actual(shell.view);
     }
     ui.separator();
-    let grid = Button::selectable(shell.grid, "Cell Grid")
-        .shortcut_text(ui.ctx().format_shortcut(&s::GRID));
-    if ui.add(grid).clicked() {
-        shell.grid = !shell.grid;
+    let o = &mut shell.overlays;
+    for (on, label, shortcut) in [
+        (&mut o.grid, "Cell Grid", Some(&s::GRID)),
+        (&mut o.clashes, "Clashes", Some(&s::CLASHES)),
+        (&mut o.steering, "Pins & Locks", None),
+        (&mut o.ghost, "Ghost of the Other Image", None),
+        (&mut o.border, "Border", Some(&s::BORDER)),
+    ] {
+        let mut button = Button::selectable(*on, label);
+        if let Some(shortcut) = shortcut {
+            button = button.shortcut_text(ui.ctx().format_shortcut(shortcut));
+        }
+        if ui.add(button).clicked() {
+            *on = !*on;
+        }
     }
     ui.separator();
     if item(ui, "Hide Dock", Some(&s::HIDE_DOCK), true) {
