@@ -189,7 +189,7 @@ Mask thumbnails in the Layers panel (§5) show the raster with modifiers applied
 | Transform (scale / rotate) layer | `Cmd T` / `S` | Photoshop free transform / ours |
 | Snap: Off → C64 pixel → Cell | `Shift Cmd ;` | Photoshop snap toggle |
 | Rotate selected layer ±0.1° / ±1° | `Cmd Alt [` `]` / with `Shift` | ours |
-| Scale selected layer ±1 % / ±10 % | `Cmd` + `[` `]` / with `Shift` | ours |
+| Scale selected layer ±1 % / ±10 % | `Cmd` + `[` `]` / with `Shift` (±10 % only with the Transform tool; otherwise `Shift Cmd [` `]` walk the worst cells) | ours |
 | Mask mode on/off; mask tools Brush, Lasso, Gradient, Key | `M`; `B`, `W`, `G`, `K` | Photoshop (`B`, `G`), ours (`M`, `W`, `K`) |
 | Brush size down / up; swap Add/Subtract | `[` / `]`; `X` | Photoshop |
 | Show mask alone | `Alt`-click mask thumbnail | Photoshop |

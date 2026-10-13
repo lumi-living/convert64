@@ -16,6 +16,7 @@ pub mod shortcuts;
 mod status;
 mod toolbar;
 mod tools;
+mod transform;
 mod working;
 
 use crate::icons::Icon;
@@ -40,11 +41,19 @@ pub enum Tool {
     Region,
     /// Nudge a layer.
     Nudge,
+    /// Scale and rotate a layer (ADR-011).
+    Transform,
 }
 
 impl Tool {
     /// Every tool, in toolbar order.
-    pub const ALL: [Self; 4] = [Self::Pin, Self::Lock, Self::Region, Self::Nudge];
+    pub const ALL: [Self; 5] = [
+        Self::Pin,
+        Self::Lock,
+        Self::Region,
+        Self::Nudge,
+        Self::Transform,
+    ];
 
     /// The tool's name.
     pub fn label(self) -> &'static str {
@@ -53,6 +62,7 @@ impl Tool {
             Self::Lock => "Lock",
             Self::Region => "Region",
             Self::Nudge => "Nudge",
+            Self::Transform => "Transform",
         }
     }
 
@@ -63,6 +73,7 @@ impl Tool {
             Self::Lock => crate::icons::LOCK,
             Self::Region => crate::icons::REGION,
             Self::Nudge => crate::icons::NUDGE,
+            Self::Transform => crate::icons::TRANSFORM,
         }
     }
 
@@ -73,6 +84,7 @@ impl Tool {
             Self::Lock => egui::Key::L,
             Self::Region => egui::Key::R,
             Self::Nudge => egui::Key::V,
+            Self::Transform => egui::Key::S,
         }
     }
 }
@@ -130,6 +142,8 @@ pub enum Action {
     Gesture(u64, convert64_project::JsonCommand),
     /// The drag ended.
     EndGesture,
+    /// Revert the drag in progress (`Esc` during a transform).
+    CancelGesture,
     /// Undo (`Cmd Z`).
     Undo,
     /// Redo (`Shift Cmd Z`, `Cmd Y`).
@@ -185,6 +199,14 @@ pub struct Shell {
     curve_channel: usize,
     /// A Pin, Lock or Nudge drag in progress.
     drag: Option<tools::ToolDrag>,
+    /// A Transform drag in progress.
+    transform_drag: Option<transform::TransformDrag>,
+    /// `Cmd [` / `]` this frame: scale the selected layer by this factor.
+    scale_request: Option<f32>,
+    /// `Shift Cmd ;` this frame: the next Snap setting.
+    snap_cycle: bool,
+    /// The Transform group's W/H chain: uniform scale (the default).
+    pub scale_linked: bool,
     /// The cell the right-click menu is for.
     menu_cell: Option<crate::workspace::Cell>,
     /// The cell worst-cell navigation last went to.
@@ -238,6 +260,10 @@ impl Default for Shell {
             renaming: None,
             curve_channel: 0,
             drag: None,
+            transform_drag: None,
+            scale_request: None,
+            snap_cycle: false,
+            scale_linked: true,
             menu_cell: None,
             nav_cell: None,
             nav_request: None,
@@ -375,6 +401,36 @@ impl Shell {
             if let Some(forward) = self.nav_request.take() {
                 self.step_worst(ws, forward);
             }
+            if std::mem::take(&mut self.snap_cycle) {
+                use convert64_core::layer::Snap;
+                let snap = match ws.doc.session().project().snap {
+                    Snap::Off => Snap::C64Pixel,
+                    Snap::C64Pixel => Snap::Cell,
+                    Snap::Cell => Snap::Off,
+                };
+                actions.push(Action::Run(convert64_project::JsonCommand::SnapSet(
+                    convert64_core::command::SnapSet { snap },
+                )));
+            }
+            if let Some(f) = self.scale_request.take()
+                && let Some(l) = ws.doc.session().project().layers.get(self.layer)
+            {
+                let t = l.transform();
+                let s = t.scale();
+                if let Ok(transform) = t.scaled_about_anchor(
+                    convert64_core::Vec2::new(s.x * f, s.y * f),
+                    l.source().size(),
+                ) {
+                    let layer = convert64_project::LayerRef::Index(self.layer);
+                    actions.push(Action::Run(
+                        convert64_project::JsonCommand::LayerSetTransform {
+                            layer,
+                            transform,
+                            snap: None,
+                        },
+                    ));
+                }
+            }
             self.mask_overlay = if self.mask.active {
                 ws.mask_overlay(ui.ctx(), self.layer, self.mask.alone)
                     .map(egui::TextureHandle::id)
@@ -384,13 +440,17 @@ impl Shell {
         }
         self.export_requested = false;
         self.nav_request = None;
+        self.scale_request = None;
+        self.snap_cycle = false;
 
         if !self.chrome_hidden {
             egui::Panel::top("menu_bar")
                 .show(ui, |ui| menu::show(self, ws.as_deref(), ui, &mut actions));
             egui::Panel::top("toolbar")
                 .exact_size(layout::TOOLBAR_HEIGHT)
-                .show(ui, |ui| toolbar::show(self, ui));
+                .show(ui, |ui| {
+                    toolbar::show(self, ws.as_deref(), ui, &mut actions)
+                });
             if self.mask.tool.is_some() {
                 egui::Panel::top("mask_options")
                     .exact_size(layout::TOOLBAR_HEIGHT)
@@ -497,11 +557,53 @@ impl Shell {
             if i.consume_shortcut(&s::TOGGLE_VISIBLE) {
                 actions.push(Action::ToggleVisible(self.layer));
             }
-            if i.consume_shortcut(&s::NEXT_WORST) {
-                self.nav_request = Some(true);
+            // Rotate ±0.1° (with Shift ±1°) about the anchor.
+            for (key, sign) in [
+                (egui::Key::OpenBracket, -1.0),
+                (egui::Key::CloseBracket, 1.0),
+            ] {
+                let cmd_alt = egui::Modifiers::COMMAND.plus(egui::Modifiers::ALT);
+                let step = if i.consume_key(cmd_alt.plus(egui::Modifiers::SHIFT), key) {
+                    1.0
+                } else if i.consume_key(cmd_alt, key) {
+                    0.1
+                } else {
+                    continue;
+                };
+                let layer = convert64_project::LayerRef::Index(self.layer);
+                actions.push(Action::Run(convert64_project::JsonCommand::LayerRotate {
+                    layer,
+                    degrees: sign * step,
+                    relative: true,
+                    anchor: None,
+                    snap: None,
+                }));
             }
-            if i.consume_shortcut(&s::PREVIOUS_WORST) {
+            // With the Transform tool, Shift Cmd [ ] scale ±10 %; otherwise they walk the
+            // worst cells (UX §8 gives both the same keys; the tool decides).
+            let transforming = self.tool == Tool::Transform && self.mask.tool.is_none();
+            if transforming && i.consume_shortcut(&s::NEXT_WORST) {
+                self.scale_request = Some(1.1);
+            } else if transforming && i.consume_shortcut(&s::PREVIOUS_WORST) {
+                self.scale_request = Some(1.0 / 1.1);
+            } else if i.consume_shortcut(&s::NEXT_WORST) {
+                self.nav_request = Some(true);
+            } else if i.consume_shortcut(&s::PREVIOUS_WORST) {
                 self.nav_request = Some(false);
+            }
+            if i.consume_shortcut(&s::SCALE_UP) {
+                self.scale_request = Some(1.01);
+            }
+            if i.consume_shortcut(&s::SCALE_DOWN) {
+                self.scale_request = Some(1.0 / 1.01);
+            }
+            if i.consume_shortcut(&s::TRANSFORM) {
+                self.tool = Tool::Transform;
+                self.mask.tool = None;
+                self.mask.active = false;
+            }
+            if i.consume_shortcut(&s::SNAP_CYCLE) {
+                self.snap_cycle = true;
             }
             // Shift Cmd S before Cmd S, as with Tab.
             if i.consume_shortcut(&s::SAVE_AS) {

@@ -304,6 +304,13 @@ impl App {
                 }
             }
             Action::Gesture(id, command) => self.edit(ctx, Some(id), command),
+            Action::CancelGesture => {
+                if let Some(ws) = &mut self.workspace
+                    && ws.doc.cancel_gesture()
+                {
+                    self.resolve();
+                }
+            }
             Action::EndGesture => {
                 if let Some(ws) = &mut self.workspace {
                     ws.doc.end_gesture();
@@ -518,7 +525,6 @@ impl eframe::App for App {
 /// `--screenshot <file.png> [--theme light|dark] [--size <w>x<h>] [--view result]
 /// [--overlay grid|clashes|ghost]… [--compare split|flicker|side] [--dialog export]
 /// [--tab recipe|layers|export] [--command <json>]… [--zoom <n>] [--centre <x>,<y>]
-/// [--mask]`: draws a few frames,
 /// saves the window as a PNG and quits. The PR screenshots come from it (#203).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
@@ -552,6 +558,8 @@ mod screenshot {
         pub(super) centre: Option<(f32, f32)>,
         /// `--mask`: mask mode on the selected layer.
         pub(super) mask: bool,
+        /// `--tool pin|lock|region|nudge|transform`.
+        pub(super) tool: Option<String>,
         frame: u32,
     }
 
@@ -582,6 +590,7 @@ mod screenshot {
             let mut zoom = None;
             let mut centre = None;
             let mut mask = false;
+            let mut tool = None;
             while let Some(arg) = args.next() {
                 let mut value = || args.next().ok_or(format!("{arg} needs a value"));
                 match arg.as_str() {
@@ -599,6 +608,7 @@ mod screenshot {
                     "--tab" => tab = Some(value()?),
                     "--command" => commands.push(value()?),
                     "--mask" => mask = true,
+                    "--tool" => tool = Some(value()?),
                     "--zoom" => zoom = Some(value()?.parse().map_err(|_| "--zoom: a number")?),
                     "--centre" => {
                         let v = value()?;
@@ -639,6 +649,7 @@ mod screenshot {
                     zoom,
                     centre,
                     mask,
+                    tool,
                     frame: 0,
                 }),
             })
@@ -747,6 +758,15 @@ fn main() -> eframe::Result {
                 }
                 if let Some((x, y)) = request.centre {
                     app.shell.camera.centre = egui::pos2(x, y);
+                }
+                if let Some(name) = &request.tool {
+                    use convert64_app::shell::Tool;
+                    if let Some(t) = Tool::ALL
+                        .into_iter()
+                        .find(|t| t.label().eq_ignore_ascii_case(name))
+                    {
+                        app.shell.tool = t;
+                    }
                 }
                 if request.mask {
                     app.shell.toggle_mask_mode();

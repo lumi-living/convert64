@@ -2,9 +2,10 @@
 //! compare as 24 px icon buttons in three groups, and a hint on the right naming the
 //! working view.
 
-use super::{MaskTool, Shell, Tool, ViewMode, icon};
+use super::{Action, MaskTool, Shell, Tool, ViewMode, icon};
 use crate::icons;
 use crate::view::Compare;
+use crate::workspace::Workspace;
 use egui::{Button, RichText, Ui};
 
 /// A toolbar button: an icon, a tooltip, `selected` drawn as the toggle's on state.
@@ -17,7 +18,38 @@ fn button(ui: &mut Ui, glyph: icons::Icon, tooltip: &str, selected: bool, enable
         .clicked()
 }
 
-pub(super) fn show(shell: &mut Shell, ui: &mut Ui) {
+/// The Snap setting (ADR-011): Off, C64 pixel, Cell (`Shift Cmd ;` cycles).
+pub(in crate::shell) fn snap_menu(ws: Option<&Workspace>, ui: &mut Ui, actions: &mut Vec<Action>) {
+    use convert64_core::layer::Snap;
+    let current = ws.map_or(Snap::Off, |ws| ws.doc.session().project().snap);
+    let name = |s: Snap| match s {
+        Snap::Off => "Off",
+        Snap::C64Pixel => "C64 pixel",
+        Snap::Cell => "Cell",
+    };
+    ui.add_enabled_ui(ws.is_some(), |ui| {
+        egui::ComboBox::from_id_salt("snap")
+            .selected_text(RichText::new(format!("Snap: {}", name(current))).small())
+            .width(0.0)
+            .show_ui(ui, |ui| {
+                for s in [Snap::Off, Snap::C64Pixel, Snap::Cell] {
+                    if ui.selectable_label(s == current, name(s)).clicked() && s != current {
+                        let cmd = convert64_core::command::SnapSet { snap: s };
+                        actions.push(Action::Run(convert64_project::JsonCommand::SnapSet(cmd)));
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Snap transforms: Off (sub-pixel), C64 pixel, Cell (Shift Cmd ;)");
+    });
+}
+
+pub(super) fn show(
+    shell: &mut Shell,
+    ws: Option<&Workspace>,
+    ui: &mut Ui,
+    actions: &mut Vec<Action>,
+) {
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         if shell.mask.active {
@@ -45,6 +77,7 @@ pub(super) fn show(shell: &mut Shell, ui: &mut Ui) {
                 }
             }
         }
+        snap_menu(ws, ui, actions);
         ui.separator();
         let ctx = ui.ctx().clone();
         let tip = |label: &str, shortcut| format!("{label} ({})", ctx.format_shortcut(shortcut));

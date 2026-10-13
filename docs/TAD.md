@@ -625,6 +625,13 @@ As built in #209 (2026-10-13): palette, shortcuts, states and accessibility basi
 - **States** (§11): the empty state (#203); a full solve running over 200 ms shows "Solving full search… n s" with **Pause** in the status bar and fades the result slightly; Pause cancels the solve and **Resume** restarts it. When clashes exist and the overlay is off, the status bar suggests "Show clashes (Shift C)" once, dismissible. File errors (open, mask, palette, save) sit inline in the status bar in the error colour; a click shows the details and Dismiss — no modal. Export success is a toast (#205).
 - **Accessibility** (§12): the working view and the result panel carry `WidgetInfo` names for screen readers; the tab order is egui's; pins, locks, clashes and the chosen background are marked by glyphs, outlines, rings and text as well as colour. Glyphs missing from Inter (`✕`, `⇄`) were replaced by the icon font or words.
 
+As built in #197 (2026-10-13): position, scale and rotation in the app (UX §6 item 1, §7, ADR-011), on #198's transform.
+
+- **Transform group** first in the Recipe tab: X and Y (C64 pixels, 0.01 steps), W and H % chained by default (`scaled_about_anchor`, so the pivot stays put), rotation (±180°, 0.01°), a 3 × 3 anchor picker (`reanchored`: the picture stays, the pivot moves), Snap, flips, and presets (fit width, fit height, fit screen, fill screen, 1 and 2 source pixels per C64 pixel, 100 %). Every field is `layer_set_transform`; a drag is one undo step.
+- **Transform tool** (`S`, `Cmd T`): the selected layer's rotated box (`canvas_quad`) with four corner and four edge handles and the anchor. Inside moves, a corner scales uniformly (`Shift`: free aspect), an edge scales one axis, just outside a corner rotates about the anchor (`Shift`: 15° steps), the anchor drags the pivot, the wheel over the box scales ±1 %. Holding `Cmd` inverts the project's Snap for that drag (`snap` on the command). `Esc` during a drag reverts it (`Document::cancel_gesture`). The status bar reads X, Y, W %, H % and the angle.
+- **Snap** (`snap_set`) is in the toolbar beside the tools and in the Transform group; `Shift Cmd ;` cycles Off → C64 pixel → Cell.
+- **Keys.** `Cmd Alt [` / `]` rotate ∓0.1° (`Shift`: 1°, `layer_rotate` relative); `Cmd [` / `]` scale ∓1 %. UX §8 gives `Shift Cmd [` / `]` both to ±10 % scale and to worst-cell navigation: with the Transform tool they scale, otherwise they walk the worst cells.
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.

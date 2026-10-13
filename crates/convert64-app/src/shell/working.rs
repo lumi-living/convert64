@@ -46,9 +46,19 @@ pub(super) fn show(
         shell.camera.fit(view, ViewMode::Source);
         shell.camera.fit(view, ViewMode::Result);
     }
-    navigate(shell, ui, &response, view);
+    let wheel_scales = shell.tool == super::Tool::Transform
+        && shell.mask.tool.is_none()
+        && response
+            .hover_pos()
+            .is_some_and(|p| super::transform::over_box(shell, ws, view, p));
+    if !wheel_scales {
+        navigate(shell, ui, &response, view);
+    }
     if shell.hand {
         // The hand tool only pans.
+    } else if shell.mask.tool.is_none() && shell.tool == super::Tool::Transform {
+        super::transform::interact(shell, ws, ui, &response, view, actions);
+        super::tools::interact(shell, ws, ui, &response, view, actions);
     } else if shell.mask.tool.is_some() {
         super::mask::interact(shell, ws, ui, &response, view, actions);
     } else {
@@ -133,6 +143,9 @@ pub(super) fn show(
         painter.image(tex, picture, uv, Color32::WHITE);
     }
     super::tools::draw_drag(shell, ws, &painter, view);
+    if shell.mask.tool.is_none() && shell.tool == super::Tool::Transform {
+        super::transform::draw(shell, ws, &painter, view);
+    }
     let hover = response
         .hover_pos()
         .map(|p| shell.camera.to_picture(view, shell.view, p));

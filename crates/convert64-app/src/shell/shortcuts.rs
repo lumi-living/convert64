@@ -74,3 +74,11 @@ pub const PREVIOUS_WORST: KeyboardShortcut = shift_cmd(Key::OpenBracket);
 pub const VIA_CUT: KeyboardShortcut = shift_cmd(Key::J);
 /// Mask mode on and off.
 pub const MASK_MODE: KeyboardShortcut = bare(Key::M);
+/// Transform tool.
+pub const TRANSFORM: KeyboardShortcut = cmd(Key::T);
+/// Snap: Off → C64 pixel → Cell.
+pub const SNAP_CYCLE: KeyboardShortcut = shift_cmd(Key::Semicolon);
+/// Scale the selected layer up 1 %.
+pub const SCALE_UP: KeyboardShortcut = cmd(Key::CloseBracket);
+/// Scale the selected layer down 1 %.
+pub const SCALE_DOWN: KeyboardShortcut = cmd(Key::OpenBracket);
