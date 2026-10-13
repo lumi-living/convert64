@@ -406,8 +406,13 @@ mod tests {
         assert_eq!(doc.session().project().layers.len(), 1);
         let mut session_doc = doc;
         let (w, h, rgba) = session_doc.source_rgba();
-        let (sw, sh) = session_doc.grid().size();
-        assert_eq!((w, h), (sw, sh));
+        // The Source view's own grid, finer than the 1× solve (ADR-012).
+        assert_eq!(session_doc.grid().n(), 1);
+        let preview = SuperGrid::new(
+            Mode::MulticolorBitmap,
+            convert64_project::Session::PREVIEW_N,
+        );
+        assert_eq!((w, h), preview.unwrap().size());
         assert_eq!(rgba.len(), (w * h * 4) as usize);
         // Solve the snapshot the scheduler would get, synchronously.
         let mut scheduler = crate::scheduler::Scheduler::stepping(Default::default());

@@ -5,8 +5,8 @@ expression: hex(&bytes)
 01 cc 01 cc 01 cc 01 cc 01 cc 01 cc 01 cc 01 cc
 01 cb 01 ca 01 c5 01 be 01 b2 01 a1 01 8b 01 73
 01 59 01 41 01 2b 01 1a 01 0e 01 07 01 02 01 01
-01 00 00 ff 00 ff 00 ff 00 ff 00 ff 00 ff 00 ff
+01 00 00 bf 00 ff 00 ff 00 ff 00 ff 00 ff 00 ff
 01 cc 01 cc 01 cc 01 cc 01 cc 01 cc 01 cc 01 cc
 01 cb 01 ca 01 c5 01 be 01 b2 01 a1 01 8b 01 73
 01 59 01 41 01 2b 01 1a 01 0e 01 07 01 02 01 01
-01 00 00 ff 00 ff 00 ff 00 ff 00 ff 00 ff 00 ff
+01 00 00 bf 00 ff 00 ff 00 ff 00 ff 00 ff 00 ff

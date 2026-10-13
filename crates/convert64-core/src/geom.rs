@@ -312,8 +312,9 @@ struct SuperGridData {
     target: Mode,
 }
 
-/// The compositor's supersampled grid: `n ×` the target mode's logical resolution
-/// (default 4×, so 1280 × 800 for hi-res and 640 × 800 for multicolor).
+/// The compositor's grid: `n ×` the target mode's logical resolution (default 1×, the
+/// target grid itself, ADR-012; at 4× it is 1280 × 800 for hi-res and 640 × 800 for
+/// multicolor).
 ///
 /// Converts between the spaces in the [module docs](self); the multicolor 2:1 pixel
 /// aspect lives here and nowhere else. Masks, regions, the cursor and the cell-badge
@@ -346,8 +347,10 @@ impl TryFrom<SuperGridData> for SuperGrid {
 }
 
 impl SuperGrid {
-    /// The default supersample factor (`docs/TAD.md` §2).
-    pub const DEFAULT_N: u8 = 4;
+    /// The default supersample factor (`docs/TAD.md` §2): 1, compositing straight on the
+    /// target grid with png2c64's Mitchell bicubic (ADR-012, #227). Higher factors stay
+    /// available as a quality setting.
+    pub const DEFAULT_N: u8 = 1;
 
     /// The grid for `target` at `n ×` (1–8). Only full-screen bitmap and charset modes
     /// are compositor targets; sprites and the reserved M3 modes are rejected.
