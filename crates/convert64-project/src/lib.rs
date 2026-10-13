@@ -24,7 +24,7 @@ pub mod recipe;
 pub mod session;
 pub mod store;
 
-pub use command::{JsonCommand, LayerRef};
+pub use command::{JsonCommand, LayerRef, RegionRef};
 pub use error::ProjectError;
 pub use file::{EXTENSION, Embed, PaletteSpec, ProjectFile, SCHEMA_VERSION, SolveSpec};
 pub use recipe::RecipeFile;

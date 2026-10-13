@@ -5,14 +5,16 @@
 //! The registry holds the mask commands of ADR-008 (#77), the cell steering commands
 //! (E5) and, since #193, every other edit the app makes: layers (add, remove, reorder,
 //! visibility, opacity, blend, transform, nudge, rename, duplicate), adjustments,
-//! recipes, the target mode, the palette, the background and the solve settings. The
+//! recipes, the target mode, the palette, the background and the solve settings; since
+//! #216, the regions (add, remove, rename, reorder, recipe, and painting their
+//! canvas-space masks) and editing a layer mask's sources list. The
 //! app, `convert64 apply` and the MCP server all execute these same values; the JSON
 //! forms and file paths live in `convert64-project`, since this crate does no I/O.
 //!
 //! Undo mementos are the smallest state that restores the project: for paint, the
 //! [`TILE`](crate::mask::TILE)-sized raster tiles the command touched (taken before it
 //! ran), so undo is O(touched tiles); for modifier and source edits, the previous mask;
-//! for a property, its previous value; for a removed layer, the layer.
+//! for a property, its previous value; for a removed layer or region, the layer or region.
 
 use crate::colour::ColourIndex;
 use crate::document::SolveSettings;
@@ -30,6 +32,7 @@ use crate::mask::{
 use crate::mode::Mode;
 use crate::model::CellPos;
 use crate::palette::Palette;
+use crate::region::Region;
 use crate::solve::png2c64_ref::Divergences;
 use crate::solve::steering::{Pin, Steering, colour_set};
 use crate::solve::{Background, SolverKind};
@@ -51,6 +54,8 @@ fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
 pub enum CommandError {
     /// No layer at this index.
     NoLayer(usize),
+    /// No region at this index.
+    NoRegion(usize),
     /// An argument is out of range.
     Param {
         /// Which argument.
@@ -68,6 +73,7 @@ impl fmt::Display for CommandError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoLayer(i) => write!(f, "there is no layer {i}"),
+            Self::NoRegion(i) => write!(f, "there is no region {i}"),
             Self::Param { what, why } => write!(f, "{what}: {why}"),
             Self::Mask(e) => write!(f, "mask: {e}"),
             Self::Recipe(e) => write!(f, "recipe: {e}"),
@@ -112,6 +118,33 @@ fn check_points(what: &'static str, pts: &[Vec2], min: usize) -> Result<(), Comm
         return Err(param(what, "points must be finite"));
     }
     Ok(())
+}
+
+/// The brush arguments of `mask_stroke` and `region_stroke`.
+fn check_stroke(
+    points: &[Vec2],
+    radius: f32,
+    hardness: f32,
+    flow: f32,
+) -> Result<(), CommandError> {
+    check_points("points", points, 1)?;
+    check_range("radius", radius, 0.25, 1000.0)?;
+    check_range("hardness", hardness, 0.0, 1.0)?;
+    check_range("flow", flow, 0.0, 1.0)
+}
+
+/// The arguments of `mask_fill` and `region_fill`.
+fn check_fill(polygon: &[Vec2], value: f32) -> Result<(), CommandError> {
+    check_points("polygon", polygon, 3)?;
+    check_range("value", value, 0.0, 1.0)
+}
+
+fn check_name(name: &str) -> Result<(), CommandError> {
+    if name.is_empty() {
+        Err(param("name", "must not be empty"))
+    } else {
+        Ok(())
+    }
 }
 
 /// Paints a soft round brush along a polyline (ADR-008 `MaskStroke`).
@@ -640,6 +673,128 @@ impl SolveSet {
     }
 }
 
+/// Removes one entry of a layer mask's sources list (`mask_source_remove`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MaskSourceRemove {
+    /// Layer index.
+    pub layer: usize,
+    /// Position in the sources list, 0 = first applied.
+    pub index: usize,
+}
+
+/// Sets how one of a layer mask's sources combines (`mask_source_set_combine`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MaskSourceSetCombine {
+    /// Layer index.
+    pub layer: usize,
+    /// Position in the sources list, 0 = first applied.
+    pub index: usize,
+    /// The combine mode.
+    pub combine: Combine,
+}
+
+/// Adds a region with an empty (all 0) 320 × 200 mask (`region_add`, UX §7).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionAdd {
+    /// Position, 0 = applied first; the region count puts it last (on top).
+    pub index: usize,
+    /// Display name, not empty.
+    pub name: String,
+    /// The recipe it imposes.
+    pub recipe: Recipe,
+}
+
+/// Removes a region (`region_remove`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionRemove {
+    /// Region index.
+    pub region: usize,
+}
+
+/// Renames a region (`region_rename`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionRename {
+    /// Region index.
+    pub region: usize,
+    /// The new name, not empty.
+    pub name: String,
+}
+
+/// Moves a region so it ends up at position `to`, 0 = applied first (`region_reorder`).
+/// Later regions win where masks overlap.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionReorder {
+    /// Region index.
+    pub region: usize,
+    /// Its new position.
+    pub to: usize,
+}
+
+/// Sets some of a region's recipe (`region_set_recipe`), as [`RecipeSet`] does a
+/// layer's.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionSetRecipe {
+    /// Region index.
+    pub region: usize,
+    /// What changes.
+    pub recipe: RecipeChange,
+}
+
+/// Paints a region's mask with a soft round brush along a polyline (`region_stroke`):
+/// [`MaskStroke`] in canvas pixels.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionStroke {
+    /// Region index.
+    pub region: usize,
+    /// The polyline, canvas pixels (320 × 200).
+    pub points: Vec<Vec2>,
+    /// Brush radius, canvas pixels, `0.25..=1000`.
+    pub radius: f32,
+    /// Fraction of the radius at full strength, `0..=1`.
+    pub hardness: f32,
+    /// Strength per dab, `0..=1`.
+    pub flow: f32,
+    /// Add or subtract.
+    pub mode: PaintMode,
+}
+
+/// Fills a polygon (lasso) into a region's mask (`region_fill`): [`MaskFill`] in canvas
+/// pixels.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionFill {
+    /// Region index.
+    pub region: usize,
+    /// Polygon, canvas pixels, at least 3 points.
+    pub polygon: Vec<Vec2>,
+    /// Fill value, `0..=1`.
+    pub value: f32,
+    /// Add or subtract.
+    pub mode: PaintMode,
+}
+
+/// Combines a gradient into a region's mask (`region_gradient`). A region's mask is a
+/// raster only, so the gradient is baked in (sampled at pixel centres, canvas pixels)
+/// rather than kept as an editable source.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionGradient {
+    /// Region index.
+    pub region: usize,
+    /// The gradient, canvas pixels.
+    pub gradient: Gradient,
+    /// How it combines with the mask.
+    pub combine: Combine,
+}
+
+/// Sets a region's whole mask to one value (`region_clear`): 0 clears, 1 fills.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionClear {
+    /// Region index.
+    pub region: usize,
+    /// The value, `0..=1`.
+    #[serde(default)]
+    pub value: f32,
+}
+
 /// A command (ADR-005). See [`REGISTRY`] for the names.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
@@ -707,6 +862,28 @@ pub enum Command {
     SolveSet(SolveSet),
     /// `snap_set`.
     SnapSet(SnapSet),
+    /// `mask_source_remove`.
+    MaskSourceRemove(MaskSourceRemove),
+    /// `mask_source_set_combine`.
+    MaskSourceSetCombine(MaskSourceSetCombine),
+    /// `region_add`.
+    RegionAdd(Box<RegionAdd>),
+    /// `region_remove`.
+    RegionRemove(RegionRemove),
+    /// `region_rename`.
+    RegionRename(RegionRename),
+    /// `region_reorder`.
+    RegionReorder(RegionReorder),
+    /// `region_set_recipe`.
+    RegionSetRecipe(Box<RegionSetRecipe>),
+    /// `region_stroke`.
+    RegionStroke(RegionStroke),
+    /// `region_fill`.
+    RegionFill(RegionFill),
+    /// `region_gradient`.
+    RegionGradient(RegionGradient),
+    /// `region_clear`.
+    RegionClear(RegionClear),
 }
 
 /// A command's name and a one-line description, for front-ends (CLI help, MCP tool list).
@@ -853,11 +1030,56 @@ pub const REGISTRY: &[CommandInfo] = &[
         summary: "Set what transform commands snap to: off, c64-pixel (whole target pixels, \
                   0.5°) or cell (cell boundaries, 15°).",
     },
+    CommandInfo {
+        name: "mask_source_remove",
+        summary: "Remove one entry (a gradient or key) of a layer mask's sources list.",
+    },
+    CommandInfo {
+        name: "mask_source_set_combine",
+        summary: "Set how one of a layer mask's sources combines: max, min or multiply.",
+    },
+    CommandInfo {
+        name: "region_add",
+        summary: "Add a region: an empty 320 × 200 canvas mask carrying its own recipe.",
+    },
+    CommandInfo {
+        name: "region_remove",
+        summary: "Remove a region.",
+    },
+    CommandInfo {
+        name: "region_rename",
+        summary: "Rename a region.",
+    },
+    CommandInfo {
+        name: "region_reorder",
+        summary: "Move a region to another position (0 = applied first; later regions win).",
+    },
+    CommandInfo {
+        name: "region_set_recipe",
+        summary: "Set some of a region's recipe, as recipe_set does a layer's; the others are kept.",
+    },
+    CommandInfo {
+        name: "region_stroke",
+        summary: "Paint a region's mask with a soft round brush along a polyline, canvas pixels.",
+    },
+    CommandInfo {
+        name: "region_fill",
+        summary: "Fill a polygon (lasso) into a region's mask, canvas pixels.",
+    },
+    CommandInfo {
+        name: "region_gradient",
+        summary: "Combine a linear or radial gradient into a region's mask (baked), canvas pixels.",
+    },
+    CommandInfo {
+        name: "region_clear",
+        summary: "Set a region's whole mask to one value (0 clears, 1 fills).",
+    },
 ];
 
 /// What a command changed, for the compositor and solver: `LayerRect` maps to target
-/// cells through `composite::mask_change_cells`; the others re-solve the layer's
-/// footprint or the whole picture (`Compositor::update` finds the exact cells).
+/// cells through `composite::mask_change_cells` and `CanvasRect` through
+/// `composite::canvas_change_cells`; the others re-solve the layer's footprint or the
+/// whole picture (`Compositor::update` finds the exact cells).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dirty {
     /// Part of a layer's mask raster, layer pixels.
@@ -876,6 +1098,10 @@ pub enum Dirty {
     /// The document's settings changed (target mode, palette, background or solve
     /// settings): re-solve the whole picture; a new mode also needs a new grid.
     Settings,
+    /// Part of the canvas, canvas pixels (320 × 200): a region command changed what
+    /// governs the attribute map there. Empty when nothing on the canvas changed (a new,
+    /// empty region; a rename).
+    CanvasRect(PxRect),
 }
 
 /// What undo needs.
@@ -905,6 +1131,27 @@ enum Memento {
     Moved { from: usize, to: usize },
     /// A document setting before the command.
     Setting(Setting),
+    /// Region mask tiles before a paint command, and the canvas rectangle it changed.
+    RegionTiles {
+        region: usize,
+        tiles: Vec<Tile>,
+        rect: PxRect,
+    },
+    /// A region inserted at `index`.
+    RegionInserted { index: usize },
+    /// A region removed from `index`.
+    RegionRemoved { index: usize, region: Box<Region> },
+    /// A region moved from `from` to `to`.
+    RegionMoved { from: usize, to: usize },
+    /// A region's name or recipe before the command.
+    RegionProp { region: usize, before: RegionProp },
+}
+
+/// A region property's value, for undo.
+#[derive(Clone, Debug, PartialEq)]
+enum RegionProp {
+    Name(String),
+    Recipe(Box<Recipe>),
 }
 
 /// A layer property's value, for undo.
@@ -945,6 +1192,15 @@ fn layer_mut(p: &mut Project, i: usize) -> Result<&mut Layer, CommandError> {
     p.layers.get_mut(i).ok_or(CommandError::NoLayer(i))
 }
 
+fn region_mut(p: &mut Project, i: usize) -> Result<&mut Region, CommandError> {
+    p.regions.get_mut(i).ok_or(CommandError::NoRegion(i))
+}
+
+/// The canvas rectangle a region governs: its mask's non-zero values.
+fn region_extent(r: &Region) -> Dirty {
+    Dirty::CanvasRect(r.mask().nonzero_rect())
+}
+
 impl Command {
     /// The command's registry name.
     pub const fn name(&self) -> &'static str {
@@ -981,23 +1237,31 @@ impl Command {
             Self::BackgroundPin(_) => "background_pin",
             Self::SolveSet(_) => "solve_set",
             Self::SnapSet(_) => "snap_set",
+            Self::MaskSourceRemove(_) => "mask_source_remove",
+            Self::MaskSourceSetCombine(_) => "mask_source_set_combine",
+            Self::RegionAdd(_) => "region_add",
+            Self::RegionRemove(_) => "region_remove",
+            Self::RegionRename(_) => "region_rename",
+            Self::RegionReorder(_) => "region_reorder",
+            Self::RegionSetRecipe(_) => "region_set_recipe",
+            Self::RegionStroke(_) => "region_stroke",
+            Self::RegionFill(_) => "region_fill",
+            Self::RegionGradient(_) => "region_gradient",
+            Self::RegionClear(_) => "region_clear",
         }
     }
 
     /// Checks the arguments without touching a project.
     fn validate(&self) -> Result<(), CommandError> {
         match self {
-            Self::MaskStroke(c) => {
-                check_points("points", &c.points, 1)?;
-                check_range("radius", c.radius, 0.25, 1000.0)?;
-                check_range("hardness", c.hardness, 0.0, 1.0)?;
-                check_range("flow", c.flow, 0.0, 1.0)
-            }
-            Self::MaskFill(c) => {
-                check_points("polygon", &c.polygon, 3)?;
-                check_range("value", c.value, 0.0, 1.0)
-            }
+            Self::MaskStroke(c) => check_stroke(&c.points, c.radius, c.hardness, c.flow),
+            Self::RegionStroke(c) => check_stroke(&c.points, c.radius, c.hardness, c.flow),
+            Self::MaskFill(c) => check_fill(&c.polygon, c.value),
+            Self::RegionFill(c) => check_fill(&c.polygon, c.value),
             Self::MaskClear(c) => check_range("value", c.value, 0.0, 1.0),
+            Self::RegionClear(c) => check_range("value", c.value, 0.0, 1.0),
+            Self::RegionAdd(c) => check_name(&c.name),
+            Self::RegionRename(c) => check_name(&c.name),
             Self::MaskSetModifier(c) => match c.modifier {
                 ModifierChange::Feather(f) => {
                     Modifiers::default().with_feather(f)?;
@@ -1044,13 +1308,7 @@ impl Command {
                 }
                 Ok(())
             }
-            Self::LayerRename(c) => {
-                if c.name.is_empty() {
-                    Err(param("name", "must not be empty"))
-                } else {
-                    Ok(())
-                }
-            }
+            Self::LayerRename(c) => check_name(&c.name),
             // The bitmap modes are the ones the solver solves (M1).
             Self::ModeSet(c) => match c.mode {
                 Mode::MulticolorBitmap | Mode::HiresBitmap => Ok(()),
@@ -1080,7 +1338,13 @@ impl Command {
             | Self::RecipeSet(_)
             | Self::PaletteSet(_)
             | Self::BackgroundPin(_)
-            | Self::SnapSet(_) => Ok(()),
+            | Self::SnapSet(_)
+            | Self::MaskSourceRemove(_)
+            | Self::MaskSourceSetCombine(_)
+            | Self::RegionRemove(_)
+            | Self::RegionReorder(_)
+            | Self::RegionSetRecipe(_)
+            | Self::RegionGradient(_) => Ok(()),
         }
     }
 
@@ -1302,6 +1566,165 @@ impl Command {
                 Ok(set_setting(p, Setting::Solve(Box::new(s))))
             }
             Self::SnapSet(c) => Ok(set_setting(p, Setting::Snap(c.snap))),
+            Self::MaskSourceRemove(c) => edit_mask(p, c.layer, |m| {
+                m.remove_source(c.index)?;
+                Ok(())
+            }),
+            Self::MaskSourceSetCombine(c) => edit_mask(p, c.layer, |m| {
+                m.set_combine(c.index, c.combine)?;
+                Ok(())
+            }),
+            Self::RegionAdd(c) => {
+                if c.index > p.regions.len() {
+                    return Err(param(
+                        "index",
+                        format!("{} is past the last region ({})", c.index, p.regions.len()),
+                    ));
+                }
+                let r = Region::empty(c.name.clone(), c.recipe);
+                let dirty = region_extent(&r);
+                p.regions.insert(c.index, r);
+                Ok((Memento::RegionInserted { index: c.index }, dirty))
+            }
+            Self::RegionRemove(c) => {
+                region_mut(p, c.region)?;
+                let region = Box::new(p.regions.remove(c.region));
+                let dirty = region_extent(&region);
+                Ok((
+                    Memento::RegionRemoved {
+                        index: c.region,
+                        region,
+                    },
+                    dirty,
+                ))
+            }
+            Self::RegionRename(c) => set_region_prop(p, c.region, RegionProp::Name(c.name.clone())),
+            Self::RegionReorder(c) => {
+                region_mut(p, c.region)?;
+                if c.to >= p.regions.len() {
+                    return Err(param("to", format!("there is no region position {}", c.to)));
+                }
+                let r = p.regions.remove(c.region);
+                let dirty = region_extent(&r);
+                p.regions.insert(c.to, r);
+                Ok((
+                    Memento::RegionMoved {
+                        from: c.region,
+                        to: c.to,
+                    },
+                    dirty,
+                ))
+            }
+            Self::RegionSetRecipe(c) => {
+                let r = c.recipe.apply(region_mut(p, c.region)?.recipe())?;
+                set_region_prop(p, c.region, RegionProp::Recipe(Box::new(r)))
+            }
+            Self::RegionStroke(c) => paint_region(
+                p,
+                c.region,
+                |r| paint::stroke_bounds(r, &c.points, c.radius),
+                |r| paint::stroke(r, &c.points, c.radius, c.hardness, c.flow, c.mode),
+            ),
+            Self::RegionFill(c) => paint_region(
+                p,
+                c.region,
+                |r| paint::fill_bounds(r, &c.polygon),
+                |r| paint::fill(r, &c.polygon, c.value, c.mode),
+            ),
+            Self::RegionGradient(c) => replace_region_mask(p, c.region, |r| {
+                Ok(paint::bake_gradient(r, &c.gradient, c.combine))
+            }),
+            Self::RegionClear(c) => replace_region_mask(p, c.region, |r| {
+                let (w, h) = r.size();
+                Ok(MaskRaster::filled(w, h, c.value)?)
+            }),
+        }
+    }
+}
+
+/// Runs `f` on a layer's existing mask, keeping the whole mask before it for undo.
+fn edit_mask(
+    p: &mut Project,
+    i: usize,
+    f: impl FnOnce(&mut Mask) -> Result<(), CommandError>,
+) -> Result<(Memento, Dirty), CommandError> {
+    let layer = layer_mut(p, i)?;
+    let before = layer.mask().cloned();
+    let mask = layer
+        .mask_mut()
+        .ok_or_else(|| param("layer", format!("layer {i} has no mask")))?;
+    f(mask)?;
+    Ok((Memento::Mask { layer: i, before }, Dirty::Layer(i)))
+}
+
+/// Paints a region's mask: `bounds` is the rectangle `paint` can touch (its tiles are
+/// saved for undo), `paint` returns the rectangle it touched.
+fn paint_region(
+    p: &mut Project,
+    i: usize,
+    bounds: impl FnOnce(&MaskRaster) -> PxRect,
+    paint: impl FnOnce(&mut MaskRaster) -> PxRect,
+) -> Result<(Memento, Dirty), CommandError> {
+    let r = region_mut(p, i)?.mask_mut();
+    let bounds = bounds(r);
+    let tiles = r.tiles(bounds);
+    let rect = paint(r);
+    debug_assert_eq!(rect.union(bounds), bounds);
+    Ok((
+        Memento::RegionTiles {
+            region: i,
+            tiles,
+            rect,
+        },
+        Dirty::CanvasRect(rect),
+    ))
+}
+
+/// Replaces a region's mask with `new`'s result, saving the tiles of the rectangle
+/// where it differs.
+fn replace_region_mask(
+    p: &mut Project,
+    i: usize,
+    new: impl FnOnce(&MaskRaster) -> Result<MaskRaster, CommandError>,
+) -> Result<(Memento, Dirty), CommandError> {
+    let r = region_mut(p, i)?.mask_mut();
+    let new = new(r)?;
+    let rect = paint::changed_rect(r, &new);
+    let tiles = r.tiles(rect);
+    *r = new;
+    Ok((
+        Memento::RegionTiles {
+            region: i,
+            tiles,
+            rect,
+        },
+        Dirty::CanvasRect(rect),
+    ))
+}
+
+/// Sets a region's name or recipe, returning the memento of the old value.
+fn set_region_prop(
+    p: &mut Project,
+    i: usize,
+    value: RegionProp,
+) -> Result<(Memento, Dirty), CommandError> {
+    let r = region_mut(p, i)?;
+    let (before, dirty) = swap_region_prop(r, value);
+    Ok((Memento::RegionProp { region: i, before }, dirty))
+}
+
+/// Puts `value` on the region; returns the value it replaced and what changed.
+fn swap_region_prop(r: &mut Region, value: RegionProp) -> (RegionProp, Dirty) {
+    match value {
+        RegionProp::Name(n) => {
+            let old = r.name().to_owned();
+            r.set_name(n);
+            (RegionProp::Name(old), Dirty::CanvasRect(PxRect::EMPTY))
+        }
+        RegionProp::Recipe(v) => {
+            let old = Box::new(*r.recipe());
+            r.set_recipe(*v);
+            (RegionProp::Recipe(old), region_extent(r))
         }
     }
 }
@@ -1578,6 +2001,29 @@ impl Memento {
                 swap_setting(p, before);
                 dirty
             }
+            Self::RegionTiles {
+                region,
+                tiles,
+                rect,
+            } => {
+                p.regions[region].mask_mut().restore(&tiles);
+                Dirty::CanvasRect(rect)
+            }
+            Self::RegionInserted { index } => region_extent(&p.regions.remove(index)),
+            Self::RegionRemoved { index, region } => {
+                let dirty = region_extent(&region);
+                p.regions.insert(index, *region);
+                dirty
+            }
+            Self::RegionMoved { from, to } => {
+                let r = p.regions.remove(to);
+                let dirty = region_extent(&r);
+                p.regions.insert(from, r);
+                dirty
+            }
+            Self::RegionProp { region, before } => {
+                swap_region_prop(&mut p.regions[region], before).1
+            }
         }
     }
 }
@@ -1651,7 +2097,9 @@ impl Editor {
         self.done
             .iter()
             .map(|(_, m)| match m {
-                Memento::Tiles { tiles, .. } => tiles.iter().map(Tile::len).sum(),
+                Memento::Tiles { tiles, .. } | Memento::RegionTiles { tiles, .. } => {
+                    tiles.iter().map(Tile::len).sum()
+                }
                 _ => 0,
             })
             .sum()
@@ -1951,7 +2399,7 @@ mod tests {
         ] {
             assert!(names.contains(&c.name()));
         }
-        assert_eq!(names.len(), 32);
+        assert_eq!(names.len(), 43);
     }
 
     /// #198: transform commands snap by the project's setting unless told otherwise;
@@ -2039,12 +2487,38 @@ mod tests {
         }
     }
 
-    /// Two layers sharing pixels, the second smaller and masked, so moves and copies show.
+    /// A 320 × 200 canvas mask: `value` inside `[x0, x1) × [y0, y1)`, 0 outside.
+    fn canvas_mask(x0: u32, y0: u32, x1: u32, y1: u32, value: f32) -> MaskRaster {
+        let vals = (0..320 * 200)
+            .map(|i| {
+                let (x, y) = (i % 320, i / 320);
+                if (x0..x1).contains(&x) && (y0..y1).contains(&y) {
+                    value
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        MaskRaster::from_values(320, 200, vals).unwrap()
+    }
+
+    /// Two layers sharing pixels, the second at a different opacity, so moves and copies
+    /// show; and two overlapping regions.
     fn stack() -> Project {
         let mut p = project();
         let mut top = Layer::new("top", Arc::clone(p.layers[0].source()));
         top.set_opacity(0.75).unwrap();
         p.layers.push(top);
+        let flat = Recipe::with_method(crate::layer::DitherKind::None, 0.5).unwrap();
+        p.regions = vec![
+            Region::new("sky", canvas_mask(0, 0, 160, 80, 1.0), flat).unwrap(),
+            Region::new(
+                "ground",
+                canvas_mask(100, 60, 320, 200, 0.5),
+                Recipe::default(),
+            )
+            .unwrap(),
+        ];
         p
     }
 
@@ -2132,6 +2606,59 @@ mod tests {
             Command::SnapSet(SnapSet {
                 snap: Snap::C64Pixel,
             }),
+            // #216: regions.
+            Command::RegionAdd(Box::new(RegionAdd {
+                index: 1,
+                name: "faces".into(),
+                recipe: Recipe::with_method(crate::layer::DitherKind::Atkinson, 0.8).unwrap(),
+            })),
+            Command::RegionRemove(RegionRemove { region: 0 }),
+            Command::RegionRename(RegionRename {
+                region: 1,
+                name: "floor".into(),
+            }),
+            Command::RegionReorder(RegionReorder { region: 0, to: 1 }),
+            Command::RegionSetRecipe(Box::new(RegionSetRecipe {
+                region: 0,
+                recipe: RecipeChange {
+                    method: Some(Method::new(crate::layer::DitherKind::Bayer8)),
+                    deny: Some(vec![ColourIndex::RED]),
+                    ..RecipeChange::default()
+                },
+            })),
+            Command::RegionStroke(RegionStroke {
+                region: 1,
+                points: vec![Vec2::new(10.0, 150.0), Vec2::new(90.0, 190.0)],
+                radius: 6.0,
+                hardness: 0.5,
+                flow: 0.7,
+                mode: PaintMode::Add,
+            }),
+            Command::RegionFill(RegionFill {
+                region: 0,
+                polygon: vec![
+                    Vec2::new(40.0, 20.0),
+                    Vec2::new(120.0, 20.0),
+                    Vec2::new(80.0, 70.0),
+                ],
+                value: 1.0,
+                mode: PaintMode::Subtract,
+            }),
+            Command::RegionGradient(RegionGradient {
+                region: 1,
+                gradient: Gradient::new(
+                    GradientKind::Linear,
+                    Vec2::new(0.0, 100.0),
+                    Vec2::new(320.0, 100.0),
+                    1.0,
+                )
+                .unwrap(),
+                combine: Combine::Multiply,
+            }),
+            Command::RegionClear(RegionClear {
+                region: 0,
+                value: 1.0,
+            }),
         ]
     }
 
@@ -2189,6 +2716,145 @@ mod tests {
         }
         assert_eq!(e.project(), &base);
         assert_eq!(e.undo(), None);
+    }
+
+    #[test]
+    fn region_paint_undoes_byte_identically_and_reports_its_rectangle() {
+        let mut e = Editor::new(stack());
+        let base = e.project().clone();
+        let before = e.project().regions[1].mask().clone();
+        let dirty = e
+            .execute(Command::RegionStroke(RegionStroke {
+                region: 1,
+                points: vec![Vec2::new(20.0, 20.0), Vec2::new(150.0, 90.0)],
+                radius: 12.0,
+                hardness: 0.3,
+                flow: 0.6,
+                mode: PaintMode::Add,
+            }))
+            .unwrap();
+        assert_eq!(dirty, Dirty::CanvasRect(PxRect::new(8, 8, 162, 102)));
+        assert!(e.saved_tile_values() < 320 * 200);
+        e.undo();
+        assert_eq!(e.project().regions[1].mask(), &before);
+
+        // A gradient is baked into the raster with its combine mode; the rectangle is
+        // where values changed.
+        let g = Gradient::new(
+            GradientKind::Linear,
+            Vec2::new(0.0, 0.0),
+            Vec2::new(0.0, 200.0),
+            1.0,
+        )
+        .unwrap();
+        let dirty = e
+            .execute(Command::RegionGradient(RegionGradient {
+                region: 0,
+                gradient: g,
+                combine: Combine::Min,
+            }))
+            .unwrap();
+        // Min against a mask that is 0 outside (0..160, 0..80) changes only inside it.
+        assert_eq!(dirty, Dirty::CanvasRect(PxRect::new(0, 0, 160, 80)));
+        let m = e.project().regions[0].mask();
+        assert_eq!(m.get(10, 10), g.value(Vec2::new(10.5, 10.5)));
+        assert_eq!(m.get(200, 10), 0.0);
+        // Clearing a cleared mask changes nothing and says so.
+        e.execute(Command::RegionClear(RegionClear {
+            region: 0,
+            value: 0.0,
+        }))
+        .unwrap();
+        let dirty = e
+            .execute(Command::RegionClear(RegionClear {
+                region: 0,
+                value: 0.0,
+            }))
+            .unwrap();
+        assert_eq!(dirty, Dirty::CanvasRect(PxRect::EMPTY));
+        for _ in 0..3 {
+            e.undo();
+        }
+        assert_eq!(e.project(), &base);
+    }
+
+    #[test]
+    fn regions_are_added_empty_and_keep_their_place() {
+        let mut e = Editor::new(stack());
+        let dirty = e
+            .execute(Command::RegionAdd(Box::new(RegionAdd {
+                index: 2,
+                name: "eyes".into(),
+                recipe: Recipe::default(),
+            })))
+            .unwrap();
+        assert_eq!(dirty, Dirty::CanvasRect(PxRect::EMPTY));
+        let r = &e.project().regions[2];
+        assert_eq!(r.name(), "eyes");
+        assert_eq!(r.mask().size(), (320, 200));
+        assert!(r.mask().values().iter().all(|&v| v == 0.0));
+        let dirty = e
+            .execute(Command::RegionReorder(RegionReorder { region: 0, to: 2 }))
+            .unwrap();
+        assert_eq!(dirty, Dirty::CanvasRect(PxRect::new(0, 0, 160, 80)));
+        let names: Vec<&str> = e.project().regions.iter().map(Region::name).collect();
+        assert_eq!(names, ["ground", "eyes", "sky"]);
+    }
+
+    #[test]
+    fn mask_sources_are_removed_and_recombined_with_undo() {
+        let mut e = Editor::new(project());
+        let g = |x: f32| {
+            Gradient::new(GradientKind::Linear, Vec2::ZERO, Vec2::new(x, 0.0), 1.0).unwrap()
+        };
+        for x in [100.0, 200.0] {
+            e.execute(Command::MaskGradient(MaskGradient {
+                layer: 0,
+                gradient: g(x),
+                combine: Combine::Max,
+            }))
+            .unwrap();
+        }
+        let sources = |e: &Editor| e.project().layers[0].mask().unwrap().sources().to_vec();
+        let base = sources(&e);
+        let dirty = e
+            .execute(Command::MaskSourceSetCombine(MaskSourceSetCombine {
+                layer: 0,
+                index: 1,
+                combine: Combine::Multiply,
+            }))
+            .unwrap();
+        assert_eq!(dirty, Dirty::Layer(0));
+        assert_eq!(sources(&e)[1].combine, Combine::Multiply);
+        assert_eq!(sources(&e)[0], base[0]);
+        e.execute(Command::MaskSourceRemove(MaskSourceRemove {
+            layer: 0,
+            index: 0,
+        }))
+        .unwrap();
+        let after = sources(&e);
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].source, MaskSource::Gradient(g(200.0)));
+        assert_eq!(e.undo(), Some(Dirty::Layer(0)));
+        e.undo();
+        assert_eq!(sources(&e), base);
+        e.redo().unwrap().unwrap();
+        e.redo().unwrap().unwrap();
+        assert_eq!(sources(&e), after);
+        // A source that is not there is refused, and nothing changes.
+        let p0 = e.project().clone();
+        for bad in [
+            Command::MaskSourceRemove(MaskSourceRemove { layer: 0, index: 1 }),
+            Command::MaskSourceSetCombine(MaskSourceSetCombine {
+                layer: 0,
+                index: 4,
+                combine: Combine::Min,
+            }),
+            Command::MaskSourceRemove(MaskSourceRemove { layer: 3, index: 0 }),
+        ] {
+            assert!(e.execute(bad).is_err());
+            assert_eq!(e.project(), &p0);
+        }
     }
 
     #[test]
@@ -2304,6 +2970,54 @@ mod tests {
             Command::SolveSet(SolveSet {
                 hysteresis: Some(Some(1.5)),
                 ..SolveSet::default()
+            }),
+            Command::RegionAdd(Box::new(RegionAdd {
+                index: 3,
+                name: "past the end".into(),
+                recipe: Recipe::default(),
+            })),
+            Command::RegionAdd(Box::new(RegionAdd {
+                index: 0,
+                name: String::new(),
+                recipe: Recipe::default(),
+            })),
+            Command::RegionRemove(RegionRemove { region: 2 }),
+            Command::RegionRename(RegionRename {
+                region: 0,
+                name: String::new(),
+            }),
+            Command::RegionReorder(RegionReorder { region: 0, to: 2 }),
+            Command::RegionSetRecipe(Box::new(RegionSetRecipe {
+                region: 1,
+                recipe: RecipeChange {
+                    strength: Some(-0.5),
+                    ..RecipeChange::default()
+                },
+            })),
+            Command::RegionStroke(RegionStroke {
+                region: 0,
+                points: vec![Vec2::new(1.0, 1.0)],
+                radius: 0.1,
+                hardness: 0.5,
+                flow: 1.0,
+                mode: PaintMode::Add,
+            }),
+            Command::RegionFill(RegionFill {
+                region: 5,
+                polygon: vec![Vec2::ZERO, Vec2::new(9.0, 0.0), Vec2::new(0.0, 9.0)],
+                value: 1.0,
+                mode: PaintMode::Add,
+            }),
+            Command::RegionClear(RegionClear {
+                region: 0,
+                value: 2.0,
+            }),
+            // The top layer has no mask, so no sources to edit.
+            Command::MaskSourceRemove(MaskSourceRemove { layer: 1, index: 0 }),
+            Command::MaskSourceSetCombine(MaskSourceSetCombine {
+                layer: 0,
+                index: 0,
+                combine: Combine::Min,
             }),
         ] {
             assert!(e.execute(bad.clone()).is_err(), "{bad:?}");

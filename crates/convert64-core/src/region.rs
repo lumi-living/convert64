@@ -43,14 +43,33 @@ impl Region {
         })
     }
 
+    /// A region with an empty (all 0) mask: what `region_add` creates, before any paint.
+    pub fn empty(name: impl Into<String>, recipe: Recipe) -> Self {
+        Self {
+            name: name.into(),
+            mask: MaskRaster::filled(CANVAS_WIDTH, CANVAS_HEIGHT, 0.0).expect("canvas size"),
+            recipe,
+        }
+    }
+
     /// Display name.
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    /// Renames it.
+    pub fn set_name(&mut self, name: impl Into<String>) {
+        self.name = name.into();
+    }
+
     /// The canvas-space mask.
     pub const fn mask(&self) -> &MaskRaster {
         &self.mask
+    }
+
+    /// The mask, for the region paint commands (which keep it 320 × 200 and in `0..=1`).
+    pub(crate) const fn mask_mut(&mut self) -> &mut MaskRaster {
+        &mut self.mask
     }
 
     /// The recipe it imposes.

@@ -1,8 +1,8 @@
 //! Registry commands as JSON: `{"command": "<name>", ...arguments}`, as a project or
 //! recipe file's `commands` lists them and `convert64 apply` and the MCP server take
 //! them (ADR-005). [`Session::to_command`](crate::Session::to_command) turns one into
-//! the core's [`Command`](convert64_core::command::Command), resolving layer names and
-//! reading any file it names.
+//! the core's [`Command`](convert64_core::command::Command), resolving layer and region
+//! names and reading any file it names.
 
 use crate::file::{PaletteSpec, SourceSpec};
 use convert64_core::command::{
@@ -30,6 +30,16 @@ pub enum LayerRef {
     /// Stack index, bottom first.
     Index(usize),
     /// Layer name.
+    Name(String),
+}
+
+/// A region by position (0 = applied first) or by name, as [`LayerRef`] names a layer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RegionRef {
+    /// Position, 0 = applied first.
+    Index(usize),
+    /// Region name.
     Name(String),
 }
 
@@ -272,6 +282,108 @@ pub enum JsonCommand {
     SolveSet(SolveSet),
     /// Set what transform commands snap to.
     SnapSet(SnapSet),
+    /// Remove one entry of a layer mask's sources list.
+    MaskSourceRemove {
+        /// Layer.
+        layer: LayerRef,
+        /// Position in the sources list, 0 = first applied.
+        index: usize,
+    },
+    /// Set how one of a layer mask's sources combines.
+    MaskSourceSetCombine {
+        /// Layer.
+        layer: LayerRef,
+        /// Position in the sources list, 0 = first applied.
+        index: usize,
+        /// `max`, `min` or `multiply`.
+        combine: Combine,
+    },
+    /// New region with an empty 320 × 200 mask.
+    RegionAdd {
+        /// Display name.
+        name: String,
+        /// The recipe it imposes; absent is the default recipe.
+        #[serde(default)]
+        recipe: Box<Recipe>,
+        /// Position, 0 = applied first; absent puts it last (on top).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index: Option<usize>,
+    },
+    /// Remove a region.
+    RegionRemove {
+        /// Region.
+        region: RegionRef,
+    },
+    /// Rename a region.
+    RegionRename {
+        /// Region.
+        region: RegionRef,
+        /// The new name.
+        name: String,
+    },
+    /// Move a region to position `to` (0 = applied first).
+    RegionReorder {
+        /// Region.
+        region: RegionRef,
+        /// Its new position.
+        to: usize,
+    },
+    /// Set some of a region's recipe.
+    RegionSetRecipe {
+        /// Region.
+        region: RegionRef,
+        /// The recipe fields that change.
+        recipe: RecipeChange,
+    },
+    /// Soft round brush along a polyline on a region's mask, canvas pixels.
+    RegionStroke {
+        /// Region.
+        region: RegionRef,
+        /// Polyline, canvas pixels.
+        points: Vec<Vec2>,
+        /// Radius, canvas pixels.
+        radius: f32,
+        /// `0..=1`.
+        #[serde(default)]
+        hardness: f32,
+        /// `0..=1`.
+        #[serde(default = "one")]
+        flow: f32,
+        /// `add` or `subtract`.
+        #[serde(default)]
+        mode: PaintMode,
+    },
+    /// Polygon (lasso) fill on a region's mask, canvas pixels.
+    RegionFill {
+        /// Region.
+        region: RegionRef,
+        /// Polygon, canvas pixels.
+        polygon: Vec<Vec2>,
+        /// `0..=1`.
+        #[serde(default = "one")]
+        value: f32,
+        /// `add` or `subtract`.
+        #[serde(default)]
+        mode: PaintMode,
+    },
+    /// Gradient combined into a region's mask (baked), canvas pixels.
+    RegionGradient {
+        /// Region.
+        region: RegionRef,
+        /// The gradient.
+        gradient: Gradient,
+        /// `max`, `min` or `multiply`.
+        #[serde(default)]
+        combine: Combine,
+    },
+    /// A region's whole mask to one value (0 clears, 1 fills).
+    RegionClear {
+        /// Region.
+        region: RegionRef,
+        /// `0..=1`.
+        #[serde(default)]
+        value: f32,
+    },
 }
 
 #[cfg(test)]
@@ -288,6 +400,7 @@ mod tests {
 
     fn every_command() -> Vec<JsonCommand> {
         let l = LayerRef::Name("photo".into());
+        let r = RegionRef::Name("sky".into());
         vec![
             JsonCommand::MaskStroke {
                 layer: l.clone(),
@@ -474,6 +587,68 @@ mod tests {
             JsonCommand::SnapSet(SnapSet {
                 snap: Snap::C64Pixel,
             }),
+            JsonCommand::MaskSourceRemove {
+                layer: LayerRef::Index(0),
+                index: 1,
+            },
+            JsonCommand::MaskSourceSetCombine {
+                layer: LayerRef::Name("photo".into()),
+                index: 0,
+                combine: Combine::Multiply,
+            },
+            JsonCommand::RegionAdd {
+                name: "sky".into(),
+                recipe: Box::new(Recipe::with_method(DitherKind::Bayer8, 0.5).unwrap()),
+                index: Some(0),
+            },
+            JsonCommand::RegionRemove {
+                region: RegionRef::Index(1),
+            },
+            JsonCommand::RegionRename {
+                region: r.clone(),
+                name: "clouds".into(),
+            },
+            JsonCommand::RegionReorder {
+                region: r.clone(),
+                to: 0,
+            },
+            JsonCommand::RegionSetRecipe {
+                region: r.clone(),
+                recipe: RecipeChange {
+                    strength: Some(0.25),
+                    allow: Some(vec![ColourIndex::CYAN]),
+                    ..RecipeChange::default()
+                },
+            },
+            JsonCommand::RegionStroke {
+                region: r.clone(),
+                points: vec![Vec2::new(10.0, 20.0), Vec2::new(30.5, 40.0)],
+                radius: 8.0,
+                hardness: 0.5,
+                flow: 0.75,
+                mode: PaintMode::Add,
+            },
+            JsonCommand::RegionFill {
+                region: RegionRef::Index(0),
+                polygon: vec![Vec2::ZERO, Vec2::new(50.0, 0.0), Vec2::new(0.0, 50.0)],
+                value: 1.0,
+                mode: PaintMode::Subtract,
+            },
+            JsonCommand::RegionGradient {
+                region: r.clone(),
+                gradient: Gradient::new(
+                    GradientKind::Linear,
+                    Vec2::new(0.0, 0.0),
+                    Vec2::new(0.0, 200.0),
+                    1.0,
+                )
+                .unwrap(),
+                combine: Combine::Min,
+            },
+            JsonCommand::RegionClear {
+                region: r,
+                value: 1.0,
+            },
         ]
     }
 
@@ -543,5 +718,16 @@ mod tests {
         ));
         let unknown = r#"{"command":"mask_paint_colour","layer":0}"#;
         assert!(serde_json::from_str::<JsonCommand>(unknown).is_err());
+        // A region by index or name; region_add's recipe and index are optional.
+        let add = r#"{"command":"region_add","name":"sky"}"#;
+        assert!(matches!(
+            serde_json::from_str::<JsonCommand>(add),
+            Ok(JsonCommand::RegionAdd { index: None, recipe, .. }) if *recipe == Recipe::default()
+        ));
+        let by_name = r#"{"command":"region_clear","region":"sky"}"#;
+        assert!(matches!(
+            serde_json::from_str::<JsonCommand>(by_name),
+            Ok(JsonCommand::RegionClear { region: RegionRef::Name(_), value }) if value == 0.0
+        ));
     }
 }
