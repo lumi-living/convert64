@@ -404,3 +404,36 @@ fn empty(ui: &mut Ui) {
         });
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The first frame after an open fits the Source view with a margin around the
+    /// picture (#246).
+    #[test]
+    fn the_first_frame_after_an_open_fits_with_a_margin() {
+        let rgba = (0..64 * 40)
+            .flat_map(|i| [(i % 64 * 4) as u8, 90, 90, 255])
+            .collect();
+        let png = convert64_project::codec::encode_rgba8(64, 40, rgba);
+        let doc = crate::document::Document::from_png("ramp.png", &png).unwrap();
+        let ws = Workspace::new(doc);
+        let ctx = egui::Context::default();
+        let mut shell = Shell::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 700.0))),
+            ..Default::default()
+        };
+        let mut actions = Vec::new();
+        let mut output = ctx.run_ui(input, |ui| show(&mut shell, ui, Some(&ws), &mut actions));
+        output.textures_delta.clear();
+        let view = shell.view_rect.expect("the working view was laid out");
+        let picture = shell.camera.picture_rect(view, ViewMode::Source);
+        assert!(view.contains_rect(picture), "{view:?} {picture:?}");
+        let gap = ((view.width() - picture.width()) / view.width())
+            .min((view.height() - picture.height()) / view.height())
+            / 2.0;
+        assert!((0.04..=0.06).contains(&gap), "{gap}");
+    }
+}
