@@ -885,7 +885,7 @@ mod tests {
     /// without it read and write exactly as before.
     #[test]
     fn downscale_is_written_only_when_exact() {
-        let old = r#"{"schema_version":2,"target":"hires-bitmap","layers":[
+        let old = r#"{"schema_version":3,"target":"hires-bitmap","layers":[
             {"name":"a","source":"a.png"}]}"#;
         let p = ProjectFile::parse(old).unwrap();
         assert_eq!(p.layers[0].downscale, Downscale::Auto);
