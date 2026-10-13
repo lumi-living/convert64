@@ -507,17 +507,32 @@ impl eframe::App for App {
         self.update_title(ui.ctx());
 
         #[cfg(not(target_arch = "wasm32"))]
+        let mut delete = false;
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(request) = &mut self.screenshot {
             // Wait for the first full solve when a picture is open.
             let ready = self.workspace.as_ref().is_none_or(|ws| !ws.solving);
             if ready && let (Some(dir), Some(ws)) = (request.export.take(), &self.workspace) {
                 screenshot::export(&dir, ws);
             }
+            delete = ready && std::mem::take(&mut request.delete_layer);
             // Hidden once the picture is in, so the toast is still up for the shot.
             if ready && std::mem::take(&mut request.hide_ui) {
                 self.shell.set_ui_hidden(ui.ctx(), true);
             }
             request.step(ui.ctx(), ready);
+        }
+        // `--delete-layer`: as the Delete key does, toast and all, once the picture is in.
+        #[cfg(not(target_arch = "wasm32"))]
+        if delete && let Some(ws) = &self.workspace {
+            let layer = convert64_project::LayerRef::Index(self.shell.layer);
+            let actions = vec![Action::Run(convert64_project::JsonCommand::LayerRemove {
+                layer,
+            })];
+            self.shell.announce_deletes(ui.ctx(), ws, &actions);
+            for action in actions {
+                self.act(ui.ctx(), action);
+            }
         }
     }
 
@@ -551,8 +566,8 @@ impl eframe::App for App {
 /// [--overlay grid|clashes|ghost]… [--compare split|flicker|side] [--dialog export]
 /// [--tab recipe|layers|export] [--command <json>]… [--zoom <n>] [--centre <x>,<y>]
 /// [--mask] [--tool <name>] [--drag <x0>,<y0>:<x1>,<y1>] [--export <dir>]
-/// [--dock-scroll <points>] [--hide-ui]`: draws a few frames, saves the window as a PNG
-/// and quits. The PR screenshots come from it (#203).
+/// [--dock-scroll <points>] [--hide-ui] [--delete-layer]`: draws a few frames, saves the
+/// window as a PNG and quits. The PR screenshots come from it (#203).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
     use std::path::PathBuf;
@@ -637,6 +652,8 @@ mod screenshot {
         /// `--export <dir>`: once the full solve is in, write the Koala (or Art Studio)
         /// file and the self-displaying PRG there.
         pub(super) export: Option<PathBuf>,
+        /// `--delete-layer`: delete the selected layer as the Delete key does (#245).
+        pub(super) delete_layer: bool,
         /// `--dock-scroll <points>`: the dock's tab content scrolled down this far, to
         /// show a Recipe group below the fold (#237).
         pub(super) dock_scroll: Option<f32>,
@@ -675,6 +692,7 @@ mod screenshot {
             let mut tool = None;
             let mut drag = None;
             let mut export = None;
+            let mut delete_layer = false;
             let mut dock_scroll = None;
             let mut hide_ui = false;
             while let Some(arg) = args.next() {
@@ -694,6 +712,7 @@ mod screenshot {
                     "--tab" => tab = Some(value()?),
                     "--command" => commands.push(value()?),
                     "--mask" => mask = true,
+                    "--delete-layer" => delete_layer = true,
                     "--hide-ui" => hide_ui = true,
                     "--tool" => tool = Some(value()?),
                     "--drag" => {
@@ -761,6 +780,7 @@ mod screenshot {
                     drag,
                     drag_frame: 0,
                     export,
+                    delete_layer,
                     dock_scroll,
                     hide_ui,
                     frame: 0,

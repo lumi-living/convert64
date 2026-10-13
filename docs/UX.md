@@ -100,7 +100,7 @@ Row anatomy, left to right (editor consensus): **eye** · **thumbnail** (source,
 
 - Subtitle shows the recipe in short form: `FS 80% · OKLab · Force`. This is the one departure from editors, and it is the point of the product: you see at a glance how each layer will be dithered.
 - Blend mode and opacity controls sit above the list (Photoshop/Krita/Photopea). Mask thumbnail appears beside the layer thumbnail with a chain icon when a mask exists.
-- Bottom icon strip: **New from file**, **Duplicate**, **Add mask**, **Group** (v2), **Delete**. Drag to reorder (`egui_dnd`), drop a file onto the panel or the preview to add a layer, double-click to rename, `Cmd/Ctrl J` duplicate, `Delete`/`Backspace` delete with undo.
+- Bottom icon strip: **New from file**, **Duplicate**, **Add mask**, **Group** (v2), **Delete**. Drag to reorder (`egui_dnd`), drop a file onto the panel or the preview to add a layer, double-click to rename, `Cmd/Ctrl J` duplicate, `Delete`/`Backspace` delete with undo, but only while the Layers panel or the canvas has the keys (after a press on either, or `Esc`), never from the Recipe form; every delete shows a toast naming the layer with an **Undo** button: "Deleted layer 'source' · Undo" (#245).
 - Selecting a layer selects what the Recipe panel edits and what nudging moves. Multi-select applies recipe changes to all (v2).
 - Empty state (no layers): one sentence and one button — *"Drop an image here or open one. Convert64 shows the C64 result as soon as it loads."* **Open image…**
 
