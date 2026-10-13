@@ -41,10 +41,15 @@ pub(super) fn show(
     let name = format!("Working view, {}", shell.view.label());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, &name));
     shell.view_rect = Some(view);
+    shell.canvas_id = Some(response.id);
+    if ui.input(|i| i.pointer.any_pressed()) && response.contains_pointer() {
+        shell.key_focus = super::KeyFocus::Canvas;
+    }
     if shell.fit_pending {
         shell.fit_pending = false;
-        shell.camera.fit(view, ViewMode::Source);
-        shell.camera.fit(view, ViewMode::Result);
+        let border = shell.overlays.border;
+        shell.camera.fit(view, ViewMode::Source, border);
+        shell.camera.fit(view, ViewMode::Result, border);
     }
     let wheel_scales = shell.tool == super::Tool::Transform
         && shell.mask.tool.is_none()
@@ -435,5 +440,14 @@ mod tests {
             .min((view.height() - picture.height()) / view.height())
             / 2.0;
         assert!((0.04..=0.06).contains(&gap), "{gap}");
+        // Result opens at the largest integer zoom with half the border in view (#247).
+        let z = shell.camera.result_zoom;
+        let framed = |z: u8| {
+            (crate::view::SCREEN + egui::Vec2::splat(2.0 * crate::view::FIT_BORDER)) * f32::from(z)
+        };
+        let fits = |z: u8| framed(z).x <= view.width() && framed(z).y <= view.height();
+        assert!(fits(z), "{z}× in {view:?}");
+        let next = crate::view::RESULT_STEPS.into_iter().find(|&s| s > z);
+        assert!(next.is_none_or(|n| !fits(n)), "{z}× in {view:?}");
     }
 }

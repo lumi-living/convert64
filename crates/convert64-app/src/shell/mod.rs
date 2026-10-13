@@ -29,17 +29,19 @@ pub use crate::view::ViewMode;
 pub use export_dialog::ExportDialog;
 pub use mask::{MaskState, MaskTool};
 
-/// The four steering tools (`docs/UX.md` §7), in toolbar order.
+/// The four steering tools (`docs/UX.md` §7), in toolbar order. Nudge (`V`, Move in
+/// Photoshop and Figma) is the default: a stray click with it selects a layer and
+/// changes nothing, where Pin would pin a cell (#242).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tool {
     /// Pin a cell's colour set.
-    #[default]
     Pin,
     /// Lock a cell.
     Lock,
     /// Paint a region.
     Region,
     /// Nudge a layer.
+    #[default]
     Nudge,
     /// Scale and rotate a layer (ADR-011).
     Transform,
@@ -113,6 +115,20 @@ impl DockTab {
             Self::Export => "Export",
         }
     }
+}
+
+/// Where the keyboard's single keys go when no text is being typed: the canvas (the
+/// working view), the Layers panel, or some other part of the window. `Delete` and
+/// `Backspace` delete the selected layer only from the first two (#245).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyFocus {
+    /// The working view: the default, and where `Esc` returns.
+    #[default]
+    Canvas,
+    /// The Layers tab.
+    Layers,
+    /// Anything else: the Recipe form, the result panel, the toolbar.
+    Other,
 }
 
 /// Something the user asked for that the shell cannot do itself.
@@ -245,6 +261,14 @@ pub struct Shell {
     pub last_export: Option<(crate::export::Settings, String)>,
     /// A message shown at the bottom of the window until the time (egui seconds) passes.
     toast: Option<(String, bool, f64)>,
+    /// The toast offers Undo (a deleted layer).
+    toast_undo: bool,
+    /// Where the last press landed, or `Esc` sent the keys (#245).
+    pub key_focus: KeyFocus,
+    /// The Layers tab's rectangle last frame, for a focused widget inside it.
+    layers_rect: Option<egui::Rect>,
+    /// The working view's widget id, for keyboard focus on it.
+    canvas_id: Option<egui::Id>,
     /// `--dock-scroll <points>` (screenshots only): the dock's tab content held scrolled
     /// down this far, to show a group below the fold.
     pub dock_scroll: Option<f32>,
@@ -290,6 +314,10 @@ impl Default for Shell {
             export_requested: false,
             last_export: None,
             toast: None,
+            toast_undo: false,
+            key_focus: KeyFocus::default(),
+            layers_rect: None,
+            canvas_id: None,
             dock_scroll: None,
         }
     }
@@ -307,7 +335,36 @@ impl Shell {
     pub fn toast(&mut self, ctx: &egui::Context, message: impl Into<String>, error: bool) {
         let now = ctx.input(|i| i.time);
         self.toast = Some((message.into(), error, now + if error { 6.0 } else { 3.0 }));
+        self.toast_undo = false;
         ctx.request_repaint_after(std::time::Duration::from_secs(3));
+    }
+
+    /// Shows `message` with an **Undo** button for 6 s, for an edit that removed
+    /// something (UX §11; "Deleted layer 'source' · Undo", #245).
+    pub fn toast_with_undo(&mut self, ctx: &egui::Context, message: impl Into<String>) {
+        let now = ctx.input(|i| i.time);
+        self.toast = Some((message.into(), false, now + 6.0));
+        self.toast_undo = true;
+        ctx.request_repaint_after(std::time::Duration::from_secs(6));
+    }
+
+    /// Whether `Delete` / `Backspace` may delete the selected layer now: only while the
+    /// keys belong to the canvas or the Layers panel, never to the Recipe form (#245).
+    fn delete_keys_apply(&self, ctx: &egui::Context) -> bool {
+        let here = match ctx.memory(|m| m.focused()) {
+            None => self.key_focus,
+            // A widget with keyboard focus (`Tab`) decides by where it is.
+            Some(id) if Some(id) == self.canvas_id => KeyFocus::Canvas,
+            Some(id) => {
+                let inside = ctx.read_response(id).zip(self.layers_rect);
+                if inside.is_some_and(|(r, layers)| layers.contains(r.rect.center())) {
+                    KeyFocus::Layers
+                } else {
+                    KeyFocus::Other
+                }
+            }
+        };
+        matches!(here, KeyFocus::Canvas | KeyFocus::Layers)
     }
 
     /// Hides or shows the menu bar, toolbar, dock and status bar (`Cmd \`, View › Hide
@@ -337,6 +394,16 @@ impl Shell {
             .clone()
             .unwrap_or_else(|| (crate::export::Settings::default(), ws.doc.stem()));
         self.export = Some(ExportDialog { settings, name });
+    }
+
+    /// A new document starts with the default tool (Nudge) and out of mask mode, so a
+    /// first click on it changes nothing (#242).
+    pub fn reset_tool(&mut self) {
+        self.tool = Tool::default();
+        self.mask.active = false;
+        self.mask.tool = None;
+        self.drag = None;
+        self.transform_drag = None;
     }
 
     /// Fits the picture into the working view on the next frame (after an open).
@@ -377,7 +444,7 @@ impl Shell {
     /// Fits the picture into the working view.
     pub fn fit(&mut self) {
         match self.view_rect {
-            Some(rect) => self.camera.fit(rect, self.view),
+            Some(rect) => self.camera.fit(rect, self.view, self.overlays.border),
             None => self.fit_pending = true,
         }
     }
@@ -419,9 +486,17 @@ impl Shell {
     }
 
     /// Draws the whole shell into `ui` (the app's root) and returns what the user asked
-    /// for. Keyboard shortcuts are read first, unless a text field has focus.
+    /// for. Keyboard shortcuts are read first; single keys wait while a text field is
+    /// being edited.
     pub fn show(&mut self, ui: &mut egui::Ui, mut ws: Option<&mut Workspace>) -> Vec<Action> {
         let mut actions = Vec::new();
+        // A press anywhere else ends a text edit, as a click does: a drag on a slider
+        // must not leave the W field taking the keys (#244).
+        let presses = egui::SurrenderFocusOn::Presses;
+        if ui.ctx().options(|o| o.input_options.surrender_focus_on) != presses {
+            ui.ctx()
+                .options_mut(|o| o.input_options.surrender_focus_on = presses);
+        }
         self.handle_shortcuts(ui.ctx(), &mut actions);
         if let Some(ws) = ws.as_deref_mut() {
             ws.prepare(ui.ctx());
@@ -522,11 +597,31 @@ impl Shell {
                 working::show(self, ui, ws.as_deref(), &mut actions)
             });
         export_dialog::show(self, ws.as_deref(), ui.ctx(), &mut actions);
-        self.show_toast(ui.ctx());
+        if let Some(ws) = ws.as_deref() {
+            self.announce_deletes(ui.ctx(), ws, &actions);
+        }
+        self.show_toast(ui.ctx(), &mut actions);
+        release_focus(ui.ctx());
         actions
     }
 
-    fn show_toast(&mut self, ctx: &egui::Context) {
+    /// A layer delete, from any key, button or menu, says what went and offers Undo:
+    /// it used to happen silently (usability review M9, #245).
+    pub fn announce_deletes(&mut self, ctx: &egui::Context, ws: &Workspace, actions: &[Action]) {
+        use convert64_project::{JsonCommand, LayerRef};
+        let layers = &ws.doc.session().project().layers;
+        for action in actions {
+            if let Action::Run(JsonCommand::LayerRemove {
+                layer: LayerRef::Index(i),
+            }) = action
+                && let Some(layer) = layers.get(*i)
+            {
+                self.toast_with_undo(ctx, format!("Deleted layer '{}'", layer.name()));
+            }
+        }
+    }
+
+    fn show_toast(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let Some((message, error, until)) = &self.toast else {
             return;
         };
@@ -536,28 +631,56 @@ impl Shell {
         }
         let theme = crate::theme::Theme::current(ctx);
         let colour = if *error { theme.error } else { theme.ok };
+        let undo = self.toast_undo;
+        let mut undone = false;
         egui::Area::new(egui::Id::new("toast"))
             .anchor(
                 egui::Align2::CENTER_BOTTOM,
                 [0.0, -2.0 * layout::STATUS_HEIGHT],
             )
-            .interactable(false)
+            .interactable(undo)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    // One line, however long: a wrapped toast reads badly.
-                    let text = egui::RichText::new(message.as_str()).color(colour);
-                    ui.add(egui::Label::new(text).extend());
+                    ui.horizontal(|ui| {
+                        // One line, however long: a wrapped toast reads badly.
+                        let text = egui::RichText::new(message.as_str()).color(colour);
+                        ui.add(egui::Label::new(text).extend());
+                        if undo {
+                            ui.label("·");
+                            let keys = ctx.format_shortcut(&shortcuts::UNDO);
+                            undone = ui
+                                .link("Undo")
+                                .on_hover_text(format!("Undo ({keys})"))
+                                .clicked();
+                        }
+                    });
                 });
             });
+        if undone {
+            actions.push(Action::Undo);
+            self.toast = None;
+        }
     }
 
     /// The shortcuts of `docs/UX.md` §8 that the shell itself handles.
     fn handle_shortcuts(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         use shortcuts as s;
-        // Single keys only when no text field wants them.
-        let typing = ctx.egui_wants_keyboard_input();
+        // Single keys only while no text field is being edited (a `TextEdit`, or a
+        // `DragValue` taking typed digits); a focused slider or button leaves them be
+        // (#244). Arrows, though, belong to whichever widget has focus.
+        let typing = ctx.text_edit_focused();
+        let widget_focused = ctx.egui_wants_keyboard_input();
+        let delete_applies = self.delete_keys_apply(ctx);
         let mut hide_ui = None;
         ctx.input_mut(|i| {
+            // A press moves the keys away from the canvas and the Layers panel, unless
+            // it lands on one of them (they say so as they draw); `Esc` brings them back.
+            if i.pointer.any_pressed() {
+                self.key_focus = KeyFocus::Other;
+            }
+            if i.key_pressed(egui::Key::Escape) {
+                self.key_focus = KeyFocus::Canvas;
+            }
             // Show/Hide UI and Show/Hide Dock (`Cmd \`, `Shift Cmd \`), even while typing.
             // Shift first: a Cmd pattern also matches with Shift held. Shift `\` usually
             // arrives as `|`.
@@ -696,7 +819,10 @@ impl Shell {
             if i.consume_shortcut(&s::COMPARE) {
                 self.compare = self.compare.next();
             }
-            if i.consume_shortcut(&s::DELETE_LAYER) || i.consume_shortcut(&s::DELETE_LAYER_ALT) {
+            if delete_applies
+                && (i.consume_shortcut(&s::DELETE_LAYER)
+                    || i.consume_shortcut(&s::DELETE_LAYER_ALT))
+            {
                 let layer = convert64_project::LayerRef::Index(self.layer);
                 actions.push(Action::Run(convert64_project::JsonCommand::LayerRemove {
                     layer,
@@ -736,6 +862,9 @@ impl Shell {
                 self.mask.size = (self.mask.size * 1.25).min(64.0);
             }
             // Arrows nudge the selected layer: 10 px with Shift, 0.25 px with Alt (UX §6).
+            if widget_focused {
+                return;
+            }
             for (key, dx, dy) in [
                 (egui::Key::ArrowLeft, -1.0, 0.0),
                 (egui::Key::ArrowRight, 1.0, 0.0),
@@ -762,6 +891,24 @@ impl Shell {
         if let Some(hidden) = hide_ui {
             self.set_ui_hidden(ctx, hidden);
         }
+    }
+}
+
+/// Gives the keyboard back to the shortcuts once a slider or `DragValue` is done with:
+/// on `Enter`, and when its drag ends (#244, Figma's behaviour). Text being typed keeps
+/// its focus until `Enter`, `Esc` or a press elsewhere, which egui handles.
+fn release_focus(ctx: &egui::Context) {
+    let Some(id) = ctx.memory(|m| m.focused()) else {
+        return;
+    };
+    if ctx.text_edit_focused() {
+        return;
+    }
+    let drag_widget = ctx.read_response(id).is_some_and(|r| r.sense.senses_drag());
+    let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+    let drag_ended = ctx.drag_stopped_id() == Some(id);
+    if drag_widget && (enter || drag_ended) {
+        ctx.memory_mut(|m| m.surrender_focus(id));
     }
 }
 
@@ -888,6 +1035,309 @@ mod tests {
         shell.toggle_mask_mode();
         let (shell, _) = frame(shell, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
         assert!(!shell.mask.active && !shell.chrome_hidden);
+    }
+
+    /// A document with two layers, "ramp" and "top", and a context to draw it on.
+    fn two_layers() -> (egui::Context, Workspace) {
+        let png = |g: u8| {
+            let rgba = (0..64 * 40)
+                .flat_map(|i| [(i % 64 * 4) as u8, g, 90, 255])
+                .collect();
+            convert64_project::codec::encode_rgba8(64, 40, rgba)
+        };
+        let mut doc = crate::document::Document::from_png("ramp.png", &png(10)).unwrap();
+        doc.add_layer("top.png", &png(200), None).unwrap();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        (ctx, Workspace::new(doc))
+    }
+
+    fn draw(
+        ctx: &egui::Context,
+        shell: &mut Shell,
+        ws: &mut Workspace,
+        events: Vec<egui::Event>,
+    ) -> Vec<Action> {
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        let mut actions = Vec::new();
+        let mut out = ctx.run_ui(input, |ui| actions = shell.show(ui, Some(ws)));
+        out.textures_delta.clear();
+        actions
+    }
+
+    fn press(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+
+    fn removes(actions: &[Action], i: usize) -> bool {
+        use convert64_project::{JsonCommand, LayerRef};
+        actions.iter().any(|a| {
+            *a == Action::Run(JsonCommand::LayerRemove {
+                layer: LayerRef::Index(i),
+            })
+        })
+    }
+
+    /// #245: deleting a layer names it in a toast whose Undo asks for an undo.
+    #[test]
+    fn deleting_a_layer_says_so_and_offers_undo() {
+        let (ctx, mut ws) = two_layers();
+        let mut shell = Shell {
+            layer: 1,
+            ..Shell::default()
+        };
+        draw(&ctx, &mut shell, &mut ws, vec![]);
+        let none = egui::Modifiers::NONE;
+        let actions = draw(
+            &ctx,
+            &mut shell,
+            &mut ws,
+            vec![key(egui::Key::Backspace, none)],
+        );
+        assert!(removes(&actions, 1), "{actions:?}");
+        let (message, error, _) = shell.toast.clone().expect("a toast");
+        assert_eq!(message, "Deleted layer 'top'");
+        assert!(shell.toast_undo && !error);
+
+        // The toast's last word is its Undo link.
+        draw(&ctx, &mut shell, &mut ws, vec![]);
+        let area = ctx
+            .memory(|m| m.area_rect(egui::Id::new("toast")))
+            .expect("the toast is drawn");
+        let undo = area.right_center() - egui::vec2(20.0, 0.0);
+        draw(&ctx, &mut shell, &mut ws, press(undo, true));
+        let actions = draw(&ctx, &mut shell, &mut ws, press(undo, false));
+        assert_eq!(actions, vec![Action::Undo]);
+        assert!(shell.toast.is_none());
+    }
+
+    /// #245: `Delete` / `Backspace` delete only while the canvas or the Layers panel has
+    /// the keys: after a press on either, or `Esc`; not after a press on the Recipe form
+    /// or with another widget focused by `Tab`.
+    #[test]
+    fn delete_keys_act_only_from_the_canvas_or_the_layers_panel() {
+        let none = egui::Modifiers::NONE;
+        let (ctx, mut ws) = two_layers();
+        let mut shell = Shell::default();
+        let delete = |shell: &mut Shell, ws: &mut Workspace| {
+            let actions = draw(&ctx, shell, ws, vec![key(egui::Key::Delete, none)]);
+            shell.toast = None;
+            // Whichever layer is selected (a click on the canvas may select one).
+            removes(&actions, shell.layer)
+        };
+        draw(&ctx, &mut shell, &mut ws, vec![]);
+        assert_eq!(
+            shell.key_focus,
+            KeyFocus::Canvas,
+            "the canvas has the keys first"
+        );
+        assert!(delete(&mut shell, &mut ws));
+
+        // A press on the Recipe form takes them away.
+        let view = shell.view_rect.unwrap();
+        let form = egui::pos2(view.right() + 60.0, view.bottom() - 40.0);
+        draw(&ctx, &mut shell, &mut ws, press(form, true));
+        draw(&ctx, &mut shell, &mut ws, press(form, false));
+        assert_eq!(shell.key_focus, KeyFocus::Other);
+        assert!(!delete(&mut shell, &mut ws));
+
+        // `Esc` gives them back to the canvas.
+        draw(
+            &ctx,
+            &mut shell,
+            &mut ws,
+            vec![key(egui::Key::Escape, none)],
+        );
+        assert!(delete(&mut shell, &mut ws));
+
+        // A press on the canvas, and one on the Layers panel.
+        draw(&ctx, &mut shell, &mut ws, press(form, true));
+        draw(&ctx, &mut shell, &mut ws, press(form, false));
+        draw(&ctx, &mut shell, &mut ws, press(view.center(), true));
+        draw(&ctx, &mut shell, &mut ws, press(view.center(), false));
+        assert_eq!(shell.key_focus, KeyFocus::Canvas);
+        assert!(delete(&mut shell, &mut ws));
+        shell.tab = DockTab::Layers;
+        shell.key_focus = KeyFocus::Other;
+        draw(&ctx, &mut shell, &mut ws, vec![]);
+        let layers = shell.layers_rect.expect("the Layers tab was drawn");
+        draw(&ctx, &mut shell, &mut ws, press(layers.center(), true));
+        draw(&ctx, &mut shell, &mut ws, press(layers.center(), false));
+        assert_eq!(shell.key_focus, KeyFocus::Layers);
+        assert!(delete(&mut shell, &mut ws));
+
+        // A widget outside both, focused with `Tab` (the first is the File menu).
+        shell.key_focus = KeyFocus::Canvas;
+        draw(&ctx, &mut shell, &mut ws, vec![key(egui::Key::Tab, none)]);
+        draw(&ctx, &mut shell, &mut ws, vec![]);
+        assert!(ctx.memory(|m| m.focused()).is_some());
+        assert!(!delete(&mut shell, &mut ws));
+    }
+
+    /// The shell and, beside it, a slider and a `DragValue` as the Recipe form has
+    /// them, frame after frame on one context (#244).
+    struct Form {
+        ctx: egui::Context,
+        shell: Shell,
+        slider: (f32, Option<egui::Response>),
+        drag: (f32, Option<egui::Response>),
+    }
+
+    impl Form {
+        fn new() -> Self {
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx);
+            let mut form = Self {
+                ctx,
+                shell: Shell::default(),
+                slider: (0.5, None),
+                drag: (50.0, None),
+            };
+            form.frame(vec![]);
+            form
+        }
+
+        fn frame(&mut self, events: Vec<egui::Event>) -> Vec<Action> {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut actions = Vec::new();
+            let (shell, slider, drag) = (&mut self.shell, &mut self.slider, &mut self.drag);
+            let mut output = self.ctx.run_ui(input, |ui| {
+                actions = shell.show(ui, None);
+                egui::Area::new(egui::Id::new("form"))
+                    .fixed_pos([400.0, 300.0])
+                    .show(ui.ctx(), |ui| {
+                        let r = egui::Slider::new(&mut slider.0, 0.0..=1.0).show_value(false);
+                        slider.1 = Some(ui.add(r));
+                        drag.1 = Some(ui.add(egui::DragValue::new(&mut drag.0)));
+                    });
+            });
+            output.textures_delta.clear();
+            actions
+        }
+
+        fn slider_id(&self) -> egui::Id {
+            self.slider.1.as_ref().unwrap().id
+        }
+
+        fn drag_id(&self) -> egui::Id {
+            self.drag.1.as_ref().unwrap().id
+        }
+
+        /// Gives `id` keyboard focus, as `Tab` or a click would.
+        fn focus(&mut self, id: egui::Id) {
+            self.ctx.memory_mut(|m| m.request_focus(id));
+            self.frame(vec![]);
+            assert_eq!(self.focused(), Some(id));
+        }
+
+        fn focused(&self) -> Option<egui::Id> {
+            self.ctx.memory(|m| m.focused())
+        }
+
+        fn pointer(&mut self, pos: egui::Pos2, pressed: Option<bool>) {
+            let mut events = vec![egui::Event::PointerMoved(pos)];
+            if let Some(pressed) = pressed {
+                events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            self.frame(events);
+        }
+    }
+
+    /// #244: a slider with focus leaves single keys to the shortcuts (arrows stay with
+    /// the slider), and `Enter` gives the keyboard back.
+    #[test]
+    fn a_focused_slider_leaves_single_keys_to_the_shortcuts() {
+        let none = egui::Modifiers::NONE;
+        let mut form = Form::new();
+        form.focus(form.slider_id());
+        form.frame(vec![key(egui::Key::R, none)]);
+        assert_eq!(form.shell.tool, Tool::Region);
+        let actions = form.frame(vec![key(egui::Key::ArrowLeft, none)]);
+        assert!(actions.is_empty(), "arrows move the slider, not the layer");
+        form.frame(vec![key(egui::Key::Enter, none)]);
+        assert_eq!(form.focused(), None, "Enter drops focus");
+        let actions = form.frame(vec![key(egui::Key::ArrowLeft, none)]);
+        assert_eq!(actions.len(), 1, "arrows nudge again: {actions:?}");
+    }
+
+    /// #244: the end of a drag on a focused slider gives the keyboard back.
+    #[test]
+    fn a_slider_drag_ends_its_focus() {
+        let mut form = Form::new();
+        let id = form.slider_id();
+        let rect = form.slider.1.as_ref().unwrap().rect;
+        form.focus(id);
+        form.pointer(rect.left_center() + egui::vec2(4.0, 0.0), Some(true));
+        form.pointer(rect.center(), None);
+        form.pointer(rect.right_center(), None);
+        form.pointer(rect.right_center(), Some(false));
+        form.frame(vec![]);
+        assert!(
+            form.slider.0 > 0.9,
+            "the drag moved the slider: {}",
+            form.slider.0
+        );
+        assert_eq!(form.focused(), None);
+    }
+
+    /// #244: digits typed into a `DragValue` hold the single keys until `Enter`.
+    #[test]
+    fn typing_into_a_drag_value_holds_single_keys_until_enter() {
+        let none = egui::Modifiers::NONE;
+        let mut form = Form::new();
+        form.focus(form.drag_id());
+        assert!(
+            form.ctx.text_edit_focused(),
+            "the DragValue takes typed digits"
+        );
+        form.frame(vec![key(egui::Key::R, none), egui::Event::Text("r".into())]);
+        assert_ne!(form.shell.tool, Tool::Region, "R is typed, not a shortcut");
+        form.frame(vec![key(egui::Key::Enter, none)]);
+        form.frame(vec![key(egui::Key::R, none)]);
+        assert_eq!(form.shell.tool, Tool::Region);
+    }
+
+    /// #244: a press elsewhere (the start of a slider drag) ends typing, not only a click.
+    #[test]
+    fn a_press_elsewhere_ends_typing() {
+        let mut form = Form::new();
+        form.focus(form.drag_id());
+        let slider = form.slider.1.as_ref().unwrap().rect.center();
+        form.pointer(slider, Some(true));
+        assert!(!form.ctx.text_edit_focused());
+        form.pointer(slider, Some(false));
+        form.frame(vec![key(egui::Key::R, egui::Modifiers::NONE)]);
+        assert_eq!(form.shell.tool, Tool::Region);
+    }
+
+    /// #244: `Esc` ends typing and returns the keys to the canvas in the same frame.
+    #[test]
+    fn esc_returns_the_keys_to_the_canvas() {
+        let none = egui::Modifiers::NONE;
+        let mut form = Form::new();
+        form.focus(form.drag_id());
+        form.frame(vec![key(egui::Key::Escape, none), key(egui::Key::R, none)]);
+        assert_eq!(form.focused(), None);
+        assert_eq!(form.shell.tool, Tool::Region);
     }
 
     #[test]

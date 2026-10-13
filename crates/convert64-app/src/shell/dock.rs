@@ -212,7 +212,16 @@ fn tab_content(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui, actions: 
     if let Some(ws) = ws {
         match shell.tab {
             DockTab::Export => return export_tab(shell, ws, ui),
-            DockTab::Layers => return super::layers::show(shell, ws, ui, actions),
+            DockTab::Layers => {
+                super::layers::show(shell, ws, ui, actions);
+                // A press on the panel gives it the Delete key (#245).
+                let rect = ui.min_rect();
+                shell.layers_rect = Some(rect);
+                if ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(rect) {
+                    shell.key_focus = super::KeyFocus::Layers;
+                }
+                return;
+            }
             DockTab::Recipe => return super::recipe::show(shell, ws, ui, actions),
         }
     }

@@ -76,7 +76,7 @@ The solved C64 image, for inspection and comparison.
 
 | Aspect | Decision | Why |
 |---|---|---|
-| Zoom | Integer only: 1×, 2×, 3×, 4×, 6×, 8×; same keys as above; `Cmd/Ctrl 0` fits to the largest integer zoom | nearest-neighbour texture; fractional zoom blurs pixels |
+| Zoom | Integer only: 1×, 2×, 3×, 4×, 6×, 8×; same keys as above; `Cmd/Ctrl 0` fits to the largest integer zoom, and the view opens at it: the picture with at least half the border (16 px) on each side when the border is drawn, with the Source margin when it is not | nearest-neighbour texture; fractional zoom blurs pixels |
 | Aspect | 2:1 pixels in multicolor modes rendered as 2 device px per C64 px at 1×; optional "PAL 0.936" correction toggle, off by default | what the solver optimised, then what a TV would show |
 | Pan | `Space`+drag, middle-drag, scroll, or the result panel as navigator | universal |
 | Border | 32 px-equivalent border in the chosen border colour, toggle `View › Border` | judging edge colours against the frame is part of the craft |
@@ -100,7 +100,7 @@ Row anatomy, left to right (editor consensus): **eye** · **thumbnail** (source,
 
 - Subtitle shows the recipe in short form: `FS 80% · OKLab · Force`. This is the one departure from editors, and it is the point of the product: you see at a glance how each layer will be dithered.
 - Blend mode and opacity controls sit above the list (Photoshop/Krita/Photopea). Mask thumbnail appears beside the layer thumbnail with a chain icon when a mask exists.
-- Bottom icon strip: **New from file**, **Duplicate**, **Add mask**, **Group** (v2), **Delete**. Drag to reorder (`egui_dnd`), drop a file onto the panel or the preview to add a layer, double-click to rename, `Cmd/Ctrl J` duplicate, `Delete`/`Backspace` delete with undo.
+- Bottom icon strip: **New from file**, **Duplicate**, **Add mask**, **Group** (v2), **Delete**. Drag to reorder (`egui_dnd`), drop a file onto the panel or the preview to add a layer, double-click to rename, `Cmd/Ctrl J` duplicate, `Delete`/`Backspace` delete with undo, but only while the Layers panel or the canvas has the keys (after a press on either, or `Esc`), never from the Recipe form; every delete shows a toast naming the layer with an **Undo** button: "Deleted layer 'source' · Undo" (#245).
 - Selecting a layer selects what the Recipe panel edits and what nudging moves. Multi-select applies recipe changes to all (v2).
 - Empty state (no layers): one sentence and one button — *"Drop an image here or open one. Convert64 shows the C64 result as soon as it loads."* **Open image…**
 
@@ -134,7 +134,7 @@ Controls: `Slider` for bounded values with the value field editable on click; `D
 
 ## 7. Cell tools (steering)
 
-Three tools in the toolbar, all operate on the preview, all additive to the project, all undoable:
+Three tools in the toolbar, all operate on the preview, all additive to the project, all undoable. **Nudge** (`V`, Move in Photoshop and Figma) is the default, on first run and for every picture opened, so a stray click selects a layer and changes nothing; Pin, Lock and Region act only once picked, and a click outside the picture (on the border or the pasteboard) never pins, locks or paints (#242):
 
 | Tool | Key | Click | Drag | Feedback |
 |---|---|---|---|---|
@@ -168,7 +168,7 @@ Mask thumbnails in the Layers panel (§5) show the raster with modifiers applied
 
 ## 8. Keyboard shortcuts
 
-`Cmd` on macOS, `Ctrl` elsewhere; `Option`↔`Alt`. Menu items show the accelerator via `ctx.format_shortcut`. Shortcuts are suppressed while a text field has focus.
+`Cmd` on macOS, `Ctrl` elsewhere; `Option`↔`Alt`. Menu items show the accelerator via `ctx.format_shortcut`. Single-key shortcuts are suppressed only while text is being typed (a text field, or a number field after a click on it); a slider or button with focus leaves them working, though arrows then belong to that control. `Enter` and the end of a drag hand the keyboard back from a slider or number field, a press anywhere else ends typing, and `Esc` always returns the keyboard to the canvas (Figma behaviour; #244).
 
 | Action | Shortcut | Convention source |
 |---|---|---|
