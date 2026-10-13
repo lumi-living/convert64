@@ -22,6 +22,10 @@ pub struct Workspace {
     pub solve_ms: Option<f64>,
     /// A full search is running and the solution on screen is provisional or stale.
     pub solving: bool,
+    /// When the running solve was submitted (egui seconds), for the slow-solve state.
+    pub solve_started: Option<f64>,
+    /// The user paused the solve (UX §11); the result on screen is stale until Resume.
+    pub paused: bool,
     source: Option<(u64, TextureHandle)>,
     result: Option<(*const Solution, TextureHandle)>,
     /// One thumbnail per layer, bottom first, keyed by the source it shows.
@@ -65,6 +69,8 @@ impl Workspace {
             solution: None,
             solve_ms: None,
             solving: true,
+            solve_started: None,
+            paused: false,
             source: None,
             result: None,
             thumbs: Vec::new(),

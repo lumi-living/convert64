@@ -22,7 +22,7 @@ use convert64_project::{JsonCommand, LayerRef};
 use egui::{Response, RichText, Ui};
 
 /// The width of a row's label column, in points.
-const LABEL_WIDTH: f32 = 84.0;
+const LABEL_WIDTH: f32 = 90.0;
 
 /// Emits commands for one layer.
 struct Form<'a> {
@@ -195,6 +195,7 @@ pub(super) fn show(shell: &mut Shell, ws: &Workspace, ui: &mut Ui, actions: &mut
     let i = shell.layer.min(project.layers.len() - 1);
     let layer = &project.layers[i];
     let mut f = Form { actions, layer: i };
+    picture(&mut f, ws, ui);
     ui.label(
         RichText::new(format!("Layer: {}", layer.name()))
             .small()
@@ -581,6 +582,139 @@ fn curves(f: &mut Form, shell: &mut Shell, c: &Curves, ui: &mut Ui) {
         pts.remove(idx);
         set(f, None, pts);
     }
+}
+
+/// The picture-wide settings at the top (Figma `Recipe tab`): mode, palette (Pepto PAL
+/// and NTSC, Colodore, a `.vpl` file) and the background (auto or one colour).
+fn picture(f: &mut Form, ws: &Workspace, ui: &mut Ui) {
+    use convert64_core::Palette;
+    use convert64_core::command::BackgroundPin;
+    use convert64_core::mode::Mode;
+    use convert64_core::solve::Background;
+    use convert64_project::PaletteSpec;
+    let mode = ws.doc.mode();
+    ui.horizontal(|ui| {
+        label(ui, "Mode", false);
+        egui::ComboBox::from_id_salt("recipe_mode")
+            .selected_text(super::status::mode_name(mode))
+            .show_ui(ui, |ui| {
+                for m in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
+                    if ui
+                        .selectable_label(m == mode, super::status::mode_name(m))
+                        .clicked()
+                        && m != mode
+                    {
+                        f.actions.push(Action::SetMode(m));
+                    }
+                }
+            });
+    });
+    let palette = ws.doc.palette();
+    let presets = [
+        (PaletteSpec::PeptoPal, Palette::pepto_pal(), "Pepto PAL"),
+        (PaletteSpec::PeptoNtsc, Palette::pepto_ntsc(), "Pepto NTSC"),
+        (
+            PaletteSpec::Colodore,
+            Palette::colodore(50.0, 100.0, 50.0),
+            "Colodore",
+        ),
+    ];
+    let current = presets
+        .iter()
+        .find(|(_, p, _)| p == palette)
+        .map_or_else(|| palette.name().to_owned(), |(_, _, n)| (*n).to_owned());
+    ui.horizontal(|ui| {
+        label(ui, "Palette", current != "Pepto PAL");
+        egui::ComboBox::from_id_salt("recipe_palette")
+            .selected_text(&current)
+            .show_ui(ui, |ui| {
+                for (spec, p, name) in presets {
+                    if ui.selectable_label(&p == palette, name).clicked() && &p != palette {
+                        f.emit(None, JsonCommand::PaletteSet { palette: spec });
+                    }
+                }
+                ui.separator();
+                if ui.button("VICE palette file (.vpl)…").clicked() {
+                    f.actions.push(Action::LoadPalette);
+                }
+            });
+    });
+    let bg = ws.doc.session().project().solve.background;
+    ui.horizontal(|ui| {
+        label(ui, "Background", bg != Background::Auto);
+        ui.vertical(|ui| {
+            let mut auto = bg == Background::Auto;
+            if ui.checkbox(&mut auto, "Auto (the solver picks)").changed() {
+                let background = if auto {
+                    Background::Auto
+                } else {
+                    let chosen = ws
+                        .solution
+                        .as_ref()
+                        .and_then(|s| s.background)
+                        .unwrap_or(ColourIndex::ALL[0]);
+                    Background::Fixed(chosen)
+                };
+                f.emit(
+                    None,
+                    JsonCommand::BackgroundPin(BackgroundPin { background }),
+                );
+            }
+            let side = layout::SWATCH_SIZE;
+            ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
+            for row in ColourIndex::ALL.chunks(8) {
+                ui.horizontal(|ui| {
+                    for &c in row {
+                        let (rect, resp) =
+                            ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
+                        let rgb = palette.rgb(c);
+                        ui.painter().rect_filled(
+                            rect,
+                            1.0,
+                            egui::Color32::from_rgb(rgb.r, rgb.g, rgb.b),
+                        );
+                        let solved = ws.solution.as_ref().and_then(|s| s.background) == Some(c);
+                        let pinned = bg == Background::Fixed(c);
+                        // The chosen background is ringed: accent when pinned, text colour when
+                        // the solver picked it (not colour alone: the ring's width differs too).
+                        if pinned || solved {
+                            let (w, colour) = if pinned {
+                                (2.5, Theme::current(ui.ctx()).accent)
+                            } else {
+                                (1.5, ui.visuals().text_color())
+                            };
+                            ui.painter().rect_stroke(
+                                rect,
+                                1.0,
+                                (w, colour),
+                                egui::StrokeKind::Outside,
+                            );
+                        }
+                        let tip = format!(
+                            "Background {}{}",
+                            c.get(),
+                            if pinned {
+                                " (pinned)"
+                            } else if solved {
+                                " (solver's pick)"
+                            } else {
+                                ""
+                            }
+                        );
+                        if resp.on_hover_text(tip).clicked() && !pinned {
+                            f.emit(
+                                None,
+                                JsonCommand::BackgroundPin(BackgroundPin {
+                                    background: Background::Fixed(c),
+                                }),
+                            );
+                        }
+                    }
+                });
+            }
+        });
+    });
+    ui.separator();
 }
 
 /// The Mask group (UX §6 item 3): modifiers, the sources list and Edit mask; a layer

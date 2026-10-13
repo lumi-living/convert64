@@ -37,6 +37,9 @@ pub(super) fn show(
     };
     let view = ui.max_rect();
     let response = ui.allocate_rect(view, Sense::click_and_drag());
+    // Screen readers: the view is one focusable area with a name (UX §12).
+    let name = format!("Working view, {}", shell.view.label());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, &name));
     shell.view_rect = Some(view);
     if shell.fit_pending {
         shell.fit_pending = false;
@@ -44,7 +47,9 @@ pub(super) fn show(
         shell.camera.fit(view, ViewMode::Result);
     }
     navigate(shell, ui, &response, view);
-    if shell.mask.tool.is_some() {
+    if shell.hand {
+        // The hand tool only pans.
+    } else if shell.mask.tool.is_some() {
         super::mask::interact(shell, ws, ui, &response, view, actions);
     } else {
         super::tools::interact(shell, ws, ui, &response, view, actions);
@@ -166,7 +171,7 @@ fn navigate(shell: &mut Shell, ui: &Ui, response: &egui::Response, view: Rect) {
         }
     }
     let panning = response.dragged_by(egui::PointerButton::Middle)
-        || (space && response.dragged_by(egui::PointerButton::Primary));
+        || ((space || shell.hand) && response.dragged_by(egui::PointerButton::Primary));
     if panning {
         shell.camera.pan(mode, response.drag_delta());
     }
@@ -193,6 +198,12 @@ fn draw(shell: &Shell, ws: &Workspace, painter: &Painter, view: Rect, mode: View
             match ws.result_texture() {
                 Some(tex) => {
                     painter.image(tex.id(), picture, uv, Color32::WHITE);
+                    // A full search running for a while: the last result, slightly faded
+                    // (UX §11).
+                    let now = painter.ctx().input(|i| i.time);
+                    if ws.solving && ws.solve_started.is_some_and(|t| now - t > 0.2) {
+                        painter.rect_filled(picture, 0.0, theme.canvas_bg.gamma_multiply(0.25));
+                    }
                 }
                 None => {
                     painter.rect_filled(picture, 0.0, theme.canvas_bg);

@@ -152,6 +152,26 @@ impl Document {
         })
     }
 
+    /// Sets the palette from a VICE `.vpl` file (`palette_set`): linked by `path`
+    /// natively, from the session's store in the browser.
+    pub fn load_palette(
+        &mut self,
+        name: &str,
+        bytes: &[u8],
+        path: Option<&Path>,
+    ) -> Result<(), ProjectError> {
+        let path = match path {
+            Some(p) => p.to_owned(),
+            None => {
+                self.session.store().write(Path::new(name), bytes)?;
+                PathBuf::from(name)
+            }
+        };
+        self.run(JsonCommand::PaletteSet {
+            palette: convert64_project::PaletteSpec::Vpl(path),
+        })
+    }
+
     /// Adds a picture as a new layer on top (a file dropped on an open project): its
     /// bytes go into the session's store (browser) or it is linked by `path` (native).
     pub fn add_layer(

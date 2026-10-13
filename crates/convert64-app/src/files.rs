@@ -18,6 +18,8 @@ pub enum Purpose {
     AddLayer,
     /// Load it as the selected layer's mask (the mask options bar's Load PNG…).
     Mask,
+    /// Load it as the palette (a VICE `.vpl` file).
+    Palette,
 }
 
 /// A finished file operation.
@@ -113,12 +115,17 @@ impl Files {
     /// Open… (`Cmd O`): the native dialog or the browser's file picker, the result
     /// tagged with what it is for.
     pub fn pick_open(&self, ctx: &egui::Context, purpose: Purpose) {
-        let dialog = rfd::AsyncFileDialog::new().add_filter(OPEN_FILTER.0, OPEN_FILTER.1);
+        let filter = match purpose {
+            Purpose::Palette => ("VICE palette", &["vpl"][..]),
+            Purpose::Mask => ("Greyscale PNG", &["png"][..]),
+            _ => OPEN_FILTER,
+        };
+        let dialog = rfd::AsyncFileDialog::new().add_filter(filter.0, filter.1);
         #[cfg(not(target_arch = "wasm32"))]
         {
             let _ = ctx;
             let picked = rfd::FileDialog::new()
-                .add_filter(OPEN_FILTER.0, OPEN_FILTER.1)
+                .add_filter(filter.0, filter.1)
                 .pick_file();
             drop(dialog);
             if let Some(path) = picked {

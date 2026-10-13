@@ -110,6 +110,13 @@ fn result(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui) {
     let theme = Theme::current(ui.ctx());
     let size = egui::vec2(ui.available_width(), layout::RESULT_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Other,
+            true,
+            "C64 result, click to inspect",
+        )
+    });
     let painter = ui.painter_at(rect);
     let Some(ws) = ws else {
         painter.rect_filled(rect, 0.0, theme.canvas_bg);
