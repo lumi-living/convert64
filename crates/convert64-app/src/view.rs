@@ -18,6 +18,11 @@ pub const BORDER: f32 = 32.0;
 /// picture's edge do not sit on the view's edge (#246).
 pub const FIT_MARGIN: f32 = 0.05;
 
+/// How much of the border Result mode's *Fit* keeps in view on each side, in screen
+/// units: half of it. A frame that is partly cropped still shows the edge colours against
+/// the border, and it lets the picture open a step larger (#247).
+pub const FIT_BORDER: f32 = BORDER / 2.0;
+
 /// Source zoom steps, as scale factors (points per screen unit): 25 %–800 %.
 pub const SOURCE_STEPS: [f32; 10] = [0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0];
 
@@ -153,10 +158,12 @@ impl Camera {
         self.clamp();
     }
 
-    /// Fits the screen in `view` (`Cmd 0`): fractional in Source mode, leaving
-    /// [`FIT_MARGIN`] of the view free on each side; the largest integer step that fits
-    /// in Result mode (with the border).
-    pub fn fit(&mut self, view: Rect, mode: ViewMode) {
+    /// Fits the screen in `view` (`Cmd 0`, and on open): fractional in Source mode,
+    /// leaving [`FIT_MARGIN`] of the view free on each side; in Result mode the largest
+    /// integer step at which the picture fits with [`FIT_BORDER`] of the border around it
+    /// when the `border` is drawn, or with the Source margin when it is not. Screen units
+    /// already carry multicolor's 2:1 pixels, so both modes fit alike.
+    pub fn fit(&mut self, view: Rect, mode: ViewMode, border: bool) {
         self.centre = (SCREEN / 2.0).to_pos2();
         match mode {
             ViewMode::Source => {
@@ -165,8 +172,12 @@ impl Camera {
                 self.source_zoom = s.clamp(SOURCE_STEPS[0], SOURCE_STEPS[SOURCE_STEPS.len() - 1]);
             }
             ViewMode::Result => {
-                let framed = SCREEN + Vec2::splat(2.0 * BORDER);
-                let s = (view.width() / framed.x).min(view.height() / framed.y);
+                let (room, framed) = if border {
+                    (view.size(), SCREEN + Vec2::splat(2.0 * FIT_BORDER))
+                } else {
+                    (view.size() * (1.0 - 2.0 * FIT_MARGIN), SCREEN)
+                };
+                let s = (room.x / framed.x).min(room.y / framed.y);
                 self.result_zoom = RESULT_STEPS
                     .into_iter()
                     .rev()
@@ -310,10 +321,10 @@ mod tests {
         assert_eq!(cam.result_zoom, 3);
         cam.zoom_about(view(), ViewMode::Result, 1.1, view().center());
         assert_eq!(cam.result_zoom, 4);
-        cam.fit(view(), ViewMode::Result);
-        // (320 + 64) × 2 = 768 ≤ 800 and (200 + 64) × 2 = 528 ≤ 600; × 3 does not fit.
+        cam.fit(view(), ViewMode::Result, true);
+        // (320 + 32) × 2 = 704 ≤ 800 and (200 + 32) × 2 = 464 ≤ 600; × 3 does not fit.
         assert_eq!(cam.result_zoom, 2);
-        cam.fit(view(), ViewMode::Source);
+        cam.fit(view(), ViewMode::Source, true);
         // 800 × 600 less 5 % on each side is 720 × 540: 720 / 320 = 2.25.
         assert!((cam.source_zoom - 2.25).abs() < 1e-6);
         assert_eq!(cam.percent(ViewMode::Source), 225);
@@ -328,7 +339,7 @@ mod tests {
                 source_zoom: 8.0,
                 result_zoom: 8,
             };
-            cam.fit(view, ViewMode::Source);
+            cam.fit(view, ViewMode::Source, true);
             let picture = cam.picture_rect(view, ViewMode::Source);
             assert!(view.contains_rect(picture), "{size:?}: {picture:?}");
             assert_eq!(picture.center(), view.center(), "{size:?}");
@@ -338,6 +349,37 @@ mod tests {
                 / 2.0;
             assert!((0.04..=0.06).contains(&gap), "{size:?}: {gap}");
         }
+    }
+
+    #[test]
+    fn result_fit_takes_the_largest_integer_zoom_that_fits() {
+        let fit = |w: f32, h: f32, border: bool| {
+            let view = Rect::from_min_size(pos2(10.0, 20.0), vec2(w, h));
+            let mut cam = Camera::default();
+            cam.fit(view, ViewMode::Result, border);
+            let picture = cam.picture_rect(view, ViewMode::Result);
+            assert!(view.contains_rect(picture), "{w}×{h}: {picture:?}");
+            cam.result_zoom
+        };
+        // The review's 1440 × 900 browser window leaves a working view of about
+        // 1120 × 816: 3× (960 × 600) fits with most of the border; the whole border
+        // (1152 wide) would not, which kept it at 2×.
+        assert_eq!(fit(1120.0, 816.0, true), 3);
+        assert_eq!(fit(1120.0, 816.0, false), 3);
+        // The border counts only when it is drawn: 680 high fits 3× (600 and 5 % above
+        // and below) without it, but not with half of it (3 × 232 = 696).
+        assert_eq!(fit(1300.0, 680.0, true), 2);
+        assert_eq!(fit(1300.0, 680.0, false), 3);
+        // Large views go up the integer steps (no 5×); small ones stop at 1×.
+        assert_eq!(fit(2600.0, 1800.0, true), 6);
+        assert_eq!(fit(400.0, 260.0, true), 1);
+        // Multicolor's 2:1: one multicolor pixel (two screen units) is 2z × z points.
+        let mut cam = Camera::default();
+        cam.fit(view(), ViewMode::Result, true);
+        let z = f32::from(cam.result_zoom);
+        let picture = cam.picture_rect(view(), ViewMode::Result);
+        assert_eq!(picture.width() / 160.0, 2.0 * z);
+        assert_eq!(picture.height() / 200.0, z);
     }
 
     #[test]

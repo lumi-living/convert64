@@ -373,7 +373,7 @@ impl Shell {
     /// Fits the picture into the working view.
     pub fn fit(&mut self) {
         match self.view_rect {
-            Some(rect) => self.camera.fit(rect, self.view),
+            Some(rect) => self.camera.fit(rect, self.view, self.overlays.border),
             None => self.fit_pending = true,
         }
     }
