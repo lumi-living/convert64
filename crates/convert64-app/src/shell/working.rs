@@ -18,10 +18,18 @@ const CHECKER: f32 = 16.0;
 /// The smallest cell, in points, the grid overlay is drawn at; finer would be a grey wash.
 const GRID_MIN_CELL: f32 = 6.0;
 
+/// The smallest cell, in points, that gets a pin or lock glyph (Figma `Cell Badge`).
+const GLYPH_MIN_CELL: f32 = 16.0;
+
 /// A/B flicker: each image's time on screen (2 Hz).
 const FLICKER_S: f64 = 0.25;
 
-pub(super) fn show(shell: &mut Shell, ui: &mut Ui, ws: Option<&Workspace>) {
+pub(super) fn show(
+    shell: &mut Shell,
+    ui: &mut Ui,
+    ws: Option<&Workspace>,
+    actions: &mut Vec<super::Action>,
+) {
     let Some(ws) = ws else {
         shell.hover = None;
         empty(ui);
@@ -36,6 +44,7 @@ pub(super) fn show(shell: &mut Shell, ui: &mut Ui, ws: Option<&Workspace>) {
         shell.camera.fit(view, ViewMode::Result);
     }
     navigate(shell, ui, &response, view);
+    super::tools::interact(shell, ws, ui, &response, view, actions);
 
     let painter = ui.painter_at(view);
     let pointer = response.hover_pos();
@@ -107,6 +116,8 @@ pub(super) fn show(shell: &mut Shell, ui: &mut Ui, ws: Option<&Workspace>) {
         }
         Compare::Off => draw(shell, ws, &painter, view, shell.shown()),
     }
+
+    super::tools::draw_drag(shell, ws, &painter, view);
 
     // The picture point under the pointer, for the status bar.
     shell.hover = pointer.map(|p| {
@@ -234,18 +245,20 @@ fn draw(shell: &Shell, ws: &Workspace, painter: &Painter, view: Rect, mode: View
     }
     if shell.overlays.steering {
         let (pins, locks) = ws.steered_cells();
-        for cell in pins {
-            painter.rect_stroke(
-                to_view(cell_rect(grid, cell)),
-                0.0,
-                (2.0, theme.pin),
-                StrokeKind::Inside,
-            );
-        }
-        for cell in locks {
-            let r = to_view(cell_rect(grid, cell));
-            painter.rect_stroke(r, 0.0, (2.0, theme.lock), StrokeKind::Inside);
-            painter.line_segment([r.left_top(), r.right_bottom()], (1.0, theme.lock));
+        for (cells, colour, glyph) in [
+            (pins, theme.pin, icons::PIN),
+            (locks, theme.lock, icons::LOCK),
+        ] {
+            for cell in cells {
+                let r = to_view(cell_rect(grid, cell));
+                painter.rect_stroke(r, 0.0, (1.5, colour), StrokeKind::Inside);
+                // The glyph at the top right once a cell is big enough to hold it.
+                if r.width() >= GLYPH_MIN_CELL {
+                    let font = egui::FontId::new(r.width() * 0.45, glyph.font_family());
+                    let at = r.right_top() + vec2(-1.0, 1.0);
+                    painter.text(at, egui::Align2::RIGHT_TOP, glyph.codepoint, font, colour);
+                }
+            }
         }
     }
 }

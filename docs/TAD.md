@@ -599,6 +599,15 @@ As built in #207 (2026-10-13): the Recipe tab (UX §6), for the selected layer.
 - **Advanced**, collapsed (`solve_set`): ADR-010's divergences from png2c64 — chroma guard, cell clamp, bridging, max luma diff, mix levels, pair bias — all off by default, then the solver (reference or native), refinements and finalists; with the native solver also its luma-pair bias and the layer's smooth and adaptive settings.
 - **Conventions.** Label, slider and value field on one row; a dot before a changed label; a double click on a label resets that value; each group has Reset and its title takes the accent colour when anything in it changed. A drag is one undo step and takes the fast path until release (#206's gestures). The Transform group is #197 and the Mask group #78.
 
+As built in #208 (2026-10-13): the steering tools (UX §7).
+
+- **Pin** (`P`): a click pins the cell's current colour set (`cell_pin`, `full`); a drag pins a rectangle, each cell to its own set, as one undo step (`Document::run_all`); `Alt`-click pins only the colour under the cursor. **Lock** (`L`): click or rectangle `cell_lock`; on cells that are all locked it unlocks. **Nudge** (`V`): a click selects the topmost visible layer under the cursor, a drag moves it sub-pixel (`layer_nudge` as one gesture: fast path while dragging, full solve on release); the arrow keys nudge the selected layer 1 px, 10 px with `Shift`, 0.25 px with `Alt`.
+- **Feedback.** Pinned and locked cells are outlined in the `pin` and `lock` colours with the glyph at the top right once a cell is 16 pt; a drag shows its rectangle; a toast says "Pinned 7 cells".
+- **Right-click** a cell: Pin colours, Lock/Unlock, Clear pin/lock (`cell_clear`), Jump to worst neighbour, Copy cell colours (hex). `Shift Cmd ]` / `[` walk the clash report's worst-first order.
+- **Undo steps.** `Document` keeps its own undo steps over the editor's history, so a group of commands (a rectangle of pins) undoes and redoes as one.
+- **Not here.** The Region tool (`R`) paints a mask carrying its own recipe: the registry has no region commands yet, so it arrives with the mask tools (#78), which add them with CLI and MCP parity.
+- **Screenshots** take `--command <json>` (registry commands run after opening), `--zoom` and `--centre`.
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.
