@@ -535,7 +535,8 @@ impl LayerCache {
             },
         );
         if !adj.is_identity() {
-            adjust_planes(&mut rgba, adj);
+            let size = (rect.width() as usize, rect.height() as usize);
+            adjust_planes(&mut rgba, size, adj, grid.n());
         }
         let raster = LayerRaster {
             rect,
@@ -546,10 +547,12 @@ impl LayerCache {
     }
 }
 
-/// A layer's adjustments applied to its resampled, premultiplied planes (#190: after
-/// resampling, where png2c64 applies its gamma and range matching). Fully transparent
-/// pixels stay transparent, so the planes' extents still hold.
-fn adjust_planes(planes: &mut Planes, adj: &Adjustments) {
+/// A layer's adjustments applied to its resampled, premultiplied planes (`w × h`, on a
+/// grid `n ×` the target's; #190: after resampling, where png2c64 applies its gamma,
+/// sharpen and range matching). Fully transparent pixels stay transparent, so the planes'
+/// extents still hold; the sharpen weights its blur by alpha and stays inside the
+/// layer's rectangle, so the cells an adjustment can change are the rectangle's (#228).
+fn adjust_planes(planes: &mut Planes, size: (usize, usize), adj: &Adjustments, n: u8) {
     let mut px: Vec<[f32; 4]> = (0..planes.a.len())
         .map(|i| {
             let a = planes.a[i];
@@ -560,17 +563,7 @@ fn adjust_planes(planes: &mut Planes, adj: &Adjustments) {
             }
         })
         .collect();
-    let plan = adj.plan();
-    if !plan.is_identity() {
-        crate::par::for_each(&mut px, |p| {
-            if p[3] > 0.0 {
-                plan.apply(p);
-            }
-        });
-    }
-    if let Some(m) = &adj.match_range {
-        m.apply(&mut px);
-    }
+    adj.apply_image(&mut px, size, u32::from(n));
     for (i, p) in px.iter().enumerate() {
         let a = planes.a[i];
         if a > 0.0 {
@@ -584,7 +577,8 @@ fn adjust_planes(planes: &mut Planes, adj: &Adjustments) {
 /// The one layer a plain project consists of, if it is plain (#190): a bitmap mode, no
 /// regions, one visible layer that is fully opaque 8-bit sRGB, filling the screen
 /// exactly (no offset, no flip, no rotation: #198), at full opacity, Normal blend, with no mask and no
-/// adjustment but gamma and range matching. Such a project gets png2c64's front end.
+/// adjustment but gamma, png2c64's sharpen (its kernel, no threshold: #228) and range
+/// matching. Such a project gets png2c64's front end.
 fn plain_layer<'a>(layers: &'a [Layer], regions: &[Region], grid: SuperGrid) -> Option<&'a Layer> {
     use crate::mode::Mode;
     if !matches!(grid.target(), Mode::MulticolorBitmap | Mode::HiresBitmap) || !regions.is_empty() {
@@ -598,10 +592,12 @@ fn plain_layer<'a>(layers: &'a [Layer], regions: &[Region], grid: SuperGrid) -> 
     let src = layer.source();
     let (w, h) = src.size();
     let t = layer.transform();
+    let adj = layer.adjustments();
     let tone_only = Adjustments {
         gamma: crate::layer::Gamma::IDENTITY,
+        sharpen: crate::layer::Sharpen::default(),
         match_range: None,
-        ..layer.adjustments().clone()
+        ..adj.clone()
     };
     (src.srgb8().is_some()
         && layer.opacity() == 1.0
@@ -612,13 +608,14 @@ fn plain_layer<'a>(layers: &'a [Layer], regions: &[Region], grid: SuperGrid) -> 
         && t.rotate() == 0.0
         && !t.flip_h()
         && !t.flip_v()
+        && (adj.sharpen.is_off() || adj.sharpen.is_png2c64())
         && tone_only.is_identity())
     .then_some(layer)
 }
 
 /// png2c64's front end for a plain layer: its 8-bit source scaled straight to the
-/// target with its Mitchell bicubic, then its preprocessing with the layer's gamma, then
-/// range matching onto the layer's targets (`solve::png2c64_ref::prepare`).
+/// target with its Mitchell bicubic, then its preprocessing with the layer's gamma and
+/// sharpen, then range matching onto the layer's targets (`solve::png2c64_ref::prepare`).
 fn png2c64_front_end(layer: &Layer, grid: SuperGrid) -> Vec<[f32; 3]> {
     use crate::solve::png2c64_ref::{prepare, preprocess, quantize::Mode as RefMode};
     let src = layer.source();
@@ -635,6 +632,7 @@ fn png2c64_front_end(layer: &Layer, grid: SuperGrid) -> Vec<[f32; 3]> {
         mode,
         &preprocess::Settings {
             gamma: adj.gamma.get(),
+            sharpen: adj.sharpen.amount(),
             ..preprocess::Settings::default()
         },
         None,
@@ -867,7 +865,8 @@ impl Compositor {
     }
 
     /// Whether a plain project (one opaque 8-bit layer filling the screen, no mask, no
-    /// regions, no adjustment but gamma and range matching) takes png2c64's front end
+    /// regions, no adjustment but gamma, png2c64's sharpen and range matching) takes
+    /// png2c64's front end
     /// (#190; on by default) or the supersampled composite like any other. The next
     /// update recomposites everything when this changes.
     pub fn set_png2c64_front_end(&mut self, on: bool) {
@@ -1774,6 +1773,139 @@ mod tests {
             let mut c = Compositor::new(g);
             c.update(&layers, &regions);
             assert!(!c.frame().png2c64_prepared(), "{what}");
+        }
+    }
+
+    /// #228: a plain layer sharpened with png2c64's kernel and no threshold keeps
+    /// png2c64's front end, with the amount in its preprocessing; a Gaussian radius or a
+    /// threshold, which png2c64 does not have, is composited.
+    #[test]
+    fn png2c64_sharpen_keeps_the_front_end() {
+        use crate::layer::{Radius, Sharpen};
+        use crate::solve::png2c64_ref::{prepare, preprocess, quantize::Mode as RefMode};
+        let base = plain();
+        let with = |s: Sharpen| {
+            let mut l = base.clone();
+            l.set_adjustments(Adjustments {
+                sharpen: s,
+                ..base.adjustments().clone()
+            });
+            l
+        };
+        let g = grid(Mode::MulticolorBitmap, 4);
+        for amount in [0.5, -0.5] {
+            let layer = with(Sharpen::png2c64(amount).unwrap());
+            let mut c = Compositor::new(g);
+            c.update(std::slice::from_ref(&layer), &[]);
+            assert!(c.frame().png2c64_prepared(), "{amount}");
+            let want = prepare(
+                layer.source().srgb8().unwrap(),
+                (200, 125),
+                RefMode::Multicolor,
+                &preprocess::Settings {
+                    sharpen: amount,
+                    ..preprocess::Settings::default()
+                },
+                None,
+            );
+            assert_eq!(c.frame().colour(), &want.px[..], "{amount}");
+            // The sharpen changed the prepared image.
+            let mut plain_c = Compositor::new(g);
+            plain_c.update(std::slice::from_ref(&base), &[]);
+            assert_ne!(plain_c.frame().colour(), c.frame().colour(), "{amount}");
+        }
+        for s in [
+            Sharpen::new(0.5, Radius::gaussian(0.8).unwrap(), 0.0).unwrap(),
+            Sharpen::new(0.5, Radius::Png2c64, 0.01).unwrap(),
+        ] {
+            let mut c = Compositor::new(g);
+            c.update(&[with(s)], &[]);
+            assert!(!c.frame().png2c64_prepared(), "{s:?}");
+        }
+    }
+
+    /// #228: sharpening edits, a nudge of a sharpened layer and turning the sharpen
+    /// off update exactly the cells whose output changed, as a full recomposite, and
+    /// stay inside the layer's footprint: the sharpen never spreads past the layer's
+    /// rectangle, so its dirty region is that rectangle's cells.
+    #[test]
+    fn sharpen_updates_equal_a_full_recomposite() {
+        use crate::layer::{Radius, Sharpen};
+        for mode in [Mode::HiresBitmap, Mode::MulticolorBitmap] {
+            let g = grid(mode, 2);
+            let (w, h) = (40, 30);
+            let bg = Layer::new("bg", solid(320, 200, [0.1, 0.2, 0.3, 1.0]));
+            let top = layer_of(
+                pattern(w, h),
+                w,
+                h,
+                Transform::translated(Vec2::new(64.25, 40.5)).unwrap(),
+            );
+            let mut layers = vec![bg, top];
+            let mut c = Compositor::new(g);
+            c.update(&layers, &[]);
+            let set = |l: &mut Vec<Layer>, s: Sharpen| {
+                let a = Adjustments {
+                    sharpen: s,
+                    ..l[1].adjustments().clone()
+                };
+                l[1].set_adjustments(a);
+            };
+            type Edit = Box<dyn Fn(&mut Vec<Layer>)>;
+            let edits: [(&str, Edit); 5] = [
+                (
+                    "png2c64",
+                    Box::new(move |l| set(l, Sharpen::png2c64(1.0).unwrap())),
+                ),
+                (
+                    "gaussian",
+                    Box::new(move |l| {
+                        set(
+                            l,
+                            Sharpen::new(1.0, Radius::gaussian(0.8).unwrap(), 0.0).unwrap(),
+                        );
+                    }),
+                ),
+                (
+                    "nudge",
+                    Box::new(|l| {
+                        let t = l[1].transform().nudged(Vec2::new(0.25, 0.0)).unwrap();
+                        l[1].set_transform(t);
+                    }),
+                ),
+                (
+                    "soften",
+                    Box::new(move |l| set(l, Sharpen::png2c64(-1.0).unwrap())),
+                ),
+                ("off", Box::new(move |l| set(l, Sharpen::default()))),
+            ];
+            for (name, edit) in edits {
+                let (_, before) = full(g, &layers, &[]);
+                let footprint = |l: &[Layer]| {
+                    let (_, rect) = placement(&l[1], g);
+                    CellSet::from_super_rect(g, rect)
+                };
+                let mut allowed = footprint(&layers);
+                edit(&mut layers);
+                allowed = allowed.union(footprint(&layers));
+                let reported = c.update(&layers, &[]);
+                let (canvas, frame) = full(g, &layers, &[]);
+                assert!(c.canvas() == &canvas, "{mode} {name}: canvas");
+                assert!(c.frame() == &frame, "{mode} {name}: frame");
+                let (tw, th) = g.target_size();
+                let changed: CellSet = before
+                    .differing(&frame, PxRect::of_size(tw, th))
+                    .into_iter()
+                    .filter_map(|(x, y)| g.target_px_to_cell(x, y))
+                    .collect();
+                assert_eq!(reported, changed, "{mode} {name}");
+                assert!(!reported.is_empty(), "{mode} {name}: changed nothing?");
+                assert_eq!(
+                    reported.union(allowed),
+                    allowed,
+                    "{mode} {name}: outside the layer"
+                );
+            }
         }
     }
 

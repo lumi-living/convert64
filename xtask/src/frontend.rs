@@ -33,7 +33,7 @@ const BACKGROUND: [u8; 3] = [30, 30, 30];
 const TEXT: [u8; 3] = [225, 225, 225];
 
 /// The fixtures with their baselines' mode, method and strength.
-const FIXTURES: [(&str, Mode, DitherKind, f32); 6] = [
+pub(crate) const FIXTURES: [(&str, Mode, DitherKind, f32); 6] = [
     ("portrait", Mode::MulticolorBitmap, DitherKind::Checker, 0.7),
     ("terrain", Mode::MulticolorBitmap, DitherKind::Checker, 0.7),
     ("title", Mode::MulticolorBitmap, DitherKind::Checker, 0.7),
@@ -49,6 +49,22 @@ fn render(
     mode: Mode,
     kind: DitherKind,
     strength: f32,
+    png2c64: bool,
+) -> Result<(RgbImage, RgbImage), String> {
+    let adjustments = Adjustments {
+        gamma: Gamma::PNG2C64,
+        ..Adjustments::default()
+    };
+    render_with(name, mode, kind, strength, &adjustments, png2c64)
+}
+
+/// [`render`] with the layer's own `adjustments` (#228's sharpen sheet).
+pub(crate) fn render_with(
+    name: &str,
+    mode: Mode,
+    kind: DitherKind,
+    strength: f32,
+    adjustments: &Adjustments,
     png2c64: bool,
 ) -> Result<(RgbImage, RgbImage), String> {
     let path = repo_root().join("fixtures").join(name).join("source.png");
@@ -68,10 +84,7 @@ fn render(
         .map_err(|e| e.to_string())?,
     );
     layer.set_recipe(Recipe::with_method(kind, strength).map_err(|e| e.to_string())?);
-    layer.set_adjustments(Adjustments {
-        gamma: Gamma::PNG2C64,
-        ..Adjustments::default()
-    });
+    layer.set_adjustments(adjustments.clone());
     let grid = SuperGrid::with_default_factor(mode).map_err(|e| e.to_string())?;
     let mut c = Compositor::new(grid);
     c.set_png2c64_front_end(png2c64);

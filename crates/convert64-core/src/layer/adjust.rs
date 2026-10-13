@@ -1,11 +1,12 @@
 //! Per-layer colour adjustments (UX §6, group 2). Every field defaults to identity.
 //!
-//! Applied in a fixed order: gamma → levels → brightness/contrast → HSL → curves →
-//! range matching. Gamma, levels, brightness/contrast and curves work per channel in
-//! linear light and are baked into lookup tables; HSL works in OKLCh; range matching
-//! (png2c64 `--match-range`) remaps the whole image's OKLab extent and so runs over all
-//! pixels at once. Alpha is never touched. Passes at their identity value are skipped,
-//! so identity adjustments return the input bit for bit.
+//! Applied in a fixed order, png2c64's: gamma → sharpen → levels → brightness/contrast →
+//! HSL → curves → range matching. Gamma, levels, brightness/contrast and curves work per
+//! channel in linear light and are baked into lookup tables; sharpen works on OKLab L
+//! over a neighbourhood (#228); HSL works in OKLCh; range matching (png2c64
+//! `--match-range`) remaps the whole image's OKLab extent and so runs over all pixels at
+//! once. Alpha is never touched. Passes at their identity value are skipped, so identity
+//! adjustments return the input bit for bit.
 
 use super::SourceImage;
 use crate::palette::{LinearRgb, Oklab, Oklch, Palette, linear_to_srgb8, srgb8_to_linear};
@@ -569,6 +570,295 @@ impl Hsl {
     }
 }
 
+/// The blur a [`Sharpen`] subtracts (or, for a negative amount, blends toward).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Radius {
+    /// png2c64's 3 × 3 box at the target grid, bit for bit; a negative amount blends
+    /// toward three passes of it. The default.
+    #[default]
+    Png2c64,
+    /// A Gaussian of this σ in target pixels, `0.3..=3` (fat pixels horizontally in
+    /// multicolor, like feather σ, ADR-008), separable.
+    Gaussian(f32),
+}
+
+impl Radius {
+    /// A Gaussian of `sigma` target pixels, `0.3..=3`.
+    pub fn gaussian(sigma: f32) -> Result<Self, AdjustError> {
+        check("sharpen radius", sigma, 0.3, 3.0).map(Self::Gaussian)
+    }
+}
+
+impl fmt::Display for Radius {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Png2c64 => f.write_str("png2c64"),
+            Self::Gaussian(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl std::str::FromStr for Radius {
+    type Err = String;
+    /// `png2c64`, or a σ in target pixels.
+    fn from_str(s: &str) -> Result<Self, String> {
+        if s.trim().eq_ignore_ascii_case("png2c64") {
+            return Ok(Self::Png2c64);
+        }
+        let sigma: f32 = s
+            .trim()
+            .parse()
+            .map_err(|_| format!("sharpen radius must be png2c64 or 0.3–3 px, got {s:?}"))?;
+        Self::gaussian(sigma).map_err(|e| e.to_string())
+    }
+}
+
+impl Serialize for Radius {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Png2c64 => s.serialize_str("png2c64"),
+            Self::Gaussian(sigma) => s.serialize_f32(*sigma),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Radius {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Data {
+            Sigma(f32),
+            Name(String),
+        }
+        match Data::deserialize(d)? {
+            Data::Sigma(sigma) => Self::gaussian(sigma).map_err(serde::de::Error::custom),
+            Data::Name(name) => name.parse().map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct SharpenData {
+    #[serde(default)]
+    amount: f32,
+    #[serde(default)]
+    radius: Radius,
+    #[serde(default)]
+    threshold: f32,
+}
+
+/// An unsharp mask on OKLab lightness at the target grid (#228), after gamma and before
+/// levels (png2c64's position). Never chroma: a and b are kept.
+///
+/// `amount` (`−1..=3`) is png2c64's `--sharpen`: positive adds `amount × (L − blur)`;
+/// negative blends by `−amount` toward the blur (softening). `|amount| < 0.01` is off,
+/// as in png2c64. `threshold` (`0..=0.1` in L) leaves a pixel alone where
+/// `|L − blur|` is below it, so noise stays unsharpened; it applies to sharpening only,
+/// and png2c64 has none (0). The blur is weighted by alpha, so a transparent surround
+/// does not pull a halo into a layer's edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "SharpenData")]
+pub struct Sharpen {
+    amount: f32,
+    radius: Radius,
+    threshold: f32,
+}
+
+impl TryFrom<SharpenData> for Sharpen {
+    type Error = AdjustError;
+    fn try_from(d: SharpenData) -> Result<Self, AdjustError> {
+        Self::new(d.amount, d.radius, d.threshold)
+    }
+}
+
+impl Sharpen {
+    /// Amount in `−1..=3`, threshold in `0..=0.1`; a Gaussian radius in `0.3..=3`.
+    pub fn new(amount: f32, radius: Radius, threshold: f32) -> Result<Self, AdjustError> {
+        if let Radius::Gaussian(sigma) = radius {
+            Radius::gaussian(sigma)?;
+        }
+        Ok(Self {
+            amount: check("sharpen amount", amount, -1.0, 3.0)?,
+            radius,
+            threshold: check("sharpen threshold", threshold, 0.0, 0.1)?,
+        })
+    }
+
+    /// png2c64's `--sharpen amount`: its 3 × 3 kernel, no threshold.
+    pub fn png2c64(amount: f32) -> Result<Self, AdjustError> {
+        Self::new(amount, Radius::Png2c64, 0.0)
+    }
+
+    /// The amount, `−1..=3`.
+    pub const fn amount(&self) -> f32 {
+        self.amount
+    }
+
+    /// The blur.
+    pub const fn radius(&self) -> Radius {
+        self.radius
+    }
+
+    /// The threshold in OKLab L, `0..=0.1`.
+    pub const fn threshold(&self) -> f32 {
+        self.threshold
+    }
+
+    /// Whether it changes nothing (`|amount| < 0.01`, png2c64's dead zone).
+    pub fn is_off(&self) -> bool {
+        self.amount.abs() < 0.01
+    }
+
+    /// Whether it is png2c64's `--sharpen` exactly: its kernel and no threshold.
+    pub fn is_png2c64(&self) -> bool {
+        self.radius == Radius::Png2c64 && self.threshold == 0.0
+    }
+
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Sharpens `px` (straight-alpha linear RGBA, `w × h`, row-major) in place on a grid
+    /// `scale ×` the target grid, so the radius stays in target pixels. Pixels of alpha 0
+    /// are neither used nor changed; alpha is untouched. Each pixel the kernel changes
+    /// goes through png2c64's OKLab round trip and clamp, as in png2c64.
+    pub fn apply(&self, px: &mut [[f32; 4]], (w, h): (usize, usize), scale: u32) {
+        use crate::solve::png2c64_ref::colour::{clamped, linear_to_oklab, oklab_to_linear};
+        use crate::solve::png2c64_ref::preprocess::unsharp_box;
+        if self.is_off() || px.is_empty() {
+            return;
+        }
+        debug_assert_eq!(px.len(), w * h);
+        let rgb = |p: &[f32; 4]| [p[0], p[1], p[2]];
+        let mut l: Vec<f32> = crate::par::map(px, |p| {
+            if p[3] > 0.0 {
+                linear_to_oklab(rgb(p))[0]
+            } else {
+                0.0
+            }
+        });
+        let alpha: Vec<f32> = px.iter().map(|p| p[3]).collect();
+        let step = scale.max(1) as usize;
+        let skipped = match self.radius {
+            Radius::Png2c64 => unsharp_box(
+                &mut l,
+                Some(&alpha),
+                (w, h),
+                step,
+                self.amount,
+                self.threshold,
+            ),
+            Radius::Gaussian(sigma) => unsharp_gaussian(
+                &mut l,
+                &alpha,
+                (w, h),
+                sigma * step as f32,
+                self.amount,
+                self.threshold,
+            ),
+        };
+        let mut rows: Vec<_> = px
+            .chunks_mut(w)
+            .zip(l.chunks(w).zip(skipped.chunks(w)))
+            .map(|(p, (l, s))| (p, l, s))
+            .collect();
+        crate::par::for_each(&mut rows, |(p, l, s)| {
+            for ((p, &lv), &skip) in p.iter_mut().zip(*l).zip(*s) {
+                if skip {
+                    continue;
+                }
+                let mut lab = linear_to_oklab(rgb(p));
+                lab[0] = lv.clamp(0.0, 1.0);
+                let [r, g, b] = clamped(oklab_to_linear(lab));
+                p[..3].copy_from_slice(&[r, g, b]);
+            }
+        });
+    }
+}
+
+/// [`unsharp_box`](crate::solve::png2c64_ref::preprocess::unsharp_box) with a Gaussian
+/// of `sigma` grid pixels instead of png2c64's box: separable, cut at 3σ, each tap
+/// weighted by `weight` (alpha) and the sum normalised by the weights it met, so the
+/// plane's edges and a transparent surround pull in nothing. A negative `strength`
+/// blends by `−strength` (at most 1) toward the blur. Returns the pixels left alone
+/// (weight 0, or under `threshold` when sharpening).
+fn unsharp_gaussian(
+    l: &mut [f32],
+    weight: &[f32],
+    (w, h): (usize, usize),
+    sigma: f32,
+    strength: f32,
+    threshold: f32,
+) -> Vec<bool> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "3σ of at most 3 × 8 grid pixels"
+    )]
+    let r = (3.0 * sigma).ceil() as usize;
+    let taps: Vec<f32> = (0..=r)
+        .map(|k| {
+            let k = k as f32;
+            (-k * k / (2.0 * sigma * sigma)).exp()
+        })
+        .collect();
+    // Blur the weighted lightness and the weights alike; their ratio is the blur.
+    let num: Vec<f32> = l.iter().zip(weight).map(|(v, a)| v * a).collect();
+    let pass = |src: &[f32], out: &mut [f32], horizontal: bool| {
+        let (lines, len, line_stride, step) = if horizontal {
+            (h, w, w, 1)
+        } else {
+            (w, h, 1, w)
+        };
+        for line in 0..lines {
+            let base = line * line_stride;
+            for i in 0..len {
+                let mut acc = src[base + i * step] * taps[0];
+                for (k, &t) in taps.iter().enumerate().skip(1) {
+                    if i >= k {
+                        acc += src[base + (i - k) * step] * t;
+                    }
+                    if i + k < len {
+                        acc += src[base + (i + k) * step] * t;
+                    }
+                }
+                out[base + i * step] = acc;
+            }
+        }
+    };
+    let blur = |src: &[f32]| {
+        let mut tmp = vec![0.0f32; w * h];
+        let mut out = vec![0.0f32; w * h];
+        pass(src, &mut tmp, true);
+        pass(&tmp, &mut out, false);
+        out
+    };
+    let (bn, bw) = crate::par::join(|| blur(&num), || blur(weight));
+    let amount = if strength > 0.0 {
+        strength
+    } else {
+        (-strength).clamp(0.0, 1.0)
+    };
+    let mut skipped = vec![false; w * h];
+    for (i, v) in l.iter_mut().enumerate() {
+        if weight[i] <= 0.0 || bw[i] <= 0.0 {
+            skipped[i] = true;
+            continue;
+        }
+        let d = *v - bn[i] / bw[i];
+        if strength > 0.0 {
+            if d.abs() < threshold {
+                skipped[i] = true;
+                continue;
+            }
+            *v += d * amount;
+        } else {
+            *v -= d * amount;
+        }
+    }
+    skipped
+}
+
 /// Most control points a curve may have.
 pub const MAX_CURVE_POINTS: usize = 16;
 
@@ -730,6 +1020,9 @@ pub struct Adjustments {
     /// png2c64-style gamma, applied first.
     #[serde(default)]
     pub gamma: Gamma,
+    /// Unsharp mask on lightness, after gamma (#228); off by default.
+    #[serde(default, skip_serializing_if = "Sharpen::is_default")]
+    pub sharpen: Sharpen,
     /// Input levels.
     #[serde(default)]
     pub levels: Levels,
@@ -794,11 +1087,16 @@ impl Lut {
     }
 }
 
-/// [`Adjustments`] compiled for per-pixel use: the separable passes as tables, the
-/// identity passes dropped.
+/// [`Adjustments`] compiled: the separable passes as tables, the identity passes
+/// dropped. Range matching is not part of the plan ([`Adjustments::apply_image`] runs
+/// it after).
 #[derive(Clone, Debug)]
 pub struct AdjustPlan {
-    /// Gamma, levels, then brightness/contrast, the same for every channel.
+    /// Gamma alone, when a sharpen runs between it and the rest of `tone`.
+    gamma: Option<Lut>,
+    sharpen: Option<Sharpen>,
+    /// Gamma (unless in `gamma`), levels, then brightness/contrast, the same for every
+    /// channel.
     tone: Option<Lut>,
     hsl: Option<Hsl>,
     /// Master then channel curve, per channel.
@@ -813,8 +1111,21 @@ impl Adjustments {
 
     /// Compiles the adjustments into lookup tables.
     pub fn plan(&self) -> AdjustPlan {
-        let (gamma, levels) = (self.gamma, self.levels);
-        let bc = self.brightness_contrast;
+        let (levels, bc) = (self.levels, self.brightness_contrast);
+        let sharpen = (!self.sharpen.is_off()).then_some(self.sharpen);
+        // With a sharpen between them, gamma gets its own table; otherwise one table
+        // runs gamma, levels and brightness/contrast together, as before #228.
+        let (gamma, pre) = match sharpen {
+            Some(_) => (Gamma::IDENTITY, self.gamma),
+            None => (self.gamma, Gamma::IDENTITY),
+        };
+        let gamma_lut = (pre != Gamma::IDENTITY).then(|| {
+            Lut::build(ToneFn::Tone(
+                pre,
+                Levels::IDENTITY,
+                BrightnessContrast::default(),
+            ))
+        });
         let tone = (gamma != Gamma::IDENTITY
             || levels != Levels::IDENTITY
             || bc != BrightnessContrast::default())
@@ -825,18 +1136,55 @@ impl Adjustments {
             [&c.red, &c.green, &c.blue]
                 .map(|ch| Lut::build(ToneFn::Curve(c.master.clone(), ch.clone())))
         });
-        AdjustPlan { tone, hsl, curves }
+        AdjustPlan {
+            gamma: gamma_lut,
+            sharpen,
+            tone,
+            hsl,
+            curves,
+        }
+    }
+
+    /// Applies every adjustment to `px` (straight-alpha linear RGBA, `w × h`,
+    /// row-major) in place, in order, on a grid `scale ×` the target grid (the sharpen's
+    /// radius is in target pixels). Pixels of alpha 0 are left alone.
+    pub fn apply_image(&self, px: &mut [[f32; 4]], size: (usize, usize), scale: u32) {
+        self.plan().apply_image(px, size, scale);
+        if let Some(m) = &self.match_range {
+            m.apply(px);
+        }
     }
 }
 
 impl AdjustPlan {
     /// No pass is active.
     pub fn is_identity(&self) -> bool {
-        self.tone.is_none() && self.hsl.is_none() && self.curves.is_none()
+        self.gamma.is_none()
+            && self.sharpen.is_none()
+            && self.tone.is_none()
+            && self.hsl.is_none()
+            && self.curves.is_none()
     }
 
-    /// Adjusts one straight-alpha linear pixel in place; alpha is untouched.
+    /// Adjusts one straight-alpha linear pixel in place with the per-pixel passes; alpha
+    /// is untouched. A sharpen needs the pixel's neighbours: [`Self::apply_image`] runs
+    /// it.
     pub fn apply(&self, px: &mut [f32; 4]) {
+        self.apply_pre(px);
+        self.apply_post(px);
+    }
+
+    /// The passes before the sharpen: gamma, when it has its own table.
+    fn apply_pre(&self, px: &mut [f32; 4]) {
+        if let Some(t) = &self.gamma {
+            for v in &mut px[..3] {
+                *v = t.eval(*v);
+            }
+        }
+    }
+
+    /// The passes after the sharpen.
+    fn apply_post(&self, px: &mut [f32; 4]) {
         if let Some(t) = &self.tone {
             for v in &mut px[..3] {
                 *v = t.eval(*v);
@@ -852,6 +1200,34 @@ impl AdjustPlan {
             }
         }
     }
+
+    /// Every pass, the sharpen included, over an image of `w × h` straight-alpha
+    /// pixels on a grid `scale ×` the target grid; pixels of alpha 0 are left alone.
+    pub fn apply_image(&self, px: &mut [[f32; 4]], size: (usize, usize), scale: u32) {
+        let Some(sharpen) = &self.sharpen else {
+            if !self.is_identity() {
+                crate::par::for_each(px, |p| {
+                    if p[3] > 0.0 {
+                        self.apply_post(p);
+                    }
+                });
+            }
+            return;
+        };
+        if self.gamma.is_some() {
+            crate::par::for_each(px, |p| {
+                if p[3] > 0.0 {
+                    self.apply_pre(p);
+                }
+            });
+        }
+        sharpen.apply(px, size, scale);
+        crate::par::for_each(px, |p| {
+            if p[3] > 0.0 {
+                self.apply_post(p);
+            }
+        });
+    }
 }
 
 /// A layer's adjusted pixels, recomputed only when the source or the adjustments
@@ -865,18 +1241,15 @@ pub struct AdjustCache {
 
 impl AdjustCache {
     /// The adjusted pixels of `source`. Identity adjustments return the source pixels
-    /// unchanged (one copy into the shared buffer, made once).
+    /// unchanged (one copy into the shared buffer, made once). Fully transparent pixels
+    /// are left alone.
     pub fn get(&mut self, source: &Arc<SourceImage>, adj: &Adjustments) -> Arc<[[f32; 4]]> {
         let hit = matches!(&self.key, Some((s, a)) if Arc::ptr_eq(s, source) && a == adj);
         if !hit || self.pixels.is_none() {
-            let plan = adj.plan();
             let mut px = source.pixels().to_vec();
-            if !plan.is_identity() {
-                crate::par::for_each(&mut px, |p| plan.apply(p));
-            }
-            if let Some(m) = &adj.match_range {
-                m.apply(&mut px);
-            }
+            let (w, h) = source.size();
+            // On the source's own pixels, one per target pixel for the sharpen's radius.
+            adj.apply_image(&mut px, (w as usize, h as usize), 1);
             self.pixels = Some(px.into());
             self.key = Some((Arc::clone(source), adj.clone()));
             self.recomputes += 1;
@@ -1160,6 +1533,272 @@ mod tests {
             toml::from_str::<Adjustments>("[levels]\nblack = 0.9\nwhite = 0.1\ngamma = 1.0\n")
                 .is_err()
         );
+    }
+
+    /// A deterministic pseudo-random linear colour per pixel, all opaque.
+    fn noise(w: usize, h: usize, seed: u32) -> Vec<[f32; 4]> {
+        let mut s = seed;
+        let mut next = move || {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            (s >> 8) as f32 / (1u32 << 24) as f32
+        };
+        (0..w * h).map(|_| [next(), next(), next(), 1.0]).collect()
+    }
+
+    fn lab(p: [f32; 4]) -> [f32; 3] {
+        crate::solve::png2c64_ref::colour::linear_to_oklab([p[0], p[1], p[2]])
+    }
+
+    fn from_lab(l: [f32; 3], a: f32) -> [f32; 4] {
+        let [r, g, b] = crate::solve::png2c64_ref::colour::oklab_to_linear(l);
+        [r, g, b, a]
+    }
+
+    /// #228: amount 0 (any radius) is off, and the adjustments return their input bit
+    /// for bit, as without a sharpen.
+    #[test]
+    fn sharpen_amount_zero_is_bit_identical() {
+        let (w, h) = (23, 17);
+        let src = noise(w, h, 7);
+        for radius in [Radius::Png2c64, Radius::gaussian(1.2).unwrap()] {
+            for threshold in [0.0, 0.05] {
+                let adj = Adjustments {
+                    sharpen: Sharpen::new(0.0, radius, threshold).unwrap(),
+                    ..Adjustments::default()
+                };
+                assert!(adj.is_identity());
+                let mut px = src.clone();
+                adj.apply_image(&mut px, (w, h), 4);
+                assert_eq!(px, src);
+                // With gamma too: the same as gamma alone, bit for bit.
+                let both = Adjustments {
+                    gamma: Gamma::PNG2C64,
+                    ..adj
+                };
+                let gamma = Adjustments {
+                    gamma: Gamma::PNG2C64,
+                    ..Adjustments::default()
+                };
+                let (mut x, mut y) = (src.clone(), src.clone());
+                both.apply_image(&mut x, (w, h), 1);
+                gamma.apply_image(&mut y, (w, h), 1);
+                assert_eq!(x, y);
+            }
+        }
+        assert!(
+            Sharpen::png2c64(0.005).unwrap().is_off(),
+            "png2c64's dead zone"
+        );
+    }
+
+    /// #228: the png2c64 kernel at the target grid is png2c64's `apply_sharpen`, bit for
+    /// bit, both ways (sharpen and soften), after the same gamma.
+    #[test]
+    fn png2c64_kernel_equals_png2c64_s_apply_sharpen() {
+        use crate::solve::png2c64_ref::{Image, preprocess};
+        let (w, h) = (31, 19);
+        let src = noise(w, h, 0x2545_f491);
+        for amount in [0.5, 1.7, 3.0, -0.5, -1.0] {
+            let adj = Adjustments {
+                gamma: Gamma::PNG2C64,
+                sharpen: Sharpen::png2c64(amount).unwrap(),
+                ..Adjustments::default()
+            };
+            let mut ours = src.clone();
+            adj.apply_image(&mut ours, (w, h), 1);
+            let mut im = Image::new(w, h, src.iter().map(|p| [p[0], p[1], p[2]]).collect());
+            for p in &mut im.px {
+                *p = p.map(|v| Gamma::PNG2C64.eval(v));
+            }
+            preprocess::apply_sharpen(&mut im, amount);
+            for (i, (a, b)) in ours.iter().zip(&im.px).enumerate() {
+                assert_eq!(
+                    [a[0], a[1], a[2]].map(f32::to_bits),
+                    b.map(f32::to_bits),
+                    "amount {amount}, pixel {i}"
+                );
+            }
+        }
+    }
+
+    /// #228: a Gaussian sharpen of a lightness step overshoots on both sides of the
+    /// edge and leaves chroma (OKLab a, b) alone.
+    #[test]
+    fn gaussian_step_response_changes_lightness_only() {
+        let (w, h) = (24, 6);
+        let (dark, light) = ([0.45, 0.03, 0.02], [0.65, 0.03, 0.02]);
+        let src: Vec<[f32; 4]> = (0..w * h)
+            .map(|i| from_lab(if i % w < w / 2 { dark } else { light }, 1.0))
+            .collect();
+        for scale in [1, 4] {
+            let (sw, sh) = (w * scale, h * scale);
+            let up: Vec<[f32; 4]> = (0..sw * sh)
+                .map(|i| src[(i / sw / scale) * w + (i % sw) / scale])
+                .collect();
+            let mut px = up.clone();
+            Sharpen::new(1.0, Radius::gaussian(0.8).unwrap(), 0.0)
+                .unwrap()
+                .apply(&mut px, (sw, sh), scale as u32);
+            let row = sh / 2 * sw;
+            let (before, after) = (lab(px[row + sw / 2 - 1]), lab(px[row + sw / 2]));
+            assert!(
+                before[0] < dark[0] - 0.02,
+                "{scale}: no dark overshoot {before:?}"
+            );
+            assert!(
+                after[0] > light[0] + 0.02,
+                "{scale}: no light overshoot {after:?}"
+            );
+            for (p, q) in px.iter().zip(&up) {
+                let (a, b) = (lab(*p), lab(*q));
+                assert!(
+                    (a[1] - b[1]).abs() < 1e-4 && (a[2] - b[2]).abs() < 1e-4,
+                    "{scale}: chroma moved, {a:?} from {b:?}"
+                );
+                assert_eq!(p[3], q[3]);
+            }
+            // Far from the edge (3σ = 2.4 target px), nothing changes.
+            for i in [row, row + sw - 1] {
+                assert!((lab(px[i])[0] - lab(up[i])[0]).abs() < 1e-6, "{scale}: {i}");
+            }
+        }
+    }
+
+    /// #228: under the threshold, a noisy patch stays exactly as it was while a real
+    /// edge next to it is still sharpened.
+    #[test]
+    fn threshold_leaves_noise_untouched() {
+        let (w, h) = (40, 20);
+        let mut seed = 99u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed >> 8) as f32 / (1u32 << 24) as f32
+        };
+        // Left: grey noise of ±0.004 in L; right: a hard step.
+        let src: Vec<[f32; 4]> = (0..w * h)
+            .map(|i| {
+                let x = i % w;
+                let l = if x < 20 {
+                    0.5 + 0.008 * (next() - 0.5)
+                } else if x < 30 {
+                    0.3
+                } else {
+                    0.8
+                };
+                from_lab([l, 0.0, 0.0], 1.0)
+            })
+            .collect();
+        for radius in [Radius::Png2c64, Radius::gaussian(1.0).unwrap()] {
+            let mut px = src.clone();
+            Sharpen::new(2.0, radius, 0.02)
+                .unwrap()
+                .apply(&mut px, (w, h), 1);
+            // png2c64's kernel leaves its border to the OKLab round trip, as png2c64.
+            for y in 1..h - 1 {
+                for x in 1..17 {
+                    assert_eq!(px[y * w + x], src[y * w + x], "{radius}: noise at {x},{y}");
+                }
+            }
+            let mid = h / 2 * w;
+            assert!(lab(px[mid + 29])[0] < 0.29, "{radius}: edge not sharpened");
+            assert!(lab(px[mid + 30])[0] > 0.81, "{radius}: edge not sharpened");
+            // Without the threshold the noise is sharpened too.
+            let mut all = src.clone();
+            Sharpen::new(2.0, radius, 0.0)
+                .unwrap()
+                .apply(&mut all, (w, h), 1);
+            assert_ne!(all[mid + 5], src[mid + 5], "{radius}");
+        }
+    }
+
+    /// #228: a layer's edge against a transparent surround gets no halo. The blur is
+    /// weighted by alpha, so a flat layer with a soft (partly covered) border is
+    /// unchanged and the transparent pixels stay as they were.
+    #[test]
+    fn transparent_surround_pulls_in_no_halo() {
+        let (w, h) = (30, 30);
+        let grey = from_lab([0.6, 0.02, -0.01], 1.0);
+        let src: Vec<[f32; 4]> = (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                let inside = |v: usize| (10..20).contains(&v);
+                let edge = |v: usize| v == 9 || v == 20;
+                if inside(x) && inside(y) {
+                    grey
+                } else if (inside(x) || edge(x)) && (inside(y) || edge(y)) {
+                    [grey[0], grey[1], grey[2], 0.4]
+                } else {
+                    [0.0; 4]
+                }
+            })
+            .collect();
+        for scale in [1u32, 2] {
+            let s = scale as usize;
+            let (sw, sh) = (w * s, h * s);
+            let up: Vec<[f32; 4]> = (0..sw * sh)
+                .map(|i| src[(i / sw / s) * w + (i % sw) / s])
+                .collect();
+            for sharpen in [
+                Sharpen::png2c64(3.0).unwrap(),
+                Sharpen::png2c64(-1.0).unwrap(),
+                Sharpen::new(3.0, Radius::gaussian(2.0).unwrap(), 0.0).unwrap(),
+            ] {
+                let mut px = up.clone();
+                sharpen.apply(&mut px, (sw, sh), scale);
+                for (i, (p, q)) in px.iter().zip(&up).enumerate() {
+                    assert_eq!(p[3], q[3]);
+                    if q[3] == 0.0 {
+                        assert_eq!(p, q, "{sharpen:?}: transparent pixel {i} changed");
+                    } else {
+                        let (a, b) = (lab(*p), lab(*q));
+                        assert!(
+                            (a[0] - b[0]).abs() < 1e-5,
+                            "{sharpen:?} ×{scale}: halo at {i}: L {} from {}",
+                            a[0],
+                            b[0]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sharpen_serde_defaults_and_validation() {
+        // An old project's adjustments have no sharpen: they load with it off, and an
+        // off sharpen is not written.
+        let old: Adjustments = toml::from_str("gamma = 1.5\n").unwrap();
+        assert_eq!(old.sharpen, Sharpen::default());
+        assert!(old.sharpen.is_off() && old.sharpen.is_png2c64());
+        let text = toml::to_string(&old).unwrap();
+        assert!(!text.contains("sharpen"), "{text}");
+        for sharpen in [
+            Sharpen::png2c64(-0.5).unwrap(),
+            Sharpen::new(1.25, Radius::gaussian(0.8).unwrap(), 0.02).unwrap(),
+        ] {
+            let adj = Adjustments {
+                sharpen,
+                ..Adjustments::default()
+            };
+            let text = toml::to_string(&adj).unwrap();
+            assert_eq!(toml::from_str::<Adjustments>(&text).unwrap(), adj, "{text}");
+        }
+        let parsed: Sharpen = toml::from_str("amount = 0.5\nradius = \"png2c64\"\n").unwrap();
+        assert_eq!(parsed, Sharpen::png2c64(0.5).unwrap());
+        let parsed: Sharpen = toml::from_str("amount = 1\nradius = 2\n").unwrap();
+        assert_eq!(parsed.radius(), Radius::Gaussian(2.0));
+        assert_eq!("0.8".parse::<Radius>(), Ok(Radius::Gaussian(0.8)));
+        assert_eq!("PNG2C64".parse::<Radius>(), Ok(Radius::Png2c64));
+        assert!("0.1".parse::<Radius>().is_err() && "wide".parse::<Radius>().is_err());
+        assert!(Sharpen::png2c64(3.5).is_err() && Sharpen::png2c64(-1.5).is_err());
+        assert!(Sharpen::new(1.0, Radius::Png2c64, 0.2).is_err());
+        assert!(Sharpen::new(1.0, Radius::Gaussian(5.0), 0.0).is_err());
+        assert!(toml::from_str::<Sharpen>("amount = 9\n").is_err());
+        assert!(toml::from_str::<Sharpen>("radius = 0.1\n").is_err());
     }
 
     proptest! {
