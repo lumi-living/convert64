@@ -49,6 +49,9 @@ eframe = { version = "0.36.2", default-features = false, features = [
     "x11",
 ] }
 egui = "0.36.2"
+# File dialogs (TAD §4): native dialogs (xdg-portal on Linux, no GTK) and the browser's
+# file picker in wasm.
+rfd = "0.17.2"
 # Material Symbols icon font (ADR-007): the Outlined cut only, not the default Filled.
 egui_material_icons = { version = "0.8.0", default-features = false, features = ["outline"] }
 

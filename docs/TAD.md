@@ -576,6 +576,13 @@ As built in #216 (2026-10-13): region commands for the Region tool (UX §7), and
 - **The project file** is unchanged, schema version 2: `regions` already holds the name, the mask raster and the recipe. A test saves regions made by commands and reloads them (masks within 1/65535 after the first save, as layer masks) and checks that load → save is byte-identical.
 - **Unchanged:** the solver and the compositor's output (no golden or parity change).
 
+As built in #205 (2026-10-13): open, save and export in the app.
+
+- **Open.** File › Open… (`Cmd O`) takes a PNG or a `.convert64` project; a picture dropped on the window opens too, or, on an open project, becomes a new layer on top (`layer_add`, fitted inside the screen). Natively `rfd` shows the system dialog (its default `xdg-portal` backend on Linux, so no GTK) and the app links files in place: `convert64-project`'s `fs` feature is on for the native build only. In the browser `rfd` shows the file picker and the bytes go into the session's `MemoryStore`, so a project opened there must embed its sources.
+- **Save.** `Cmd S` writes the project back to its file (natively; links relative to it, as the CLI's `--save-project`), `Shift Cmd S` asks where. In the browser both download the project with every source embedded. The title shows `*` while there are unsaved edits (UX §9).
+- **Export.** `convert64_app::export::files` makes the E6 outputs from the result on screen with the same `convert64-formats` calls as the CLI: Koala or Art Studio, the self-displaying PRG, the PNG preview (zoom 1–8), the raw set and source for KickAssembler, ACME, 64tass, ca65 and C (inline bytes or includes). The dialog (`Cmd E`, or the dock's Export tab) remembers its settings for Export Again (`Shift Cmd E`). One file gets a Save dialog natively, several a folder; in the browser each is a download (`rfd`'s wasm backend). Export waits for the full solve. A toast reports `Exported title.kla (10 003 B)`; failures name cause and remedy.
+- **Dependency.** `rfd` 0.17 (TAD §4's file dialogs), default features.
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.

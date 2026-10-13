@@ -7,6 +7,7 @@
 //! [`crate::theme::layout`] and colours from [`crate::theme::Theme`].
 
 mod dock;
+mod export_dialog;
 mod menu;
 pub mod shortcuts;
 mod status;
@@ -20,6 +21,7 @@ use crate::workspace::Workspace;
 use convert64_core::mode::Mode;
 
 pub use crate::view::ViewMode;
+pub use export_dialog::ExportDialog;
 
 /// The four steering tools (`docs/UX.md` §7), in toolbar order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -97,7 +99,7 @@ impl DockTab {
 }
 
 /// Something the user asked for that the shell cannot do itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Close the app (native) or do nothing (web).
     Quit,
@@ -106,6 +108,15 @@ pub enum Action {
     /// Change the target mode (the result header's dropdown): `mode_set`, then a full
     /// solve.
     SetMode(Mode),
+    /// File › Open… (`Cmd O`).
+    Open,
+    /// File › Save (`Cmd S`): to the project's file, or as Save As.
+    Save,
+    /// File › Save As… (`Shift Cmd S`).
+    SaveAs,
+    /// Export with these settings, files named after the stem (the dialog, or Export
+    /// Again).
+    Export(crate::export::Settings, String),
 }
 
 /// The smallest and largest dock width (`docs/UX.md` §3: 260–420 px). Not a Figma
@@ -144,6 +155,14 @@ pub struct Shell {
     view_rect: Option<egui::Rect>,
     /// The picture point under the pointer, in screen units.
     hover: Option<egui::Pos2>,
+    /// The export dialog, while open.
+    pub export: Option<ExportDialog>,
+    /// `Cmd E` this frame: open the dialog once the workspace is at hand.
+    export_requested: bool,
+    /// The last export, for Export Again.
+    pub last_export: Option<(crate::export::Settings, String)>,
+    /// A message shown at the bottom of the window until the time (egui seconds) passes.
+    toast: Option<(String, bool, f64)>,
 }
 
 impl Default for Shell {
@@ -163,11 +182,32 @@ impl Default for Shell {
             fit_pending: true,
             view_rect: None,
             hover: None,
+            export: None,
+            export_requested: false,
+            last_export: None,
+            toast: None,
         }
     }
 }
 
 impl Shell {
+    /// Shows `message` for a few seconds (UX §11: 3 s for success); errors stay 6 s and
+    /// are drawn in the error colour.
+    pub fn toast(&mut self, ctx: &egui::Context, message: impl Into<String>, error: bool) {
+        let now = ctx.input(|i| i.time);
+        self.toast = Some((message.into(), error, now + if error { 6.0 } else { 3.0 }));
+        ctx.request_repaint_after(std::time::Duration::from_secs(3));
+    }
+
+    /// Opens the export dialog for `ws`.
+    pub fn open_export(&mut self, ws: &Workspace) {
+        let (settings, name) = self
+            .last_export
+            .clone()
+            .unwrap_or_else(|| (crate::export::Settings::default(), ws.doc.stem()));
+        self.export = Some(ExportDialog { settings, name });
+    }
+
     /// Fits the picture into the working view on the next frame (after an open).
     pub fn fit_on_next_frame(&mut self) {
         self.fit_pending = true;
@@ -212,10 +252,15 @@ impl Shell {
         self.handle_shortcuts(ui.ctx(), &mut actions);
         if let Some(ws) = ws.as_deref_mut() {
             ws.prepare(ui.ctx());
+            if std::mem::take(&mut self.export_requested) {
+                self.open_export(ws);
+            }
         }
+        self.export_requested = false;
 
         if !self.chrome_hidden {
-            egui::Panel::top("menu_bar").show(ui, |ui| menu::show(self, ui, &mut actions));
+            egui::Panel::top("menu_bar")
+                .show(ui, |ui| menu::show(self, ws.as_deref(), ui, &mut actions));
             egui::Panel::top("toolbar")
                 .exact_size(layout::TOOLBAR_HEIGHT)
                 .show(ui, |ui| toolbar::show(self, ui));
@@ -240,7 +285,32 @@ impl Shell {
                     .inner_margin(0),
             )
             .show(ui, |ui| working::show(self, ui, ws.as_deref()));
+        export_dialog::show(self, ws.as_deref(), ui.ctx(), &mut actions);
+        self.show_toast(ui.ctx());
         actions
+    }
+
+    fn show_toast(&mut self, ctx: &egui::Context) {
+        let Some((message, error, until)) = &self.toast else {
+            return;
+        };
+        if ctx.input(|i| i.time) > *until {
+            self.toast = None;
+            return;
+        }
+        let theme = crate::theme::Theme::current(ctx);
+        let colour = if *error { theme.error } else { theme.ok };
+        egui::Area::new(egui::Id::new("toast"))
+            .anchor(
+                egui::Align2::CENTER_BOTTOM,
+                [0.0, -2.0 * layout::STATUS_HEIGHT],
+            )
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.colored_label(colour, message.as_str());
+                });
+            });
     }
 
     /// The shortcuts of `docs/UX.md` §8 that the shell itself handles.
@@ -269,6 +339,22 @@ impl Shell {
             }
             if i.consume_shortcut(&s::QUIT) {
                 actions.push(Action::Quit);
+            }
+            if i.consume_shortcut(&s::OPEN) {
+                actions.push(Action::Open);
+            }
+            // Shift Cmd S before Cmd S, as with Tab.
+            if i.consume_shortcut(&s::SAVE_AS) {
+                actions.push(Action::SaveAs);
+            } else if i.consume_shortcut(&s::SAVE) {
+                actions.push(Action::Save);
+            }
+            if i.consume_shortcut(&s::EXPORT_AGAIN) {
+                if let Some((settings, name)) = self.last_export.clone() {
+                    actions.push(Action::Export(settings, name));
+                }
+            } else if i.consume_shortcut(&s::EXPORT) {
+                self.export_requested = true;
             }
             self.flip_held = !typing && i.key_down(egui::Key::Backslash);
             if typing {
