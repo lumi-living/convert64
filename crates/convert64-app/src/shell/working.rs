@@ -41,6 +41,10 @@ pub(super) fn show(
     let name = format!("Working view, {}", shell.view.label());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, &name));
     shell.view_rect = Some(view);
+    shell.canvas_id = Some(response.id);
+    if ui.input(|i| i.pointer.any_pressed()) && response.contains_pointer() {
+        shell.key_focus = super::KeyFocus::Canvas;
+    }
     if shell.fit_pending {
         shell.fit_pending = false;
         let border = shell.overlays.border;
