@@ -267,13 +267,14 @@ fn mask_buttons(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui, actions:
                 }
             }
         });
-    let mut feather = mods.feather();
+    let before = mods.feather();
+    let mut feather = before;
     let r = ui.add(
         egui::Slider::new(&mut feather, 0.0..=32.0)
             .text("Feather")
             .suffix(" px"),
     );
-    if r.changed() {
+    if r.changed() && (feather - before).abs() > 1e-3 {
         set(
             actions,
             r.dragged().then_some(0x6665_6174),
