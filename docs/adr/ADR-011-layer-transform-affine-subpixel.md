@@ -144,3 +144,12 @@ details §3–§5 left open. The Decision section above is kept as written.
 10. **png2c64 parity.** The compatibility path of #190 (PR #201, not merged when this
     was written) must also require `rotate == 0`. The fit transform alone does not
     exclude a full turn, which takes the rotated path.
+
+## Amended 2026-10-13 (#227, ADR-012)
+
+[ADR-012](ADR-012-mitchell-resampling-every-layer.md) replaces the kernels of §4 and of
+the #198 amendment's §3–§4: both paths now use png2c64's Mitchell bicubic, and the
+rotated path has no prefilter (png2c64 does not widen its kernel when downscaling).
+A rotated layer's sample position is clamped to the source like png2c64's, and a
+multiple of 90° on whole pixels copies the pixels. The default grid is the target's
+(1×); a mask is resampled at 4× and box-reduced. The rest of ADR-011 stands.

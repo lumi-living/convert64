@@ -503,14 +503,15 @@ mod tests {
         c.frame().clone()
     }
 
-    /// The reference path on a frame is png2c64's port run on the frame's colours
-    /// (after png2c64's preprocessing round trip), bit for bit, in both modes and for
-    /// ordered, diffusion and `none` recipes.
+    /// The reference path on a frame is png2c64's port run on the frame's colours, bit
+    /// for bit, in both modes and for ordered, diffusion and `none` recipes. The
+    /// compositor's frames have been through png2c64's preprocessing already (ADR-012),
+    /// so the solver takes their colours as they are.
     #[test]
     fn the_reference_path_is_the_port_on_the_frame() {
         use super::super::png2c64_ref::dither::{PxSettings, Settings};
         use super::super::png2c64_ref::quantize::Mode as RefMode;
-        use super::super::png2c64_ref::{Image, colour, convert, preprocess};
+        use super::super::png2c64_ref::{Image, colour, convert};
         let s = Solver::new(&Palette::pepto_pal());
         for (mode, rm) in [
             (Mode::MulticolorBitmap, RefMode::Multicolor),
@@ -527,14 +528,8 @@ mod tests {
                 assert_eq!(sol.solver, SolverKind::Reference, "{mode} {kind:?}");
                 assert_eq!(sol.fallback, None);
                 let (w, h) = rm.screen();
-                let mut im = Image::new(w, h, f.colour().to_vec());
-                preprocess::apply(
-                    &mut im,
-                    &preprocess::Settings {
-                        gamma: 1.0,
-                        ..preprocess::Settings::default()
-                    },
-                );
+                assert!(f.png2c64_prepared());
+                let im = Image::new(w, h, f.colour().to_vec());
                 let settings = Settings {
                     method: super::super::reference::ref_method(kind).unwrap(),
                     strength: f.attributes().pixels()[0].strength,
