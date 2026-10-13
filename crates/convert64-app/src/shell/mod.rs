@@ -14,6 +14,7 @@ mod recipe;
 pub mod shortcuts;
 mod status;
 mod toolbar;
+mod tools;
 mod working;
 
 use crate::icons::Icon;
@@ -121,6 +122,8 @@ pub enum Action {
     Export(crate::export::Settings, String),
     /// Run a registry command (ADR-005).
     Run(convert64_project::JsonCommand),
+    /// Run several commands as one undo step, then show the message ("Pinned 7 cells").
+    RunAll(Vec<convert64_project::JsonCommand>, String),
     /// Run a command that is part of a drag: one undo step per drag (UX §11).
     Gesture(u64, convert64_project::JsonCommand),
     /// The drag ended.
@@ -170,6 +173,14 @@ pub struct Shell {
     renaming: Option<(usize, String)>,
     /// The curve the Recipe tab's curves editor shows: master, red, green, blue.
     curve_channel: usize,
+    /// A Pin, Lock or Nudge drag in progress.
+    drag: Option<tools::ToolDrag>,
+    /// The cell the right-click menu is for.
+    menu_cell: Option<crate::workspace::Cell>,
+    /// The cell worst-cell navigation last went to.
+    nav_cell: Option<crate::workspace::Cell>,
+    /// `Shift Cmd ]` (true) or `[` (false) this frame.
+    nav_request: Option<bool>,
     /// Whether Edit › Undo and Redo have something to do (set by the app each frame).
     pub history: (bool, bool),
     /// `\` is held: the working view shows the other image.
@@ -206,6 +217,10 @@ impl Default for Shell {
             layer: 0,
             renaming: None,
             curve_channel: 0,
+            drag: None,
+            menu_cell: None,
+            nav_cell: None,
+            nav_request: None,
             history: (false, false),
             flip_held: false,
             fit_pending: true,
@@ -242,6 +257,11 @@ impl Shell {
         self.fit_pending = true;
     }
 
+    /// Keeps the camera as set instead of fitting after an open (screenshots).
+    pub fn keep_camera(&mut self) {
+        self.fit_pending = false;
+    }
+
     /// The image the working view shows now: the view mode, flipped while `\` is held.
     pub fn shown(&self) -> ViewMode {
         if self.flip_held {
@@ -261,6 +281,32 @@ impl Shell {
         match self.view_rect {
             Some(rect) => self.camera.fit(rect, self.view),
             None => self.fit_pending = true,
+        }
+    }
+
+    /// Centres the working view on `cell` in Result mode.
+    pub fn go_to_cell(&mut self, ws: &Workspace, cell: crate::workspace::Cell) {
+        self.view = ViewMode::Result;
+        self.camera.centre = crate::view::cell_rect(ws.doc.grid(), cell).center();
+        self.nav_cell = Some(cell);
+    }
+
+    /// The next-worst (`forward`) or previous cell after the last one visited, starting
+    /// at the worst (`Shift Cmd ]` / `[`).
+    fn step_worst(&mut self, ws: &Workspace, forward: bool) {
+        let Some(sol) = &ws.solution else { return };
+        let next = self
+            .nav_cell
+            .and_then(|(x, y)| {
+                let pos = convert64_core::model::CellPos {
+                    x: x as u16,
+                    y: y as u16,
+                };
+                sol.report.step(pos, forward)
+            })
+            .or_else(|| sol.report.worst_first().first().copied());
+        if let Some(c) = next {
+            self.go_to_cell(ws, (u32::from(c.x), u32::from(c.y)));
         }
     }
 
@@ -284,8 +330,12 @@ impl Shell {
             if std::mem::take(&mut self.export_requested) {
                 self.open_export(ws);
             }
+            if let Some(forward) = self.nav_request.take() {
+                self.step_worst(ws, forward);
+            }
         }
         self.export_requested = false;
+        self.nav_request = None;
 
         if !self.chrome_hidden {
             egui::Panel::top("menu_bar")
@@ -313,7 +363,9 @@ impl Shell {
                     .fill(canvas)
                     .inner_margin(0),
             )
-            .show(ui, |ui| working::show(self, ui, ws.as_deref()));
+            .show(ui, |ui| {
+                working::show(self, ui, ws.as_deref(), &mut actions)
+            });
         export_dialog::show(self, ws.as_deref(), ui.ctx(), &mut actions);
         self.show_toast(ui.ctx());
         actions
@@ -390,6 +442,12 @@ impl Shell {
             if i.consume_shortcut(&s::TOGGLE_VISIBLE) {
                 actions.push(Action::ToggleVisible(self.layer));
             }
+            if i.consume_shortcut(&s::NEXT_WORST) {
+                self.nav_request = Some(true);
+            }
+            if i.consume_shortcut(&s::PREVIOUS_WORST) {
+                self.nav_request = Some(false);
+            }
             // Shift Cmd S before Cmd S, as with Tab.
             if i.consume_shortcut(&s::SAVE_AS) {
                 actions.push(Action::SaveAs);
@@ -432,6 +490,29 @@ impl Shell {
                 if i.consume_key(egui::Modifiers::NONE, tool.key()) {
                     self.tool = tool;
                 }
+            }
+            // Arrows nudge the selected layer: 10 px with Shift, 0.25 px with Alt (UX §6).
+            for (key, dx, dy) in [
+                (egui::Key::ArrowLeft, -1.0, 0.0),
+                (egui::Key::ArrowRight, 1.0, 0.0),
+                (egui::Key::ArrowUp, 0.0, -1.0),
+                (egui::Key::ArrowDown, 0.0, 1.0),
+            ] {
+                let step = if i.consume_key(egui::Modifiers::SHIFT, key) {
+                    10.0
+                } else if i.consume_key(egui::Modifiers::ALT, key) {
+                    0.25
+                } else if i.consume_key(egui::Modifiers::NONE, key) {
+                    1.0
+                } else {
+                    continue;
+                };
+                let by = convert64_core::Vec2::new(dx * step, dy * step);
+                let layer = convert64_project::LayerRef::Index(self.layer);
+                actions.push(Action::Run(convert64_project::JsonCommand::LayerNudge {
+                    layer,
+                    by,
+                }));
             }
         });
     }

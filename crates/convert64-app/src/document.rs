@@ -24,6 +24,10 @@ pub struct Document {
     /// The gesture (a slider or field drag) the last command belongs to: the next
     /// command of the same gesture replaces it, so a drag is one undo step (UX §11).
     gesture: Option<u64>,
+    /// How many editor commands each undo step holds, oldest first (a rectangle of pins
+    /// is one step of many commands), and the same for redo.
+    undo_steps: Vec<usize>,
+    redo_steps: Vec<usize>,
 }
 
 /// Whether `name` is a project file rather than a picture.
@@ -75,6 +79,8 @@ impl Document {
             saved: 0,
             path,
             gesture: None,
+            undo_steps: Vec::new(),
+            redo_steps: Vec::new(),
         }
     }
 
@@ -184,9 +190,28 @@ impl Document {
 
     /// Runs a registry command (ADR-005): the app edits only through these.
     pub fn run(&mut self, command: JsonCommand) -> Result<(), ProjectError> {
+        self.run_all(vec![command])
+    }
+
+    /// Runs several commands as one undo step (a rectangle of pins, each cell its own
+    /// colours). If one fails, the ones before it are undone and nothing changes.
+    pub fn run_all(&mut self, commands: Vec<JsonCommand>) -> Result<(), ProjectError> {
         self.gesture = None;
-        self.session.run(command)?;
-        self.revision += 1;
+        let mut done = 0;
+        for command in commands {
+            if let Err(e) = self.session.run(command) {
+                for _ in 0..done {
+                    self.session.editor_mut().undo();
+                }
+                return Err(e);
+            }
+            done += 1;
+        }
+        if done > 0 {
+            self.undo_steps.push(done);
+            self.redo_steps.clear();
+            self.revision += 1;
+        }
         Ok(())
     }
 
@@ -200,8 +225,11 @@ impl Document {
     ) -> Result<(), ProjectError> {
         if self.gesture == Some(gesture) {
             self.session.editor_mut().undo();
+            self.undo_steps.pop();
         }
         self.session.run(command)?;
+        self.undo_steps.push(1);
+        self.redo_steps.clear();
         self.gesture = Some(gesture);
         self.revision += 1;
         Ok(())
@@ -212,33 +240,39 @@ impl Document {
         self.gesture = None;
     }
 
-    /// Undoes the last command (`Cmd Z`); false if there is nothing to undo.
+    /// Undoes the last step (`Cmd Z`); false if there is nothing to undo.
     pub fn undo(&mut self) -> bool {
         self.gesture = None;
-        let done = self.session.editor_mut().undo().is_some();
-        if done {
-            self.revision += 1;
+        let Some(n) = self.undo_steps.pop() else {
+            return false;
+        };
+        for _ in 0..n {
+            self.session.editor_mut().undo();
         }
-        done
+        self.redo_steps.push(n);
+        self.revision += 1;
+        true
     }
 
-    /// Redoes the last undone command (`Shift Cmd Z`, `Cmd Y`).
+    /// Redoes the last undone step (`Shift Cmd Z`, `Cmd Y`).
     pub fn redo(&mut self) -> Result<bool, ProjectError> {
         self.gesture = None;
-        match self.session.editor_mut().redo() {
-            None => Ok(false),
-            Some(Ok(_)) => {
-                self.revision += 1;
-                Ok(true)
+        let Some(n) = self.redo_steps.pop() else {
+            return Ok(false);
+        };
+        for _ in 0..n {
+            if let Some(Err(e)) = self.session.editor_mut().redo() {
+                return Err(ProjectError::Invalid(e.to_string()));
             }
-            Some(Err(e)) => Err(ProjectError::Invalid(e.to_string())),
         }
+        self.undo_steps.push(n);
+        self.revision += 1;
+        Ok(true)
     }
 
     /// Whether there is something to undo and to redo.
-    pub fn history(&mut self) -> (bool, bool) {
-        let e = self.session.editor_mut();
-        (e.undo_len() > 0, e.redo_len() > 0)
+    pub fn history(&self) -> (bool, bool) {
+        (!self.undo_steps.is_empty(), !self.redo_steps.is_empty())
     }
 
     /// Changes with every edit.
@@ -419,5 +453,25 @@ mod tests {
         assert!(!doc.undo());
         assert!(doc.redo().unwrap());
         assert_eq!(doc.session().project().layers[0].opacity(), 0.5);
+    }
+
+    #[test]
+    fn a_group_of_commands_is_one_undo_step() {
+        use convert64_core::command::CellLock;
+        use convert64_core::model::CellPos;
+        let mut doc = Document::from_png("ramp.png", &png()).unwrap();
+        let lock = |x| {
+            JsonCommand::CellLock(CellLock {
+                cells: vec![CellPos { x, y: 0 }],
+                locked: true,
+            })
+        };
+        doc.run_all(vec![lock(0), lock(1), lock(2)]).unwrap();
+        assert_eq!(doc.session().project().steering.locks().iter().count(), 3);
+        assert!(doc.undo());
+        assert_eq!(doc.session().project().steering.locks().iter().count(), 0);
+        assert!(doc.redo().unwrap());
+        assert_eq!(doc.session().project().steering.locks().iter().count(), 3);
+        assert_eq!(doc.history(), (true, false));
     }
 }

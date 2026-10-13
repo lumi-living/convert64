@@ -66,3 +66,7 @@ pub const SOURCE_RESULT: KeyboardShortcut = bare(Key::Q);
 pub const HIDE_CHROME: KeyboardShortcut = bare(Key::Tab);
 /// Hide the dock.
 pub const HIDE_DOCK: KeyboardShortcut = KeyboardShortcut::new(Modifiers::SHIFT, Key::Tab);
+/// Next-worst cell.
+pub const NEXT_WORST: KeyboardShortcut = shift_cmd(Key::CloseBracket);
+/// Previous worst cell.
+pub const PREVIOUS_WORST: KeyboardShortcut = shift_cmd(Key::OpenBracket);

@@ -5,7 +5,7 @@
 
 use super::{Action, Shell, icon};
 use crate::icons;
-use crate::theme::{Theme, layout};
+use crate::theme::layout;
 use crate::workspace::Workspace;
 use convert64_core::Blend;
 use convert64_core::layer::Layer;
@@ -317,6 +317,5 @@ fn strip(shell: &Shell, ui: &mut Ui, actions: &mut Vec<Action>) {
                 layer: at(shell.layer),
             }));
         }
-        let _ = Theme::current(ui.ctx());
     });
 }

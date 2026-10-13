@@ -258,6 +258,18 @@ impl App {
             Action::NewLayer if self.workspace.is_some() => self.files.pick_open(ctx, true),
             Action::NewLayer => self.files.pick_open(ctx, false),
             Action::Run(command) => self.edit(ctx, None, command),
+            Action::RunAll(commands, message) => {
+                let Some(ws) = &mut self.workspace else {
+                    return;
+                };
+                match ws.doc.run_all(commands) {
+                    Ok(()) => {
+                        self.shell.toast(ctx, message, false);
+                        self.resolve();
+                    }
+                    Err(e) => self.shell.toast(ctx, e.to_string(), true),
+                }
+            }
             Action::Gesture(id, command) => self.edit(ctx, Some(id), command),
             Action::EndGesture => {
                 if let Some(ws) = &mut self.workspace {
@@ -427,7 +439,7 @@ impl eframe::App for App {
 
 /// `--screenshot <file.png> [--theme light|dark] [--size <w>x<h>] [--view result]
 /// [--overlay grid|clashes|ghost]… [--compare split|flicker|side] [--dialog export]
-/// [--tab recipe|layers|export]`: draws a few frames,
+/// [--tab recipe|layers|export] [--command <json>]… [--zoom <n>] [--centre <x>,<y>]`: draws a few frames,
 /// saves the window as a PNG and quits. The PR screenshots come from it (#203).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
@@ -452,6 +464,13 @@ mod screenshot {
         pub(super) dialog: Option<String>,
         /// `--tab recipe|layers|export`: the dock tab.
         pub(super) tab: Option<String>,
+        /// `--command <json>` (repeatable): registry commands run after opening.
+        pub(super) commands: Vec<String>,
+        /// `--zoom <n>`: the zoom in the working view's mode (percent in Source,
+        /// times in Result).
+        pub(super) zoom: Option<f32>,
+        /// `--centre <x>,<y>`: the picture point at the centre, in screen units.
+        pub(super) centre: Option<(f32, f32)>,
         frame: u32,
     }
 
@@ -478,6 +497,9 @@ mod screenshot {
             let mut compare = None;
             let mut dialog = None;
             let mut tab = None;
+            let mut commands = Vec::new();
+            let mut zoom = None;
+            let mut centre = None;
             while let Some(arg) = args.next() {
                 let mut value = || args.next().ok_or(format!("{arg} needs a value"));
                 match arg.as_str() {
@@ -493,6 +515,16 @@ mod screenshot {
                     "--compare" => compare = Some(value()?),
                     "--dialog" => dialog = Some(value()?),
                     "--tab" => tab = Some(value()?),
+                    "--command" => commands.push(value()?),
+                    "--zoom" => zoom = Some(value()?.parse().map_err(|_| "--zoom: a number")?),
+                    "--centre" => {
+                        let v = value()?;
+                        let (x, y) = v.split_once(',').ok_or("--centre is <x>,<y>")?;
+                        centre = Some((
+                            x.parse().map_err(|_| "--centre: bad x")?,
+                            y.parse().map_err(|_| "--centre: bad y")?,
+                        ));
+                    }
                     "--size" => {
                         let v = value()?;
                         let (w, h) = v.split_once('x').ok_or("--size is <w>x<h>")?;
@@ -520,6 +552,9 @@ mod screenshot {
                     compare,
                     dialog,
                     tab,
+                    commands,
+                    zoom,
+                    centre,
                     frame: 0,
                 }),
             })
@@ -609,6 +644,28 @@ fn main() -> eframe::Result {
                         "ghost" => o.ghost = true,
                         _ => eprintln!("convert64-app: unknown overlay {overlay}"),
                     }
+                }
+                for json in &request.commands {
+                    match serde_json::from_str::<convert64_project::JsonCommand>(json) {
+                        Ok(cmd) => app.act(&cc.egui_ctx, Action::Run(cmd)),
+                        Err(e) => eprintln!("convert64-app: --command: {e}"),
+                    }
+                }
+                if let Some(z) = request.zoom {
+                    match app.shell.view {
+                        convert64_app::shell::ViewMode::Result => {
+                            app.shell.camera.result_zoom = z as u8
+                        }
+                        convert64_app::shell::ViewMode::Source => {
+                            app.shell.camera.source_zoom = z / 100.0
+                        }
+                    }
+                }
+                if let Some((x, y)) = request.centre {
+                    app.shell.camera.centre = egui::pos2(x, y);
+                }
+                if request.zoom.is_some() || request.centre.is_some() {
+                    app.shell.keep_camera();
                 }
                 use convert64_app::shell::DockTab;
                 match request.tab.as_deref() {
