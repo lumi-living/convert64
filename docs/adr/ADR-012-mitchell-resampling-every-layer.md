@@ -1,6 +1,6 @@
 # ADR-012: png2c64's Mitchell bicubic for every layer, on the target grid
 
-**Status:** Accepted
+**Status:** Accepted — the kernel is superseded by [ADR-013](ADR-013-png2amiga-c64-reference.md) (png2amiga's widened Lanczos-3, #235).
 **Date:** 2026-10-13
 **Deciders:** Jaakko Haaparanta
 
