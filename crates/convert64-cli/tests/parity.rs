@@ -36,8 +36,9 @@ fn ok(out: &Output) -> Value {
     serde_json::from_slice(&out.stdout).unwrap_or(Value::Null)
 }
 
-/// A two-layer 64 × 40 project (the photo and a copy of it) with a half-transparent
-/// source and a greyscale `mask.png`.
+/// A two-layer 64 × 40 project (the photo and a copy of it, whose mask has a gradient
+/// source) with a half-transparent source, two regions (`sky`, painted, and `ground`)
+/// and a greyscale `mask.png`.
 fn project(dir: &Path) -> PathBuf {
     let img = image::RgbaImage::from_fn(64, 40, |x, y| {
         let a = if x < 48 { 255 } else { 96 };
@@ -62,6 +63,15 @@ fn project(dir: &Path) -> PathBuf {
             "base.convert64",
             "--command",
             r#"{"command":"layer_duplicate","layer":0}"#,
+            // Layer 1's mask has a source, and there are two regions (#216).
+            "--command",
+            r#"{"command":"mask_gradient","layer":1,"gradient":{"kind":"radial","from":{"x":32,"y":20},"to":{"x":60,"y":20}}}"#,
+            "--command",
+            r#"{"command":"region_add","name":"sky"}"#,
+            "--command",
+            r#"{"command":"region_fill","region":"sky","polygon":[{"x":0,"y":0},{"x":320,"y":0},{"x":320,"y":90},{"x":0,"y":90}]}"#,
+            "--command",
+            r#"{"command":"region_add","name":"ground"}"#,
             "--in-place",
         ],
     ));

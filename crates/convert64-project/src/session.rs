@@ -8,7 +8,7 @@
 //! feature) and in the browser ([`MemoryStore`](crate::MemoryStore)).
 
 use crate::codec;
-use crate::command::{JsonCommand, LayerRef};
+use crate::command::{JsonCommand, LayerRef, RegionRef};
 use crate::error::{ProjectError, invalid};
 use crate::file::{
     self, Embed, LayerEntry, MaskSpec, PaletteSpec, ProjectFile, RegionEntry, SCHEMA_VERSION,
@@ -20,7 +20,9 @@ use convert64_core::command::{
     AdjustmentsSet, Command, Dirty, LayerAdd, LayerDuplicate, LayerNudge, LayerRemove, LayerRename,
     LayerReorder, LayerSetBlend, LayerSetOpacity, LayerSetTransform, LayerSetVisible, LayerViaMask,
     MaskClear, MaskFill, MaskFromAlpha, MaskGradient, MaskKey, MaskLoad, MaskSetModifier,
-    MaskStroke, PaletteSet, RecipeSet,
+    MaskSourceRemove, MaskSourceSetCombine, MaskStroke, PaletteSet, RecipeSet, RegionAdd,
+    RegionClear, RegionFill, RegionGradient, RegionRemove, RegionRename, RegionReorder,
+    RegionSetRecipe, RegionStroke,
 };
 use convert64_core::layer::{Layer, SourceImage};
 use convert64_core::mask::{Mask, MaskRaster};
@@ -339,6 +341,19 @@ impl Session {
         }
     }
 
+    /// The region index a reference names.
+    pub fn resolve_region(&self, r: &RegionRef) -> Result<usize, ProjectError> {
+        let regions = &self.project().regions;
+        match r {
+            RegionRef::Index(i) if *i < regions.len() => Ok(*i),
+            RegionRef::Index(i) => Err(invalid(format!("there is no region {i}"))),
+            RegionRef::Name(n) => regions
+                .iter()
+                .position(|r| r.name() == n)
+                .ok_or_else(|| invalid(format!("there is no region named {n:?}"))),
+        }
+    }
+
     /// The core command for a JSON command (reading any file it names, relative to the
     /// project or recipe file).
     pub fn to_command(&mut self, cmd: JsonCommand) -> Result<Command, ProjectError> {
@@ -524,6 +539,86 @@ impl Session {
             }
             JsonCommand::BackgroundPin(c) => Command::BackgroundPin(c),
             JsonCommand::SolveSet(c) => Command::SolveSet(c),
+            JsonCommand::MaskSourceRemove { layer, index } => {
+                Command::MaskSourceRemove(MaskSourceRemove {
+                    layer: self.resolve(&layer)?,
+                    index,
+                })
+            }
+            JsonCommand::MaskSourceSetCombine {
+                layer,
+                index,
+                combine,
+            } => Command::MaskSourceSetCombine(MaskSourceSetCombine {
+                layer: self.resolve(&layer)?,
+                index,
+                combine,
+            }),
+            JsonCommand::RegionAdd {
+                name,
+                recipe,
+                index,
+            } => Command::RegionAdd(Box::new(RegionAdd {
+                index: index.unwrap_or(self.project().regions.len()),
+                name,
+                recipe: *recipe,
+            })),
+            JsonCommand::RegionRemove { region } => Command::RegionRemove(RegionRemove {
+                region: self.resolve_region(&region)?,
+            }),
+            JsonCommand::RegionRename { region, name } => Command::RegionRename(RegionRename {
+                region: self.resolve_region(&region)?,
+                name,
+            }),
+            JsonCommand::RegionReorder { region, to } => Command::RegionReorder(RegionReorder {
+                region: self.resolve_region(&region)?,
+                to,
+            }),
+            JsonCommand::RegionSetRecipe { region, recipe } => {
+                Command::RegionSetRecipe(Box::new(RegionSetRecipe {
+                    region: self.resolve_region(&region)?,
+                    recipe,
+                }))
+            }
+            JsonCommand::RegionStroke {
+                region,
+                points,
+                radius,
+                hardness,
+                flow,
+                mode,
+            } => Command::RegionStroke(RegionStroke {
+                region: self.resolve_region(&region)?,
+                points,
+                radius,
+                hardness,
+                flow,
+                mode,
+            }),
+            JsonCommand::RegionFill {
+                region,
+                polygon,
+                value,
+                mode,
+            } => Command::RegionFill(RegionFill {
+                region: self.resolve_region(&region)?,
+                polygon,
+                value,
+                mode,
+            }),
+            JsonCommand::RegionGradient {
+                region,
+                gradient,
+                combine,
+            } => Command::RegionGradient(RegionGradient {
+                region: self.resolve_region(&region)?,
+                gradient,
+                combine,
+            }),
+            JsonCommand::RegionClear { region, value } => Command::RegionClear(RegionClear {
+                region: self.resolve_region(&region)?,
+                value,
+            }),
         })
     }
 

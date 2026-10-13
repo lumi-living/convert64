@@ -110,7 +110,7 @@ A saved raster is `{"fill": v}` when every value is the same (stored exactly) an
 { "name": "sky", "mask": { "fill": 1.0 }, "recipe": { "method": { "kind": "none" }, "strength": 1.0 } }
 ```
 
-A recipe override over part of the picture (UX §7). `mask` is a raster as above, in canvas space: 320 × 200.
+A recipe override over part of the picture (UX §7). `mask` is a raster as above, in canvas space: 320 × 200. Regions are applied in order, later ones winning where masks overlap. The `region_*` commands (`region_add`, `region_stroke`, `region_set_recipe`, …; [cli.md](cli.md#apply)) make and edit them; a saved region is exactly what they made, with the same 1/65535 rounding of a painted mask on the first save.
 
 ## Steering
 
