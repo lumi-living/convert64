@@ -149,11 +149,17 @@ fn view_menu(shell: &mut Shell, ui: &mut Ui, actions: &mut Vec<Action>) {
         }
     }
     ui.separator();
-    if item(ui, "Hide Dock", Some(&s::HIDE_DOCK), true) {
+    let dock = if shell.dock_hidden {
+        "Show Dock"
+    } else {
+        "Hide Dock"
+    };
+    if item(ui, dock, Some(&s::HIDE_DOCK), true) {
         shell.dock_hidden = !shell.dock_hidden;
     }
-    if item(ui, "Hide All Chrome", Some(&s::HIDE_CHROME), true) {
-        shell.chrome_hidden = true;
+    // The menu is part of the UI, so it only ever hides it; `Cmd \` or `Esc` shows it.
+    if item(ui, "Hide UI", Some(&s::HIDE_UI), true) {
+        shell.set_ui_hidden(ui.ctx(), true);
     }
     ui.separator();
     ui.menu_button("Theme", |ui| {

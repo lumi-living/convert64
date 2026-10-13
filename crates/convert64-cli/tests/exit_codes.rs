@@ -276,6 +276,7 @@ fn every_command_has_a_json_report() {
         assert_eq!(v["error"].is_null(), code == 0, "{line:?}");
         assert!(v["timing_ms"]["total"].is_f64());
         assert!(v["files_written"].is_array());
+        assert!(v["notes"].is_array(), "{line:?}");
     }
 }
 

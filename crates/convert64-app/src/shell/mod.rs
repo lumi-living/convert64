@@ -178,9 +178,9 @@ pub struct Shell {
     pub tool: Tool,
     /// The dock tab under the result.
     pub tab: DockTab,
-    /// `Tab`: menu, toolbar, dock and status bar hidden.
+    /// `Cmd \`: menu, toolbar, dock and status bar hidden; `Esc` shows them again.
     pub chrome_hidden: bool,
-    /// `Shift Tab`: the dock (and with it the result) hidden.
+    /// `Shift Cmd \`: the dock (and with it the result) hidden.
     pub dock_hidden: bool,
     /// Where the working view looks and how close.
     pub camera: Camera,
@@ -247,6 +247,9 @@ pub struct Shell {
     pub last_export: Option<(crate::export::Settings, String)>,
     /// A message shown at the bottom of the window until the time (egui seconds) passes.
     toast: Option<(String, bool, f64)>,
+    /// `--dock-scroll <points>` (screenshots only): the dock's tab content held scrolled
+    /// down this far, to show a group below the fold.
+    pub dock_scroll: Option<f32>,
 }
 
 impl Default for Shell {
@@ -289,6 +292,7 @@ impl Default for Shell {
             export_requested: false,
             last_export: None,
             toast: None,
+            dock_scroll: None,
         }
     }
 }
@@ -306,6 +310,26 @@ impl Shell {
         let now = ctx.input(|i| i.time);
         self.toast = Some((message.into(), error, now + if error { 6.0 } else { 3.0 }));
         ctx.request_repaint_after(std::time::Duration::from_secs(3));
+    }
+
+    /// Hides or shows the menu bar, toolbar, dock and status bar (`Cmd \`, View › Hide
+    /// UI). Hiding says how to get them back, since nothing on screen does (#240).
+    pub fn set_ui_hidden(&mut self, ctx: &egui::Context, hidden: bool) {
+        self.chrome_hidden = hidden;
+        if hidden {
+            let keys = ctx.format_shortcut(&shortcuts::HIDE_UI);
+            self.toast(
+                ctx,
+                format!("UI hidden — press {keys} or Esc to show it"),
+                false,
+            );
+        } else if self
+            .toast
+            .as_ref()
+            .is_some_and(|t| t.0.starts_with("UI hidden"))
+        {
+            self.toast = None;
+        }
     }
 
     /// Opens the export dialog for `ws`.
@@ -365,7 +389,7 @@ impl Shell {
     /// Fits the picture into the working view.
     pub fn fit(&mut self) {
         match self.view_rect {
-            Some(rect) => self.camera.fit(rect, self.view),
+            Some(rect) => self.camera.fit(rect, self.view, self.overlays.border),
             None => self.fit_pending = true,
         }
     }
@@ -407,9 +431,17 @@ impl Shell {
     }
 
     /// Draws the whole shell into `ui` (the app's root) and returns what the user asked
-    /// for. Keyboard shortcuts are read first, unless a text field has focus.
+    /// for. Keyboard shortcuts are read first; single keys wait while a text field is
+    /// being edited.
     pub fn show(&mut self, ui: &mut egui::Ui, mut ws: Option<&mut Workspace>) -> Vec<Action> {
         let mut actions = Vec::new();
+        // A press anywhere else ends a text edit, as a click does: a drag on a slider
+        // must not leave the W field taking the keys (#244).
+        let presses = egui::SurrenderFocusOn::Presses;
+        if ui.ctx().options(|o| o.input_options.surrender_focus_on) != presses {
+            ui.ctx()
+                .options_mut(|o| o.input_options.surrender_focus_on = presses);
+        }
         self.handle_shortcuts(ui.ctx(), &mut actions);
         if let Some(ws) = ws.as_deref_mut() {
             ws.prepare(ui.ctx());
@@ -511,6 +543,7 @@ impl Shell {
             });
         export_dialog::show(self, ws.as_deref(), ui.ctx(), &mut actions);
         self.show_toast(ui.ctx());
+        release_focus(ui.ctx());
         actions
     }
 
@@ -542,9 +575,27 @@ impl Shell {
     /// The shortcuts of `docs/UX.md` §8 that the shell itself handles.
     fn handle_shortcuts(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         use shortcuts as s;
-        // Single keys only when no text field wants them.
-        let typing = ctx.egui_wants_keyboard_input();
+        // Single keys only while no text field is being edited (a `TextEdit`, or a
+        // `DragValue` taking typed digits); a focused slider or button leaves them be
+        // (#244). Arrows, though, belong to whichever widget has focus.
+        let typing = ctx.text_edit_focused();
+        let widget_focused = ctx.egui_wants_keyboard_input();
+        let mut hide_ui = None;
         ctx.input_mut(|i| {
+            // Show/Hide UI and Show/Hide Dock (`Cmd \`, `Shift Cmd \`), even while typing.
+            // Shift first: a Cmd pattern also matches with Shift held. Shift `\` usually
+            // arrives as `|`.
+            if i.consume_shortcut(&s::HIDE_DOCK)
+                || i.consume_key(s::HIDE_DOCK.modifiers, egui::Key::Pipe)
+            {
+                self.dock_hidden = !self.dock_hidden;
+            } else if i.consume_shortcut(&s::HIDE_UI) {
+                hide_ui = Some(!self.chrome_hidden);
+            }
+            // `Esc` always brings the UI back (#240); it does nothing else then.
+            if self.chrome_hidden && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+                hide_ui = Some(false);
+            }
             if i.consume_shortcut(&s::ZOOM_IN) {
                 self.zoom_step(true);
             }
@@ -635,7 +686,7 @@ impl Shell {
             if i.consume_shortcut(&s::SNAP_CYCLE) {
                 self.snap_cycle = true;
             }
-            // Shift Cmd S before Cmd S, as with Tab.
+            // Shift Cmd S before Cmd S: a Cmd pattern also matches with Shift held.
             if i.consume_shortcut(&s::SAVE_AS) {
                 actions.push(Action::SaveAs);
             } else if i.consume_shortcut(&s::SAVE) {
@@ -648,18 +699,13 @@ impl Shell {
             } else if i.consume_shortcut(&s::EXPORT) {
                 self.export_requested = true;
             }
-            self.flip_held = !typing && i.key_down(egui::Key::Backslash);
+            // `Cmd \` is Show/Hide UI, not a flip.
+            self.flip_held = !typing && !i.modifiers.command && i.key_down(egui::Key::Backslash);
             if typing {
                 return;
             }
             if i.consume_shortcut(&s::CLASHES) {
                 self.overlays.clashes = !self.overlays.clashes;
-            }
-            // Shift Tab before Tab: a plain-Tab pattern also matches with Shift held.
-            if i.consume_shortcut(&s::HIDE_DOCK) {
-                self.dock_hidden = !self.dock_hidden;
-            } else if i.consume_shortcut(&s::HIDE_CHROME) {
-                self.chrome_hidden = !self.chrome_hidden;
             }
             if i.consume_key(egui::Modifiers::NONE, egui::Key::H) {
                 self.hand = !self.hand;
@@ -714,6 +760,9 @@ impl Shell {
                 self.mask.size = (self.mask.size * 1.25).min(64.0);
             }
             // Arrows nudge the selected layer: 10 px with Shift, 0.25 px with Alt (UX §6).
+            if widget_focused {
+                return;
+            }
             for (key, dx, dy) in [
                 (egui::Key::ArrowLeft, -1.0, 0.0),
                 (egui::Key::ArrowRight, 1.0, 0.0),
@@ -737,6 +786,27 @@ impl Shell {
                 }));
             }
         });
+        if let Some(hidden) = hide_ui {
+            self.set_ui_hidden(ctx, hidden);
+        }
+    }
+}
+
+/// Gives the keyboard back to the shortcuts once a slider or `DragValue` is done with:
+/// on `Enter`, and when its drag ends (#244, Figma's behaviour). Text being typed keeps
+/// its focus until `Enter`, `Esc` or a press elsewhere, which egui handles.
+fn release_focus(ctx: &egui::Context) {
+    let Some(id) = ctx.memory(|m| m.focused()) else {
+        return;
+    };
+    if ctx.text_edit_focused() {
+        return;
+    }
+    let drag_widget = ctx.read_response(id).is_some_and(|r| r.sense.senses_drag());
+    let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+    let drag_ended = ctx.drag_stopped_id() == Some(id);
+    if drag_widget && (enter || drag_ended) {
+        ctx.memory_mut(|m| m.surrender_focus(id));
     }
 }
 
@@ -776,18 +846,248 @@ mod tests {
         }
     }
 
+    /// #240: `Cmd \` hides the UI with a toast that says how to get it back; `Esc` and
+    /// `Cmd \` show it again; `Shift Cmd \` hides only the dock.
     #[test]
-    fn tab_hides_the_chrome_and_shift_tab_only_the_dock() {
-        let (shell, _) = frame(
-            Shell::default(),
-            vec![key(egui::Key::Tab, egui::Modifiers::NONE)],
-        );
+    fn cmd_backslash_hides_the_ui_and_esc_shows_it() {
+        let cmd = egui::Modifiers::COMMAND;
+        let (shell, _) = frame(Shell::default(), vec![key(egui::Key::Backslash, cmd)]);
         assert!(shell.chrome_hidden && !shell.dock_hidden);
-        let (shell, _) = frame(
-            Shell::default(),
-            vec![key(egui::Key::Tab, egui::Modifiers::SHIFT)],
+        let (message, error, _) = shell.toast.clone().expect("a toast on hide");
+        // "⌘\" on macOS, "Ctrl+Backslash" elsewhere, as the menus show it.
+        let keys = message
+            .strip_prefix("UI hidden — press ")
+            .and_then(|m| m.strip_suffix(" or Esc to show it"))
+            .unwrap_or_else(|| panic!("{message}"));
+        assert!(keys == "⌘\\" || keys == "Ctrl+Backslash", "{keys}");
+        assert!(!error);
+
+        let (shell, _) = frame(shell, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
+        assert!(!shell.chrome_hidden);
+        assert!(shell.toast.is_none(), "the hint goes with the hidden UI");
+
+        let (shell, _) = frame(Shell::default(), vec![key(egui::Key::Backslash, cmd)]);
+        let (shell, _) = frame(shell, vec![key(egui::Key::Backslash, cmd)]);
+        assert!(!shell.chrome_hidden, "Cmd \\ toggles");
+
+        let shift_cmd = cmd.plus(egui::Modifiers::SHIFT);
+        for k in [egui::Key::Backslash, egui::Key::Pipe] {
+            let (shell, _) = frame(Shell::default(), vec![key(k, shift_cmd)]);
+            assert!(!shell.chrome_hidden && shell.dock_hidden, "{k:?}");
+        }
+    }
+
+    /// Holding `Cmd \` hides the UI; it does not flip the working view as a bare `\` does.
+    #[test]
+    fn cmd_backslash_is_not_hold_to_compare() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut shell = Shell::default();
+        for (modifiers, flipped) in [
+            (egui::Modifiers::NONE, true),
+            (egui::Modifiers::COMMAND, false),
+        ] {
+            let input = egui::RawInput {
+                events: vec![
+                    egui::Event::ModifiersChanged(modifiers),
+                    key(egui::Key::Backslash, modifiers),
+                ],
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                shell.show(ui, None);
+            });
+            output.textures_delta.clear();
+            assert_eq!(shell.flip_held, flipped, "{modifiers:?}");
+            // Release the key before the next case.
+            let input = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Backslash,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                shell.show(ui, None);
+            });
+            output.textures_delta.clear();
+        }
+    }
+
+    /// #240: `Tab` and `Shift Tab` are egui's focus traversal and hide nothing.
+    #[test]
+    fn tab_hides_nothing() {
+        for m in [egui::Modifiers::NONE, egui::Modifiers::SHIFT] {
+            let (shell, _) = frame(Shell::default(), vec![key(egui::Key::Tab, m)]);
+            assert!(!shell.chrome_hidden && !shell.dock_hidden, "{m:?}");
+        }
+    }
+
+    /// `Esc` with the UI showing still leaves mask mode (it is not swallowed).
+    #[test]
+    fn esc_with_the_ui_showing_leaves_mask_mode() {
+        let mut shell = Shell::default();
+        shell.toggle_mask_mode();
+        let (shell, _) = frame(shell, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
+        assert!(!shell.mask.active && !shell.chrome_hidden);
+    }
+
+    /// The shell and, beside it, a slider and a `DragValue` as the Recipe form has
+    /// them, frame after frame on one context (#244).
+    struct Form {
+        ctx: egui::Context,
+        shell: Shell,
+        slider: (f32, Option<egui::Response>),
+        drag: (f32, Option<egui::Response>),
+    }
+
+    impl Form {
+        fn new() -> Self {
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx);
+            let mut form = Self {
+                ctx,
+                shell: Shell::default(),
+                slider: (0.5, None),
+                drag: (50.0, None),
+            };
+            form.frame(vec![]);
+            form
+        }
+
+        fn frame(&mut self, events: Vec<egui::Event>) -> Vec<Action> {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut actions = Vec::new();
+            let (shell, slider, drag) = (&mut self.shell, &mut self.slider, &mut self.drag);
+            let mut output = self.ctx.run_ui(input, |ui| {
+                actions = shell.show(ui, None);
+                egui::Area::new(egui::Id::new("form"))
+                    .fixed_pos([400.0, 300.0])
+                    .show(ui.ctx(), |ui| {
+                        let r = egui::Slider::new(&mut slider.0, 0.0..=1.0).show_value(false);
+                        slider.1 = Some(ui.add(r));
+                        drag.1 = Some(ui.add(egui::DragValue::new(&mut drag.0)));
+                    });
+            });
+            output.textures_delta.clear();
+            actions
+        }
+
+        fn slider_id(&self) -> egui::Id {
+            self.slider.1.as_ref().unwrap().id
+        }
+
+        fn drag_id(&self) -> egui::Id {
+            self.drag.1.as_ref().unwrap().id
+        }
+
+        /// Gives `id` keyboard focus, as `Tab` or a click would.
+        fn focus(&mut self, id: egui::Id) {
+            self.ctx.memory_mut(|m| m.request_focus(id));
+            self.frame(vec![]);
+            assert_eq!(self.focused(), Some(id));
+        }
+
+        fn focused(&self) -> Option<egui::Id> {
+            self.ctx.memory(|m| m.focused())
+        }
+
+        fn pointer(&mut self, pos: egui::Pos2, pressed: Option<bool>) {
+            let mut events = vec![egui::Event::PointerMoved(pos)];
+            if let Some(pressed) = pressed {
+                events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            self.frame(events);
+        }
+    }
+
+    /// #244: a slider with focus leaves single keys to the shortcuts (arrows stay with
+    /// the slider), and `Enter` gives the keyboard back.
+    #[test]
+    fn a_focused_slider_leaves_single_keys_to_the_shortcuts() {
+        let none = egui::Modifiers::NONE;
+        let mut form = Form::new();
+        form.focus(form.slider_id());
+        form.frame(vec![key(egui::Key::R, none)]);
+        assert_eq!(form.shell.tool, Tool::Region);
+        let actions = form.frame(vec![key(egui::Key::ArrowLeft, none)]);
+        assert!(actions.is_empty(), "arrows move the slider, not the layer");
+        form.frame(vec![key(egui::Key::Enter, none)]);
+        assert_eq!(form.focused(), None, "Enter drops focus");
+        let actions = form.frame(vec![key(egui::Key::ArrowLeft, none)]);
+        assert_eq!(actions.len(), 1, "arrows nudge again: {actions:?}");
+    }
+
+    /// #244: the end of a drag on a focused slider gives the keyboard back.
+    #[test]
+    fn a_slider_drag_ends_its_focus() {
+        let mut form = Form::new();
+        let id = form.slider_id();
+        let rect = form.slider.1.as_ref().unwrap().rect;
+        form.focus(id);
+        form.pointer(rect.left_center() + egui::vec2(4.0, 0.0), Some(true));
+        form.pointer(rect.center(), None);
+        form.pointer(rect.right_center(), None);
+        form.pointer(rect.right_center(), Some(false));
+        form.frame(vec![]);
+        assert!(
+            form.slider.0 > 0.9,
+            "the drag moved the slider: {}",
+            form.slider.0
         );
-        assert!(!shell.chrome_hidden && shell.dock_hidden);
+        assert_eq!(form.focused(), None);
+    }
+
+    /// #244: digits typed into a `DragValue` hold the single keys until `Enter`.
+    #[test]
+    fn typing_into_a_drag_value_holds_single_keys_until_enter() {
+        let none = egui::Modifiers::NONE;
+        let mut form = Form::new();
+        form.focus(form.drag_id());
+        assert!(
+            form.ctx.text_edit_focused(),
+            "the DragValue takes typed digits"
+        );
+        form.frame(vec![key(egui::Key::R, none), egui::Event::Text("r".into())]);
+        assert_ne!(form.shell.tool, Tool::Region, "R is typed, not a shortcut");
+        form.frame(vec![key(egui::Key::Enter, none)]);
+        form.frame(vec![key(egui::Key::R, none)]);
+        assert_eq!(form.shell.tool, Tool::Region);
+    }
+
+    /// #244: a press elsewhere (the start of a slider drag) ends typing, not only a click.
+    #[test]
+    fn a_press_elsewhere_ends_typing() {
+        let mut form = Form::new();
+        form.focus(form.drag_id());
+        let slider = form.slider.1.as_ref().unwrap().rect.center();
+        form.pointer(slider, Some(true));
+        assert!(!form.ctx.text_edit_focused());
+        form.pointer(slider, Some(false));
+        form.frame(vec![key(egui::Key::R, egui::Modifiers::NONE)]);
+        assert_eq!(form.shell.tool, Tool::Region);
+    }
+
+    /// #244: `Esc` ends typing and returns the keys to the canvas in the same frame.
+    #[test]
+    fn esc_returns_the_keys_to_the_canvas() {
+        let none = egui::Modifiers::NONE;
+        let mut form = Form::new();
+        form.focus(form.drag_id());
+        form.frame(vec![key(egui::Key::Escape, none), key(egui::Key::R, none)]);
+        assert_eq!(form.focused(), None);
+        assert_eq!(form.shell.tool, Tool::Region);
     }
 
     #[test]
