@@ -115,6 +115,20 @@ impl DockTab {
     }
 }
 
+/// Where the keyboard's single keys go when no text is being typed: the canvas (the
+/// working view), the Layers panel, or some other part of the window. `Delete` and
+/// `Backspace` delete the selected layer only from the first two (#245).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyFocus {
+    /// The working view: the default, and where `Esc` returns.
+    #[default]
+    Canvas,
+    /// The Layers tab.
+    Layers,
+    /// Anything else: the Recipe form, the result panel, the toolbar.
+    Other,
+}
+
 /// Something the user asked for that the shell cannot do itself.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
@@ -245,6 +259,14 @@ pub struct Shell {
     pub last_export: Option<(crate::export::Settings, String)>,
     /// A message shown at the bottom of the window until the time (egui seconds) passes.
     toast: Option<(String, bool, f64)>,
+    /// The toast offers Undo (a deleted layer).
+    toast_undo: bool,
+    /// Where the last press landed, or `Esc` sent the keys (#245).
+    pub key_focus: KeyFocus,
+    /// The Layers tab's rectangle last frame, for a focused widget inside it.
+    layers_rect: Option<egui::Rect>,
+    /// The working view's widget id, for keyboard focus on it.
+    canvas_id: Option<egui::Id>,
 }
 
 impl Default for Shell {
@@ -287,6 +309,10 @@ impl Default for Shell {
             export_requested: false,
             last_export: None,
             toast: None,
+            toast_undo: false,
+            key_focus: KeyFocus::default(),
+            layers_rect: None,
+            canvas_id: None,
         }
     }
 }
@@ -303,7 +329,36 @@ impl Shell {
     pub fn toast(&mut self, ctx: &egui::Context, message: impl Into<String>, error: bool) {
         let now = ctx.input(|i| i.time);
         self.toast = Some((message.into(), error, now + if error { 6.0 } else { 3.0 }));
+        self.toast_undo = false;
         ctx.request_repaint_after(std::time::Duration::from_secs(3));
+    }
+
+    /// Shows `message` with an **Undo** button for 6 s, for an edit that removed
+    /// something (UX §11; "Deleted layer 'source' · Undo", #245).
+    pub fn toast_with_undo(&mut self, ctx: &egui::Context, message: impl Into<String>) {
+        let now = ctx.input(|i| i.time);
+        self.toast = Some((message.into(), false, now + 6.0));
+        self.toast_undo = true;
+        ctx.request_repaint_after(std::time::Duration::from_secs(6));
+    }
+
+    /// Whether `Delete` / `Backspace` may delete the selected layer now: only while the
+    /// keys belong to the canvas or the Layers panel, never to the Recipe form (#245).
+    fn delete_keys_apply(&self, ctx: &egui::Context) -> bool {
+        let here = match ctx.memory(|m| m.focused()) {
+            None => self.key_focus,
+            // A widget with keyboard focus (`Tab`) decides by where it is.
+            Some(id) if Some(id) == self.canvas_id => KeyFocus::Canvas,
+            Some(id) => {
+                let inside = ctx.read_response(id).zip(self.layers_rect);
+                if inside.is_some_and(|(r, layers)| layers.contains(r.rect.center())) {
+                    KeyFocus::Layers
+                } else {
+                    KeyFocus::Other
+                }
+            }
+        };
+        matches!(here, KeyFocus::Canvas | KeyFocus::Layers)
     }
 
     /// Opens the export dialog for `ws`.
@@ -498,11 +553,30 @@ impl Shell {
                 working::show(self, ui, ws.as_deref(), &mut actions)
             });
         export_dialog::show(self, ws.as_deref(), ui.ctx(), &mut actions);
-        self.show_toast(ui.ctx());
+        if let Some(ws) = ws.as_deref() {
+            self.announce_deletes(ui.ctx(), ws, &actions);
+        }
+        self.show_toast(ui.ctx(), &mut actions);
         actions
     }
 
-    fn show_toast(&mut self, ctx: &egui::Context) {
+    /// A layer delete, from any key, button or menu, says what went and offers Undo:
+    /// it used to happen silently (usability review M9, #245).
+    pub fn announce_deletes(&mut self, ctx: &egui::Context, ws: &Workspace, actions: &[Action]) {
+        use convert64_project::{JsonCommand, LayerRef};
+        let layers = &ws.doc.session().project().layers;
+        for action in actions {
+            if let Action::Run(JsonCommand::LayerRemove {
+                layer: LayerRef::Index(i),
+            }) = action
+                && let Some(layer) = layers.get(*i)
+            {
+                self.toast_with_undo(ctx, format!("Deleted layer '{}'", layer.name()));
+            }
+        }
+    }
+
+    fn show_toast(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let Some((message, error, until)) = &self.toast else {
             return;
         };
@@ -512,19 +586,35 @@ impl Shell {
         }
         let theme = crate::theme::Theme::current(ctx);
         let colour = if *error { theme.error } else { theme.ok };
+        let undo = self.toast_undo;
+        let mut undone = false;
         egui::Area::new(egui::Id::new("toast"))
             .anchor(
                 egui::Align2::CENTER_BOTTOM,
                 [0.0, -2.0 * layout::STATUS_HEIGHT],
             )
-            .interactable(false)
+            .interactable(undo)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    // One line, however long: a wrapped toast reads badly.
-                    let text = egui::RichText::new(message.as_str()).color(colour);
-                    ui.add(egui::Label::new(text).extend());
+                    ui.horizontal(|ui| {
+                        // One line, however long: a wrapped toast reads badly.
+                        let text = egui::RichText::new(message.as_str()).color(colour);
+                        ui.add(egui::Label::new(text).extend());
+                        if undo {
+                            ui.label("·");
+                            let keys = ctx.format_shortcut(&shortcuts::UNDO);
+                            undone = ui
+                                .link("Undo")
+                                .on_hover_text(format!("Undo ({keys})"))
+                                .clicked();
+                        }
+                    });
                 });
             });
+        if undone {
+            actions.push(Action::Undo);
+            self.toast = None;
+        }
     }
 
     /// The shortcuts of `docs/UX.md` §8 that the shell itself handles.
@@ -532,7 +622,16 @@ impl Shell {
         use shortcuts as s;
         // Single keys only when no text field wants them.
         let typing = ctx.egui_wants_keyboard_input();
+        let delete_applies = self.delete_keys_apply(ctx);
         ctx.input_mut(|i| {
+            // A press moves the keys away from the canvas and the Layers panel, unless
+            // it lands on one of them (they say so as they draw); `Esc` brings them back.
+            if i.pointer.any_pressed() {
+                self.key_focus = KeyFocus::Other;
+            }
+            if i.key_pressed(egui::Key::Escape) {
+                self.key_focus = KeyFocus::Canvas;
+            }
             if i.consume_shortcut(&s::ZOOM_IN) {
                 self.zoom_step(true);
             }
@@ -662,7 +761,10 @@ impl Shell {
             if i.consume_shortcut(&s::COMPARE) {
                 self.compare = self.compare.next();
             }
-            if i.consume_shortcut(&s::DELETE_LAYER) || i.consume_shortcut(&s::DELETE_LAYER_ALT) {
+            if delete_applies
+                && (i.consume_shortcut(&s::DELETE_LAYER)
+                    || i.consume_shortcut(&s::DELETE_LAYER_ALT))
+            {
                 let layer = convert64_project::LayerRef::Index(self.layer);
                 actions.push(Action::Run(convert64_project::JsonCommand::LayerRemove {
                     layer,
@@ -776,6 +878,153 @@ mod tests {
             vec![key(egui::Key::Tab, egui::Modifiers::SHIFT)],
         );
         assert!(!shell.chrome_hidden && shell.dock_hidden);
+    }
+
+    /// A document with two layers, "ramp" and "top", and a context to draw it on.
+    fn two_layers() -> (egui::Context, Workspace) {
+        let png = |g: u8| {
+            let rgba = (0..64 * 40)
+                .flat_map(|i| [(i % 64 * 4) as u8, g, 90, 255])
+                .collect();
+            convert64_project::codec::encode_rgba8(64, 40, rgba)
+        };
+        let mut doc = crate::document::Document::from_png("ramp.png", &png(10)).unwrap();
+        doc.add_layer("top.png", &png(200), None).unwrap();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        (ctx, Workspace::new(doc))
+    }
+
+    fn draw(
+        ctx: &egui::Context,
+        shell: &mut Shell,
+        ws: &mut Workspace,
+        events: Vec<egui::Event>,
+    ) -> Vec<Action> {
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        let mut actions = Vec::new();
+        let mut out = ctx.run_ui(input, |ui| actions = shell.show(ui, Some(ws)));
+        out.textures_delta.clear();
+        actions
+    }
+
+    fn press(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+
+    fn removes(actions: &[Action], i: usize) -> bool {
+        use convert64_project::{JsonCommand, LayerRef};
+        actions.iter().any(|a| {
+            *a == Action::Run(JsonCommand::LayerRemove {
+                layer: LayerRef::Index(i),
+            })
+        })
+    }
+
+    /// #245: deleting a layer names it in a toast whose Undo asks for an undo.
+    #[test]
+    fn deleting_a_layer_says_so_and_offers_undo() {
+        let (ctx, mut ws) = two_layers();
+        let mut shell = Shell {
+            layer: 1,
+            ..Shell::default()
+        };
+        draw(&ctx, &mut shell, &mut ws, vec![]);
+        let none = egui::Modifiers::NONE;
+        let actions = draw(
+            &ctx,
+            &mut shell,
+            &mut ws,
+            vec![key(egui::Key::Backspace, none)],
+        );
+        assert!(removes(&actions, 1), "{actions:?}");
+        let (message, error, _) = shell.toast.clone().expect("a toast");
+        assert_eq!(message, "Deleted layer 'top'");
+        assert!(shell.toast_undo && !error);
+
+        // The toast's last word is its Undo link.
+        draw(&ctx, &mut shell, &mut ws, vec![]);
+        let area = ctx
+            .memory(|m| m.area_rect(egui::Id::new("toast")))
+            .expect("the toast is drawn");
+        let undo = area.right_center() - egui::vec2(20.0, 0.0);
+        draw(&ctx, &mut shell, &mut ws, press(undo, true));
+        let actions = draw(&ctx, &mut shell, &mut ws, press(undo, false));
+        assert_eq!(actions, vec![Action::Undo]);
+        assert!(shell.toast.is_none());
+    }
+
+    /// #245: `Delete` / `Backspace` delete only while the canvas or the Layers panel has
+    /// the keys: after a press on either, or `Esc`; not after a press on the Recipe form
+    /// or with another widget focused by `Tab`.
+    #[test]
+    fn delete_keys_act_only_from_the_canvas_or_the_layers_panel() {
+        let none = egui::Modifiers::NONE;
+        let (ctx, mut ws) = two_layers();
+        let mut shell = Shell::default();
+        let delete = |shell: &mut Shell, ws: &mut Workspace| {
+            let actions = draw(&ctx, shell, ws, vec![key(egui::Key::Delete, none)]);
+            shell.toast = None;
+            removes(&actions, 0)
+        };
+        draw(&ctx, &mut shell, &mut ws, vec![]);
+        assert_eq!(
+            shell.key_focus,
+            KeyFocus::Canvas,
+            "the canvas has the keys first"
+        );
+        assert!(delete(&mut shell, &mut ws));
+
+        // A press on the Recipe form takes them away.
+        let view = shell.view_rect.unwrap();
+        let form = egui::pos2(view.right() + 60.0, view.bottom() - 40.0);
+        draw(&ctx, &mut shell, &mut ws, press(form, true));
+        draw(&ctx, &mut shell, &mut ws, press(form, false));
+        assert_eq!(shell.key_focus, KeyFocus::Other);
+        assert!(!delete(&mut shell, &mut ws));
+
+        // `Esc` gives them back to the canvas.
+        draw(
+            &ctx,
+            &mut shell,
+            &mut ws,
+            vec![key(egui::Key::Escape, none)],
+        );
+        assert!(delete(&mut shell, &mut ws));
+
+        // A press on the canvas, and one on the Layers panel.
+        draw(&ctx, &mut shell, &mut ws, press(form, true));
+        draw(&ctx, &mut shell, &mut ws, press(form, false));
+        draw(&ctx, &mut shell, &mut ws, press(view.center(), true));
+        draw(&ctx, &mut shell, &mut ws, press(view.center(), false));
+        assert_eq!(shell.key_focus, KeyFocus::Canvas);
+        assert!(delete(&mut shell, &mut ws));
+        shell.tab = DockTab::Layers;
+        shell.key_focus = KeyFocus::Other;
+        draw(&ctx, &mut shell, &mut ws, vec![]);
+        let layers = shell.layers_rect.expect("the Layers tab was drawn");
+        draw(&ctx, &mut shell, &mut ws, press(layers.center(), true));
+        draw(&ctx, &mut shell, &mut ws, press(layers.center(), false));
+        assert_eq!(shell.key_focus, KeyFocus::Layers);
+        assert!(delete(&mut shell, &mut ws));
+
+        // A widget outside both, focused with `Tab` (the first is the File menu).
+        shell.key_focus = KeyFocus::Canvas;
+        draw(&ctx, &mut shell, &mut ws, vec![key(egui::Key::Tab, none)]);
+        draw(&ctx, &mut shell, &mut ws, vec![]);
+        assert!(ctx.memory(|m| m.focused()).is_some());
+        assert!(!delete(&mut shell, &mut ws));
     }
 
     #[test]
