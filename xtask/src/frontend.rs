@@ -49,7 +49,7 @@ const BACKGROUND: [u8; 3] = [30, 30, 30];
 const TEXT: [u8; 3] = [225, 225, 225];
 
 /// The fixtures with their baselines' mode, method and strength.
-const FIXTURES: [(&str, Mode, DitherKind, f32); 6] = [
+pub(crate) const FIXTURES: [(&str, Mode, DitherKind, f32); 6] = [
     ("portrait", Mode::MulticolorBitmap, DitherKind::Checker, 0.7),
     ("terrain", Mode::MulticolorBitmap, DitherKind::Checker, 0.7),
     ("title", Mode::MulticolorBitmap, DitherKind::Checker, 0.7),
@@ -156,6 +156,20 @@ fn render(
     png2c64: bool,
 ) -> Result<(RgbImage, RgbImage), String> {
     let layer = fixture_layer(name, kind, strength)?;
+    render_layers(&[layer], mode, png2c64)
+}
+
+/// [`render`] with the layer's own `adjustments` (#228's sharpen sheet).
+pub(crate) fn render_with(
+    name: &str,
+    mode: Mode,
+    kind: DitherKind,
+    strength: f32,
+    adjustments: &Adjustments,
+    png2c64: bool,
+) -> Result<(RgbImage, RgbImage), String> {
+    let mut layer = fixture_layer(name, kind, strength)?;
+    layer.set_adjustments(adjustments.clone());
     render_layers(&[layer], mode, png2c64)
 }
 

@@ -15,6 +15,8 @@
 //!   end on every fixture, both into the reference solver), and the large sources of
 //!   #235 (generated into `target/aliasing/`): exact, auto and area-averaged, with the
 //!   grain-leakage gate.
+//! - `sharpen-sheet`: the Sharpen adjustment of #228 on every fixture (amount 0 / 0.5 / 1.0
+//!   with png2c64's kernel, 1.0 with a Gaussian of σ 0.8).
 //! - `png2c64-previews --png2c64 <path>`: regenerate png2c64's own renders and contact
 //!   sheets in `docs/reference/dither-previews/`, the parity test's reference.
 //! - `tokens [--check]`: generate the app theme (`crates/convert64-app/src/theme/generated.rs`)
@@ -27,6 +29,7 @@ mod font;
 mod frontend;
 mod goldens;
 mod previews;
+mod sharpen;
 mod sheet;
 mod tokens;
 mod vice;
@@ -67,6 +70,10 @@ enum Command {
     /// compositor and by png2c64's front end, both solved by the reference solver, next
     /// to png2c64's baseline, in `docs/reference/dither-previews/convert64-sheets/`.
     FrontEndSheet,
+    /// The Sharpen adjustment (#228) on every fixture at its baseline settings: amount
+    /// 0, 0.5 and 1.0 with png2c64's 3 × 3 kernel and 1.0 with a Gaussian of σ 0.8,
+    /// prepared and solved, in `docs/reference/dither-previews/convert64-sheets/`.
+    SharpenSheet,
     /// Regenerate png2c64's renders of its 30 dither methods and its contact sheets.
     ///
     /// Runs png2c64 on the dither-preview test card (strength 1.0) and on
@@ -191,6 +198,7 @@ fn main() -> ExitCode {
         Command::Png2c64Baselines { png2c64, only } => baselines::run(&png2c64, &only),
         Command::Png2c64Previews { png2c64 } => previews::run(&png2c64),
         Command::FrontEndSheet => frontend::run(),
+        Command::SharpenSheet => sharpen::run(),
         Command::ViceCheck {
             x64sc,
             only,

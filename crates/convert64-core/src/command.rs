@@ -22,7 +22,7 @@ use crate::geom::{PxRect, Vec2};
 use crate::layer::{
     Adjustments, Blend, BrightnessContrast, CellMetric, Curves, Downscale, FitMode, Gamma, Hsl,
     Layer, Levels, Method, Metric, OrderedSemantics, PatternPhase, RangeMatch, Recipe, RecipeError,
-    Snap, Transform,
+    Sharpen, Snap, Transform,
 };
 use crate::mask::paint::{self, PaintMode};
 use crate::mask::{
@@ -472,6 +472,9 @@ pub struct AdjustmentsChange {
     /// Gamma.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gamma: Option<Gamma>,
+    /// Unsharp mask on lightness (#228).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sharpen: Option<Sharpen>,
     /// Levels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub levels: Option<Levels>,
@@ -498,6 +501,7 @@ impl AdjustmentsChange {
     pub fn apply(&self, a: &Adjustments) -> Adjustments {
         Adjustments {
             gamma: self.gamma.unwrap_or(a.gamma),
+            sharpen: self.sharpen.unwrap_or(a.sharpen),
             levels: self.levels.unwrap_or(a.levels),
             brightness_contrast: self.brightness_contrast.unwrap_or(a.brightness_contrast),
             hsl: self.hsl.unwrap_or(a.hsl),
@@ -2426,7 +2430,7 @@ mod tests {
         ] {
             assert!(names.contains(&c.name()));
         }
-        assert_eq!(names.len(), 43);
+        assert_eq!(names.len(), 44);
     }
 
     /// #198: transform commands snap by the project's setting unless told otherwise;
@@ -2570,6 +2574,10 @@ mod tests {
             Command::LayerSetBlend(LayerSetBlend {
                 layer: 1,
                 blend: Blend::Screen,
+            }),
+            Command::LayerSetDownscale(LayerSetDownscale {
+                layer: 1,
+                downscale: Downscale::Exact,
             }),
             Command::LayerSetTransform(LayerSetTransform {
                 layer: 0,

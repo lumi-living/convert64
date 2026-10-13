@@ -163,6 +163,58 @@ fn mix_levels_gamma_and_range_matching_from_the_command_line() {
     }
 }
 
+/// #228: `--sharpen`, `--sharpen-radius` and `--sharpen-threshold` set every layer's
+/// sharpen; a saved project carries it, and bad values are input errors.
+#[test]
+fn sharpen_from_the_command_line() {
+    let dir = temp("convert-sharpen");
+    let png = source(&dir);
+    let out = dir.join("sharp.kla");
+    let project = dir.join("sharp.convert64");
+    let r = convert(&[
+        "convert",
+        png.to_str().unwrap(),
+        "--sharpen",
+        "-0.5",
+        "--sharpen-radius",
+        "0.8",
+        "--sharpen-threshold",
+        "0.02",
+        "-o",
+        out.to_str().unwrap(),
+        "--save-project",
+        project.to_str().unwrap(),
+    ]);
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let check = convert(&["validate", out.to_str().unwrap()]);
+    assert_eq!(String::from_utf8_lossy(&check.stdout).trim(), "legal");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&project).unwrap()).unwrap();
+    let s = &v["layers"][0]["adjustments"]["sharpen"];
+    assert_eq!(s["amount"], -0.5, "{v}");
+    assert!((s["radius"].as_f64().unwrap() - 0.8).abs() < 1e-6, "{v}");
+    assert!(
+        (s["threshold"].as_f64().unwrap() - 0.02).abs() < 1e-6,
+        "{v}"
+    );
+    for bad in [
+        ["--sharpen", "4"],
+        ["--sharpen-radius", "wide"],
+        ["--sharpen-radius", "0.1"],
+        ["--sharpen-threshold", "0.5"],
+    ] {
+        let r = convert(&[
+            "convert",
+            png.to_str().unwrap(),
+            bad[0],
+            bad[1],
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+        assert_eq!(r.status.code(), Some(2), "{bad:?}");
+    }
+}
+
 /// Every ordered, noise and effect id of `docs/reference/dither-methods.md` §1–§2.
 const THRESHOLD_IDS: &[&str] = &[
     "none",

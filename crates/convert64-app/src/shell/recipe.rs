@@ -15,7 +15,7 @@ use convert64_core::SolveSettings;
 use convert64_core::command::{AdjustmentsChange, RecipeChange, SolveSet};
 use convert64_core::layer::{
     Adjustments, BrightnessContrast, Curve, Curves, DitherFamily, DitherKind, FitMode, Gamma, Hsl,
-    Layer, Levels, Method, Metric, Orientation, PatternPhase, RangeMatch, Recipe,
+    Layer, Levels, Method, Metric, Orientation, PatternPhase, Radius, RangeMatch, Recipe, Sharpen,
 };
 use convert64_core::solve::{Divergences, SolverKind};
 use convert64_project::{JsonCommand, LayerRef};
@@ -411,6 +411,7 @@ fn adjustments(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, u
                 },
             );
             curves(f, shell, &a.curves, ui);
+            sharpen(f, a.sharpen, ui);
             ui.horizontal(|ui| {
                 let on = a.match_range.is_some();
                 let lab = label(ui, "Range", on);
@@ -442,6 +443,7 @@ fn adjustments(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, u
             None,
             AdjustmentsChange {
                 gamma: Some(d.gamma),
+                sharpen: Some(d.sharpen),
                 levels: Some(d.levels),
                 brightness_contrast: Some(d.brightness_contrast),
                 hsl: Some(d.hsl),
@@ -450,6 +452,104 @@ fn adjustments(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, u
             },
         );
     }
+}
+
+/// The Sharpen rows (UX §6, #228): Amount −100…300 %, Radius (png2c64's 3 × 3 or a
+/// Gaussian σ of 0.3–3 C64 px) and Threshold 0–10 % of lightness. Each label resets its
+/// value on a double click.
+fn sharpen(f: &mut Form, s: Sharpen, ui: &mut Ui) {
+    let d = Sharpen::default();
+    let set = |f: &mut Form, g: Option<&str>, amount: f32, radius: Radius, threshold: f32| {
+        if let Ok(x) = Sharpen::new(amount, radius, threshold) {
+            f.adjust(
+                g,
+                AdjustmentsChange {
+                    sharpen: Some(x),
+                    ..Default::default()
+                },
+            );
+        }
+    };
+    ui.label(RichText::new("Sharpen").small().weak())
+        .on_hover_text("An unsharp mask on lightness at the C64 grid, after gamma");
+    commit(
+        f,
+        "sharpen amount",
+        slider(
+            ui,
+            "Amount",
+            s.amount() * 100.0,
+            d.amount() * 100.0,
+            -100.0..=300.0,
+            " %",
+            0,
+        ),
+        |f, g, v| set(f, g, v / 100.0, s.radius(), s.threshold()),
+    );
+    // Radius: png2c64's kernel, or a Gaussian with its σ in a drag value.
+    let gaussian = |sigma: f32| Radius::gaussian(sigma.clamp(0.3, 3.0)).unwrap_or(Radius::Png2c64);
+    let mut stopped = false;
+    ui.horizontal(|ui| {
+        let lab = label(ui, "Radius", s.radius() != d.radius());
+        if lab.double_clicked() && s.radius() != d.radius() {
+            set(f, None, s.amount(), d.radius(), s.threshold());
+        }
+        let png2c64 = s.radius() == Radius::Png2c64;
+        if ui
+            .selectable_label(png2c64, "png2c64 3×3")
+            .on_hover_text("png2c64's own kernel, bit for bit")
+            .clicked()
+            && !png2c64
+        {
+            set(f, None, s.amount(), Radius::Png2c64, s.threshold());
+        }
+        match s.radius() {
+            Radius::Png2c64 => {
+                if ui
+                    .selectable_label(false, "Gaussian")
+                    .on_hover_text("A Gaussian blur of σ C64 pixels")
+                    .clicked()
+                {
+                    set(f, None, s.amount(), gaussian(1.0), s.threshold());
+                }
+            }
+            Radius::Gaussian(sigma) => {
+                let mut x = sigma;
+                let r = ui
+                    .add(
+                        egui::DragValue::new(&mut x)
+                            .speed(0.01)
+                            .range(0.3..=3.0)
+                            .fixed_decimals(2)
+                            .suffix(" px"),
+                    )
+                    .on_hover_text("σ in C64 pixels");
+                // As the sliders: a value merely rounded for display is not an edit.
+                if r.changed() && (x - sigma).abs() > 0.005 {
+                    let g = r.dragged().then_some("sharpen radius");
+                    set(f, g, s.amount(), gaussian(x), s.threshold());
+                }
+                stopped = r.drag_stopped();
+            }
+        }
+    });
+    if stopped {
+        f.end();
+    }
+    commit(
+        f,
+        "sharpen threshold",
+        slider(
+            ui,
+            "Threshold",
+            s.threshold() * 100.0,
+            d.threshold() * 100.0,
+            0.0..=10.0,
+            " %",
+            1,
+        ),
+        |f, g, v| set(f, g, s.amount(), s.radius(), (v / 100.0).clamp(0.0, 0.1)),
+    );
 }
 
 /// The curves editor: a channel picker and a square with the curve over a diagonal;
