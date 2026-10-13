@@ -127,8 +127,11 @@ impl Document {
         let spec = match path {
             Some(p) => convert64_project::file::SourceSpec::Path(p.to_owned()),
             None => {
-                self.session.store().write(Path::new(name), bytes)?;
-                convert64_project::file::SourceSpec::Path(PathBuf::from(name))
+                // A revision prefix, so a second `source.png` never replaces the first in
+                // the browser's store.
+                let stored = PathBuf::from(format!("layers/{}-{name}", self.revision));
+                self.session.store().write(&stored, bytes)?;
+                convert64_project::file::SourceSpec::Path(stored)
             }
         };
         // Fit inside the screen, never enlarged; top left.
@@ -330,5 +333,15 @@ mod tests {
         let layers = &doc.session().project().layers;
         assert_eq!(layers.len(), 2);
         assert_eq!(doc.revision(), 1);
+    }
+
+    #[test]
+    fn a_second_picture_with_the_same_name_is_its_own_layer() {
+        let mut doc = Document::from_png("source.png", &png()).unwrap();
+        let other = convert64_project::codec::encode_rgba8(8, 4, vec![200; 8 * 4 * 4]);
+        doc.add_layer("source.png", &other, None).unwrap();
+        let layers = &doc.session().project().layers;
+        assert_eq!(layers[0].source().size(), (64, 40));
+        assert_eq!(layers[1].source().size(), (8, 4));
     }
 }
