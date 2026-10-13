@@ -102,12 +102,17 @@ pub(crate) struct AxisMap {
     inv: Vec<f32>,
     /// Fraction of each output's footprint inside the layer.
     pub cov: Vec<f32>,
+    /// The source's mip level the taps index (#235); 0 for the source itself.
+    pub level: u32,
 }
 
 impl AxisMap {
     /// The map for a source axis of `src_len` pixels placed at `translate` with `scale`
     /// canvas pixels per source pixel (`flip` mirrors it), onto `out_len` super pixels of
-    /// `step` canvas pixels each.
+    /// `step` canvas pixels each, its taps on the source's mip `level` along this axis
+    /// (#235; 0 for the source itself). The placement, the coverage and the sample
+    /// positions are the original's; a level only divides the positions by `2^level`
+    /// (exact in f32) and clamps the taps to the level's length.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -121,6 +126,7 @@ impl AxisMap {
         flip: bool,
         step: f32,
         out_len: u32,
+        level: u32,
     ) -> Self {
         // Output pixels the layer spans, and source pixels per output pixel: png2c64's
         // `src / dst` when the span is a whole number (a layer fitted to the screen), whose
@@ -144,7 +150,7 @@ impl AxisMap {
         // The layer's offset in output pixels; 0 for a layer at the origin, so its
         // positions are png2c64's `(x + ½) · ratio`.
         let offset = translate / step;
-        let identity = ratio == 1.0 && offset.fract() == 0.0;
+        let identity = ratio == 1.0 && offset.fract() == 0.0 && level == 0;
         let mut map = Self {
             out0: first,
             start: vec![0],
@@ -152,8 +158,12 @@ impl AxisMap {
             w: Vec::new(),
             inv: Vec::new(),
             cov: Vec::new(),
+            level,
         };
-        let max_j = src_len as i64 - 1;
+        let len = super::mip::level_len(src_len, level);
+        // `2^−level`, exact.
+        let inv_mip = 1.0 / (1u32 << level) as f32;
+        let max_j = len as i64 - 1;
         for i in first..last {
             let a = i as f32 * step;
             let b = a + step;
@@ -161,6 +171,9 @@ impl AxisMap {
             let mut u = (i as f32 + 0.5 - offset) * ratio;
             if flip {
                 u = src_len as f32 - u;
+            }
+            if level > 0 {
+                u *= inv_mip;
             }
             if identity {
                 // 1:1 and on whole pixels: a copy, as png2c64 copies a source that is
@@ -175,7 +188,7 @@ impl AxisMap {
                 // much it overlaps): it samples the edge, as png2c64 never samples outside.
                 // A fitted layer's positions are always inside, so this changes nothing
                 // there.
-                let pos = (u - 0.5).clamp(-0.5, src_len as f32 - 0.5);
+                let pos = (u - 0.5).clamp(-0.5, len as f32 - 0.5);
                 let center = pos.floor() as i64;
                 let mut weight_sum = 0.0f32;
                 for k in -1..=2 {
@@ -712,7 +725,7 @@ mod tests {
 
     #[test]
     fn identity_at_1x_is_one_tap_per_pixel() {
-        let m = AxisMap::new(10, 0.0, 1.0, false, 1.0, 320);
+        let m = AxisMap::new(10, 0.0, 1.0, false, 1.0, 320, 0);
         assert_eq!((m.out0, m.len()), (0, 10));
         for k in 0..10 {
             let taps: Vec<_> = m.taps(k).filter(|t| t.1 != 0.0).collect();
@@ -748,8 +761,8 @@ mod tests {
                 scale::Kernel::MitchellNetravali,
             );
             let src: Vec<[f32; 4]> = px.iter().map(|p| [p[0], p[1], p[2], 1.0]).collect();
-            let mx = AxisMap::new(w as u32, 0.0, 320.0 / w as f32, false, step, tw);
-            let my = AxisMap::new(h as u32, 0.0, 200.0 / h as f32, false, 1.0, 200);
+            let mx = AxisMap::new(w as u32, 0.0, 320.0 / w as f32, false, step, tw, 0);
+            let my = AxisMap::new(h as u32, 0.0, 200.0 / h as f32, false, 1.0, 200, 0);
             let (mut got, mut extent) = (Planes::default(), Vec::new());
             resample_planes(&src, w as u32, &mx, &my, &mut got, &mut extent, true);
             for (i, p) in want.px.iter().enumerate() {
@@ -762,7 +775,7 @@ mod tests {
     #[test]
     fn weights_sum_to_one_and_coverage_tracks_the_edge() {
         for (scale, step) in [(1.0, 0.25), (3.0, 0.5), (0.1, 0.25), (0.37, 1.0)] {
-            let m = AxisMap::new(50, 2.3, scale, false, step, 2000);
+            let m = AxisMap::new(50, 2.3, scale, false, step, 2000, 0);
             for k in 0..m.len() as usize {
                 assert!(
                     (sum_weights(&m, k) - 1.0).abs() < 1e-5,
@@ -781,8 +794,8 @@ mod tests {
 
     #[test]
     fn flip_mirrors_taps() {
-        let a = AxisMap::new(8, 0.0, 1.0, false, 0.5, 100);
-        let b = AxisMap::new(8, 0.0, 1.0, true, 0.5, 100);
+        let a = AxisMap::new(8, 0.0, 1.0, false, 0.5, 100, 0);
+        let b = AxisMap::new(8, 0.0, 1.0, true, 0.5, 100, 0);
         let n = a.len() as usize;
         for k in 0..n {
             let ta: Vec<_> = a.taps(k).collect();
@@ -802,17 +815,17 @@ mod tests {
 
     #[test]
     fn clipped_to_the_grid() {
-        let m = AxisMap::new(10, -5.0, 1.0, false, 1.0, 3);
+        let m = AxisMap::new(10, -5.0, 1.0, false, 1.0, 3, 0);
         assert_eq!((m.out0, m.len()), (0, 3));
-        let m = AxisMap::new(10, 400.0, 1.0, false, 1.0, 320);
+        let m = AxisMap::new(10, 400.0, 1.0, false, 1.0, 320, 0);
         assert_eq!(m.len(), 0);
     }
 
     #[test]
     fn a_downscale_preserves_flat_fields() {
         let src = vec![[0.5, 0.25, 1.0, 1.0]; 40 * 40];
-        let mx = AxisMap::new(40, 0.0, 0.25, false, 1.0, 320);
-        let my = AxisMap::new(40, 0.0, 0.25, false, 1.0, 200);
+        let mx = AxisMap::new(40, 0.0, 0.25, false, 1.0, 320, 0);
+        let my = AxisMap::new(40, 0.0, 0.25, false, 1.0, 200, 0);
         let out = resample(&src, 40, &mx, &my);
         assert_eq!(out.len(), 100);
         for p in out {
@@ -894,8 +907,8 @@ mod tests {
     fn colour_planes_match_the_reference_bit_for_bit() {
         for (sx, tx, kx, fx, step_x, gx) in axes() {
             for (sy, ty, ky, fy, step_y, gy) in axes() {
-                let mx = AxisMap::new(sx, tx, kx, fx, step_x, gx);
-                let my = AxisMap::new(sy, ty, ky, fy, step_y, gy);
+                let mx = AxisMap::new(sx, tx, kx, fx, step_x, gx, 0);
+                let my = AxisMap::new(sy, ty, ky, fy, step_y, gy, 0);
                 let src = source(sx, sy);
                 let mut want = reference(&src, sx, &mx, &my);
                 let ow = mx.len() as usize;
@@ -934,8 +947,8 @@ mod tests {
     fn half_resolution_mask_matches_resample_then_reduce() {
         for (sx, tx, kx, fx, step_x, gx) in axes() {
             for (sy, ty, ky, fy, step_y, gy) in axes() {
-                let mx = AxisMap::new(sx, tx, kx, fx, step_x, gx);
-                let my = AxisMap::new(sy, ty, ky, fy, step_y, gy);
+                let mx = AxisMap::new(sx, tx, kx, fx, step_x, gx, 0);
+                let my = AxisMap::new(sy, ty, ky, fy, step_y, gy, 0);
                 let src: Vec<f32> = source(sx, sy).iter().map(|p| p[0] + p[3]).collect();
                 let (ow, oh) = (mx.len() as usize, my.len() as usize);
                 let finish = |row: &mut [f32]| {

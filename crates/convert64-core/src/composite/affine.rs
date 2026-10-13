@@ -8,8 +8,9 @@
 //!   path's kernel: 4 × 4 taps on the premultiplied source around the inverse-mapped
 //!   position, weights normalised to sum to 1; samples clamp to the layer's edge pixels.
 //!   Like png2c64's scaler and the separable path, it is not widened when the layer is
-//!   scaled down (no prefilter), so a turned layer is as crisp as an upright one. The
-//!   mip machinery #198 used for that prefilter stays, at level 0.
+//!   scaled down, so a turned layer is as crisp as an upright one. Shrunk by more than
+//!   4× along a layer axis, under `Downscale::Auto` it samples the source's mip level on
+//!   that axis instead (#235, `mip`), the rule the separable path follows.
 //! - **Coverage.** The layer's edge is antialiased by the fraction of each super pixel
 //!   inside the rotated quad, computed **exactly**: the super pixel's footprint is a
 //!   parallelogram in layer space, clipped against the box `[0, w] × [0, h]`
@@ -76,13 +77,14 @@ pub(crate) struct AffineMap {
 }
 
 impl AffineMap {
-    /// The map for a source of `size` placed by `t` onto `grid`.
+    /// The map for a source of `size` placed by `t` onto `grid`, sampling the source's
+    /// mip `level` along each layer axis ((0, 0): the source itself; #235).
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "the box is clamped to the grid before casting"
     )]
-    pub fn new(t: &Transform, size: (u32, u32), grid: SuperGrid) -> Self {
+    pub fn new(t: &Transform, size: (u32, u32), grid: SuperGrid, level: (u32, u32)) -> Self {
         let [a, b, c, d, e, f] = t.canvas_to_layer_affine(size);
         let step = grid.super_px_in_canvas();
         let (sx, sy) = (f64::from(step.x), f64::from(step.y));
@@ -91,8 +93,7 @@ impl AffineMap {
         let v = [d * sx, e * sy, d * sx * 0.5 + e * sy * 0.5 + f];
         // The footprint (one super pixel) spans u[0] + u[1] along u, v[0] + v[1] along v.
         let span = (u[0].abs() + u[1].abs(), v[0].abs() + v[1].abs());
-        // No prefilter (ADR-012): level 0 along both axes.
-        let (lu, lv) = (0, 0);
+        let (lu, lv) = level;
         let (lo, hi) = t.canvas_bounds(size);
         let a0 = grid.canvas_to_super(lo);
         let a1 = grid.canvas_to_super(hi);
@@ -112,6 +113,7 @@ impl AffineMap {
             && (v[0] == 0.0) != (v[1] == 0.0)
             && (u[0] == 0.0) == (v[1] == 0.0);
         let lattice = quarter
+            && level == (0, 0)
             && [u[0], u[1], v[0], v[1]].into_iter().all(unit)
             && centred(u[2])
             && centred(v[2]);
@@ -129,9 +131,24 @@ impl AffineMap {
     }
 
     /// How far (in source pixels of level 0) one source pixel's change can reach through
-    /// the kernel: two pixels each way (the mip stays at level 0, ADR-012).
+    /// the kernel: two pixels each way, and on a mip level (#235) two of its pixels and
+    /// the one it was averaged into.
     pub fn reach_src(&self) -> f64 {
-        f64::from(2u32 << self.level.0.max(self.level.1))
+        let l = self.level.0.max(self.level.1);
+        if l == 0 {
+            2.0
+        } else {
+            f64::from(3u32 << l)
+        }
+    }
+
+    /// Source pixels (of level 0) one pixel of `grid` spans along each layer axis, for a
+    /// source of `size` placed by `t`: the shrink the mip level is chosen from (#235).
+    /// For an unrotated layer it is `step / scale` on each axis.
+    pub fn footprint(t: &Transform, size: (u32, u32), step: crate::geom::Vec2) -> (f64, f64) {
+        let [a, b, _, d, e, _] = t.canvas_to_layer_affine(size);
+        let (sx, sy) = (f64::from(step.x), f64::from(step.y));
+        ((a * sx).abs() + (b * sy).abs(), (d * sx).abs() + (e * sy).abs())
     }
 
     /// The fraction of super pixel `(i, j)` inside the layer's box, whose footprint is
@@ -287,41 +304,6 @@ fn area(p: &[(f64, f64)]) -> f64 {
             a.0 * b.1 - b.0 * a.1
         })
         .sum()
-}
-
-/// `src` (`w × h`, row-major) box-reduced by 2 along x `lx` times and along y `ly`
-/// times; an odd last pixel is averaged with itself (the edge clamp). Returns the
-/// reduced pixels and their size.
-pub(crate) fn mip<T: Px>(src: &[T], w: u32, h: u32, lx: u32, ly: u32) -> (Vec<T>, (u32, u32)) {
-    let (mut px, mut w, mut h) = (src.to_vec(), w as usize, h as usize);
-    for _ in 0..lx {
-        let nw = w.div_ceil(2);
-        let mut out = vec![T::ZERO; nw * h];
-        for (o, line) in out.chunks_mut(nw).zip(px.chunks(w)) {
-            for (i, o) in o.iter_mut().enumerate() {
-                o.madd(0.5, line[2 * i]);
-                o.madd(0.5, line[(2 * i + 1).min(w - 1)]);
-            }
-        }
-        (px, w) = (out, nw);
-    }
-    for _ in 0..ly {
-        let nh = h.div_ceil(2);
-        let mut out = vec![T::ZERO; w * nh];
-        for (y, o) in out.chunks_mut(w).enumerate() {
-            let (a, b) = (2 * y, (2 * y + 1).min(h - 1));
-            for (x, o) in o.iter_mut().enumerate() {
-                o.madd(0.5, px[a * w + x]);
-                o.madd(0.5, px[b * w + x]);
-            }
-        }
-        (px, h) = (out, nh);
-    }
-    let size = (
-        u32::try_from(w).expect("mip of a u32 size"),
-        u32::try_from(h).expect("mip of a u32 size"),
-    );
-    (px, size)
 }
 
 /// Resamples premultiplied colour (the mip level `map` samples, `mw × mh`) onto
@@ -508,7 +490,7 @@ mod tests {
             for deg in [0.25, 17.0, 45.0, 90.0, 133.3, -60.0] {
                 let t = rotated(deg, 1.7);
                 let size = (37, 23);
-                let map = AffineMap::new(&t, size, grid);
+                let map = AffineMap::new(&t, size, grid, (0, 0));
                 let mut total = 0.0f64;
                 for j in map.rect.y0..map.rect.y1 {
                     let w = map.rect.width() as usize;
@@ -524,29 +506,18 @@ mod tests {
         }
     }
 
+    /// #235: the shrink a level is chosen from is the source pixels one grid pixel spans
+    /// along each layer axis: `1 / scale` unrotated or turned by 90°, more in between.
     #[test]
-    fn mip_halves_each_axis_and_keeps_flat_fields() {
-        let src = vec![[0.5f32, 0.25, 1.0, 1.0]; 7 * 5];
-        let (px, size) = mip(&src, 7, 5, 2, 1);
-        assert_eq!(size, (2, 3));
-        assert!(px.iter().all(|p| *p == [0.5, 0.25, 1.0, 1.0]));
-        let ramp: Vec<f32> = (0..8).map(|x| x as f32).collect();
-        let (px, size) = mip(&ramp, 8, 1, 1, 0);
-        assert_eq!((px, size), (vec![0.5, 2.5, 4.5, 6.5], (4, 1)));
-    }
-
-    #[test]
-    /// ADR-012: no prefilter, at any scale (png2c64's scaler has none either).
-    fn no_mip_at_any_scale() {
-        let grid = SuperGrid::new(Mode::HiresBitmap, 1).unwrap();
-        for (scale, want) in [(1.0, 0), (0.5, 0), (0.3, 0), (0.1, 0), (2.0, 0)] {
-            let t = Transform::new(Vec2::ZERO, Vec2::new(scale, 1.0), false, false)
+    fn the_footprint_is_the_shrink_along_each_layer_axis() {
+        let step = Vec2::new(1.0, 1.0);
+        for (deg, want) in [(0.0, 10.0), (90.0, 10.0), (45.0, 10.0 * 2f64.sqrt())] {
+            let t = Transform::new(Vec2::ZERO, Vec2::new(0.1, 0.5), false, false)
                 .unwrap()
-                .with_rotation(90.0)
+                .with_rotation(deg)
                 .unwrap();
-            let map = AffineMap::new(&t, (100, 100), grid);
-            // Turned 90°, the canvas's y runs along the layer's u, which is scaled.
-            assert_eq!(map.level, (want, 0), "{scale}");
+            let (fu, _) = AffineMap::footprint(&t, (100, 100), step);
+            assert!((fu - want).abs() < 1e-6, "{deg}: {fu}");
         }
     }
 }

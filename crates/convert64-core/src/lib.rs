@@ -26,7 +26,7 @@ pub use command::{Command, Editor, Project};
 pub use composite::{AttributeMap, Canvas, Compositor, TargetFrame};
 pub use document::SolveSettings;
 pub use geom::{CellSet, PxRect, SuperGrid, Vec2};
-pub use layer::{Blend, Layer, Recipe, SourceImage, Transform};
+pub use layer::{Blend, Downscale, Layer, Recipe, SourceImage, Transform};
 pub use mask::{Mask, MaskRaster};
 pub use mode::{Mode, ModeSpec};
 pub use model::{
