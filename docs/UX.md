@@ -134,7 +134,7 @@ Controls: `Slider` for bounded values with the value field editable on click; `D
 
 ## 7. Cell tools (steering)
 
-Three tools in the toolbar, all operate on the preview, all additive to the project, all undoable:
+Three tools in the toolbar, all operate on the preview, all additive to the project, all undoable. **Nudge** (`V`, Move in Photoshop and Figma) is the default, on first run and for every picture opened, so a stray click selects a layer and changes nothing; Pin, Lock and Region act only once picked, and a click outside the picture (on the border or the pasteboard) never pins, locks or paints (#242):
 
 | Tool | Key | Click | Drag | Feedback |
 |---|---|---|---|---|

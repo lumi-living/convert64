@@ -65,6 +65,7 @@ impl App {
         let mut ws = Workspace::new(doc);
         Self::submit(&mut self.scheduler, &mut ws, &self.ctx, SolveMode::Full);
         self.workspace = Some(ws);
+        self.shell.reset_tool();
         self.shell.fit_on_next_frame();
         self.shell.last_export = None;
         self.shell.error = None;
