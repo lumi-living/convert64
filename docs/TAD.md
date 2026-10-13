@@ -36,16 +36,19 @@ Fixed 16 colours. Reference values Pepto / Colodore. Nine luminance levels (0, 8
 
 ```
  Source layers (f32 linear RGBA, any size)
-        │  per-layer: float transform → resample onto the super grid, then the layer's
-        │             adjustments (gamma, levels/curves/HSL, range matching — after the
-        │             resample, png2c64's order, #190), mask, feather, blend, opacity,
-        │             dither recipe (method, strength, phase, metric, allowed set, force/adaptive)
+        │  per-layer: float transform → png2c64's Mitchell bicubic onto the super grid
+        │             (ADR-012; sub-pixel placement is the kernel's phase), then the
+        │             layer's adjustments (gamma, png2c64's preprocessing round trip,
+        │             levels/curves/HSL, range matching — after the resample, png2c64's
+        │             order, #190), mask (resampled at 4× and box-reduced), feather,
+        │             blend, opacity, dither recipe (method, strength, phase, metric,
+        │             allowed set, force/adaptive)
         ▼
- Composite at N× supersample (default 4× → 1280×800 for a 320×200 target)
+ Composite on the super grid (default 1×: 160×200 or 320×200, the target itself)
         │  + attribute map: per pixel, which recipe governs it
         │    (top-most non-transparent layer wins; strength blends through alpha/feather)
         ▼
- Target-mode resample (box/Lanczos → 320×200 or 160×200, honouring 2:1 aspect)
+ Box filter to the target grid (a no-op at 1×; 2:1 aspect honoured)
         ▼
  Constraint solver (global colours → per-cell colour sets → cell-clamped dithering → refine)
         ▼
@@ -54,7 +57,7 @@ Fixed 16 colours. Reference values Pepto / Colodore. Nine luminance levels (0, 8
         └─► Exporters (formats crate)
 ```
 
-**A plain project takes png2c64's front end (#190).** One visible, fully opaque 8-bit layer filling the screen exactly, with no mask, no regions and no adjustment but gamma and range matching, skips the supersampled composite. Its colour is png2c64's prepared image: the bytes scaled straight to the target grid with png2c64's Mitchell bicubic, then gamma, then png2c64's preprocessing (`solve::png2c64_ref::prepare`), then range matching. The frame is marked prepared, so the reference solver does not repeat the OKLab round trip. `convert64 convert picture.png` is therefore png2c64's output end to end. Anything more (a nudge, a mask, a second layer) uses the composite, which differs from png2c64's front end only in its resampler. `Compositor::set_png2c64_front_end(false)` turns the compatibility path off.
+**A plain project takes png2c64's front end (#190).** One visible, fully opaque 8-bit layer filling the screen exactly, with no mask, no regions and no adjustment but gamma and range matching, skips the supersampled composite. Its colour is png2c64's prepared image: the bytes scaled straight to the target grid with png2c64's Mitchell bicubic, then gamma, then png2c64's preprocessing (`solve::png2c64_ref::prepare`), then range matching. The frame is marked prepared, so the reference solver does not repeat the OKLab round trip. `convert64 convert picture.png` is therefore png2c64's output end to end. Anything more (a nudge, a mask, a second layer) uses the composite. Since ADR-012 (#227) the composite resamples every layer the same way, so for a plain project the two paths give the same frame bit for bit (a test, `the_general_path_is_png2c64_s_front_end_for_a_plain_layer`); the branch stays until that invariant has stood for a while. `Compositor::set_png2c64_front_end(false)` turns it off.
 
 **Dithering is a per-pixel attribute carried through compositing, not an operation per layer** ([ADR-002](adr/ADR-002-dither-as-per-pixel-attribute.md)). Palette indices cannot be blended; layers stay in float and control only the recipe.
 
@@ -81,7 +84,7 @@ solve(target, mode):
 Global budget ≤ 256 (ECM 64) unique 8×8 patterns. Greedy merge by perceptual damage first (what CharPad does), then k-means refinement (what png2c64 does); expose a merge-tolerance slider and a live counter. Levenshtein-style reuse (C64CC) as an alternative heuristic.
 
 ### 3.3 Sub-pixel nudging
-Layers positioned in float; composite at N× supersample; box-filter to the target grid. A 0.25-px nudge changes target-pixel coverage and cell statistics, so the solver legitimately re-picks cell colours. Supersample factor is a quality setting.
+Layers positioned in float; each is resampled with png2c64's Mitchell bicubic straight to the target grid, so a 0.25-px nudge moves the kernel's phase and the layer's edge coverage, changes cell statistics, and the solver legitimately re-picks cell colours (ADR-012; `tests/rotate.rs` checks it on a fixture). Masks are resampled at 4× and box-reduced, because a hard mask edge at 1× is measured off by up to 0.3 in coverage. A higher supersample factor (1–8) is kept as a setting; it composites on the finer grid and box-filters it down, which is softer.
 
 ### 3.4 Colour accuracy
 - Quantise in a perceptual space: default OKLab; CIELAB; Pepto-YUV with luma weighted 2–3×; raw RGB.
@@ -137,8 +140,8 @@ As built in E4 (2026-10-11): the compositor and attribute map ([ADR-002](adr/ADR
 - **`command`.** `Project { layers, regions }`, `Command`, `Editor`, `REGISTRY` and `Dirty`.
 
 **Behaviour**
-- **Supersampling.** The default factor is 4× (1–8).
-- **Resampling** is separable per axis because transforms are axis-aligned. It is bilinear where a source pixel covers at least one super pixel, and Lanczos-3 stretched to the footprint below that. A layer's edge is its exact box coverage, so a sub-pixel nudge moves target pixels continuously.
+- **Supersampling.** The default factor is 1× (1–8) since ADR-012; it was 4×.
+- **Resampling** is separable per axis because transforms are axis-aligned. Since ADR-012 it is png2c64's Mitchell bicubic (B = C = ⅓, four taps, edge taps clamped and the weights renormalised, no widening when downscaling), bit for bit png2c64's scaler when the layer fits the grid. A layer's edge is its exact box coverage, so a sub-pixel nudge moves target pixels continuously. (Before #227: bilinear up, Lanczos-3 down, at 4×.)
 - **Feather cache.** Each layer keeps two caches:
   - its resampled raster, keyed by the source `Arc`, adjustments, transform, mask generation and grid;
   - its evaluated mask, keyed by the modifiers and that raster's identity.
@@ -518,7 +521,7 @@ As built in #203 (2026-10-13): the app shell, `convert64_app::shell` (UX §3, Fi
 
 As built in #204 (2026-10-13): the result panel and the working view (UX §4).
 
-- **Document and workspace.** `convert64_app::document::Document` wraps a `convert64_project::Session` (edits go through registry commands; a revision counter tells the views what changed) and builds the scheduler's `Snapshot`. `Workspace` adds the newest solution and two textures: the source composite (the session's supersampled canvas, `Session::canvas_rgba`, linear with mipmaps) and the result (target grid, `TextureOptions::NEAREST`, drawn 2:1 for multicolor). The working view and the result panel share the result texture. Both are rebuilt only when the document's revision or the solution changes. The session's compositor serves the Source view and the scheduler's serves the solves, so an edit composites twice (in wasm on one thread); a shared canvas is a later optimisation.
+- **Document and workspace.** `convert64_app::document::Document` wraps a `convert64_project::Session` (edits go through registry commands; a revision counter tells the views what changed) and builds the scheduler's `Snapshot`. `Workspace` adds the newest solution and two textures: the source composite (the session's supersampled canvas, `Session::canvas_rgba`, linear with mipmaps) and the result (target grid, `TextureOptions::NEAREST`, drawn 2:1 for multicolor). The working view and the result panel share the result texture. Both are rebuilt only when the document's revision or the solution changes. The session's compositor serves the Source view and the scheduler's serves the solves, so an edit composites twice (in wasm on one thread); a shared canvas is a later optimisation. Since ADR-012 the solve's grid is 1×, so the Source view gets its own compositor at `Session::PREVIEW_N` (4×) for a sharp zoomed-in view: an edit composites at 1× twice and at 4× once.
 - **Camera.** `convert64_app::view`: positions in screen units (hi-res pixels, 320 × 200 in every mode), one centre shared by both modes so `Q` keeps the place; Source zoom fractional 25–800 %, Result zoom 1×, 2×, 3×, 4×, 6×, 8× with the picture's corner on whole points; fit, 100 %, step and zoom-about-cursor. Pan with `Space` + drag, middle drag or scroll; zoom with pinch or `Cmd` + wheel.
 - **Compare and overlays.** Hold `\` flips to the other image; `,` cycles split (draggable divider), A/B flicker at 2 Hz and side by side (linked cursor). Every compare mode draws both images with the view mode's geometry, so they line up. Overlays: cell grid (`Cmd '`, from 6 pt cells up), clash heatmap (`Shift C`: cell error as `clash` alpha, colour-starved cells outlined), pins and locks, the other image as a 30 % ghost, and the border (`Cmd B`). The border is the solution's background colour (black in hi-res): the project has no border colour yet.
 - **Result panel.** The result inside its border at most 1× (the Figma frame's 16/12 px inset), clash dots, the navigator rectangle in Result mode; a click centres the working view there and switches it to Result, a drag pans. The header has the mode dropdown (multicolor and hi-res bitmap, `mode_set` then a full solve), the clash count (a button to the worst clash) and the compare and fit buttons. The solve time is in the status bar, with the cursor's cell, pixel, colours, error and pin/lock state.
@@ -683,5 +686,6 @@ The public data model every front-end, solver, reader and writer shares. Constru
 - Full re-solve (MC bitmap, 16 bg search): < 100 ms native, < 300 ms WASM. Measured (`tests/solve_bench.rs`, portrait at 4×, Apple M-series, release), sequential / `parallel`: reference solver Floyd–Steinberg 26.8 / 8.4 ms, Bayer 4 24.4 / 5.1 ms; native solver 49.0 / 15.8 ms and 95.4 / 13.9 ms (#181). Interactive re-solve after a 0.25 px nudge on the reference path: 8.0 / 5.5 ms and 5.7 / 3.3 ms.
 - Interactive single pass while dragging: < 16 ms native, < 50 ms WASM.
 - Rotated layers (#198, `tests/bench.rs`, macOS runner class, multicolor / hi-res): ten rotated masked layers composite cold in 47 / 89 ms with `parallel` and 132 / 240 ms single-threaded. A rotation drag of one layer takes 6.5 / 12.8 ms and 15.8 / 36.3 ms. That is over #98's and #139's budgets (60 ms cold, 10 / 12 ms per nudge); axis-aligned layers are unchanged. See "As built in #198".
+- Compositor after ADR-012 (#227; `tests/bench.rs` at the 1× default, ten full-screen masked layers, Apple M-series, release, multicolor / hi-res, sequential then `parallel`). Axis-aligned: cold composite 15.2 / 29.2 ms and 4.3 / 6.2 ms, a 0.25 px nudge 1.7 / 3.3 ms and 1.6 / 2.3 ms (before, at 4×: 15.0 / 27.7 and 7.5 / 8.3 ms cold, 4.1 / 7.5 and 2.0 / 3.1 ms nudge). Rotated: cold 25.2 / 49.3 ms and 5.0 / 8.1 ms, a rotation drag 2.7 / 5.4 ms and 1.7 / 2.3 ms (before: 52.0 / 102.1 and 9.0 / 14.0 ms cold, 7.1 / 14.9 and 2.4 / 3.5 ms drag). Every row is within #98's and #139's budgets; the rotated path no longer exceeds them. Most of what is left is the masks' 4× grid (without it the rotated cold composite is 11 / 21 ms), which ADR-012 measured as needed.
 - Solve scheduler stages (#194; `stage_timings` in `convert64-app`, release, native with `parallel`, Apple M-series, multicolor at 4×, a full-screen layer and a 24 px square): cold composite 2.7 ms and full solve 8.9 ms; a 0.25 px nudge of the square 0.7 ms composite and 4.2 ms fast path; its release 7.6 ms full solve. In wasm each `tick` aims at 10 ms: a drag frame composites, and the next frame (or the same one, once both fit) solves the fast path; single-threaded the fast path is 6–8 ms native (above), an estimated 15–25 ms in wasm (not measured), within the 50 ms budget.
 - UI uploads the 320×200 preview as an egui texture with nearest-neighbour filtering and draws it at integer zoom with 2:1 pixel aspect where applicable; overlays (cell grid, pins/locks, clash heatmap) are painter calls over the same rect.

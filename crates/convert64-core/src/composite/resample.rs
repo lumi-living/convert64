@@ -2,16 +2,21 @@
 //!
 //! An axis-aligned transform (translate, scale, flip; `rotate == 0`) is resampled in two
 //! 1-D passes driven by per-axis weight tables ([`AxisMap`]); a rotated one goes through
-//! `affine` instead (#198). Per axis, a source pixel that
-//! covers at least one super pixel is sampled bilinearly; a smaller one is filtered with
-//! Lanczos-3 stretched to the footprint, so downscales do not alias. Samples clamp to the
-//! layer's edge pixels; the layer's own edge is instead expressed as **coverage**, the
-//! exact fraction of each super pixel's footprint inside the layer's box. A layer that
-//! fits the canvas exactly is therefore fully opaque, and a sub-pixel nudge moves its
-//! edge coverage linearly.
+//! `affine` instead (#198). Both use png2c64's Mitchell bicubic (ADR-012, #227): per
+//! output pixel, four source taps around the sample position, weighted by the
+//! Mitchell–Netravali kernel at their distance and divided by the weights' sum, exactly
+//! as png2c64's `scale::bicubic` does (taps clamped to the source, unwidened when
+//! scaling down). Sub-pixel placement is the kernel's phase. A layer that spans a whole
+//! number of output pixels from 0 (one fitted to the screen) samples at png2c64's
+//! positions, `(x + ½) · src / dst − ½`, so it is resampled bit for bit as png2c64
+//! scales; an axis at 1:1 with no sub-pixel offset is copied, as png2c64 copies a source
+//! that is already the target's size. Samples clamp to the layer's edge pixels; the
+//! layer's own edge is instead expressed as **coverage**, the exact fraction of each
+//! super pixel's footprint inside the layer's box, so a sub-pixel nudge moves its edge
+//! coverage linearly.
 
 use crate::scratch;
-use std::f32::consts::PI;
+use crate::solve::png2c64_ref::scale::mitchell;
 
 /// A pixel value that can be accumulated with weights.
 pub(crate) trait Px: Copy + Send + Sync + crate::scratch::Scratch {
@@ -19,9 +24,11 @@ pub(crate) trait Px: Copy + Send + Sync + crate::scratch::Scratch {
     const ZERO: Self;
     /// `self += w × v`.
     fn madd(&mut self, w: f32, v: Self);
+    /// `self × s`, each channel.
+    fn scaled(self, s: f32) -> Self;
 
     /// `Σ_k wy[k] · Σ_j wx[j] · taps[k][j]`, a 4 × 4 separable kernel on a block of
-    /// pixels (the rotated path's Catmull-Rom, #198): each row summed across, then the
+    /// pixels (the rotated path's Mitchell, #198, ADR-012): each row summed across, then the
     /// rows down.
     #[inline(always)]
     fn taps4x4(taps: &[[Self; 4]; 4], wx: [f32; 4], wy: [f32; 4]) -> Self {
@@ -42,6 +49,10 @@ impl Px for f32 {
     #[inline]
     fn madd(&mut self, w: f32, v: Self) {
         *self += w * v;
+    }
+    #[inline]
+    fn scaled(self, s: f32) -> Self {
+        self * s
     }
 
     /// For one channel, the columns are summed down first, then across.
@@ -69,6 +80,10 @@ impl Px for [f32; 4] {
             self[i] += w * v[i];
         }
     }
+    #[inline]
+    fn scaled(self, s: f32) -> Self {
+        self.map(|v| v * s)
+    }
 }
 
 /// One axis of a layer's placement on the super grid: which super pixels it touches,
@@ -81,45 +96,12 @@ pub(crate) struct AxisMap {
     start: Vec<u32>,
     /// Source pixel index of each tap.
     src: Vec<u32>,
-    /// Weight of each tap; an output's weights sum to 1.
+    /// Weight of each tap, as the kernel gives it.
     w: Vec<f32>,
+    /// Per output, `1 / Σ w`: the taps' sum is scaled by it afterwards, as png2c64 does.
+    inv: Vec<f32>,
     /// Fraction of each output's footprint inside the layer.
     pub cov: Vec<f32>,
-}
-
-/// `sin(π·x)` for `0 ≤ x ≤ 3` with basic IEEE operations only (no platform `sin`), so
-/// resampling weights, and with them the solver's input, are the same on every OS: the
-/// argument is reduced to `|r| ≤ ½` around the nearest integer and the series summed in
-/// f64 (error far below f32's precision).
-fn sin_pi(x: f32) -> f32 {
-    let x = f64::from(x);
-    let k = (x + 0.5).floor();
-    let r = (x - k) * std::f64::consts::PI;
-    let r2 = r * r;
-    // Taylor series of sin to r^17 (|r| ≤ π/2).
-    let mut term = r;
-    let mut sum = r;
-    for n in 1..=8 {
-        let n = f64::from(n);
-        term = -term * r2 / ((2.0 * n) * (2.0 * n + 1.0));
-        sum += term;
-    }
-    #[expect(clippy::cast_possible_truncation, reason = "a sine in −1..=1")]
-    let s = sum as f32;
-    if (k as i64) % 2 == 0 { s } else { -s }
-}
-
-/// Lanczos kernel with `a = 3`.
-fn lanczos3(x: f32) -> f32 {
-    let x = x.abs();
-    if x < 1e-6 {
-        1.0
-    } else if x >= 3.0 {
-        0.0
-    } else {
-        let px = PI * x;
-        3.0 * sin_pi(x) * sin_pi(x / 3.0) / (px * px)
-    }
 }
 
 impl AxisMap {
@@ -140,16 +122,35 @@ impl AxisMap {
         step: f32,
         out_len: u32,
     ) -> Self {
+        // Output pixels the layer spans, and source pixels per output pixel: png2c64's
+        // `src / dst` when the span is a whole number (a layer fitted to the screen), whose
+        // end is then exactly on an output edge (`320 / 637 · 637` rounds just short).
+        let span = f64::from(scale) * f64::from(src_len) / f64::from(step);
+        let whole = span.round();
+        let fitted = (span - whole).abs() < 1e-4 && whole >= 1.0;
+        let ratio = if fitted {
+            src_len as f32 / whole as f32
+        } else {
+            (f64::from(src_len) / span) as f32
+        };
         let lo = translate;
-        let hi = translate + scale * src_len as f32;
+        let hi = if fitted {
+            translate + whole as f32 * step
+        } else {
+            translate + scale * src_len as f32
+        };
         let first = ((lo / step).floor().max(0.0) as u32).min(out_len);
         let last = ((hi / step).ceil().max(0.0) as u32).min(out_len);
-        let ratio = step / scale; // source pixels per super pixel
+        // The layer's offset in output pixels; 0 for a layer at the origin, so its
+        // positions are png2c64's `(x + ½) · ratio`.
+        let offset = translate / step;
+        let identity = ratio == 1.0 && offset.fract() == 0.0;
         let mut map = Self {
             out0: first,
             start: vec![0],
             src: Vec::new(),
             w: Vec::new(),
+            inv: Vec::new(),
             cov: Vec::new(),
         };
         let max_j = src_len as i64 - 1;
@@ -157,42 +158,38 @@ impl AxisMap {
             let a = i as f32 * step;
             let b = a + step;
             let cov = ((b.min(hi) - a.max(lo)) / step).clamp(0.0, 1.0);
-            let c = (i as f32 + 0.5) * step;
-            let mut u = (c - translate) / scale;
+            let mut u = (i as f32 + 0.5 - offset) * ratio;
             if flip {
                 u = src_len as f32 - u;
             }
-            let n0 = map.src.len();
-            if ratio <= 1.0 {
-                let uu = u - 0.5;
-                let j0 = uu.floor();
-                let f = uu - j0;
-                let j0 = j0 as i64;
-                for (j, w) in [(j0, 1.0 - f), (j0 + 1, f)] {
-                    map.push_tap(j.clamp(0, max_j) as u32, w, n0);
-                }
+            if identity {
+                // 1:1 and on whole pixels: a copy, as png2c64 copies a source that is
+                // already the target's size.
+                map.src.push((u.floor() as i64).clamp(0, max_j) as u32);
+                map.w.push(1.0);
+                map.inv.push(1.0);
             } else {
-                let support = 3.0 * ratio;
-                let j_lo = (u - 0.5 - support).ceil() as i64;
-                let j_hi = (u - 0.5 + support).floor() as i64;
-                for j in j_lo.max(0)..=j_hi.min(max_j) {
-                    let w = lanczos3((j as f32 + 0.5 - u) / ratio);
-                    if w != 0.0 {
-                        map.src.push(j as u32);
-                        map.w.push(w);
-                    }
+                // png2c64's `sample`: the four pixels around `pos`, clamped, each weighted
+                // by the kernel at its distance; the sum is divided by the weights' sum.
+                // An edge output's centre can lie past the layer (its coverage says how
+                // much it overlaps): it samples the edge, as png2c64 never samples outside.
+                // A fitted layer's positions are always inside, so this changes nothing
+                // there.
+                let pos = (u - 0.5).clamp(-0.5, src_len as f32 - 0.5);
+                let center = pos.floor() as i64;
+                let mut weight_sum = 0.0f32;
+                for k in -1..=2 {
+                    let s = (center + k).clamp(0, max_j);
+                    let w = mitchell(pos - s as f32);
+                    map.src.push(s as u32);
+                    map.w.push(w);
+                    weight_sum += w;
                 }
-                let sum: f32 = map.w[n0..].iter().sum();
-                if sum.abs() < 1e-6 || map.src.len() == n0 {
-                    map.src.truncate(n0);
-                    map.w.truncate(n0);
-                    map.src.push((u.floor() as i64).clamp(0, max_j) as u32);
-                    map.w.push(1.0);
+                map.inv.push(if weight_sum > 0.0 {
+                    1.0 / weight_sum
                 } else {
-                    for w in &mut map.w[n0..] {
-                        *w /= sum;
-                    }
-                }
+                    1.0
+                });
             }
             map.cov.push(cov);
             map.start.push(map.src.len() as u32);
@@ -207,24 +204,12 @@ impl AxisMap {
         map
     }
 
-    /// Adds a tap, merging it with an existing tap on the same source pixel.
-    fn push_tap(&mut self, j: u32, w: f32, n0: usize) {
-        if w == 0.0 {
-            return;
-        }
-        if let Some(k) = self.src[n0..].iter().position(|&s| s == j) {
-            self.w[n0 + k] += w;
-        } else {
-            self.src.push(j);
-            self.w.push(w);
-        }
-    }
-
     fn pop_back(&mut self) {
         self.start.pop();
         let end = *self.start.last().expect("start keeps its first entry") as usize;
         self.src.truncate(end);
         self.w.truncate(end);
+        self.inv.pop();
         self.cov.pop();
     }
 
@@ -236,6 +221,7 @@ impl AxisMap {
         for s in &mut self.start {
             *s -= skip as u32;
         }
+        self.inv.remove(0);
         self.cov.remove(0);
         self.out0 += 1;
     }
@@ -276,9 +262,10 @@ pub(crate) fn resample<T: Px>(src: &[T], sw: u32, mx: &AxisMap, my: &AxisMap) ->
 /// Output rows resampled per task.
 pub(crate) const CHUNK_ROWS: usize = 32;
 
-/// An output's taps when it has at most two (every bilinear output): source pixels and
+/// An output's taps when it has at most two (an axis copied at 1:1): source pixels and
 /// weights. A one-tap output has a second tap of weight 0 on the same pixel, which adds
-/// a zero to its finite sum and so leaves it unchanged (#139).
+/// a zero to its finite sum and so leaves it unchanged (#139). Such outputs have
+/// `inv == 1`.
 #[derive(Clone, Copy, Debug)]
 struct Pair {
     j: [u32; 2],
@@ -287,7 +274,7 @@ struct Pair {
 
 impl AxisMap {
     /// Every output's taps as a [`Pair`], or `None` when an output has more than two
-    /// (a Lanczos downscale).
+    /// (the Mitchell kernel's four).
     fn pairs(&self) -> Option<Vec<Pair>> {
         self.start
             .windows(2)
@@ -309,14 +296,15 @@ impl AxisMap {
     }
 }
 
-/// Output `k` of `line` through `mx`: `0 + w0·v0 + w1·v1 …` in tap order.
+/// Output `k` of `line` through `mx`: `(0 + w0·v0 + w1·v1 …) · inv` in tap order, as
+/// png2c64's `sample` sums.
 #[inline(always)]
 fn tap_sum<T: Px>(line: &[T], mx: &AxisMap, k: usize) -> T {
     let mut acc = T::ZERO;
     for (j, w) in mx.taps(k) {
         acc.madd(w, line[j as usize]);
     }
-    acc
+    acc.scaled(mx.inv[k])
 }
 
 /// The horizontal pass of one chunk: source rows from `r0` resampled through `mx`, one
@@ -382,15 +370,24 @@ fn vertical<T: Px>(tmp: &[T], r0: u32, my: &AxisMap, k: usize, row: &mut [T]) {
                     o.madd(w, *v);
                 }
             }
+            let inv = my.inv[k];
+            for o in row.iter_mut() {
+                *o = o.scaled(inv);
+            }
         }
     }
 }
 
 /// [`vertical`] for interleaved colour, split into the planes `out` as it is written,
-/// each pixel scaled by its coverage (`cov[x] × my.cov[k]`), colour clamped at 0 and
-/// alpha to `0..=1`. `inner` is where `cov` is 1: on a row whose own coverage is 1
+/// each pixel scaled by its coverage (`cov[x] × my.cov[k]`), colour as resampled
+/// (Mitchell's negative lobes kept, as png2c64 keeps them) and alpha clamped to `0..=1`,
+/// or exactly the coverage when the source is `opaque`. `inner` is where `cov` is 1: on a row whose own coverage is 1
 /// too, the scale there is 1 and is skipped, since `v × 1 = v` (#139).
 #[inline(always)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pass's inputs, its outputs and whether the source is opaque"
+)]
 fn vertical_split(
     tmp: &[[f32; 4]],
     r0: u32,
@@ -399,6 +396,7 @@ fn vertical_split(
     out: [&mut [f32]; 4],
     cov: &[f32],
     inner: std::ops::Range<usize>,
+    opaque: bool,
 ) {
     let ow = cov.len();
     let cy = my.cov[k];
@@ -419,6 +417,7 @@ fn vertical_split(
                 cov,
                 cy,
                 inner,
+                opaque,
             );
         }
         (Some((j0, w0)), Some((j1, w1)), None) => {
@@ -434,6 +433,7 @@ fn vertical_split(
                 cov,
                 cy,
                 inner,
+                opaque,
             );
         }
         _ => split_row(
@@ -442,12 +442,13 @@ fn vertical_split(
                 for (j, w) in my.taps(k) {
                     acc.madd(w, line(j)[x]);
                 }
-                acc
+                acc.scaled(my.inv[k])
             },
             out,
             cov,
             cy,
             inner,
+            opaque,
         ),
     }
 }
@@ -460,6 +461,7 @@ fn split_row(
     cov: &[f32],
     cy: f32,
     inner: std::ops::Range<usize>,
+    opaque: bool,
 ) {
     let ow = cov.len();
     let [r, g, b, a] = out;
@@ -467,10 +469,18 @@ fn split_row(
     for x in (0..inner.start).chain(inner.end.max(inner.start)..ow) {
         let v = sum(x);
         let s = cov[x] * cy;
-        r[x] = (v[0] * s).max(0.0);
-        g[x] = (v[1] * s).max(0.0);
-        b[x] = (v[2] * s).max(0.0);
-        a[x] = (v[3] * s).clamp(0.0, 1.0);
+        // Colour keeps the kernel's slight negative ringing, as png2c64's scaler does;
+        // the layer's front end clamps it in its OKLab round trip (ADR-012).
+        r[x] = v[0] * s;
+        g[x] = v[1] * s;
+        b[x] = v[2] * s;
+        // An opaque source's alpha is its coverage, exactly: the kernel's sum of ones
+        // can round to just under 1.
+        a[x] = if opaque {
+            s
+        } else {
+            (v[3] * s).clamp(0.0, 1.0)
+        };
     }
     let (r, g, b, a) = (
         &mut r[inner.clone()],
@@ -480,10 +490,10 @@ fn split_row(
     );
     for (i, x) in inner.enumerate() {
         let v = sum(x);
-        r[i] = v[0].max(0.0);
-        g[i] = v[1].max(0.0);
-        b[i] = v[2].max(0.0);
-        a[i] = v[3].clamp(0.0, 1.0);
+        r[i] = v[0];
+        g[i] = v[1];
+        b[i] = v[2];
+        a[i] = if opaque { 1.0 } else { v[3].clamp(0.0, 1.0) };
     }
 }
 
@@ -615,8 +625,10 @@ impl Planes {
 }
 
 /// Resamples premultiplied colour (`sw` wide) through `mx` and `my` into planes, scaled
-/// by coverage (`mx.cov × my.cov`): alpha clamped to `0..=1` and colour to `≥ 0`, since
-/// Lanczos can ring slightly negative. `extent` gets, per output row, the columns outside
+/// by coverage (`mx.cov × my.cov`): alpha clamped to `0..=1`. Colour is left as the
+/// kernel gives it, slight negative ringing included (png2c64's scaler does not clamp;
+/// the layer's front end does, ADR-012). With `opaque` (every source alpha 1) the alpha
+/// is the coverage itself. `extent` gets, per output row, the columns outside
 /// which the row is all zero.
 ///
 /// Chunked like [`resample_into`]. The horizontal pass works on interleaved pixels; the
@@ -630,6 +642,7 @@ pub(crate) fn resample_planes(
     my: &AxisMap,
     out: &mut Planes,
     extent: &mut Vec<(u32, u32)>,
+    opaque: bool,
 ) {
     let (ow, oh) = (mx.len() as usize, my.len() as usize);
     out.sized(ow * oh);
@@ -674,7 +687,7 @@ pub(crate) fn resample_planes(
                     &mut a[o],
                 );
                 let planes = [&mut *r, &mut *g, &mut *b, &mut *a];
-                vertical_split(tmp, r0, my, k, planes, &mx.cov, inner.clone());
+                vertical_split(tmp, r0, my, k, planes, &mx.cov, inner.clone(), opaque);
                 let on = |x: &usize| r[*x] != 0.0 || g[*x] != 0.0 || b[*x] != 0.0 || a[*x] != 0.0;
                 *e = match ((0..ow).find(on), (0..ow).rfind(on)) {
                     (Some(x0), Some(x1)) => (
@@ -692,17 +705,9 @@ pub(crate) fn resample_planes(
 mod tests {
     use super::*;
 
-    #[test]
-    fn sin_pi_matches_the_platform_sine() {
-        for i in 0..=3000 {
-            let x = i as f32 / 1000.0;
-            let want = (f64::from(x) * std::f64::consts::PI).sin();
-            assert!((f64::from(sin_pi(x)) - want).abs() < 1e-6, "{x}");
-        }
-    }
-
+    /// The weights of output `k` as applied: the kernel's, scaled by `1 / Σ w`.
     fn sum_weights(m: &AxisMap, k: usize) -> f32 {
-        m.taps(k).map(|(_, w)| w).sum()
+        m.taps(k).map(|(_, w)| w).sum::<f32>() * m.inv[k]
     }
 
     #[test]
@@ -716,6 +721,44 @@ mod tests {
         }
     }
 
+    /// ADR-012: a layer fitted to the target is resampled bit for bit as png2c64's
+    /// `scale::bicubic` scales, in both modes' geometry, upscaled and downscaled.
+    #[test]
+    fn a_fitted_layer_is_png2c64_s_bicubic_bit_for_bit() {
+        use crate::solve::png2c64_ref::{Image, scale};
+        for (w, h, tw, step) in [
+            (200usize, 125usize, 160u32, 2.0f32),
+            (1024, 637, 320, 1.0),
+            (97, 61, 160, 2.0),
+        ] {
+            let px: Vec<[f32; 3]> = (0..w * h)
+                .map(|i| {
+                    let (x, y) = ((i % w) as f32, (i / w) as f32);
+                    [
+                        (x * 0.013).fract(),
+                        (y * 0.027).fract(),
+                        ((x + y) * 0.051).fract(),
+                    ]
+                })
+                .collect();
+            let want = scale::bicubic(
+                &Image::new(w, h, px.clone()),
+                tw as usize,
+                200,
+                scale::Kernel::MitchellNetravali,
+            );
+            let src: Vec<[f32; 4]> = px.iter().map(|p| [p[0], p[1], p[2], 1.0]).collect();
+            let mx = AxisMap::new(w as u32, 0.0, 320.0 / w as f32, false, step, tw);
+            let my = AxisMap::new(h as u32, 0.0, 200.0 / h as f32, false, 1.0, 200);
+            let (mut got, mut extent) = (Planes::default(), Vec::new());
+            resample_planes(&src, w as u32, &mx, &my, &mut got, &mut extent, true);
+            for (i, p) in want.px.iter().enumerate() {
+                assert_eq!([got.r[i], got.g[i], got.b[i]], *p, "{w}×{h} → {tw}: {i}");
+                assert_eq!(got.a[i], 1.0);
+            }
+        }
+    }
+
     #[test]
     fn weights_sum_to_one_and_coverage_tracks_the_edge() {
         for (scale, step) in [(1.0, 0.25), (3.0, 0.5), (0.1, 0.25), (0.37, 1.0)] {
@@ -723,7 +766,9 @@ mod tests {
             for k in 0..m.len() as usize {
                 assert!(
                     (sum_weights(&m, k) - 1.0).abs() < 1e-5,
-                    "{scale} {step} {k}"
+                    "{scale} {step} {k}: {:?} {}",
+                    m.taps(k).collect::<Vec<_>>(),
+                    m.inv[k]
                 );
             }
             let total: f32 = m.cov.iter().sum::<f32>() * step;
@@ -764,7 +809,7 @@ mod tests {
     }
 
     #[test]
-    fn lanczos_downscale_preserves_flat_fields() {
+    fn a_downscale_preserves_flat_fields() {
         let src = vec![[0.5, 0.25, 1.0, 1.0]; 40 * 40];
         let mx = AxisMap::new(40, 0.0, 0.25, false, 1.0, 320);
         let my = AxisMap::new(40, 0.0, 0.25, false, 1.0, 200);
@@ -790,7 +835,7 @@ mod tests {
                         for (j, w) in mx.taps(k) {
                             acc.madd(w, line[j as usize]);
                         }
-                        acc
+                        acc.scaled(mx.inv[k])
                     })
                     .collect()
             })
@@ -802,11 +847,14 @@ mod tests {
                     o.madd(w, *v);
                 }
             }
+            for o in row.iter_mut() {
+                *o = o.scaled(my.inv[k]);
+            }
         }
         out
     }
 
-    /// Placements covering bilinear and Lanczos axes, flips, sub-pixel offsets, the grid
+    /// Placements covering upscaled and downscaled axes, flips, sub-pixel offsets, the grid
     /// edges and one-tap outputs: `(src len, translate, scale, flip, step, out len)`.
     fn axes() -> Vec<(u32, f32, f32, bool, f32, u32)> {
         vec![
@@ -856,12 +904,12 @@ mod tests {
                         let s = cx * my.cov[k];
                         p[3] = (p[3] * s).clamp(0.0, 1.0);
                         for c in &mut p[..3] {
-                            *c = (*c * s).max(0.0);
+                            *c *= s;
                         }
                     }
                 }
                 let (mut got, mut extent) = (Planes::default(), Vec::new());
-                resample_planes(&src, sx, &mx, &my, &mut got, &mut extent);
+                resample_planes(&src, sx, &mx, &my, &mut got, &mut extent, false);
                 assert_eq!(extent.len(), my.len() as usize);
                 for (i, p) in want.iter().enumerate() {
                     let q = [got.r[i], got.g[i], got.b[i], got.a[i]];

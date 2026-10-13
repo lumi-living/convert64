@@ -121,3 +121,9 @@ half-resolution mask and re-blurred on stroke end, not per mouse move.
 - [ ] E4 #76: mask raster, procedural sources and modifiers in the compositor and attribute map
 - [ ] E4 #77: mask commands in the command registry, with undo mementos and JSON/MCP exposure
 - [ ] E8 #78: mask tools in the app — brush, lasso, gradient, key, modifier sliders, quick-mask view
+
+## Note 2026-10-13 (#227, ADR-012)
+
+With the composite on the target grid (ADR-012), a mask is resampled at 4× and
+box-reduced before its snap and feather, so its edge keeps the coverage it had on the
+4× grid (measured in ADR-012). Its semantics here are unchanged.
