@@ -2,7 +2,7 @@
 //! Both report the layer-space rectangle they touched, which drives undo tiles and the
 //! solver's dirty cells.
 
-use super::MaskRaster;
+use super::{Combine, Gradient, MaskRaster};
 use crate::geom::{PxRect, Vec2};
 use serde::{Deserialize, Serialize};
 
@@ -190,6 +190,39 @@ pub(crate) fn fill(r: &mut MaskRaster, polygon: &[Vec2], value: f32, mode: Paint
         }
     }
     rect
+}
+
+/// `r` with `gradient` combined into every pixel (sampled at pixel centres), baked into
+/// the raster: what a region, which has no procedural sources, does with a gradient.
+pub(crate) fn bake_gradient(r: &MaskRaster, gradient: &Gradient, combine: Combine) -> MaskRaster {
+    let mut out = r.clone();
+    let w = r.width() as usize;
+    let mut g = vec![0.0; w];
+    for (y, row) in out.data.chunks_mut(w).enumerate() {
+        gradient.row(y as f32 + 0.5, &mut g);
+        combine.apply_row(row, &g);
+        for v in row.iter_mut() {
+            *v = v.clamp(0.0, 1.0);
+        }
+    }
+    out
+}
+
+/// The rectangle of pixels where two rasters of the same size differ (bit for bit).
+pub(crate) fn changed_rect(a: &MaskRaster, b: &MaskRaster) -> PxRect {
+    assert_eq!(a.size(), b.size(), "rasters differ in size");
+    let w = a.width() as usize;
+    let mut out = PxRect::EMPTY;
+    for (y, (ra, rb)) in a.data.chunks(w).zip(b.data.chunks(w)).enumerate() {
+        let differs = |(p, q): (&f32, &f32)| p.to_bits() != q.to_bits();
+        let Some(x0) = ra.iter().zip(rb).position(differs) else {
+            continue;
+        };
+        let x1 = ra.iter().zip(rb).rposition(differs).expect("one differs") + 1;
+        let y = y as u32;
+        out = out.union(PxRect::new(x0 as u32, y, x1 as u32, y + 1));
+    }
+    out
 }
 
 #[cfg(test)]

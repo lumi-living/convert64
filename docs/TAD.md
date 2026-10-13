@@ -566,6 +566,16 @@ As built in #198 (2026-10-13): rotation and an anchor in the layer transform ([A
   - skip the mask where neither the quad nor the feather's reach can use it;
   - pre-upsample the source with the separable Catmull-Rom and sample that bilinearly.
 
+As built in #216 (2026-10-13): region commands for the Region tool (UX §7), and commands for a layer mask's sources list (UX §6).
+
+- **The registry** grows from 32 to 43 commands: `region_add` (name, optional recipe and position; an empty 320 × 200 mask), `region_remove`, `region_rename`, `region_reorder` (0 = applied first; later regions win where masks overlap), `region_set_recipe` (a `RecipeChange`, as `recipe_set`), and painting a region's canvas-space mask with the layer mask shapes: `region_stroke`, `region_fill` (polygon), `region_gradient`, `region_clear`. For the Mask group's Sources list: `mask_source_remove` and `mask_source_set_combine` (`max`, `min`, `multiply`). Each has a JSON form (`convert64_project::JsonCommand`), a schema and an example in `convert64 commands --json`, runs through `convert64 apply` and as an MCP tool, and is covered by the parity test, whose base project now has a mask source on layer 1 and two regions. Regions are named by index or name (`RegionRef`, as `LayerRef`; `Session::resolve_region`).
+- **Shared code.** The region paint commands run the layer mask's brush and lasso (`mask::paint`) with the same argument checks on the region's raster; the undo tiles moved from `Mask` to `MaskRaster` so both use them.
+- **Undo.** Paint keeps the touched tiles (stroke, fill) or the tiles of the rectangle where values changed (gradient, clear); a removed region is kept whole; rename and recipe keep the old value. The source list commands keep the whole mask, as `mask_gradient` does.
+- **`Dirty::CanvasRect`** (canvas pixels): paint reports the touched rectangle, gradient and clear the rectangle that changed, add, remove, reorder and recipe the region's non-zero extent (empty for a new region and for a rename); undo reports what the command did. `composite::canvas_change_cells` grows it by the one canvas pixel that bilinear sampling reaches and maps it to target cells, so the app re-solves only those; a test checks that it covers every cell `Compositor::update` reports, undo included. The source list commands report `Dirty::Layer`.
+- **`region_gradient` is baked.** A region's mask is a raster with no procedural sources (a layer mask has them, ADR-008), so the gradient is combined into the raster at pixel centres with its combine mode and cannot be edited afterwards. Keeping regions raster-only leaves the compositor and the project file as they were.
+- **The project file** is unchanged, schema version 2: `regions` already holds the name, the mask raster and the recipe. A test saves regions made by commands and reloads them (masks within 1/65535 after the first save, as layer masks) and checks that load → save is byte-identical.
+- **Unchanged:** the solver and the compositor's output (no golden or parity change).
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.

@@ -1432,6 +1432,37 @@ pub fn mask_change_cells(grid: SuperGrid, layer: &Layer, layer_rect: PxRect) -> 
     CellSet::from_super_rect(grid, r)
 }
 
+/// The target cells a change inside `canvas_rect` (canvas pixels, 320 × 200) can affect,
+/// as a region command reports it ([`Dirty::CanvasRect`](crate::command::Dirty)): the
+/// rectangle grown by one canvas pixel, since regions are sampled bilinearly, and mapped
+/// onto the cells.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "coordinates are clamped to the super grid before casting"
+)]
+pub fn canvas_change_cells(grid: SuperGrid, canvas_rect: PxRect) -> CellSet {
+    if canvas_rect.is_empty() {
+        return CellSet::EMPTY;
+    }
+    let a = grid.canvas_to_super(Vec2::new(
+        canvas_rect.x0 as f32 - 1.0,
+        canvas_rect.y0 as f32 - 1.0,
+    ));
+    let b = grid.canvas_to_super(Vec2::new(
+        canvas_rect.x1 as f32 + 1.0,
+        canvas_rect.y1 as f32 + 1.0,
+    ));
+    let (gw, gh) = grid.size();
+    let r = PxRect::new(
+        a.x.max(0.0).floor() as u32,
+        a.y.max(0.0).floor() as u32,
+        (b.x.ceil().max(0.0) as u32).min(gw),
+        (b.y.ceil().max(0.0) as u32).min(gh),
+    );
+    CellSet::from_super_rect(grid, r)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2155,6 +2186,101 @@ mod tests {
                 c.update(&layers, &regions).is_empty(),
                 "{mode}: no edit, no cells"
             );
+        }
+    }
+
+    /// Region commands report a canvas rectangle (#216); its cells cover every cell the
+    /// compositor finds changed, undo included.
+    #[test]
+    fn region_commands_report_the_cells_they_change() {
+        use crate::command::{
+            Command, Dirty, Editor, RecipeChange, RegionAdd, RegionClear, RegionFill,
+            RegionGradient, RegionReorder, RegionSetRecipe, RegionStroke,
+        };
+        use crate::mask::{Combine, Gradient, GradientKind, PaintMode};
+        for mode in [Mode::HiresBitmap, Mode::MulticolorBitmap] {
+            let g = grid(mode, 2);
+            let mut e = Editor::new(crate::Project {
+                layers: edit_scene(),
+                regions: vec![sky_region()],
+                ..crate::Project::default()
+            });
+            let mut c = Compositor::new(g);
+            c.update(&e.project().layers, &e.project().regions);
+            let square = vec![
+                Vec2::new(100.0, 60.0),
+                Vec2::new(180.0, 60.0),
+                Vec2::new(180.0, 120.0),
+                Vec2::new(100.0, 120.0),
+            ];
+            let commands = [
+                Command::RegionAdd(Box::new(RegionAdd {
+                    index: 1,
+                    name: "dither".into(),
+                    recipe: crate::layer::Recipe::with_method(
+                        crate::layer::DitherKind::Atkinson,
+                        1.0,
+                    )
+                    .unwrap(),
+                })),
+                Command::RegionStroke(RegionStroke {
+                    region: 1,
+                    points: vec![Vec2::new(150.0, 40.0), Vec2::new(250.0, 150.0)],
+                    radius: 9.0,
+                    hardness: 0.4,
+                    flow: 0.8,
+                    mode: PaintMode::Add,
+                }),
+                Command::RegionFill(RegionFill {
+                    region: 1,
+                    polygon: square,
+                    value: 1.0,
+                    mode: PaintMode::Add,
+                }),
+                Command::RegionGradient(RegionGradient {
+                    region: 1,
+                    gradient: Gradient::new(
+                        GradientKind::Radial,
+                        Vec2::new(40.0, 40.0),
+                        Vec2::new(90.0, 40.0),
+                        0.5,
+                    )
+                    .unwrap(),
+                    combine: Combine::Max,
+                }),
+                Command::RegionReorder(RegionReorder { region: 1, to: 0 }),
+                Command::RegionSetRecipe(Box::new(RegionSetRecipe {
+                    region: 1,
+                    recipe: RecipeChange {
+                        strength: Some(0.9),
+                        ..RecipeChange::default()
+                    },
+                })),
+                Command::RegionClear(RegionClear {
+                    region: 0,
+                    value: 0.0,
+                }),
+            ];
+            let check = |c: &mut Compositor, e: &Editor, dirty: Dirty, what: &str| {
+                let Dirty::CanvasRect(rect) = dirty else {
+                    panic!("{what}: {dirty:?}")
+                };
+                let reported = c.update(&e.project().layers, &e.project().regions);
+                let covered = canvas_change_cells(g, rect);
+                assert_eq!(
+                    reported.intersection(covered),
+                    reported,
+                    "{mode} {what}: changed cells outside {rect:?}"
+                );
+            };
+            for cmd in commands {
+                let name = cmd.name();
+                let dirty = e.execute(cmd).unwrap();
+                check(&mut c, &e, dirty, name);
+            }
+            while let Some(dirty) = e.undo() {
+                check(&mut c, &e, dirty, "undo");
+            }
         }
     }
 
