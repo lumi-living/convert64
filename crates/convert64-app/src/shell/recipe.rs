@@ -24,10 +24,13 @@ use egui::{Response, RichText, Ui};
 /// The width of a row's label column, in points.
 const LABEL_WIDTH: f32 = 90.0;
 
-/// Emits commands for one layer.
+/// Emits commands for one layer, or for one region's recipe (the Region tool's
+/// pseudo-layer, UX §7).
 struct Form<'a> {
     actions: &'a mut Vec<Action>,
     layer: usize,
+    /// Recipe changes go to this region instead of the layer.
+    region: Option<usize>,
 }
 
 impl Form<'_> {
@@ -39,6 +42,11 @@ impl Form<'_> {
     }
 
     fn recipe(&mut self, gesture: Option<&str>, recipe: RecipeChange) {
+        if let Some(r) = self.region {
+            let region = convert64_project::command::RegionRef::Index(r);
+            self.emit(gesture, JsonCommand::RegionSetRecipe { region, recipe });
+            return;
+        }
         let layer = LayerRef::Index(self.layer);
         self.emit(gesture, JsonCommand::RecipeSet { layer, recipe });
     }
@@ -194,7 +202,19 @@ pub(super) fn show(shell: &mut Shell, ws: &Workspace, ui: &mut Ui, actions: &mut
     }
     let i = shell.layer.min(project.layers.len() - 1);
     let layer = &project.layers[i];
-    let mut f = Form { actions, layer: i };
+    if shell.tool == super::Tool::Region && shell.mask.tool.is_none() {
+        let mut f = Form {
+            actions,
+            layer: i,
+            region: None,
+        };
+        return regions(&mut f, shell, ws, ui);
+    }
+    let mut f = Form {
+        actions,
+        layer: i,
+        region: None,
+    };
     picture(&mut f, ws, ui);
     ui.label(
         RichText::new(format!("Layer: {}", layer.name()))
@@ -716,6 +736,56 @@ fn picture(f: &mut Form, ws: &Workspace, ui: &mut Ui) {
         });
     });
     ui.separator();
+}
+
+/// The Region tool's panel: the regions (select, add, rename, remove) and the selected
+/// region's dither recipe and colour fitting, edited like a layer's (`region_set_recipe`).
+fn regions(f: &mut Form, shell: &mut Shell, ws: &Workspace, ui: &mut Ui) {
+    use convert64_project::command::RegionRef;
+    let regions = &ws.doc.session().project().regions;
+    ui.label(RichText::new("Regions: a recipe painted over the picture. Paint with R; the first stroke makes a region.").small().weak());
+    for (k, r) in regions.iter().enumerate() {
+        ui.horizontal(|ui| {
+            if ui.selectable_label(shell.region == k, r.name()).clicked() {
+                shell.region = k;
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let delete = egui::Button::new(super::icon(crate::icons::DELETE)).frame(false);
+                if ui.add(delete).on_hover_text("Remove the region").clicked() {
+                    f.emit(
+                        None,
+                        JsonCommand::RegionRemove {
+                            region: RegionRef::Index(k),
+                        },
+                    );
+                }
+            });
+        });
+    }
+    if ui.button("Add region").clicked() {
+        let name = format!("Region {}", regions.len() + 1);
+        f.emit(
+            None,
+            JsonCommand::RegionAdd {
+                name,
+                recipe: Box::default(),
+                index: None,
+            },
+        );
+        shell.region = regions.len();
+    }
+    let Some(region) = regions.get(shell.region) else {
+        return;
+    };
+    ui.separator();
+    ui.label(
+        RichText::new(format!("Region: {}", region.name()))
+            .small()
+            .weak(),
+    );
+    f.region = Some(shell.region);
+    dither(f, region.recipe(), ui);
+    fitting(f, region.recipe(), ws, ui);
 }
 
 /// `t` with translate, scale and flips replaced; rotation and anchor kept.

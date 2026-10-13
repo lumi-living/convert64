@@ -34,6 +34,9 @@ pub struct Workspace {
     mask_thumbs: (u64, Vec<Option<TextureHandle>>),
     /// The quick-mask overlay: for which revision, layer and style, and its texture.
     mask_overlay: Option<((u64, usize, bool), TextureHandle)>,
+    /// All regions' masks as one white texture (alpha = the strongest region), 320 × 200,
+    /// for the Region tool's tint; with the revision it was made for.
+    regions: Option<(u64, TextureHandle)>,
 }
 
 impl std::fmt::Debug for Workspace {
@@ -76,6 +79,7 @@ impl Workspace {
             thumbs: Vec::new(),
             mask_thumbs: (u64::MAX, Vec::new()),
             mask_overlay: None,
+            regions: None,
         }
     }
 
@@ -160,6 +164,39 @@ impl Workspace {
             self.mask_overlay = Some((key, tex));
         }
         self.mask_overlay.as_ref().map(|(_, t)| t)
+    }
+
+    /// The regions' coverage (white, alpha = mask) for the tint overlay; `None` without
+    /// regions.
+    pub fn region_overlay(&mut self, ctx: &egui::Context) -> Option<&TextureHandle> {
+        let rev = self.doc.revision();
+        let regions = &self.doc.session().project().regions;
+        if regions.is_empty() {
+            self.regions = None;
+            return None;
+        }
+        if self.regions.as_ref().is_none_or(|(r, _)| *r != rev) {
+            let (w, h) = (
+                convert64_core::region::CANVAS_WIDTH,
+                convert64_core::region::CANVAS_HEIGHT,
+            );
+            let mut alpha = vec![0.0f32; (w * h) as usize];
+            for r in regions {
+                for (a, v) in alpha.iter_mut().zip(r.mask().values()) {
+                    *a = a.max(*v);
+                }
+            }
+            let rgba: Vec<u8> = alpha
+                .iter()
+                .flat_map(|a| [255, 255, 255, (a.clamp(0.0, 1.0) * 255.0) as u8])
+                .collect();
+            let image = ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+            self.regions = Some((
+                rev,
+                ctx.load_texture("regions", image, TextureOptions::LINEAR),
+            ));
+        }
+        self.regions.as_ref().map(|(_, t)| t)
     }
 
     /// Layer `i`'s mask thumbnail, if it has a mask.

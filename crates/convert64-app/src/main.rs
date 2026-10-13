@@ -255,6 +255,9 @@ impl App {
 
     /// Carries out what the shell asked for.
     fn act(&mut self, ctx: &egui::Context, action: Action) {
+        if std::env::var_os("C64_TRACE").is_some() {
+            eprintln!("action {action:?}");
+        }
         match action {
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::SetTheme(preference) => self.set_theme(ctx, preference),

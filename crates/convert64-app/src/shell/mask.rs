@@ -635,3 +635,94 @@ pub(super) fn draw(
         }
     }
 }
+
+/// The Region tool's options bar: the brush's size, hardness and flow, Add or Subtract.
+pub(super) fn region_bar(shell: &mut Shell, ui: &mut Ui) {
+    ui.horizontal_centered(|ui| {
+        ui.spacing_mut().slider_width = 3.0 * ui.spacing().interact_size.x / 2.0;
+        ui.label(RichText::new("Region · Brush").small().strong());
+        ui.separator();
+        let m = &mut shell.mask;
+        for (mode, name) in [(PaintMode::Add, "Add"), (PaintMode::Subtract, "Subtract")] {
+            if ui.selectable_label(m.mode == mode, name).clicked() {
+                m.mode = mode;
+            }
+        }
+        ui.add(
+            egui::Slider::new(&mut m.size, 0.5..=64.0)
+                .text("Size")
+                .logarithmic(true),
+        );
+        ui.add(egui::Slider::new(&mut m.hardness, 0.0..=1.0).text("Hardness"));
+        ui.add(egui::Slider::new(&mut m.flow, 0.0..=1.0).text("Flow"));
+    });
+}
+
+/// The Region tool on the working view: a drag (or click) paints the selected region's
+/// canvas-space mask with the brush; with no region yet, the stroke makes one first.
+pub(super) fn region_interact(
+    shell: &mut Shell,
+    ws: &Workspace,
+    ui: &Ui,
+    response: &Response,
+    view: Rect,
+    actions: &mut Vec<Action>,
+) {
+    use convert64_project::command::RegionRef;
+    if shell.compare == Compare::SideBySide || ui.input(|i| i.key_down(egui::Key::Space)) {
+        return;
+    }
+    let to_picture = |p: Pos2| shell.camera.to_picture(view, shell.view, p);
+    if response.drag_started_by(egui::PointerButton::Primary)
+        && let Some(p) = response.interact_pointer_pos()
+    {
+        shell.mask.stroke = vec![to_picture(p)];
+    }
+    if response.dragged_by(egui::PointerButton::Primary)
+        && let Some(p) = response.interact_pointer_pos()
+    {
+        shell.mask.stroke.push(to_picture(p));
+    }
+    let finished = response
+        .drag_stopped()
+        .then(|| std::mem::take(&mut shell.mask.stroke));
+    let clicked = response
+        .clicked()
+        .then(|| response.interact_pointer_pos())
+        .flatten()
+        .map(|p| vec![to_picture(p)]);
+    let Some(points) = finished.or(clicked) else {
+        return;
+    };
+    let alt = ui.input(|i| i.modifiers.alt);
+    let mode = if alt && shell.mask.mode == PaintMode::Add {
+        PaintMode::Subtract
+    } else {
+        shell.mask.mode
+    };
+    let regions = ws.doc.session().project().regions.len();
+    let mut commands = Vec::new();
+    if regions == 0 {
+        commands.push(JsonCommand::RegionAdd {
+            name: "Region 1".to_owned(),
+            recipe: Box::default(),
+            index: None,
+        });
+        shell.region = 0;
+    }
+    let region = RegionRef::Index(shell.region.min(regions.max(1) - 1));
+    commands.push(JsonCommand::RegionStroke {
+        region,
+        points: points.into_iter().map(v2).collect(),
+        radius: shell.mask.size,
+        hardness: shell.mask.hardness,
+        flow: shell.mask.flow,
+        mode,
+    });
+    let message = if regions == 0 {
+        "Added Region 1"
+    } else {
+        "Painted the region"
+    };
+    actions.push(Action::RunAll(commands, message.to_owned()));
+}

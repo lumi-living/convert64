@@ -532,4 +532,31 @@ mod tests {
         assert_eq!(doc.session().project().steering.locks().iter().count(), 3);
         assert_eq!(doc.history(), (true, false));
     }
+
+    /// The Region tool's first stroke: a region and its paint, one undo step.
+    #[test]
+    fn the_first_region_stroke_makes_the_region_in_one_step() {
+        use convert64_core::Vec2;
+        use convert64_project::RegionRef;
+        let mut doc = Document::from_png("ramp.png", &png()).unwrap();
+        let add = JsonCommand::RegionAdd {
+            name: "Region 1".into(),
+            recipe: Box::default(),
+            index: None,
+        };
+        let stroke = JsonCommand::RegionStroke {
+            region: RegionRef::Index(0),
+            points: vec![Vec2::new(100.0, 100.0), Vec2::new(140.0, 110.0)],
+            radius: 6.0,
+            hardness: 0.5,
+            flow: 1.0,
+            mode: convert64_core::mask::PaintMode::Add,
+        };
+        doc.run_all(vec![add, stroke]).unwrap();
+        let regions = &doc.session().project().regions;
+        assert_eq!(regions.len(), 1);
+        assert!(regions[0].mask().values().iter().any(|v| *v > 0.5));
+        assert!(doc.undo());
+        assert!(doc.session().project().regions.is_empty());
+    }
 }

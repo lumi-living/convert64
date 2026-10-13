@@ -207,6 +207,8 @@ pub struct Shell {
     snap_cycle: bool,
     /// The Transform group's W/H chain: uniform scale (the default).
     pub scale_linked: bool,
+    /// The region the Region tool paints and the Recipe tab edits.
+    pub region: usize,
     /// The cell the right-click menu is for.
     menu_cell: Option<crate::workspace::Cell>,
     /// The cell worst-cell navigation last went to.
@@ -217,6 +219,8 @@ pub struct Shell {
     pub mask: MaskState,
     /// This frame's quick-mask overlay texture, in mask mode.
     mask_overlay: Option<egui::TextureId>,
+    /// This frame's region tint texture, with the Region tool.
+    region_overlay: Option<egui::TextureId>,
     /// `H`: the hand tool, a primary drag pans.
     pub hand: bool,
     /// The clash hint was dismissed (UX §11: suggested once).
@@ -264,11 +268,13 @@ impl Default for Shell {
             scale_request: None,
             snap_cycle: false,
             scale_linked: true,
+            region: 0,
             menu_cell: None,
             nav_cell: None,
             nav_request: None,
             mask: MaskState::default(),
             mask_overlay: None,
+            region_overlay: None,
             hand: false,
             clash_hint_dismissed: false,
             error: None,
@@ -431,6 +437,11 @@ impl Shell {
                     ));
                 }
             }
+            self.region_overlay = if self.tool == Tool::Region && self.mask.tool.is_none() {
+                ws.region_overlay(ui.ctx()).map(egui::TextureHandle::id)
+            } else {
+                None
+            };
             self.mask_overlay = if self.mask.active {
                 ws.mask_overlay(ui.ctx(), self.layer, self.mask.alone)
                     .map(egui::TextureHandle::id)
@@ -451,6 +462,11 @@ impl Shell {
                 .show(ui, |ui| {
                     toolbar::show(self, ws.as_deref(), ui, &mut actions)
                 });
+            if self.tool == Tool::Region && self.mask.tool.is_none() {
+                egui::Panel::top("region_options")
+                    .exact_size(layout::TOOLBAR_HEIGHT)
+                    .show(ui, |ui| mask::region_bar(self, ui));
+            }
             if self.mask.tool.is_some() {
                 egui::Panel::top("mask_options")
                     .exact_size(layout::TOOLBAR_HEIGHT)
@@ -504,7 +520,9 @@ impl Shell {
             .interactable(false)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.colored_label(colour, message.as_str());
+                    // One line, however long: a wrapped toast reads badly.
+                    let text = egui::RichText::new(message.as_str()).color(colour);
+                    ui.add(egui::Label::new(text).extend());
                 });
             });
     }

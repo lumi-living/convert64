@@ -59,6 +59,8 @@ pub(super) fn show(
     } else if shell.mask.tool.is_none() && shell.tool == super::Tool::Transform {
         super::transform::interact(shell, ws, ui, &response, view, actions);
         super::tools::interact(shell, ws, ui, &response, view, actions);
+    } else if shell.mask.tool.is_none() && shell.tool == super::Tool::Region {
+        super::mask::region_interact(shell, ws, ui, &response, view, actions);
     } else if shell.mask.tool.is_some() {
         super::mask::interact(shell, ws, ui, &response, view, actions);
     } else {
@@ -136,6 +138,21 @@ pub(super) fn show(
         Compare::Off => draw(shell, ws, &painter, view, shell.shown()),
     }
 
+    // The regions, tinted (UX §7: "a tinted outline"), with the Region tool.
+    if let Some(tex) = shell.region_overlay {
+        let picture = shell.camera.picture_rect(view, shell.view);
+        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        let tint = Theme::current(ui.ctx()).region.gamma_multiply(0.45);
+        painter.image(tex, picture, uv, tint);
+    }
+    if shell.tool == super::Tool::Region
+        && shell.mask.tool.is_none()
+        && let Some(h) = response.hover_pos()
+    {
+        let s = shell.camera.scale(shell.view);
+        let accent = Theme::current(ui.ctx()).accent;
+        painter.circle_stroke(h, shell.mask.size * s, (1.5, accent));
+    }
     // The quick-mask overlay (UX §7a): over the picture, in the view mode's geometry.
     if let Some(tex) = shell.mask_overlay {
         let picture = shell.camera.picture_rect(view, shell.view);
