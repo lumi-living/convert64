@@ -62,10 +62,12 @@ pub const BORDER: KeyboardShortcut = cmd(Key::B);
 pub const COMPARE: KeyboardShortcut = bare(Key::Comma);
 /// Working view: Source ⇄ Result.
 pub const SOURCE_RESULT: KeyboardShortcut = bare(Key::Q);
-/// Hide all chrome.
-pub const HIDE_CHROME: KeyboardShortcut = bare(Key::Tab);
-/// Hide the dock.
-pub const HIDE_DOCK: KeyboardShortcut = KeyboardShortcut::new(Modifiers::SHIFT, Key::Tab);
+/// Show or hide the UI: menu bar, toolbar, dock and status bar (Figma's `Cmd \`). `Esc`
+/// also shows it again. Not `Tab`, which is egui's and the browser's focus traversal.
+pub const HIDE_UI: KeyboardShortcut = cmd(Key::Backslash);
+/// Show or hide the dock. With Shift held most layouts report `\` as `|`, so the shell
+/// matches [`Key::Pipe`] too.
+pub const HIDE_DOCK: KeyboardShortcut = shift_cmd(Key::Backslash);
 /// Next-worst cell.
 pub const NEXT_WORST: KeyboardShortcut = shift_cmd(Key::CloseBracket);
 /// Previous worst cell.
