@@ -65,7 +65,7 @@ The 16-bit composite of all layers at any zoom, with the C64 cell grid projected
 
 | Aspect | Decision |
 |---|---|
-| Zoom | fractional allowed (it is a source image): 25 %–800 %, `Cmd/Ctrl +/−`, `Cmd/Ctrl 0` fit, `Cmd/Ctrl 1` 100 %, wheel around the cursor |
+| Zoom | fractional allowed (it is a source image): 25 %–800 %, `Cmd/Ctrl +/−`, `Cmd/Ctrl 0` fit (leaving 5 % of the view free around the picture, as Figma does, so the transform handles stay clear of the edge), `Cmd/Ctrl 1` 100 %, wheel around the cursor |
 | Aspect | square source pixels; the projected cell grid shows the 2:1 stretch of multicolor modes as 4×8-equivalent rectangles |
 | Overlays | **Cell grid** `Cmd/Ctrl '`, **Pins & locks**, **Regions**, **Clashes** (the heatmap projected onto source cells), **Result ghost** (result at 30 % over the source — the reverse of the ghost in Result mode) |
 | Selection | the selected layer's bounds are outlined; its transform handles are drawn in Source mode only |
