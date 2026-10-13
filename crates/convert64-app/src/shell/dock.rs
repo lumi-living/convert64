@@ -33,7 +33,11 @@ pub(super) fn show(
         .inner_margin(egui::Margin::symmetric(margin.left, 0))
         .show(ui, |ui| tabs(shell, ui));
     ui.separator();
-    egui::ScrollArea::vertical().show(ui, |ui| {
+    let mut scroll = egui::ScrollArea::vertical();
+    if let Some(offset) = shell.dock_scroll {
+        scroll = scroll.vertical_scroll_offset(offset);
+    }
+    scroll.show(ui, |ui| {
         egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
             ui.set_width(ui.available_width());
             tab_content(shell, ws, ui, actions);

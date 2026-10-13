@@ -245,6 +245,9 @@ pub struct Shell {
     pub last_export: Option<(crate::export::Settings, String)>,
     /// A message shown at the bottom of the window until the time (egui seconds) passes.
     toast: Option<(String, bool, f64)>,
+    /// `--dock-scroll <points>` (screenshots only): the dock's tab content held scrolled
+    /// down this far, to show a group below the fold.
+    pub dock_scroll: Option<f32>,
 }
 
 impl Default for Shell {
@@ -287,6 +290,7 @@ impl Default for Shell {
             export_requested: false,
             last_export: None,
             toast: None,
+            dock_scroll: None,
         }
     }
 }
