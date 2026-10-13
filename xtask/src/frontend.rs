@@ -234,7 +234,7 @@ pub(crate) fn run() -> Result<(), String> {
             GAP + 2,
             y + 3,
             &format!(
-                "{name} +0.25 px, 3 deg, masked ({} {strength}): old 4x composite | new Mitchell 1x",
+                "{name} nudged 0.25 px, turned 3 deg, masked ({} {strength}): old 4x composite | new Mitchell 1x",
                 kind.id()
             ),
             2,
