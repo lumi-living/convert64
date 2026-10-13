@@ -531,7 +531,7 @@ impl eframe::App for App {
 /// `--screenshot <file.png> [--theme light|dark] [--size <w>x<h>] [--view result]
 /// [--overlay grid|clashes|ghost]… [--compare split|flicker|side] [--dialog export]
 /// [--tab recipe|layers|export] [--command <json>]… [--zoom <n>] [--centre <x>,<y>]
-/// [--mask] [--tool <name>] [--export <dir>]`: draws a few frames,
+/// [--mask] [--tool <name>] [--export <dir>] [--dock-scroll <points>]`: draws a few frames,
 /// saves the window as a PNG and quits. The PR screenshots come from it (#203).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
@@ -605,6 +605,9 @@ mod screenshot {
         /// `--export <dir>`: once the full solve is in, write the Koala (or Art Studio)
         /// file and the self-displaying PRG there.
         pub(super) export: Option<PathBuf>,
+        /// `--dock-scroll <points>`: the dock's tab content scrolled down this far, to
+        /// show a Recipe group below the fold (#237).
+        pub(super) dock_scroll: Option<f32>,
         frame: u32,
     }
 
@@ -637,6 +640,7 @@ mod screenshot {
             let mut mask = false;
             let mut tool = None;
             let mut export = None;
+            let mut dock_scroll = None;
             while let Some(arg) = args.next() {
                 let mut value = || args.next().ok_or(format!("{arg} needs a value"));
                 match arg.as_str() {
@@ -656,6 +660,13 @@ mod screenshot {
                     "--mask" => mask = true,
                     "--tool" => tool = Some(value()?),
                     "--export" => export = Some(PathBuf::from(value()?)),
+                    "--dock-scroll" => {
+                        dock_scroll = Some(
+                            value()?
+                                .parse()
+                                .map_err(|_| "--dock-scroll: a number of points")?,
+                        );
+                    }
                     "--zoom" => zoom = Some(value()?.parse().map_err(|_| "--zoom: a number")?),
                     "--centre" => {
                         let v = value()?;
@@ -698,6 +709,7 @@ mod screenshot {
                     mask,
                     tool,
                     export,
+                    dock_scroll,
                     frame: 0,
                 }),
             })
@@ -816,6 +828,7 @@ fn main() -> eframe::Result {
                         app.shell.tool = t;
                     }
                 }
+                app.shell.dock_scroll = request.dock_scroll;
                 if request.mask {
                     app.shell.toggle_mask_mode();
                 }
