@@ -168,7 +168,7 @@ Mask thumbnails in the Layers panel (§5) show the raster with modifiers applied
 
 ## 8. Keyboard shortcuts
 
-`Cmd` on macOS, `Ctrl` elsewhere; `Option`↔`Alt`. Menu items show the accelerator via `ctx.format_shortcut`. Shortcuts are suppressed while a text field has focus.
+`Cmd` on macOS, `Ctrl` elsewhere; `Option`↔`Alt`. Menu items show the accelerator via `ctx.format_shortcut`. Single-key shortcuts are suppressed only while text is being typed (a text field, or a number field after a click on it); a slider or button with focus leaves them working, though arrows then belong to that control. `Enter` and the end of a drag hand the keyboard back from a slider or number field, a press anywhere else ends typing, and `Esc` always returns the keyboard to the canvas (Figma behaviour; #244).
 
 | Action | Shortcut | Convention source |
 |---|---|---|
