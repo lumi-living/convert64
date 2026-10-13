@@ -65,12 +65,15 @@ pub(crate) struct MipLevel<T> {
     pub size: (u32, u32),
 }
 
+/// The levels built so far, by `(lx, ly)`.
+type Levels<T> = Vec<((u32, u32), Arc<MipLevel<T>>)>;
+
 /// A lazily built rip-map: the levels built so far, by `(lx, ly)`.
 ///
 /// Cloning gives an empty cache, and any two compare equal: a cache is derived data, not
 /// part of the value that holds it.
 pub(crate) struct MipCache<T> {
-    levels: Mutex<Vec<((u32, u32), Arc<MipLevel<T>>)>>,
+    levels: Mutex<Levels<T>>,
 }
 
 impl<T> Default for MipCache<T> {
@@ -116,7 +119,7 @@ const fn kept((lx, ly): (u32, u32)) -> bool {
 }
 
 impl<T: Px> MipCache<T> {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<((u32, u32), Arc<MipLevel<T>>)>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Levels<T>> {
         self.levels.lock().unwrap_or_else(PoisonError::into_inner)
     }
 

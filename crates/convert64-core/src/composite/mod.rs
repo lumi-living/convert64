@@ -800,7 +800,6 @@ fn levels_at(layer: &Layer, step: Vec2) -> (u32, u32) {
 /// the hi-res target grid, 320 · n pixels across in either mode (a canvas pixel is a
 /// hi-res pixel, and a supersampled grid is n times finer), so a source up to 1280 px
 /// wide fitted to the screen samples the original.
-#[expect(clippy::cast_precision_loss, reason = "a factor of at most 8")]
 fn colour_levels(layer: &Layer, grid: SuperGrid) -> (u32, u32) {
     let s = 1.0 / f32::from(grid.n());
     levels_at(layer, Vec2::new(s, s))
@@ -3244,6 +3243,202 @@ mod tests {
                 let footprint = CellSet::from_super_rect(g, old.union(new));
                 assert_eq!(reported.intersection(footprint), reported, "{mode} {name}");
             }
+        }
+    }
+
+    /// An opaque 8-bit `w × h` source with detail everywhere, fitted to the screen.
+    fn fitted(w: u32, h: u32, downscale: Downscale) -> Layer {
+        let rgba: Vec<u8> = (0..w * h)
+            .flat_map(|i| {
+                let (x, y) = (i % w, i / w);
+                [
+                    (x * 7 + y * 3) as u8,
+                    (x ^ y) as u8,
+                    ((x * x + y) / 3) as u8,
+                    255,
+                ]
+            })
+            .collect();
+        let src = Arc::new(SourceImage::from_srgba8(w, h, &rgba).unwrap());
+        let mut l = layer_of_src(src, (320.0 / w as f32, 200.0 / h as f32));
+        l.set_downscale(downscale);
+        l
+    }
+
+    fn layer_of_src(src: Arc<SourceImage>, (sx, sy): (f32, f32)) -> Layer {
+        let mut l = Layer::new("s", src);
+        l.set_transform(Transform::new(Vec2::ZERO, Vec2::new(sx, sy), false, false).unwrap());
+        l.set_adjustments(Adjustments {
+            gamma: crate::layer::Gamma::PNG2C64,
+            ..Adjustments::default()
+        });
+        l
+    }
+
+    /// #235: up to a 4× shrink on the 320 grid (every source up to 1280 px wide fitted to
+    /// the screen) Auto samples the original: the frame and the canvas are Exact's bit
+    /// for bit, in both modes, through png2c64's front end and through the composite, and
+    /// no mip level is built.
+    #[test]
+    fn auto_is_exact_up_to_a_4x_shrink() {
+        for (w, h) in [
+            (200, 125),
+            (640, 400),
+            (1024, 637),
+            (1280, 720),
+            (1280, 800),
+        ] {
+            for mode in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
+                for front_end in [true, false] {
+                    let run = |d: Downscale| {
+                        let mut c = Compositor::new(grid(mode, 1));
+                        c.set_png2c64_front_end(front_end);
+                        c.update(&[fitted(w, h, d)], &[]);
+                        assert_eq!(c.mip_builds(), 0, "{w}×{h} {mode} {d:?}");
+                        (c.frame().colour().to_vec(), c.canvas().clone())
+                    };
+                    let (auto, exact) = (run(Downscale::Auto), run(Downscale::Exact));
+                    let same = auto
+                        .0
+                        .iter()
+                        .zip(&exact.0)
+                        .all(|(a, b)| a.map(f32::to_bits) == b.map(f32::to_bits));
+                    assert!(same, "{w}×{h} {mode} front end {front_end}");
+                    assert_eq!(auto.1, exact.1, "{w}×{h} {mode} front end {front_end}");
+                }
+            }
+        }
+    }
+
+    /// #235: past a 4× shrink a plain picture leaves png2c64's front end under Auto
+    /// (png2c64 has no mip levels), and keeps it under Exact.
+    #[test]
+    fn a_large_shrink_leaves_the_compatibility_path_under_auto() {
+        let g = SuperGrid::with_default_factor(Mode::MulticolorBitmap).unwrap();
+        let auto = fitted(1600, 1000, Downscale::Auto);
+        let exact = fitted(1600, 1000, Downscale::Exact);
+        assert!(plain_layer(std::slice::from_ref(&auto), &[], g).is_none());
+        assert!(plain_layer(std::slice::from_ref(&exact), &[], g).is_some());
+        assert_eq!(colour_levels(&auto, g), (2, 2));
+        // The Source view's 4× grid is four times finer: the same source is no shrink
+        // past 4× there.
+        let fine = SuperGrid::new(Mode::MulticolorBitmap, 4).unwrap();
+        assert_eq!(colour_levels(&auto, fine), (0, 0));
+    }
+
+    /// #235: scale, rotation and nudge drags of a layer shrunk past 4× reuse its mip
+    /// levels (colour and mask); a level is built once, when first needed, and never
+    /// again while the source and mask are unchanged.
+    #[test]
+    fn drags_reuse_the_mip_levels() {
+        let (w, h) = (1024, 640);
+        let src = Arc::new(SourceImage::from_linear(w, h, pattern(w, h)).unwrap());
+        // 5 %: a 20× shrink, colour level 4; the mask's 4× grid, a 5× shrink, level 2.
+        let mut layer = masked(
+            Arc::clone(&src),
+            half_mask(w, h, 400),
+            Modifiers::feathered(1.5).unwrap(),
+        );
+        let place = |layer: &mut Layer, t: Vec2, s: f32, deg: f32| {
+            let t = Transform::new(t, Vec2::new(s, s), false, false)
+                .and_then(|t| t.with_rotation(deg))
+                .unwrap();
+            layer.set_transform(t);
+        };
+        place(&mut layer, Vec2::new(40.3, 30.7), 0.05, 0.0);
+        let g = grid(Mode::HiresBitmap, 1);
+        assert_eq!(colour_levels(&layer, g), (4, 4));
+        assert_eq!(mask_placement(&layer, g).place.level(), (2, 2));
+        let mut c = Compositor::new(g);
+        c.update(std::slice::from_ref(&layer), &[]);
+        let built = c.mip_builds();
+        assert!(built > 0);
+        let resampled = c.resamples();
+        // Nudges, scales within the level, and rotations (a turned layer's footprint
+        // spans more source pixels, still within the level).
+        for (t, s, deg) in [
+            (Vec2::new(40.55, 30.7), 0.05, 0.0),
+            (Vec2::new(41.0, 31.2), 0.06, 0.0),
+            (Vec2::new(41.0, 31.2), 0.045, 0.0),
+            (Vec2::new(41.0, 31.2), 0.05, 10.0),
+            (Vec2::new(41.0, 31.2), 0.05, 30.0),
+            (Vec2::new(39.0, 30.0), 0.05, 0.0),
+        ] {
+            place(&mut layer, t, s, deg);
+            c.update(std::slice::from_ref(&layer), &[]);
+        }
+        assert_eq!(c.resamples(), resampled + 6, "every drag step resampled");
+        assert_eq!(c.mip_builds(), built, "and built no mip level");
+        // Another compositor shares the source's colour levels; only the mask's (kept
+        // per layer) are new to it.
+        let mut other = Compositor::new(g);
+        other.update(std::slice::from_ref(&layer), &[]);
+        assert!(other.mip_builds() < built);
+        // A shrink past the next level builds it, once.
+        place(&mut layer, Vec2::new(40.0, 30.0), 0.02, 0.0);
+        c.update(std::slice::from_ref(&layer), &[]);
+        let more = c.mip_builds();
+        assert!(more > built);
+        for s in [0.05, 0.02, 0.05] {
+            place(&mut layer, Vec2::new(40.0, 30.0), s, 0.0);
+            c.update(std::slice::from_ref(&layer), &[]);
+        }
+        assert_eq!(c.mip_builds(), more);
+        // Exact samples the original, whatever the shrink.
+        layer.set_downscale(Downscale::Exact);
+        c.update(std::slice::from_ref(&layer), &[]);
+        assert_eq!(c.mip_builds(), more);
+    }
+
+    /// #235: a zone plate (rings up to the source's Nyquist frequency at its corners)
+    /// shrunk 6.4×: beyond its centre the correct picture is flat grey. Exact (png2c64's
+    /// four taps) fills it with aliasing rings; Auto (the 4× level, the rest by Mitchell)
+    /// leaves it nearly flat. The same holds rotated.
+    #[test]
+    fn a_zone_plate_shrunk_past_4x_is_grey_beyond_its_centre() {
+        let (w, h) = (2048u32, 1280u32);
+        let (cx, cy) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
+        let rmax = cx.hypot(cy);
+        let k = std::f64::consts::PI / (2.0 * rmax);
+        let px: Vec<[f32; 4]> = (0..w * h)
+            .map(|i| {
+                let (x, y) = (f64::from(i % w) + 0.5 - cx, f64::from(i / w) + 0.5 - cy);
+                let v = (0.5 + 0.5 * (k * (x * x + y * y)).cos()) as f32;
+                [v, v, v, 1.0]
+            })
+            .collect();
+        let src = Arc::new(SourceImage::from_linear(w, h, px).unwrap());
+        for deg in [0.0f32, 2.0] {
+            let spread = |d: Downscale| {
+                let mut l = layer_of_src(Arc::clone(&src), (320.0 / w as f32, 200.0 / h as f32));
+                l.set_adjustments(Adjustments::default());
+                l.set_transform(l.transform().with_rotation(deg).unwrap());
+                l.set_downscale(d);
+                let g = grid(Mode::HiresBitmap, 1);
+                let mut c = Compositor::new(g);
+                c.update(&[l], &[]);
+                // Target pixels more than half the way out, away from the edges.
+                let colour = c.frame().colour();
+                let vals: Vec<f64> = (0..320 * 200)
+                    .filter(|i| {
+                        let (x, y) = (f64::from(i % 320) - 159.5, f64::from(i / 320) - 99.5);
+                        let r = (x * 6.4).hypot(y * 6.4);
+                        r > 0.5 * rmax && x.abs() < 150.0 && y.abs() < 90.0
+                    })
+                    .map(|i| f64::from(colour[i as usize][1]))
+                    .collect();
+                let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+                let var = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64;
+                (mean, var.sqrt())
+            };
+            // Measured: Exact's standard deviation 0.262 around 0.498, Auto's 0.027
+            // around 0.500, at both angles.
+            let (exact, auto) = (spread(Downscale::Exact), spread(Downscale::Auto));
+            assert!(exact.1 > 0.2, "{deg}°: exact aliases: {exact:?}");
+            assert!(
+                auto.1 < 0.05 && (auto.0 - 0.5).abs() < 0.01,
+                "{deg}°: auto is flat grey: {auto:?} {exact:?}"
+            );
         }
     }
 

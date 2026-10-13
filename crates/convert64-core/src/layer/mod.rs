@@ -251,11 +251,8 @@ pub enum Downscale {
 }
 
 impl Downscale {
-    /// Whether this is the default, [`Self::Auto`] (a project file omits it).
-    #[expect(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "serde's skip_serializing_if passes a reference"
-    )]
+    /// Whether this is the default, [`Self::Auto`] (a project file omits it; serde's
+    /// `skip_serializing_if` passes a reference).
     pub fn is_auto(&self) -> bool {
         *self == Self::Auto
     }
