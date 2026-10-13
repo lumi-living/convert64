@@ -166,7 +166,7 @@ impl Server {
             "project_open" | "recipe_open" => {
                 let path = str_arg("path")?;
                 let s = Session::open(Path::new(&path)).map_err(|e| e.to_string())?;
-                let text = format!(
+                let mut text = format!(
                     "opened {path}: {} layer(s): {}",
                     s.project().layers.len(),
                     s.project()
@@ -176,6 +176,11 @@ impl Server {
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
+                // What loading changed, e.g. an older project's migration (#236).
+                for n in s.notes() {
+                    text.push_str("\nnote: ");
+                    text.push_str(n);
+                }
                 self.session = Some(s);
                 Ok(text)
             }
@@ -346,5 +351,38 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(r["result"]["isError"], true);
+    }
+
+    /// #236: opening a version-2 project says once that it now composites at 1×.
+    #[test]
+    fn project_open_reports_a_migration() {
+        let dir = std::env::temp_dir().join(format!("convert64-mcp-236-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rgba = (0..16 * 10).flat_map(|i| [i as u8, 90, 200, 255]).collect();
+        std::fs::write(
+            dir.join("a.png"),
+            convert64_project::codec::encode_rgba8(16, 10, rgba),
+        )
+        .unwrap();
+        let project = |v: u32| {
+            format!(
+                r#"{{"schema_version":{v},"target":"hires-bitmap","supersample":4,
+                    "layers":[{{"name":"a","source":{{"path":"a.png"}}}}]}}"#
+            )
+        };
+        std::fs::write(dir.join("old.convert64"), project(2)).unwrap();
+        std::fs::write(dir.join("new.convert64"), project(3)).unwrap();
+        let mut s = Server::default();
+        let open = |s: &mut Server, name: &str| {
+            let path = dir.join(name).display().to_string();
+            s.call("project_open", json!({ "path": path })).unwrap()
+        };
+        let text = open(&mut s, "old.convert64");
+        assert!(
+            text.ends_with("\nnote: Updated project from v2: now uses 1× resampling"),
+            "{text}"
+        );
+        assert!(!open(&mut s, "new.convert64").contains("note:"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

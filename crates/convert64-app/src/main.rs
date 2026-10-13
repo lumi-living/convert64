@@ -123,7 +123,14 @@ impl App {
             return;
         }
         match Document::open(name, bytes, path) {
-            Ok(doc) => self.open(doc),
+            Ok(doc) => {
+                // An older project's migration (#236), said once.
+                let message = doc.open_message();
+                self.open(doc);
+                if let Some(message) = message {
+                    self.shell.toast(ctx, message, false);
+                }
+            }
             Err(e) => self.shell.report_error(
                 format!("Can't open {name}"),
                 format!("{e}. Open a PNG or a .convert64 project."),
@@ -505,6 +512,10 @@ impl eframe::App for App {
             if ready && let (Some(dir), Some(ws)) = (request.export.take(), &self.workspace) {
                 screenshot::export(&dir, ws);
             }
+            // Hidden once the picture is in, so the toast is still up for the shot.
+            if ready && std::mem::take(&mut request.hide_ui) {
+                self.shell.set_ui_hidden(ui.ctx(), true);
+            }
             request.step(ui.ctx(), ready);
         }
     }
@@ -531,7 +542,7 @@ impl eframe::App for App {
 /// `--screenshot <file.png> [--theme light|dark] [--size <w>x<h>] [--view result]
 /// [--overlay grid|clashes|ghost]… [--compare split|flicker|side] [--dialog export]
 /// [--tab recipe|layers|export] [--command <json>]… [--zoom <n>] [--centre <x>,<y>]
-/// [--mask] [--tool <name>] [--export <dir>]`: draws a few frames,
+/// [--mask] [--tool <name>] [--export <dir>] [--hide-ui]`: draws a few frames,
 /// saves the window as a PNG and quits. The PR screenshots come from it (#203).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
@@ -605,6 +616,8 @@ mod screenshot {
         /// `--export <dir>`: once the full solve is in, write the Koala (or Art Studio)
         /// file and the self-displaying PRG there.
         pub(super) export: Option<PathBuf>,
+        /// `--hide-ui`: the UI hidden as `Cmd \` hides it, with its toast (#240).
+        pub(super) hide_ui: bool,
         frame: u32,
     }
 
@@ -637,6 +650,7 @@ mod screenshot {
             let mut mask = false;
             let mut tool = None;
             let mut export = None;
+            let mut hide_ui = false;
             while let Some(arg) = args.next() {
                 let mut value = || args.next().ok_or(format!("{arg} needs a value"));
                 match arg.as_str() {
@@ -654,6 +668,7 @@ mod screenshot {
                     "--tab" => tab = Some(value()?),
                     "--command" => commands.push(value()?),
                     "--mask" => mask = true,
+                    "--hide-ui" => hide_ui = true,
                     "--tool" => tool = Some(value()?),
                     "--export" => export = Some(PathBuf::from(value()?)),
                     "--zoom" => zoom = Some(value()?.parse().map_err(|_| "--zoom: a number")?),
@@ -698,6 +713,7 @@ mod screenshot {
                     mask,
                     tool,
                     export,
+                    hide_ui,
                     frame: 0,
                 }),
             })

@@ -103,6 +103,58 @@ fn a_project_round_trips_through_memory() {
     );
 }
 
+/// #236: a version-2 project saved with the old default `"supersample": 4` loads on the
+/// 1× grid of ADR-012, says so once, and saves as version 3, which reloads without a
+/// note and solves to the same picture. A version-3 file keeps the factor it states.
+#[test]
+fn a_version_2_project_migrates_to_1x_and_saves_as_version_3() {
+    let v2 = r#"{
+      "schema_version": 2,
+      "target": "multicolor-bitmap",
+      "supersample": 4,
+      "layers": [
+        { "name": "photo", "source": { "path": "photo.png" },
+          "transform": { "translate": { "x": 0.25, "y": 0.0 }, "scale": { "x": 5.0, "y": 5.0 } },
+          "mask": { "raster": { "fill": 0.75 } } }
+      ],
+      "solve": { "background": { "fixed": 0 } }
+    }"#;
+    let store = store();
+    store.insert("proj/old.convert64", v2);
+    let mut old = open(&store, "proj/old.convert64");
+    assert_eq!(old.grid().n(), 1, "composites at 1×");
+    assert_eq!(
+        old.notes(),
+        ["Updated project from v2: now uses 1× resampling"]
+    );
+    let composite = old.composite_rgba();
+    let picture = old.solve(true).image.clone();
+
+    old.save_to_store(Path::new("proj/new.convert64"), Embed::Keep)
+        .unwrap();
+    let text = String::from_utf8(store.get("proj/new.convert64").unwrap()).unwrap();
+    assert!(text.contains(r#""schema_version": 3,"#), "{text}");
+    assert!(text.contains(r#""supersample": 1,"#), "{text}");
+    let mut new = open(&store, "proj/new.convert64");
+    assert!(new.notes().is_empty(), "reported once");
+    assert_eq!(new.grid().n(), 1);
+    assert_eq!(new.composite_rgba(), composite);
+    assert_eq!(new.solve(true).image, picture);
+    new.save_to_store(Path::new("proj/again.convert64"), Embed::Keep)
+        .unwrap();
+    assert_eq!(store.get("proj/again.convert64").unwrap(), text.as_bytes());
+
+    // The same document as version 3 keeps its 4×, the softer composite.
+    store.insert(
+        "proj/kept.convert64",
+        v2.replace(r#""schema_version": 2"#, r#""schema_version": 3"#),
+    );
+    let mut kept = open(&store, "proj/kept.convert64");
+    assert!(kept.notes().is_empty());
+    assert_eq!(kept.grid().n(), 4);
+    assert_ne!(kept.composite_rgba(), composite);
+}
+
 #[test]
 fn missing_files_name_themselves() {
     let store = store();

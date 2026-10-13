@@ -40,58 +40,114 @@ impl Default for Settings {
     }
 }
 
-/// `apply_sharpen`.
-fn apply_sharpen(image: &mut Image, strength: f32) {
+/// The gamma step of `preprocess::apply`: every channel to the power `gamma` (skipped at
+/// 1), a negative value first raised to 0.
+pub fn apply_gamma(image: &mut Image, gamma: f32) {
+    if gamma != 1.0 {
+        for p in &mut image.px {
+            // `std::max(v, 0.0f)`: a negative value becomes 0.
+            *p = p.map(|v| powf(if v < 0.0 { 0.0 } else { v }, gamma));
+        }
+    }
+}
+
+/// `apply_sharpen`: png2c64's unsharp mask on OKLab L ([`unsharp_box`] at its own
+/// 3 × 3, every pixel weighted alike), then every pixel back to linear and clamped.
+pub(crate) fn apply_sharpen(image: &mut Image, strength: f32) {
     if strength.abs() < 0.01 {
         return;
     }
     let (w, h) = (image.w, image.h);
     let mut l: Vec<f32> = image.px.iter().map(|&p| linear_to_oklab(p)[0]).collect();
+    unsharp_box(&mut l, None, (w, h), 1, strength, 0.0);
+    for (p, &lv) in image.px.iter_mut().zip(&l) {
+        let mut lab = linear_to_oklab(*p);
+        lab[0] = lv.clamp(0.0, 1.0);
+        *p = clamped(oklab_to_linear(lab));
+    }
+}
+
+/// The body of png2c64's `apply_sharpen` on a plane of lightness `l` (`w × h`), shared
+/// with the layer adjustment (#228). Positive `strength`: a box unsharp mask,
+/// `L + (L − blur) × strength`, on the pixels whose whole box is inside the plane (the
+/// border is left alone, as png2c64). Negative: a blend by `−strength` (at most 1)
+/// toward three passes of the box blur, the box cut to the plane at its edges.
+///
+/// The box is png2c64's 3 × 3 with its taps `step` pixels apart: on a grid `step ×`
+/// finer than png2c64's, it is png2c64's kernel at png2c64's scale. Each tap counts with
+/// its `weight` (alpha, so a transparent surround pulls in nothing; `None`: 1 each,
+/// which is png2c64 bit for bit); a pixel of weight 0 is left alone. When sharpening, a
+/// pixel whose `|L − blur|` is below `threshold` is left alone (png2c64 has no
+/// threshold: 0). Returns which pixels were left alone that way, or by weight 0.
+pub fn unsharp_box(
+    l: &mut [f32],
+    weight: Option<&[f32]>,
+    (w, h): (usize, usize),
+    step: usize,
+    strength: f32,
+    threshold: f32,
+) -> Vec<bool> {
+    debug_assert_eq!(l.len(), w * h);
+    let wt = |i: usize| weight.map_or(1.0, |a| a[i]);
+    let mut skipped: Vec<bool> = (0..w * h).map(|i| wt(i) <= 0.0).collect();
+    let s = step.max(1);
+    let orig = l.to_vec();
     if strength > 0.0 {
-        let orig = l.clone();
-        for y in 1..h.saturating_sub(1) {
-            for x in 1..w.saturating_sub(1) {
-                let mut blur = 0.0f32;
+        for y in s..h.saturating_sub(s) {
+            for x in s..w.saturating_sub(s) {
+                let i = y * w + x;
+                if skipped[i] {
+                    continue;
+                }
+                let (mut blur, mut sum) = (0.0f32, 0.0f32);
                 for dy in 0..3 {
                     for dx in 0..3 {
-                        blur += orig[(y + dy - 1) * w + (x + dx - 1)];
+                        let j = (y + dy * s - s) * w + (x + dx * s - s);
+                        let a = wt(j);
+                        blur += orig[j] * a;
+                        sum += a;
                     }
                 }
-                blur /= 9.0;
-                l[y * w + x] += (orig[y * w + x] - blur) * strength;
+                // png2c64 divides by 9: with every weight 1, `sum` is exactly 9.
+                blur /= sum;
+                let d = orig[i] - blur;
+                if d.abs() < threshold {
+                    skipped[i] = true;
+                    continue;
+                }
+                l[i] += d * strength;
             }
         }
     } else {
         let amount = (-strength).clamp(0.0, 1.0);
-        let orig = l.clone();
         let mut tmp = vec![0.0f32; w * h];
+        let s = s as i64;
         for _ in 0..3 {
             for y in 0..h {
                 for x in 0..w {
                     let (mut sum, mut count) = (0.0f32, 0.0f32);
                     for dy in -1i64..=1 {
                         for dx in -1i64..=1 {
-                            let (ny, nx) = (y as i64 + dy, x as i64 + dx);
+                            let (ny, nx) = (y as i64 + dy * s, x as i64 + dx * s);
                             if ny >= 0 && (ny as usize) < h && nx >= 0 && (nx as usize) < w {
-                                sum += l[ny as usize * w + nx as usize];
-                                count += 1.0;
+                                let j = ny as usize * w + nx as usize;
+                                let a = wt(j);
+                                sum += l[j] * a;
+                                count += a;
                             }
                         }
                     }
-                    tmp[y * w + x] = sum / count;
+                    let i = y * w + x;
+                    tmp[i] = if count > 0.0 { sum / count } else { l[i] };
                 }
             }
-            std::mem::swap(&mut l, &mut tmp);
+            l.copy_from_slice(&tmp);
         }
         for (v, &o) in l.iter_mut().zip(&orig) {
             *v = o + (*v - o) * amount;
         }
     }
-    for (p, &lv) in image.px.iter_mut().zip(&l) {
-        let mut lab = linear_to_oklab(*p);
-        lab[0] = lv.clamp(0.0, 1.0);
-        *p = clamped(oklab_to_linear(lab));
-    }
+    skipped
 }
 
 /// `apply_levels`.
@@ -115,12 +171,7 @@ fn apply_levels(image: &mut Image, black_point: f32, white_point: f32) {
 /// hue in OKLab. As png2c64, every pixel goes through the OKLab round trip and the clamp
 /// even at the default settings.
 pub fn apply(image: &mut Image, s: &Settings) {
-    if s.gamma != 1.0 {
-        for p in &mut image.px {
-            // `std::max(v, 0.0f)`: a negative value becomes 0.
-            *p = p.map(|v| powf(if v < 0.0 { 0.0 } else { v }, s.gamma));
-        }
-    }
+    apply_gamma(image, s.gamma);
     apply_sharpen(image, s.sharpen);
     apply_levels(image, s.black_point, s.white_point);
     let hue = s.hue_shift * (std::f32::consts::PI / 180.0);
