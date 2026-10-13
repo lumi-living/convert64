@@ -32,9 +32,16 @@ fn pos(c: Cell) -> CellPos {
     }
 }
 
-/// The cells of the rectangle between two picture points, row by row.
+/// The cells of the rectangle between two picture points, row by row, cut to the
+/// picture. A rectangle wholly outside it (a click on the border or the pasteboard) has
+/// none: it used to clamp to the edge cell and pin or lock that (#242).
 pub(super) fn cells_between(ws: &Workspace, a: Pos2, b: Pos2) -> Vec<Cell> {
     let grid = ws.doc.grid();
+    let r = Rect::from_two_pos(a, b);
+    let screen = crate::view::SCREEN;
+    if r.max.x < 0.0 || r.max.y < 0.0 || r.min.x >= screen.x || r.min.y >= screen.y {
+        return Vec::new();
+    }
     let clamp = |p: Pos2| {
         p.clamp(
             Pos2::ZERO,
@@ -361,6 +368,102 @@ mod tests {
             cells_between(&ws, egui::pos2(-5.0, -5.0), egui::pos2(1.0, 1.0)),
             vec![(0, 0)]
         );
+    }
+
+    /// #242: a click outside the picture has no cells (it used to clamp to the edge).
+    #[test]
+    fn a_click_outside_the_picture_has_no_cells() {
+        let ws = solved();
+        for p in [
+            (-1.0, 50.0),
+            (50.0, -0.5),
+            (320.0, 10.0),
+            (330.0, 210.0),
+            (10.0, 200.0),
+        ] {
+            let p = egui::pos2(p.0, p.1);
+            assert_eq!(cells_between(&ws, p, p), vec![], "{p:?}");
+        }
+        // A rectangle wholly on the border has none either.
+        let (a, b) = (egui::pos2(-20.0, -20.0), egui::pos2(-2.0, 100.0));
+        assert_eq!(cells_between(&ws, a, b), vec![]);
+        // The edge cells are still there.
+        let corner = egui::pos2(319.5, 199.5);
+        assert_eq!(cells_between(&ws, corner, corner), vec![(39, 24)]);
+    }
+
+    /// Clicks with `tool` at `inside` and then `outside` the picture (in Result mode,
+    /// whose border is part of the working view) and returns each click's actions.
+    fn click_in_and_out(tool: Tool) -> (Vec<Action>, Vec<Action>) {
+        let mut ws = solved();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut shell = Shell {
+            tool,
+            view: crate::view::ViewMode::Result,
+            ..Shell::default()
+        };
+        let mut frame = |shell: &mut Shell, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut actions = Vec::new();
+            let mut out = ctx.run_ui(input, |ui| actions = shell.show(ui, Some(&mut ws)));
+            out.textures_delta.clear();
+            actions
+        };
+        frame(&mut shell, vec![]);
+        frame(&mut shell, vec![]);
+        let view = shell.view_rect.expect("the working view was drawn");
+        let picture = shell.camera.picture_rect(view, shell.view);
+        // 20 screen units into the 32-unit border: beyond the Region brush (6) too.
+        let outside = picture.left_top() - egui::Vec2::splat(20.0 * shell.camera.scale(shell.view));
+        assert!(view.contains(outside));
+        let mut click = |shell: &mut Shell, pos: Pos2| {
+            let button = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            frame(shell, vec![egui::Event::PointerMoved(pos), button(true)]);
+            let actions = frame(shell, vec![button(false)]);
+            frame(shell, vec![egui::Event::PointerGone]);
+            actions
+        };
+        let inside = click(&mut shell, picture.left_top() + egui::vec2(4.0, 4.0));
+        let outside = click(&mut shell, outside);
+        (inside, outside)
+    }
+
+    /// #242: Pin, Lock and Region act on a click inside the picture and do nothing on
+    /// a click on the border around it.
+    #[test]
+    fn a_click_on_the_border_pins_locks_and_paints_nothing() {
+        for tool in [Tool::Pin, Tool::Lock, Tool::Region] {
+            let (inside, outside) = click_in_and_out(tool);
+            assert!(
+                matches!(inside.as_slice(), [Action::RunAll(..)]),
+                "{tool:?} inside: {inside:?}"
+            );
+            assert!(outside.is_empty(), "{tool:?} outside: {outside:?}");
+        }
+    }
+
+    /// #242: the default tool is Nudge (Move), and a new document goes back to it.
+    #[test]
+    fn the_default_tool_is_nudge() {
+        assert_eq!(Shell::default().tool, Tool::Nudge);
+        assert_eq!(Tool::Nudge.key(), egui::Key::V);
+        let mut shell = Shell {
+            tool: Tool::Pin,
+            ..Shell::default()
+        };
+        shell.toggle_mask_mode();
+        shell.reset_tool();
+        assert_eq!(shell.tool, Tool::Nudge);
+        assert!(!shell.mask.active && shell.mask.tool.is_none());
     }
 
     #[test]
