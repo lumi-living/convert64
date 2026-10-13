@@ -140,7 +140,7 @@ As built in E4 (2026-10-11): the compositor and attribute map ([ADR-002](adr/ADR
 - **`command`.** `Project { layers, regions }`, `Command`, `Editor`, `REGISTRY` and `Dirty`.
 
 **Behaviour**
-- **Supersampling.** The default factor is 1× (1–8) since ADR-012; it was 4×.
+- **Supersampling.** The default factor is 1× (1–8) since ADR-012; it was 4×. Project files saved before it (`schema_version` 2, which wrote 4) are migrated to 1× on load and saved as version 3; the CLI's `notes` and the app's status bar say so once (#236, [project-file.md](reference/project-file.md#versions)).
 - **Resampling** is separable per axis because transforms are axis-aligned. Since ADR-012 it is png2c64's Mitchell bicubic (B = C = ⅓, four taps, edge taps clamped and the weights renormalised, no widening when downscaling), bit for bit png2c64's scaler when the layer fits the grid. A layer's edge is its exact box coverage, so a sub-pixel nudge moves target pixels continuously. (Before #227: bilinear up, Lanczos-3 down, at 4×.)
 - **Feather cache.** Each layer keeps two caches:
   - its resampled raster, keyed by the source `Arc`, adjustments, transform, mask generation and grid;
@@ -461,7 +461,7 @@ As built in #164 (2026-10-12): `convert64 convert` over projects, every M1 outpu
 - **One path.** A PNG becomes a one-layer project (`ProjectFile::from_png`, scaled to fill the canvas); a `.convert64` project or version-1 recipe is read as it is. Command-line options are applied to the project file's data before it is loaded (`Overrides::apply`): recipe options as a JSON patch on every layer's recipe, so the core's validating constructors check them; regions keep their own recipes. Then `Session` composites and solves, as `recipe apply` and the MCP server do; `convert` no longer has its own pipeline.
 - **Outputs.** Repeatable `-o`, format from the extension or `--format`: `kla`, `art`, `prg` (`convert64_formats::prg::display_prg`) `raw` (`convert64_formats::raw::write`, named by a `.json` manifest path) and `png` (`convert64_formats::png::preview`, `--zoom`). One solve feeds every output. For a PNG input a `.kla` or `.art` output picks the mode.
 - **Exit codes.** 0 ok, 1 not legal or more clashes than `--max-clashes` (files still written), 2 input or option error (clap usage errors included), 3 write error.
-- **`--json`** is global. Every command prints one object: `command`, `ok`, `exit_code`, `error`, `timing_ms` (`total` and phases), `files_written`, then its own fields (`report.rs`). `convert`'s solve fields are `background`, `clashes`, `legal`, `violations`, `solve_error`, `summary`, `worst`; the total solve error moved from `error` to `solve_error`, since `error` is now the message.
+- **`--json`** is global. Every command prints one object: `command`, `ok`, `exit_code`, `error`, `timing_ms` (`total` and phases), `files_written`, `notes` (since #236: what loading changed, such as an older project's migration), then its own fields (`report.rs`). `convert`'s solve fields are `background`, `clashes`, `legal`, `violations`, `solve_error`, `summary`, `worst`; the total solve error moved from `error` to `solve_error`, since `error` is now the message.
 - **`--save-project`** writes the project `convert` solved, overrides applied, so `convert64 convert title.png --dither bayer4 --save-project art/title.convert64` starts a project from the command line.
 
 As built in #166 (2026-10-12): GUI/CLI parity, enforced by a test.
