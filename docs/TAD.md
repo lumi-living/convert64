@@ -615,7 +615,8 @@ As built in #78 (2026-10-13): the mask tools (UX §7a, ADR-008).
 - **Options bar** under the toolbar: the tool's options, then Snap to cells, Feather (0–32 px, one gesture per drag), Invert, Clear, Fill, Load PNG… (`mask_load`: linked natively, through the session's store in the browser), From alpha, Alone.
 - **Selection.** With mask mode off the same tools (except the brush) build a `Selection` (lasso polygons, gradients, keys); Layer via mask (`Cmd J`, the strip's button) and via cut (`Shift Cmd J`) run `layer_via_mask`; Deselect drops it.
 - **Panels.** The Layers rows show the mask thumbnail (raster with invert) beside the chain icon; the strip's Add mask runs `mask_from_alpha` when the picture has transparency, else `mask_clear` to 1. The Recipe tab's Mask group has Edit mask, feather, invert, snap and levels (Reset is one undo step), and lists the sources.
-- **Not yet.** Removing a source or changing its combine mode needs `mask_source_remove` / `mask_source_set_combine` (#216). "Re-solved N cells" and the feathered-edge clash hint wait for the scheduler to report re-solved cells.
+- **Sources list.** Each gradient or key has its combine mode (`mask_source_set_combine`) and a delete (`mask_source_remove`), both from #216.
+- **Not yet.** The Region tool (UX §7, #208) follows in its own PR on #216's region commands. "Re-solved N cells" and the feathered-edge clash hint wait for the scheduler to report re-solved cells.
 
 ### 4.1 Image model (`convert64-core::model`)
 

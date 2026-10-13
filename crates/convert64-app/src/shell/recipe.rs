@@ -706,13 +706,43 @@ fn mask_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, ui
             },
         );
         if !mask.sources().is_empty() {
+            use convert64_core::mask::Combine;
             ui.label(RichText::new("Sources").small().weak());
             for (k, e) in mask.sources().iter().enumerate() {
                 let what = match e.source {
                     MaskSource::Gradient(_) => "Gradient",
                     MaskSource::Key(_) => "Key",
                 };
-                ui.label(RichText::new(format!("{}. {what} · {:?}", k + 1, e.combine)).small());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{}. {what}", k + 1)).small());
+                    egui::ComboBox::from_id_salt(("mask_source_combine", k))
+                        .selected_text(RichText::new(format!("{:?}", e.combine)).small())
+                        .width(0.0)
+                        .show_ui(ui, |ui| {
+                            for c in [Combine::Max, Combine::Min, Combine::Multiply] {
+                                if ui
+                                    .selectable_label(e.combine == c, format!("{c:?}"))
+                                    .clicked()
+                                    && e.combine != c
+                                {
+                                    let layer = LayerRef::Index(f.layer);
+                                    f.emit(
+                                        None,
+                                        JsonCommand::MaskSourceSetCombine {
+                                            layer,
+                                            index: k,
+                                            combine: c,
+                                        },
+                                    );
+                                }
+                            }
+                        });
+                    let delete = egui::Button::new(super::icon(crate::icons::DELETE)).frame(false);
+                    if ui.add(delete).on_hover_text("Remove this source").clicked() {
+                        let layer = LayerRef::Index(f.layer);
+                        f.emit(None, JsonCommand::MaskSourceRemove { layer, index: k });
+                    }
+                });
             }
         }
         reset_button(ui, m != d)
