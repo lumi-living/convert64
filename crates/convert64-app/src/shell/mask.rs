@@ -694,6 +694,15 @@ pub(super) fn region_interact(
     let Some(points) = finished.or(clicked) else {
         return;
     };
+    // A stroke whose brush never reaches the picture paints nothing: no empty region
+    // and no "Painted" toast for a click on the border (#242).
+    let picture = Rect::from_min_size(Pos2::ZERO, crate::view::SCREEN);
+    if points
+        .iter()
+        .all(|p| picture.distance_to_pos(*p) > shell.mask.size)
+    {
+        return;
+    }
     let alt = ui.input(|i| i.modifiers.alt);
     let mode = if alt && shell.mask.mode == PaintMode::Add {
         PaintMode::Subtract
