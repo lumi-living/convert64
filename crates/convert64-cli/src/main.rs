@@ -411,6 +411,7 @@ struct RecipeOutputs<'a> {
 fn run_recipe(run: &mut Run, file: &Path, o: &RecipeOutputs<'_>) -> Result<u8, Fail> {
     run.set("file", file.display().to_string());
     let mut session = run.time("load", || Session::open(file).map_err(Fail::input))?;
+    run.notes_of(&session);
     let layers = session.project().layers.len();
     let applied = session.editor_mut().undo_len();
     run.set("layers", layers);
