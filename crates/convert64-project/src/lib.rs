@@ -26,7 +26,9 @@ pub mod store;
 
 pub use command::{JsonCommand, LayerRef, RegionRef};
 pub use error::ProjectError;
-pub use file::{EXTENSION, Embed, PaletteSpec, ProjectFile, SCHEMA_VERSION, SolveSpec};
+pub use file::{
+    EXTENSION, Embed, OLDEST_SCHEMA_VERSION, PaletteSpec, ProjectFile, SCHEMA_VERSION, SolveSpec,
+};
 pub use recipe::RecipeFile;
 pub use session::Session;
 #[cfg(feature = "fs")]

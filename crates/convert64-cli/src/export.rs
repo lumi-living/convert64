@@ -122,6 +122,7 @@ pub(crate) fn run(run: &mut Run, job: &ExportJob<'_>) -> Result<u8, Fail> {
             Err(f) => {
                 eprintln!("error: {}: {}", project.display(), f.message);
                 let v = r.to_value(f.code, Some(&f.message));
+                run.echo_notes(&project.display().to_string(), &v);
                 worst = worst.max(f.code);
                 reports.push(v);
                 continue;
@@ -129,6 +130,7 @@ pub(crate) fn run(run: &mut Run, job: &ExportJob<'_>) -> Result<u8, Fail> {
         };
         worst = worst.max(code);
         let v = r.to_value(code, None);
+        run.echo_notes(&project.display().to_string(), &v);
         for f in v["files_written"].as_array().into_iter().flatten() {
             if let Some(f) = f.as_str() {
                 run.wrote(Path::new(f));

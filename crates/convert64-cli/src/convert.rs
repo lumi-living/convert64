@@ -544,6 +544,7 @@ pub(crate) fn load(
     let session = run.time("load", || {
         Session::from_project(file, &base).map_err(Fail::input)
     })?;
+    run.notes_of(&session);
     Ok((session, png))
 }
 

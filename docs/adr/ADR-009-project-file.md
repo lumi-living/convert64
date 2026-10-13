@@ -1,6 +1,6 @@
 # ADR-009: The `.convert64` project file — versioned JSON in the CLI library
 
-**Status:** Accepted (amended 2026-10-13, #192: the format moved to `convert64-project`; see "Amended" below)
+**Status:** Accepted (amended 2026-10-13, #192: the format moved to `convert64-project`; #236: `schema_version` 3 migrates older projects to 1×; see "Amended" below)
 **Date:** 2026-10-12
 **Deciders:** Jaakko Haaparanta
 
@@ -13,7 +13,7 @@ Three questions needed an answer: what the file holds, how sources are stored, a
 ## Decision
 
 - **The file is the document, not a replay log.** A `.convert64` file holds the state: `schema_version`, target mode, supersample factor, palette, layers (source, transform, opacity, blend, visibility, recipe, adjustments, mask raster + sources + modifiers), regions, steering (pins, locks, allow, deny) and solve options. An optional `commands` list, run after loading, keeps recipe files' convenience; saving writes the result and no commands. Schema: [reference/project-file.md](../reference/project-file.md).
-- **Versioned JSON with serde.** `schema_version: 2`; version 1 is the recipe file, which every build keeps reading by mapping it onto a project. Unknown fields are errors. Values go through the core's validating constructors (`try_from` on the serde types), so a file cannot describe an invalid layer.
+- **Versioned JSON with serde.** `schema_version: 2` (3 since #236, below); version 1 is the recipe file, which every build keeps reading by mapping it onto a project. Unknown fields are errors. Values go through the core's validating constructors (`try_from` on the serde types), so a file cannot describe an invalid layer.
 - **Sources are linked or embedded, per layer.** Linked: a path relative to the project file, `/`-separated. Embedded: the original PNG's bytes in base64, so a project can stand alone (mailing it, attaching it to an issue). A layer may instead share an earlier layer's pixels (`{"layer": 0}`), which is what `layer_via_mask` creates. Saving keeps each layer's choice unless the caller asks to embed or link all.
 - **Masks are 16-bit on disk**, as ADR-008 already says: a uniform raster is written as one exact value, anything else as an embedded 16-bit greyscale PNG.
 - **The format lives in `convert64-cli`'s library** (`convert64_cli::project`), next to the recipe file and `Session`, not in `convert64-core`. Reading it needs PNG decoding and file paths; the core stays I/O-free and dependency-free beyond `serde` (CLAUDE.md non-negotiable 2). The core's `Project` stays the in-memory document commands act on; the target mode, palette and solve options live beside it in the session, as the compositor's grid and the solver already did.
@@ -67,6 +67,8 @@ The "Revisit when" above came due: the app (E8) needs to load projects in its wa
 File bytes, CLI behaviour and the schema are unchanged; `schema_version` stays 2.
 
 **#193 (2026-10-13):** "the target mode, palette and solve options live beside it in the session" no longer holds. The core's `Project` now also holds `target`, `palette` and `solve` (`convert64_core::document::SolveSettings`, the file's `solve` object), so the registry's `mode_set`, `palette_set`, `background_pin` and `solve_set` commands can change them and undo them. The file already held all three, so its format is unchanged (no `schema_version` bump). A palette is saved as it was given (preset name, colours or `.vpl` path); one the session was never given by name is saved as its preset name if it equals one, else as 16 colours. The supersample factor stays the session's.
+
+**#236 (2026-10-13): `schema_version` 3, the first migration.** ADR-012 (#227) made 1× the default factor, but every version-2 file stores the factor it was saved with, and until #227 that was 4: an old project would keep the softer 4× composite with no way in the app to change it. The field's meaning changed, so, as "Consequences" foresaw, the version goes up with a migration: `ProjectFile::migrate` (called by `ProjectFile::parse` and `Session::load`) sets a version-2 file's `supersample` to 1, whatever it was, and its `schema_version` to 3. Every value migrates, not only 4: nothing is released yet, and one look for every project is simpler than a setting. The field stays and is still written (`"supersample": 1`), rather than dropped as implicit, so a file says which grid it composites on and a version-3 file that states another factor keeps it. Version-1 recipe files are not migrated: they are written by hand and state `supersample` only when they mean it. Loading reports the migration once (`ProjectFile::migration_note`, `Session::notes`): "Updated project from v2: now uses 1× resampling", in the CLI's `notes` (and a `note:` line on stderr), the app's status bar and the MCP server's `project_open` reply. Saving writes version 3, which loads without a note. Versions older than 2 or newer than 3 are refused.
 
 ## Action items
 - [x] #163: `convert64_cli::project`, `Session::save`, `recipe apply --save/--embed/--link`, round-trip and migration tests, `docs/reference/project-file.md`

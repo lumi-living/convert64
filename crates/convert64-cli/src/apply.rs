@@ -52,6 +52,7 @@ pub(crate) fn run(run: &mut Run, job: &ApplyJob<'_>) -> Result<u8, Fail> {
         }
     }
     let mut session = run.time("load", || Session::open(job.file).map_err(Fail::input))?;
+    run.notes_of(&session);
     let mut names = Vec::with_capacity(queue.len());
     run.time("apply", || {
         for (i, (cmd, base)) in queue.into_iter().enumerate() {
