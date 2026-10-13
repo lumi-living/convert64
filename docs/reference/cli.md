@@ -25,6 +25,7 @@ Every command exits with one of these:
 | `error` | The error message, or `null` |
 | `timing_ms` | `total`, plus each phase the command ran: `load`, `apply`, `solve`, `write`, `validate`, `convert` (batch) |
 | `files_written` | Every file written, in order, as given on the command line |
+| `notes` | What loading the input changed, said once; `[]` when nothing did. Today the one note is an older project's migration ([project-file.md](project-file.md#versions)): `"Updated project from v2: now uses 1× resampling"`. Without `--json` each note is a `note: …` line on stderr. In `batch` and `export` each file's report has its own `notes` |
 
 followed by the command's own fields.
 

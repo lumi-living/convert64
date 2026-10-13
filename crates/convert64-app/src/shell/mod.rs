@@ -190,9 +190,9 @@ pub struct Shell {
     pub tool: Tool,
     /// The dock tab under the result.
     pub tab: DockTab,
-    /// `Tab`: menu, toolbar, dock and status bar hidden.
+    /// `Cmd \`: menu, toolbar, dock and status bar hidden; `Esc` shows them again.
     pub chrome_hidden: bool,
-    /// `Shift Tab`: the dock (and with it the result) hidden.
+    /// `Shift Cmd \`: the dock (and with it the result) hidden.
     pub dock_hidden: bool,
     /// Where the working view looks and how close.
     pub camera: Camera,
@@ -359,6 +359,26 @@ impl Shell {
             }
         };
         matches!(here, KeyFocus::Canvas | KeyFocus::Layers)
+    }
+
+    /// Hides or shows the menu bar, toolbar, dock and status bar (`Cmd \`, View › Hide
+    /// UI). Hiding says how to get them back, since nothing on screen does (#240).
+    pub fn set_ui_hidden(&mut self, ctx: &egui::Context, hidden: bool) {
+        self.chrome_hidden = hidden;
+        if hidden {
+            let keys = ctx.format_shortcut(&shortcuts::HIDE_UI);
+            self.toast(
+                ctx,
+                format!("UI hidden — press {keys} or Esc to show it"),
+                false,
+            );
+        } else if self
+            .toast
+            .as_ref()
+            .is_some_and(|t| t.0.starts_with("UI hidden"))
+        {
+            self.toast = None;
+        }
     }
 
     /// Opens the export dialog for `ws`.
@@ -623,6 +643,7 @@ impl Shell {
         // Single keys only when no text field wants them.
         let typing = ctx.egui_wants_keyboard_input();
         let delete_applies = self.delete_keys_apply(ctx);
+        let mut hide_ui = None;
         ctx.input_mut(|i| {
             // A press moves the keys away from the canvas and the Layers panel, unless
             // it lands on one of them (they say so as they draw); `Esc` brings them back.
@@ -631,6 +652,20 @@ impl Shell {
             }
             if i.key_pressed(egui::Key::Escape) {
                 self.key_focus = KeyFocus::Canvas;
+            }
+            // Show/Hide UI and Show/Hide Dock (`Cmd \`, `Shift Cmd \`), even while typing.
+            // Shift first: a Cmd pattern also matches with Shift held. Shift `\` usually
+            // arrives as `|`.
+            if i.consume_shortcut(&s::HIDE_DOCK)
+                || i.consume_key(s::HIDE_DOCK.modifiers, egui::Key::Pipe)
+            {
+                self.dock_hidden = !self.dock_hidden;
+            } else if i.consume_shortcut(&s::HIDE_UI) {
+                hide_ui = Some(!self.chrome_hidden);
+            }
+            // `Esc` always brings the UI back (#240); it does nothing else then.
+            if self.chrome_hidden && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+                hide_ui = Some(false);
             }
             if i.consume_shortcut(&s::ZOOM_IN) {
                 self.zoom_step(true);
@@ -722,7 +757,7 @@ impl Shell {
             if i.consume_shortcut(&s::SNAP_CYCLE) {
                 self.snap_cycle = true;
             }
-            // Shift Cmd S before Cmd S, as with Tab.
+            // Shift Cmd S before Cmd S: a Cmd pattern also matches with Shift held.
             if i.consume_shortcut(&s::SAVE_AS) {
                 actions.push(Action::SaveAs);
             } else if i.consume_shortcut(&s::SAVE) {
@@ -735,18 +770,13 @@ impl Shell {
             } else if i.consume_shortcut(&s::EXPORT) {
                 self.export_requested = true;
             }
-            self.flip_held = !typing && i.key_down(egui::Key::Backslash);
+            // `Cmd \` is Show/Hide UI, not a flip.
+            self.flip_held = !typing && !i.modifiers.command && i.key_down(egui::Key::Backslash);
             if typing {
                 return;
             }
             if i.consume_shortcut(&s::CLASHES) {
                 self.overlays.clashes = !self.overlays.clashes;
-            }
-            // Shift Tab before Tab: a plain-Tab pattern also matches with Shift held.
-            if i.consume_shortcut(&s::HIDE_DOCK) {
-                self.dock_hidden = !self.dock_hidden;
-            } else if i.consume_shortcut(&s::HIDE_CHROME) {
-                self.chrome_hidden = !self.chrome_hidden;
             }
             if i.consume_key(egui::Modifiers::NONE, egui::Key::H) {
                 self.hand = !self.hand;
@@ -827,6 +857,9 @@ impl Shell {
                 }));
             }
         });
+        if let Some(hidden) = hide_ui {
+            self.set_ui_hidden(ctx, hidden);
+        }
     }
 }
 
@@ -866,18 +899,93 @@ mod tests {
         }
     }
 
+    /// #240: `Cmd \` hides the UI with a toast that says how to get it back; `Esc` and
+    /// `Cmd \` show it again; `Shift Cmd \` hides only the dock.
     #[test]
-    fn tab_hides_the_chrome_and_shift_tab_only_the_dock() {
-        let (shell, _) = frame(
-            Shell::default(),
-            vec![key(egui::Key::Tab, egui::Modifiers::NONE)],
-        );
+    fn cmd_backslash_hides_the_ui_and_esc_shows_it() {
+        let cmd = egui::Modifiers::COMMAND;
+        let (shell, _) = frame(Shell::default(), vec![key(egui::Key::Backslash, cmd)]);
         assert!(shell.chrome_hidden && !shell.dock_hidden);
-        let (shell, _) = frame(
-            Shell::default(),
-            vec![key(egui::Key::Tab, egui::Modifiers::SHIFT)],
-        );
-        assert!(!shell.chrome_hidden && shell.dock_hidden);
+        let (message, error, _) = shell.toast.clone().expect("a toast on hide");
+        // "⌘\" on macOS, "Ctrl+Backslash" elsewhere, as the menus show it.
+        let keys = message
+            .strip_prefix("UI hidden — press ")
+            .and_then(|m| m.strip_suffix(" or Esc to show it"))
+            .unwrap_or_else(|| panic!("{message}"));
+        assert!(keys == "⌘\\" || keys == "Ctrl+Backslash", "{keys}");
+        assert!(!error);
+
+        let (shell, _) = frame(shell, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
+        assert!(!shell.chrome_hidden);
+        assert!(shell.toast.is_none(), "the hint goes with the hidden UI");
+
+        let (shell, _) = frame(Shell::default(), vec![key(egui::Key::Backslash, cmd)]);
+        let (shell, _) = frame(shell, vec![key(egui::Key::Backslash, cmd)]);
+        assert!(!shell.chrome_hidden, "Cmd \\ toggles");
+
+        let shift_cmd = cmd.plus(egui::Modifiers::SHIFT);
+        for k in [egui::Key::Backslash, egui::Key::Pipe] {
+            let (shell, _) = frame(Shell::default(), vec![key(k, shift_cmd)]);
+            assert!(!shell.chrome_hidden && shell.dock_hidden, "{k:?}");
+        }
+    }
+
+    /// Holding `Cmd \` hides the UI; it does not flip the working view as a bare `\` does.
+    #[test]
+    fn cmd_backslash_is_not_hold_to_compare() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut shell = Shell::default();
+        for (modifiers, flipped) in [
+            (egui::Modifiers::NONE, true),
+            (egui::Modifiers::COMMAND, false),
+        ] {
+            let input = egui::RawInput {
+                events: vec![
+                    egui::Event::ModifiersChanged(modifiers),
+                    key(egui::Key::Backslash, modifiers),
+                ],
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                shell.show(ui, None);
+            });
+            output.textures_delta.clear();
+            assert_eq!(shell.flip_held, flipped, "{modifiers:?}");
+            // Release the key before the next case.
+            let input = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Backslash,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                shell.show(ui, None);
+            });
+            output.textures_delta.clear();
+        }
+    }
+
+    /// #240: `Tab` and `Shift Tab` are egui's focus traversal and hide nothing.
+    #[test]
+    fn tab_hides_nothing() {
+        for m in [egui::Modifiers::NONE, egui::Modifiers::SHIFT] {
+            let (shell, _) = frame(Shell::default(), vec![key(egui::Key::Tab, m)]);
+            assert!(!shell.chrome_hidden && !shell.dock_hidden, "{m:?}");
+        }
+    }
+
+    /// `Esc` with the UI showing still leaves mask mode (it is not swallowed).
+    #[test]
+    fn esc_with_the_ui_showing_leaves_mask_mode() {
+        let mut shell = Shell::default();
+        shell.toggle_mask_mode();
+        let (shell, _) = frame(shell, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
+        assert!(!shell.mask.active && !shell.chrome_hidden);
     }
 
     /// A document with two layers, "ramp" and "top", and a context to draw it on.

@@ -123,7 +123,14 @@ impl App {
             return;
         }
         match Document::open(name, bytes, path) {
-            Ok(doc) => self.open(doc),
+            Ok(doc) => {
+                // An older project's migration (#236), said once.
+                let message = doc.open_message();
+                self.open(doc);
+                if let Some(message) = message {
+                    self.shell.toast(ctx, message, false);
+                }
+            }
             Err(e) => self.shell.report_error(
                 format!("Can't open {name}"),
                 format!("{e}. Open a PNG or a .convert64 project."),
@@ -508,6 +515,10 @@ impl eframe::App for App {
                 screenshot::export(&dir, ws);
             }
             delete = ready && std::mem::take(&mut request.delete_layer);
+            // Hidden once the picture is in, so the toast is still up for the shot.
+            if ready && std::mem::take(&mut request.hide_ui) {
+                self.shell.set_ui_hidden(ui.ctx(), true);
+            }
             request.step(ui.ctx(), ready);
         }
         // `--delete-layer`: as the Delete key does, toast and all, once the picture is in.
@@ -546,8 +557,8 @@ impl eframe::App for App {
 /// `--screenshot <file.png> [--theme light|dark] [--size <w>x<h>] [--view result]
 /// [--overlay grid|clashes|ghost]… [--compare split|flicker|side] [--dialog export]
 /// [--tab recipe|layers|export] [--command <json>]… [--zoom <n>] [--centre <x>,<y>]
-/// [--mask] [--tool <name>] [--export <dir>] [--delete-layer]`: draws a few frames,
-/// saves the window as a PNG and quits. The PR screenshots come from it (#203).
+/// [--mask] [--tool <name>] [--export <dir>] [--hide-ui] [--delete-layer]`: draws a few
+/// frames, saves the window as a PNG and quits. The PR screenshots come from it (#203).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
     use std::path::PathBuf;
@@ -622,6 +633,8 @@ mod screenshot {
         pub(super) export: Option<PathBuf>,
         /// `--delete-layer`: delete the selected layer as the Delete key does (#245).
         pub(super) delete_layer: bool,
+        /// `--hide-ui`: the UI hidden as `Cmd \` hides it, with its toast (#240).
+        pub(super) hide_ui: bool,
         frame: u32,
     }
 
@@ -655,6 +668,7 @@ mod screenshot {
             let mut tool = None;
             let mut export = None;
             let mut delete_layer = false;
+            let mut hide_ui = false;
             while let Some(arg) = args.next() {
                 let mut value = || args.next().ok_or(format!("{arg} needs a value"));
                 match arg.as_str() {
@@ -673,6 +687,7 @@ mod screenshot {
                     "--command" => commands.push(value()?),
                     "--mask" => mask = true,
                     "--delete-layer" => delete_layer = true,
+                    "--hide-ui" => hide_ui = true,
                     "--tool" => tool = Some(value()?),
                     "--export" => export = Some(PathBuf::from(value()?)),
                     "--zoom" => zoom = Some(value()?.parse().map_err(|_| "--zoom: a number")?),
@@ -718,6 +733,7 @@ mod screenshot {
                     tool,
                     export,
                     delete_layer,
+                    hide_ui,
                     frame: 0,
                 }),
             })
