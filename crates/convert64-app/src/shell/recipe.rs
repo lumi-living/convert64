@@ -990,13 +990,17 @@ fn rebuilt(
 }
 
 /// The Transform group (UX §6 item 1, ADR-011): X, Y, W %, H % (chained by default),
-/// rotation, the anchor, Snap, presets and flips, in C64 (canvas) pixels, sub-pixel.
+/// rotation, the anchor, Snap, flips, Downscale (#235: Auto or png2c64 exact) and
+/// presets, in C64 (canvas) pixels, sub-pixel.
 fn transform_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, ui: &mut Ui) {
     use convert64_core::Vec2;
     let t = layer.transform();
     let size = layer.source().size();
     let (w, h) = (size.0 as f32, size.1 as f32);
-    let changed = t.rotate() != 0.0 || t.flip_h() || t.flip_v();
+    let changed = t.rotate() != 0.0
+        || t.flip_h()
+        || t.flip_v()
+        || layer.downscale() != convert64_core::Downscale::Auto;
     let set = |f: &mut Form, g: Option<&str>, transform: convert64_core::Transform| {
         let layer = LayerRef::Index(f.layer);
         f.emit(
@@ -1194,6 +1198,40 @@ fn transform_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Laye
                     && let Some(n) = rebuilt(&t, p, sc, fl)
                 {
                     set(f, None, n);
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            use convert64_core::Downscale;
+            let now = layer.downscale();
+            label(ui, "Downscale", now != Downscale::Auto);
+            for (d, name, tip) in [
+                (
+                    Downscale::Auto,
+                    "Auto",
+                    "Past a 4× shrink, sample a cached, box-reduced copy of the source, \
+                     so large pictures do not alias (#235). Up to 4× it is png2c64's.",
+                ),
+                (
+                    Downscale::Exact,
+                    "png2c64 exact",
+                    "Always sample the original with png2c64's four taps, as png2c64 \
+                     does: large shrinks alias.",
+                ),
+            ] {
+                if ui
+                    .selectable_label(now == d, name)
+                    .on_hover_text(tip)
+                    .clicked()
+                    && now != d
+                {
+                    f.emit(
+                        None,
+                        JsonCommand::LayerSetDownscale {
+                            layer: LayerRef::Index(f.layer),
+                            downscale: d,
+                        },
+                    );
                 }
             }
         });

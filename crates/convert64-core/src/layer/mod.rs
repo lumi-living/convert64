@@ -17,6 +17,7 @@ pub use recipe::{
 };
 pub use snap::{Snap, snap_transform};
 
+use crate::composite::mip::{MipCache, MipLevel};
 use crate::geom::Vec2;
 use crate::mask::{Mask, MaskError};
 use serde::{Deserialize, Serialize};
@@ -100,6 +101,9 @@ pub struct SourceImage {
     /// The 8-bit sRGB colour it was decoded from, when it came from 8-bit bytes and is
     /// fully opaque: png2c64's front end (#190) starts from these bytes.
     srgb8: Option<Arc<[[u8; 3]]>>,
+    /// The premultiplied pixels' mip levels built so far (#235): derived, never saved,
+    /// shared by every layer and compositor holding this source.
+    mips: MipCache<[f32; 4]>,
 }
 
 impl SourceImage {
@@ -143,6 +147,7 @@ impl SourceImage {
             height,
             pixels,
             srgb8,
+            mips: MipCache::default(),
         })
     }
 
@@ -178,6 +183,7 @@ impl SourceImage {
             height,
             pixels,
             srgb8: None,
+            mips: MipCache::default(),
         })
     }
 
@@ -213,6 +219,62 @@ impl SourceImage {
     /// Whether any pixel is less than fully opaque.
     pub fn has_alpha(&self) -> bool {
         self.pixels.iter().any(|p| p[3] < 1.0)
+    }
+
+    /// Mip level `(lx, ly)` (not `(0, 0)`) of the premultiplied pixels, built on first
+    /// use and kept with the source (#235), and how many reductions building it took (0
+    /// when it was there).
+    pub(crate) fn colour_level(&self, level: (u32, u32)) -> (Arc<MipLevel<[f32; 4]>>, u32) {
+        let px = &self.pixels;
+        self.mips.level(
+            self.size(),
+            |i| {
+                let p = px[i];
+                [p[0] * p[3], p[1] * p[3], p[2] * p[3], p[3]]
+            },
+            level,
+        )
+    }
+}
+
+/// How a layer is sampled when it is shrunk a long way (#235, ADR-012 amendment).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Downscale {
+    /// png2c64's Mitchell bicubic on the original up to a 4× shrink; beyond it, the same
+    /// kernel on a box-reduced level of the source, cached with it, so a large source
+    /// does not alias.
+    #[default]
+    Auto,
+    /// png2c64's Mitchell bicubic on the original at any shrink, as png2c64 scales.
+    Exact,
+}
+
+impl Downscale {
+    /// Whether this is the default, [`Self::Auto`] (a project file omits it; serde's
+    /// `skip_serializing_if` passes a reference).
+    pub fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
+
+    /// The name the project file and the command line use.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Exact => "exact",
+        }
+    }
+}
+
+impl std::str::FromStr for Downscale {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "auto" => Ok(Self::Auto),
+            "exact" => Ok(Self::Exact),
+            _ => Err(format!("downscale must be auto or exact, got {s:?}")),
+        }
     }
 }
 
@@ -665,6 +727,7 @@ pub struct Layer {
     mask: Option<Mask>,
     adjustments: Adjustments,
     recipe: Recipe,
+    downscale: Downscale,
 }
 
 impl Layer {
@@ -681,6 +744,7 @@ impl Layer {
             mask: None,
             adjustments: Adjustments::default(),
             recipe: Recipe::default(),
+            downscale: Downscale::Auto,
         }
     }
 
@@ -789,6 +853,16 @@ impl Layer {
     /// Replaces the dither recipe.
     pub fn set_recipe(&mut self, recipe: Recipe) {
         self.recipe = recipe;
+    }
+
+    /// How the layer is sampled when shrunk a long way (#235).
+    pub const fn downscale(&self) -> Downscale {
+        self.downscale
+    }
+
+    /// Sets how the layer is sampled when shrunk a long way.
+    pub fn set_downscale(&mut self, downscale: Downscale) {
+        self.downscale = downscale;
     }
 }
 

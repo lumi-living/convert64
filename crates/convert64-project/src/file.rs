@@ -35,7 +35,7 @@ use crate::error::{ProjectError, invalid};
 use crate::recipe::RecipeFile;
 use crate::store::Store;
 use convert64_core::colour::ColourSet;
-use convert64_core::layer::{Adjustments, Blend, Recipe, Snap, Transform};
+use convert64_core::layer::{Adjustments, Blend, Downscale, Recipe, Snap, Transform};
 use convert64_core::mask::{MaskRaster, Modifiers, SourceEntry};
 use convert64_core::mode::Mode;
 use convert64_core::model::CellPos;
@@ -261,6 +261,10 @@ pub struct LayerEntry {
     /// Blend mode.
     #[serde(default)]
     pub blend: Blend,
+    /// How the layer is sampled when shrunk a long way (#235); written only when not
+    /// `auto`, so files without it load and save unchanged.
+    #[serde(default, skip_serializing_if = "Downscale::is_auto")]
+    pub downscale: Downscale,
     /// Dither recipe.
     #[serde(default)]
     pub recipe: Recipe,
@@ -493,6 +497,7 @@ impl ProjectFile {
                 transform,
                 opacity: 1.0,
                 blend: Blend::default(),
+                downscale: Downscale::Auto,
                 recipe: Recipe::default(),
                 adjustments: Adjustments::default(),
                 mask: None,
@@ -524,6 +529,7 @@ impl ProjectFile {
                     transform: l.transform,
                     opacity: l.opacity,
                     blend: l.blend,
+                    downscale: Downscale::Auto,
                     recipe: l.recipe,
                     adjustments: l.adjustments,
                     mask: None,
@@ -873,5 +879,23 @@ mod tests {
         assert_eq!(ProjectFile::parse(&text).unwrap(), q);
         let bad = r#"{"schema_version":2,"target":"hires-bitmap","layers":[],"snap":"grid"}"#;
         assert!(ProjectFile::parse(bad).is_err());
+    }
+
+    /// #235: a layer's `downscale` is written only when it is not `auto`, so files
+    /// without it read and write exactly as before.
+    #[test]
+    fn downscale_is_written_only_when_exact() {
+        let old = r#"{"schema_version":3,"target":"hires-bitmap","layers":[
+            {"name":"a","source":"a.png"}]}"#;
+        let p = ProjectFile::parse(old).unwrap();
+        assert_eq!(p.layers[0].downscale, Downscale::Auto);
+        assert!(!p.to_json().contains("downscale"));
+        let mut q = p.clone();
+        q.layers[0].downscale = Downscale::Exact;
+        let text = q.to_json();
+        assert!(text.contains(r#""downscale": "exact""#), "{text}");
+        assert_eq!(ProjectFile::parse(&text).unwrap(), q);
+        let bad = old.replace(r#""a.png"}"#, r#""a.png","downscale":"area"}"#);
+        assert!(ProjectFile::parse(&bad).is_err());
     }
 }

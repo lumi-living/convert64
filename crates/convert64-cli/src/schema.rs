@@ -195,6 +195,11 @@ fn blend_schema() -> Value {
     json!({ "type": "string", "enum": ["normal", "multiply", "screen", "overlay"], "default": "normal" })
 }
 
+fn downscale_schema() -> Value {
+    json!({ "type": "string", "enum": ["auto", "exact"], "default": "auto",
+            "description": "How a layer shrunk a long way is sampled (#235): auto samples a cached, box-reduced mip level past a 4× shrink (no aliasing on large sources); exact always the original with png2c64's four Mitchell taps, as png2c64 scales" })
+}
+
 fn source_schema() -> Value {
     json!({
         "description": "The pixels: a PNG path relative to the file the command is in (or the working directory), {\"path\": …}, {\"png_base64\": …} or {\"layer\": n} (an existing layer's pixels, shared)",
@@ -477,6 +482,10 @@ pub fn command_schema(name: &str) -> Option<Value> {
             json!({ "layer": layer(), "blend": blend_schema() }),
             &["layer", "blend"],
         ),
+        "layer_set_downscale" => object_schema(
+            json!({ "layer": layer(), "downscale": downscale_schema() }),
+            &["layer", "downscale"],
+        ),
         "layer_set_transform" => object_schema(
             json!({ "layer": layer(), "transform": transform_schema(),
                     "snap": transform_snap_schema("Snap this way instead of by the project's setting") }),
@@ -662,6 +671,7 @@ pub fn example(name: &str) -> Option<Value> {
         "layer_set_visible" => json!({ "layer": 1, "visible": false }),
         "layer_set_opacity" => json!({ "layer": 0, "opacity": 0.5 }),
         "layer_set_blend" => json!({ "layer": 1, "blend": "multiply" }),
+        "layer_set_downscale" => json!({ "layer": 0, "downscale": "exact" }),
         "layer_set_transform" => json!({ "layer": 0, "transform": {
             "translate": { "x": 8, "y": 4 }, "scale": { "x": 2.5, "y": 2.5 }, "rotate": -12.5,
             "anchor": { "x": 0, "y": 1 }, "flip_h": true } }),

@@ -12,7 +12,9 @@
 //! - `dither-sheet [--input <png> --out <dir>] [--mode mc|hires] [--reason "..."]`: render
 //!   every dither method and the comparison sheets (`docs/reference/dither-previews/`).
 //! - `front-end-sheet`: the resampler A/B of #190 (the compositor vs png2c64's front
-//!   end on every fixture, both into the reference solver).
+//!   end on every fixture, both into the reference solver), and the large sources of
+//!   #235 (generated into `target/aliasing/`): exact, auto and area-averaged, with the
+//!   grain-leakage gate.
 //! - `sharpen-sheet`: the Sharpen adjustment of #228 on every fixture (amount 0 / 0.5 / 1.0
 //!   with png2c64's kernel, 1.0 with a Gaussian of σ 0.8).
 //! - `png2c64-previews --png2c64 <path>`: regenerate png2c64's own renders and contact
@@ -20,6 +22,7 @@
 //! - `tokens [--check]`: generate the app theme (`crates/convert64-app/src/theme/generated.rs`)
 //!   from the Figma variables in `design/tokens.json`; `--check` fails if it is stale.
 
+mod aliasing;
 mod baselines;
 mod bluenoise;
 mod font;
