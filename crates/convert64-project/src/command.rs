@@ -390,7 +390,7 @@ pub enum JsonCommand {
 mod tests {
     use super::*;
     use convert64_core::ColourIndex;
-    use convert64_core::layer::{DitherKind, Gamma, Levels};
+    use convert64_core::layer::{DitherKind, Gamma, Levels, Sharpen};
     use convert64_core::mask::{
         GradientKind, KeyChannel, MaskSource, Modifiers, SnapToCells, SourceEntry,
     };
@@ -558,6 +558,7 @@ mod tests {
                 layer: l.clone(),
                 adjustments: AdjustmentsChange {
                     gamma: Some(Gamma::new(1.4).unwrap()),
+                    sharpen: Some(Sharpen::png2c64(-0.5).unwrap()),
                     match_range: Some(None),
                     ..AdjustmentsChange::default()
                 },

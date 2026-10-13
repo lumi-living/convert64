@@ -69,6 +69,9 @@ For a PNG, a `.kla` or `.art` output also picks the mode when `--mode` is not gi
 | `--smooth` | `recipe.smooth` | native solver |
 | `--gamma` | each layer's `adjustments.gamma` | 0.1–8 |
 | `--match-range` | `adjustments.match_range` | |
+| `--sharpen` | each layer's `adjustments.sharpen.amount` (#228) | −1–3, png2c64's `--sharpen`: positive sharpens lightness at the C64 grid, negative blends toward a blur; 0 is off |
+| `--sharpen-radius` | `adjustments.sharpen.radius` | `png2c64` (its 3×3 box, the default) or a Gaussian σ in C64 pixels, 0.3–3 |
+| `--sharpen-threshold` | `adjustments.sharpen.threshold` | 0–0.1 in OKLab L; pixels nearer the blur than this are not sharpened (png2c64 has none: 0) |
 | `--rotate` | each layer's `transform.rotate`, through `layer_rotate` after the project's own commands (#198) | Degrees, clockwise on screen, about the layer's anchor; the project's `snap` applies |
 | `--anchor` | each layer's `transform.anchor`, through `layer_rotate` (the picture stays in place) | `X,Y`, 0–1 across the layer's box: `0,0` top-left, `0.5,0.5` the centre (default). Alone, it moves the pivot and keeps the angle |
 | `--bg` | `solve.background` | `auto` or 0–15 |
@@ -136,7 +139,7 @@ max-clashes = 20
 skip = true
 ```
 
-Every table takes `convert`'s options in kebab-case (`solver`, `diverge` (a list), `mode`, `palette`, `dither`, `strength`, `metric`, `cell-metric`, `no-cell-clamp`, `max-luma-diff`, `ordered-semantics`, `no-chroma-guard`, `error-clamp`, `adaptive`, `mix-levels`, `smooth`, `gamma`, `match-range`, `bg`, `hysteresis`, `supersample`), plus `outputs` (`kla`, `art`, `prg`, `png`, `raw`), `max-clashes`, `zoom` (PNG previews) and `skip`. Unknown keys are errors. A file's table wins over `[defaults]`; options on the command line win over both.
+Every table takes `convert`'s options in kebab-case (`solver`, `diverge` (a list), `mode`, `palette`, `dither`, `strength`, `metric`, `cell-metric`, `no-cell-clamp`, `max-luma-diff`, `ordered-semantics`, `no-chroma-guard`, `error-clamp`, `adaptive`, `mix-levels`, `smooth`, `gamma`, `match-range`, `sharpen`, `sharpen-radius`, `sharpen-threshold`, `bg`, `hysteresis`, `supersample`), plus `outputs` (`kla`, `art`, `prg`, `png`, `raw`), `max-clashes`, `zoom` (PNG previews) and `skip`. Unknown keys are errors. A file's table wins over `[defaults]`; options on the command line win over both.
 
 Files convert independently: one failure does not stop the others. The exit code is the worst file's (3, then 2, then 1). JSON fields: `dir`, `manifest`, `out`, `converted`, `failed`, `skipped` (`input`, `reason`) and `files`, one `convert` report per file with its `input`.
 

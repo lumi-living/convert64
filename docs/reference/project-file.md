@@ -82,7 +82,7 @@ The palette is the one the picture is solved and previewed with (CLAUDE.md non-n
 | `opacity` | `1.0` | 0–1 |
 | `blend` | `"normal"` | `normal`, `multiply`, `screen`, `overlay` |
 | `recipe` | Floyd–Steinberg 100 % | The dither recipe (ADR-002): `method` (`kind`, `orientation`, `custom`), `strength`, `phase`, `metric`, `allowed`, `fit_mode`, `cell_clamp`, `max_luma_diff`, `adaptive`, `mix_levels`, `smooth`, `cell_metric`, `error_clamp`. Method ids are in [dither-methods.md](dither-methods.md); defaults are in TAD §4 "E5 in summary". |
-| `adjustments` | identity | `gamma`, `levels`, `brightness_contrast`, `hsl`, `curves`, `match_range` |
+| `adjustments` | identity | `gamma`, `sharpen` (#228: `amount` −1–3, `radius` `"png2c64"` or a σ of 0.3–3 C64 px, `threshold` 0–0.1 in OKLab L; written only when not off, so older files load unchanged), `levels`, `brightness_contrast`, `hsl`, `curves`, `match_range`. Applied in that order, after the layer is resampled (#190) |
 | `mask` | none (opaque) | The layer mask (ADR-008), below |
 
 ### Sources

@@ -3,7 +3,8 @@
 use crate::report::{Fail, NOT_LEGAL, Run};
 use clap::ValueEnum;
 use convert64_core::layer::{
-    CellMetric, DitherKind, Gamma, Metric, OrderedSemantics, RangeMatch, suggest_range_match,
+    CellMetric, DitherKind, Gamma, Metric, OrderedSemantics, Radius, RangeMatch, Sharpen,
+    suggest_range_match,
 };
 use convert64_core::mode::Mode;
 use convert64_core::solve::{Background, Solution};
@@ -258,6 +259,19 @@ pub(crate) struct Overrides {
     #[arg(long)]
     #[serde(default)]
     pub(crate) match_range: bool,
+    /// Sharpen every layer's lightness at the C64 grid, −1–3 (png2c64 --sharpen):
+    /// positive adds that much of the detail an unsharp mask finds, negative blends that
+    /// far (at most 1) toward a blur. Default 0, off.
+    #[arg(long, value_name = "AMOUNT", allow_hyphen_values = true)]
+    pub(crate) sharpen: Option<f32>,
+    /// The sharpen's blur: png2c64 (its 3×3 box, the default) or a Gaussian σ in C64
+    /// pixels, 0.3–3.
+    #[arg(long, value_name = "PX|png2c64")]
+    pub(crate) sharpen_radius: Option<Radius>,
+    /// Leave pixels whose lightness differs from the blur by less than this unsharpened,
+    /// 0–0.1 in OKLab L (png2c64 has none: 0, the default).
+    #[arg(long, value_name = "L")]
+    pub(crate) sharpen_threshold: Option<f32>,
     /// Turn every layer to this many degrees, clockwise on screen, about its anchor
     /// (`layer_rotate`, ADR-011). The project's snap applies.
     #[arg(long, value_name = "DEG", allow_hyphen_values = true)]
@@ -307,6 +321,9 @@ impl Overrides {
             smooth: self.smooth || base.smooth,
             gamma: self.gamma.or(base.gamma),
             match_range: self.match_range || base.match_range,
+            sharpen: self.sharpen.or(base.sharpen),
+            sharpen_radius: self.sharpen_radius.or(base.sharpen_radius),
+            sharpen_threshold: self.sharpen_threshold.or(base.sharpen_threshold),
             rotate: self.rotate.or(base.rotate),
             anchor: self.anchor.or_else(|| base.anchor.clone()),
         }
@@ -465,6 +482,9 @@ impl Overrides {
         } else {
             None
         };
+        let sharpen = self.sharpen.is_some()
+            || self.sharpen_radius.is_some()
+            || self.sharpen_threshold.is_some();
         let patch = self.recipe_patch()?;
         for layer in &mut file.layers {
             if !patch.is_empty() {
@@ -484,6 +504,15 @@ impl Overrides {
             }
             if match_range.is_some() {
                 layer.adjustments.match_range = match_range;
+            }
+            if sharpen {
+                let s = layer.adjustments.sharpen;
+                layer.adjustments.sharpen = Sharpen::new(
+                    self.sharpen.unwrap_or(s.amount()),
+                    self.sharpen_radius.unwrap_or(s.radius()),
+                    self.sharpen_threshold.unwrap_or(s.threshold()),
+                )
+                .map_err(Fail::input)?;
             }
         }
         let rotations = self.rotations(file.layers.len())?;
