@@ -1084,7 +1084,8 @@ mod tests {
         let delete = |shell: &mut Shell, ws: &mut Workspace| {
             let actions = draw(&ctx, shell, ws, vec![key(egui::Key::Delete, none)]);
             shell.toast = None;
-            removes(&actions, 0)
+            // Whichever layer is selected (a click on the canvas may select one).
+            removes(&actions, shell.layer)
         };
         draw(&ctx, &mut shell, &mut ws, vec![]);
         assert_eq!(
