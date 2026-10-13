@@ -78,7 +78,7 @@ pub(super) fn show(shell: &mut Shell, ui: &mut Ui) {
         if button(
             ui,
             icons::SOURCE_RESULT,
-            "Source ⇄ Result (Q)",
+            "Source or Result (Q)",
             result,
             true,
         ) {

@@ -618,6 +618,13 @@ As built in #78 (2026-10-13): the mask tools (UX §7a, ADR-008).
 - **Sources list.** Each gradient or key has its combine mode (`mask_source_set_combine`) and a delete (`mask_source_remove`), both from #216.
 - **Not yet.** The Region tool (UX §7, #208) follows in its own PR on #216's region commands. "Re-solved N cells" and the feathered-edge clash hint wait for the scheduler to report re-solved cells.
 
+As built in #209 (2026-10-13): palette, shortcuts, states and accessibility basics (UX §8, §11, §12).
+
+- **Picture group** at the top of the Recipe tab (Figma `Recipe tab`): mode, palette (Pepto PAL, Pepto NTSC, Colodore, or a VICE `.vpl` file: `palette_set`, linked natively, through the session's store in the browser) and the background (`background_pin`: Auto or one of the 16 swatches; the solver's pick is ringed in the text colour, a pinned one thicker in the accent, so not by colour alone). A palette change re-solves in full.
+- **Shortcuts.** Every UX §8 shortcut outside the Transform tool (#197) is wired and shown in the menus; single keys are ignored while a text field has focus. New here: `H` (hand: a primary drag pans) and bare `1` (100 %). A table-driven test checks that each shortcut asks for its action.
+- **States** (§11): the empty state (#203); a full solve running over 200 ms shows "Solving full search… n s" with **Pause** in the status bar and fades the result slightly; Pause cancels the solve and **Resume** restarts it. When clashes exist and the overlay is off, the status bar suggests "Show clashes (Shift C)" once, dismissible. File errors (open, mask, palette, save) sit inline in the status bar in the error colour; a click shows the details and Dismiss — no modal. Export success is a toast (#205).
+- **Accessibility** (§12): the working view and the result panel carry `WidgetInfo` names for screen readers; the tab order is egui's; pins, locks, clashes and the chosen background are marked by glyphs, outlines, rings and text as well as colour. Glyphs missing from Inter (`✕`, `⇄`) were replaced by the icon font or words.
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.

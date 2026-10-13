@@ -140,6 +140,12 @@ pub enum Action {
     ToggleVisible(usize),
     /// Load a greyscale PNG as the selected layer's mask.
     LoadMask,
+    /// Load a VICE palette file (`.vpl`) as the palette.
+    LoadPalette,
+    /// Pause the full search that is running (UX §11).
+    PauseSolve,
+    /// Resume a paused solve.
+    ResumeSolve,
 }
 
 /// The smallest and largest dock width (`docs/UX.md` §3: 260–420 px). Not a Figma
@@ -189,6 +195,12 @@ pub struct Shell {
     pub mask: MaskState,
     /// This frame's quick-mask overlay texture, in mask mode.
     mask_overlay: Option<egui::TextureId>,
+    /// `H`: the hand tool, a primary drag pans.
+    pub hand: bool,
+    /// The clash hint was dismissed (UX §11: suggested once).
+    clash_hint_dismissed: bool,
+    /// The last error, shown in the status bar: summary and details for its popover.
+    pub error: Option<(String, String)>,
     /// Whether Edit › Undo and Redo have something to do (set by the app each frame).
     pub history: (bool, bool),
     /// `\` is held: the working view shows the other image.
@@ -231,6 +243,9 @@ impl Default for Shell {
             nav_request: None,
             mask: MaskState::default(),
             mask_overlay: None,
+            hand: false,
+            clash_hint_dismissed: false,
+            error: None,
             history: (false, false),
             flip_held: false,
             fit_pending: true,
@@ -245,6 +260,12 @@ impl Default for Shell {
 }
 
 impl Shell {
+    /// Shows a file or command error in the status bar, with `details` in its popover
+    /// (UX §11: inline, never a modal).
+    pub fn report_error(&mut self, summary: impl Into<String>, details: impl Into<String>) {
+        self.error = Some((summary.into(), details.into()));
+    }
+
     /// Shows `message` for a few seconds (UX §11: 3 s for success); errors stay 6 s and
     /// are drawn in the error colour.
     pub fn toast(&mut self, ctx: &egui::Context, message: impl Into<String>, error: bool) {
@@ -379,7 +400,7 @@ impl Shell {
             }
             egui::Panel::bottom("status_bar")
                 .exact_size(layout::STATUS_HEIGHT)
-                .show(ui, |ui| status::show(self, ws.as_deref(), ui));
+                .show(ui, |ui| status::show(self, ws.as_deref(), ui, &mut actions));
             if !self.dock_hidden {
                 egui::Panel::right("dock")
                     .resizable(true)
@@ -507,6 +528,13 @@ impl Shell {
                 self.dock_hidden = !self.dock_hidden;
             } else if i.consume_shortcut(&s::HIDE_CHROME) {
                 self.chrome_hidden = !self.chrome_hidden;
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::H) {
+                self.hand = !self.hand;
+            }
+            // Bare 1 is 100 % too, for Krita and Aseprite users (UX §8).
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::Num1) {
+                self.camera.actual(self.view);
             }
             if i.consume_shortcut(&s::SOURCE_RESULT) {
                 self.view = self.view.flipped();
@@ -734,5 +762,75 @@ mod tests {
                 assert!(actions.is_empty(), "{tab:?}: {actions:?}");
             }
         }
+    }
+
+    /// UX §8: each shortcut asks for its action (the app carries it out).
+    #[test]
+    fn the_shortcut_table_asks_for_its_actions() {
+        use convert64_project::{JsonCommand, LayerRef};
+        let cmd = egui::Modifiers::COMMAND;
+        let shift_cmd = egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT);
+        let none = egui::Modifiers::NONE;
+        let cases: Vec<(egui::Key, egui::Modifiers, Action)> = vec![
+            (egui::Key::O, cmd, Action::Open),
+            (egui::Key::S, cmd, Action::Save),
+            (egui::Key::S, shift_cmd, Action::SaveAs),
+            (egui::Key::Z, cmd, Action::Undo),
+            (egui::Key::Z, shift_cmd, Action::Redo),
+            (egui::Key::Y, cmd, Action::Redo),
+            (egui::Key::N, shift_cmd, Action::NewLayer),
+            (egui::Key::Comma, cmd, Action::ToggleVisible(0)),
+            (
+                egui::Key::J,
+                cmd,
+                Action::Run(JsonCommand::LayerDuplicate {
+                    layer: LayerRef::Index(0),
+                }),
+            ),
+            (
+                egui::Key::Delete,
+                none,
+                Action::Run(JsonCommand::LayerRemove {
+                    layer: LayerRef::Index(0),
+                }),
+            ),
+            (
+                egui::Key::ArrowLeft,
+                egui::Modifiers::ALT,
+                Action::Run(JsonCommand::LayerNudge {
+                    layer: LayerRef::Index(0),
+                    by: convert64_core::Vec2::new(-0.25, 0.0),
+                }),
+            ),
+            (
+                egui::Key::ArrowDown,
+                egui::Modifiers::SHIFT,
+                Action::Run(JsonCommand::LayerNudge {
+                    layer: LayerRef::Index(0),
+                    by: convert64_core::Vec2::new(0.0, 10.0),
+                }),
+            ),
+        ];
+        for (k, m, want) in cases {
+            let (_, actions) = frame(Shell::default(), vec![key(k, m)]);
+            assert_eq!(actions, vec![want], "{k:?} {m:?}");
+        }
+        // Single keys that change the shell itself.
+        let (shell, _) = frame(Shell::default(), vec![key(egui::Key::M, none)]);
+        assert!(shell.mask.active && shell.mask.tool == Some(MaskTool::Brush));
+        let (shell, _) = frame(shell, vec![key(egui::Key::Escape, none)]);
+        assert!(!shell.mask.active && shell.mask.tool.is_none());
+        let (shell, _) = frame(
+            Shell::default(),
+            vec![key(egui::Key::H, none), key(egui::Key::Num1, none)],
+        );
+        assert!(shell.hand);
+        assert_eq!(shell.camera.source_zoom, 1.0);
+        let (shell, _) = frame(Shell::default(), vec![key(egui::Key::W, none)]);
+        assert_eq!(shell.mask.tool, Some(MaskTool::Lasso));
+        assert!(
+            !shell.mask.active,
+            "a mask tool without mask mode makes a selection"
+        );
     }
 }

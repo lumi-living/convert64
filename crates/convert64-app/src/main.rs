@@ -25,6 +25,8 @@ struct App {
     files: Files,
     /// The window title last set, so it is sent only when it changes.
     title: String,
+    /// The egui context, for the time solves are submitted at.
+    ctx: egui::Context,
     /// `--screenshot`: save the window to a PNG after a few frames, then quit (native).
     #[cfg(not(target_arch = "wasm32"))]
     screenshot: Option<screenshot::Request>,
@@ -35,7 +37,10 @@ impl App {
     /// and the scheduler asking for a repaint when a result is ready.
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::install(&cc.egui_ctx);
-        let mut app = Self::default();
+        let mut app = Self {
+            ctx: cc.egui_ctx.clone(),
+            ..Self::default()
+        };
         let stored = cc
             .storage
             .and_then(|s| s.get_string(THEME_KEY))
@@ -57,22 +62,36 @@ impl App {
     /// Opens `doc`: the working view fits it and a full solve starts.
     fn open(&mut self, doc: Document) {
         self.scheduler.cancel();
-        let ws = Workspace::new(doc);
-        self.scheduler
-            .submit(ws.doc.snapshot(None), SolveMode::Full);
+        let mut ws = Workspace::new(doc);
+        Self::submit(&mut self.scheduler, &mut ws, &self.ctx, SolveMode::Full);
         self.workspace = Some(ws);
         self.shell.fit_on_next_frame();
         self.shell.last_export = None;
+        self.shell.error = None;
+    }
+
+    /// Submits `ws`'s document to the scheduler in `mode`, noting when for the
+    /// slow-solve state.
+    fn submit(
+        scheduler: &mut convert64_app::scheduler::Scheduler,
+        ws: &mut Workspace,
+        ctx: &egui::Context,
+        mode: SolveMode,
+    ) {
+        ws.solving = true;
+        ws.paused = false;
+        if mode == SolveMode::Full {
+            ws.solve_started = Some(ctx.input(|i| i.time));
+        }
+        let previous = ws.solution.clone();
+        scheduler.submit(ws.doc.snapshot(previous), mode);
     }
 
     /// Re-solves after an edit: the whole picture, since #205's edits change settings or
     /// add layers (the interactive path arrives with dragging, #206).
     fn resolve(&mut self) {
         if let Some(ws) = &mut self.workspace {
-            ws.solving = true;
-            let previous = ws.solution.clone();
-            self.scheduler
-                .submit(ws.doc.snapshot(previous), SolveMode::Full);
+            Self::submit(&mut self.scheduler, ws, &self.ctx, SolveMode::Full);
         }
     }
 
@@ -105,10 +124,9 @@ impl App {
         }
         match Document::open(name, bytes, path) {
             Ok(doc) => self.open(doc),
-            Err(e) => self.shell.toast(
-                ctx,
-                format!("Can't open {name}: {e}. Open a PNG or a .convert64 project."),
-                true,
+            Err(e) => self.shell.report_error(
+                format!("Can't open {name}"),
+                format!("{e}. Open a PNG or a .convert64 project."),
             ),
         }
     }
@@ -220,11 +238,13 @@ impl App {
                     self.shell.layer = i;
                 }
                 if gesture.is_some() {
-                    ws.solving = true;
-                    let previous = ws.solution.clone();
                     let dirty = convert64_core::CellSet::EMPTY;
-                    self.scheduler
-                        .submit(ws.doc.snapshot(previous), SolveMode::Interactive { dirty });
+                    Self::submit(
+                        &mut self.scheduler,
+                        ws,
+                        &self.ctx,
+                        SolveMode::Interactive { dirty },
+                    );
                 } else {
                     self.resolve();
                 }
@@ -260,6 +280,16 @@ impl App {
             }
             Action::NewLayer => self.files.pick_open(ctx, Purpose::Open),
             Action::LoadMask => self.files.pick_open(ctx, Purpose::Mask),
+            Action::LoadPalette => self.files.pick_open(ctx, Purpose::Palette),
+            Action::PauseSolve => {
+                self.scheduler.cancel();
+                if let Some(ws) = &mut self.workspace {
+                    ws.solving = false;
+                    ws.paused = true;
+                    ws.solve_started = None;
+                }
+            }
+            Action::ResumeSolve => self.resolve(),
             Action::Run(command) => self.edit(ctx, None, command),
             Action::RunAll(commands, message) => {
                 let Some(ws) = &mut self.workspace else {
@@ -327,13 +357,35 @@ impl App {
                     name,
                     bytes,
                     path,
+                    purpose: Purpose::Palette,
+                } => {
+                    if let Some(ws) = &mut self.workspace {
+                        match ws.doc.load_palette(&name, &bytes, path.as_deref()) {
+                            Ok(()) => {
+                                ws.solution = None;
+                                self.resolve();
+                            }
+                            Err(e) => self.shell.report_error(
+                                format!("Can't use {name} as the palette"),
+                                format!("{e}. A VICE .vpl file lists 16 colours as hex RGB."),
+                            ),
+                        }
+                    }
+                }
+                FileEvent::Opened {
+                    name,
+                    bytes,
+                    path,
                     purpose: Purpose::Mask,
                 } => {
                     let layer = self.shell.layer;
                     if let Some(ws) = &mut self.workspace {
                         match ws.doc.load_mask(layer, &name, &bytes, path.as_deref()) {
                             Ok(()) => self.resolve(),
-                            Err(e) => self.shell.toast(ctx, format!("Can't load {name} as a mask: {e}. It must be a greyscale PNG the layer's size."), true),
+                            Err(e) => self.shell.report_error(
+                                format!("Can't load {name} as a mask"),
+                                format!("{e}. It must be a greyscale PNG the size of the layer's picture."),
+                            ),
                         }
                     }
                 }
@@ -357,7 +409,7 @@ impl App {
                     self.shell
                         .toast(ctx, format!("{verb} {}", list.join(", ")), false);
                 }
-                FileEvent::Failed(e) => self.shell.toast(ctx, e, true),
+                FileEvent::Failed(e) => self.shell.report_error("File error", e),
             }
         }
     }
@@ -421,6 +473,9 @@ impl eframe::App for App {
         {
             ws.solve_ms = Some(result.timing.composite_ms + result.timing.solve_ms);
             ws.solving = result.provisional;
+            if !result.provisional && result.mode == SolveMode::Full {
+                ws.solve_started = None;
+            }
             ws.solution = Some(result.solution);
         }
 

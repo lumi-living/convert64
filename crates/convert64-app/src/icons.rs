@@ -79,3 +79,5 @@ pub const KEY: Icon = m::ICON_COLORIZE;
 pub const INVERT: Icon = m::ICON_INVERT_COLORS;
 /// Fill a mask.
 pub const FILL: Icon = m::ICON_FORMAT_COLOR_FILL;
+/// Close / dismiss.
+pub const CLOSE: Icon = m::ICON_CLOSE;
