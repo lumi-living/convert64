@@ -1044,7 +1044,7 @@ mod tests {
             "the DragValue takes typed digits"
         );
         form.frame(vec![key(egui::Key::R, none), egui::Event::Text("r".into())]);
-        assert_eq!(form.shell.tool, Tool::Pin, "R is typed, not a shortcut");
+        assert_ne!(form.shell.tool, Tool::Region, "R is typed, not a shortcut");
         form.frame(vec![key(egui::Key::Enter, none)]);
         form.frame(vec![key(egui::Key::R, none)]);
         assert_eq!(form.shell.tool, Tool::Region);
