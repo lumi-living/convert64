@@ -525,6 +525,7 @@ impl eframe::App for App {
 /// `--screenshot <file.png> [--theme light|dark] [--size <w>x<h>] [--view result]
 /// [--overlay grid|clashes|ghost]… [--compare split|flicker|side] [--dialog export]
 /// [--tab recipe|layers|export] [--command <json>]… [--zoom <n>] [--centre <x>,<y>]
+/// [--mask] [--tool <name>]`: draws a few frames,
 /// saves the window as a PNG and quits. The PR screenshots come from it (#203).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
