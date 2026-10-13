@@ -17,3 +17,12 @@ pub fn now_ms() -> f64 {
         .and_then(|w| w.performance())
         .map_or(0.0, |p| p.now())
 }
+
+/// A diagnostic line: standard error natively, the browser console in wasm (through
+/// eframe's `web_sys`, whose `console` it enables).
+pub fn log(line: &str) {
+    #[cfg(not(target_arch = "wasm32"))]
+    eprintln!("{line}");
+    #[cfg(target_arch = "wasm32")]
+    eframe::web_sys::console::log_1(&eframe::wasm_bindgen::JsValue::from_str(line));
+}

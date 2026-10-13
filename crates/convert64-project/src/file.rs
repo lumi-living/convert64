@@ -33,7 +33,7 @@ use crate::error::{ProjectError, invalid};
 use crate::recipe::RecipeFile;
 use crate::store::Store;
 use convert64_core::colour::ColourSet;
-use convert64_core::layer::{Adjustments, Blend, Recipe, Snap, Transform};
+use convert64_core::layer::{Adjustments, Blend, Downscale, Recipe, Snap, Transform};
 use convert64_core::mask::{MaskRaster, Modifiers, SourceEntry};
 use convert64_core::mode::Mode;
 use convert64_core::model::CellPos;
@@ -245,6 +245,10 @@ pub struct LayerEntry {
     /// Blend mode.
     #[serde(default)]
     pub blend: Blend,
+    /// How the layer is sampled when shrunk a long way (#235); written only when not
+    /// `auto`, so files without it load and save unchanged.
+    #[serde(default, skip_serializing_if = "Downscale::is_auto")]
+    pub downscale: Downscale,
     /// Dither recipe.
     #[serde(default)]
     pub recipe: Recipe,
@@ -469,6 +473,7 @@ impl ProjectFile {
                 transform,
                 opacity: 1.0,
                 blend: Blend::default(),
+                downscale: Downscale::Auto,
                 recipe: Recipe::default(),
                 adjustments: Adjustments::default(),
                 mask: None,
@@ -499,6 +504,7 @@ impl ProjectFile {
                     transform: l.transform,
                     opacity: l.opacity,
                     blend: l.blend,
+                    downscale: Downscale::Auto,
                     recipe: l.recipe,
                     adjustments: l.adjustments,
                     mask: None,

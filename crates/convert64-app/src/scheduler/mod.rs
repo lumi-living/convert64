@@ -32,7 +32,7 @@
 //! The core is unchanged: every solution is exactly `Solver::solve` on the compositor's
 //! frame.
 
-mod clock;
+pub(crate) mod clock;
 mod engine;
 mod stepper;
 #[cfg(test)]

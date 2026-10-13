@@ -235,7 +235,9 @@ impl Job {
                 everything = true;
             }
             None => {
-                engine.compositor = Some(Compositor::new(snap.grid));
+                let mut c = Compositor::new(snap.grid);
+                c.set_clock(Some(clock::now_ms));
+                engine.compositor = Some(c);
                 everything = true;
             }
         }
@@ -263,7 +265,17 @@ impl Job {
             engine.steering = Some(snap.steering.clone());
         }
         let compositor = engine.compositor.as_mut().expect("set above");
+        let (builds, ms) = (compositor.mip_builds(), compositor.mip_build_ms());
         changed = changed.union(compositor.update(&snap.layers, &snap.regions));
+        // A source's mip levels are usually built by the Source view's composite first
+        // (`Document::source_rgba`) and shared; any built here are logged the same way.
+        if compositor.mip_builds() > builds {
+            clock::log(&format!(
+                "convert64: built {} mip level(s) in {:.1} ms (#235, solve)",
+                compositor.mip_builds() - builds,
+                compositor.mip_build_ms() - ms
+            ));
+        }
         if everything {
             changed = CellSet::all();
         }

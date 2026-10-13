@@ -3,7 +3,8 @@
 use crate::report::{Fail, NOT_LEGAL, Run};
 use clap::ValueEnum;
 use convert64_core::layer::{
-    CellMetric, DitherKind, Gamma, Metric, OrderedSemantics, RangeMatch, suggest_range_match,
+    CellMetric, DitherKind, Downscale, Gamma, Metric, OrderedSemantics, RangeMatch,
+    suggest_range_match,
 };
 use convert64_core::mode::Mode;
 use convert64_core::solve::{Background, Solution};
@@ -258,6 +259,12 @@ pub(crate) struct Overrides {
     #[arg(long)]
     #[serde(default)]
     pub(crate) match_range: bool,
+    /// How every layer shrunk a long way is sampled (#235): auto (the default) takes a
+    /// cached, box-reduced mip level of the source past a 4× shrink, so large sources do
+    /// not alias; exact always samples the original with png2c64's four Mitchell taps,
+    /// as png2c64 does. Up to 4× (sources up to 1280 px fitted) the two are identical.
+    #[arg(long, value_name = "auto|exact")]
+    pub(crate) downscale: Option<Downscale>,
     /// Turn every layer to this many degrees, clockwise on screen, about its anchor
     /// (`layer_rotate`, ADR-011). The project's snap applies.
     #[arg(long, value_name = "DEG", allow_hyphen_values = true)]
@@ -307,6 +314,7 @@ impl Overrides {
             smooth: self.smooth || base.smooth,
             gamma: self.gamma.or(base.gamma),
             match_range: self.match_range || base.match_range,
+            downscale: self.downscale.or(base.downscale),
             rotate: self.rotate.or(base.rotate),
             anchor: self.anchor.or_else(|| base.anchor.clone()),
         }
@@ -484,6 +492,9 @@ impl Overrides {
             }
             if match_range.is_some() {
                 layer.adjustments.match_range = match_range;
+            }
+            if let Some(d) = self.downscale {
+                layer.downscale = d;
             }
         }
         let rotations = self.rotations(file.layers.len())?;

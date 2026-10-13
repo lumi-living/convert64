@@ -142,15 +142,12 @@ impl<T: Px> MipCache<T> {
         let path = path(lx, ly);
         let start = {
             let levels = self.lock();
-            path.iter()
-                .enumerate()
-                .rev()
-                .find_map(|(i, k)| {
-                    levels
-                        .iter()
-                        .find(|(l, _)| l == k)
-                        .map(|(_, v)| (i + 1, Arc::clone(v)))
-                })
+            path.iter().enumerate().rev().find_map(|(i, k)| {
+                levels
+                    .iter()
+                    .find(|(l, _)| l == k)
+                    .map(|(_, v)| (i + 1, Arc::clone(v)))
+            })
         };
         if let Some((i, level)) = &start
             && *i == path.len()
@@ -216,7 +213,11 @@ fn reduce<T: Px>(
         };
         let (a, b) = (r0 * w, r1 * w);
         for (x, o) in row.iter_mut().enumerate() {
-            let (c0, c1) = if hx { (2 * x, (2 * x + 1).min(w - 1)) } else { (x, x) };
+            let (c0, c1) = if hx {
+                (2 * x, (2 * x + 1).min(w - 1))
+            } else {
+                (x, x)
+            };
             *o = match (hx, hy) {
                 // ((a + b) + (c + d)) / 4.
                 (true, true) => {

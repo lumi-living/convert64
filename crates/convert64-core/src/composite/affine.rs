@@ -135,11 +135,7 @@ impl AffineMap {
     /// the one it was averaged into.
     pub fn reach_src(&self) -> f64 {
         let l = self.level.0.max(self.level.1);
-        if l == 0 {
-            2.0
-        } else {
-            f64::from(3u32 << l)
-        }
+        if l == 0 { 2.0 } else { f64::from(3u32 << l) }
     }
 
     /// Source pixels (of level 0) one pixel of `grid` spans along each layer axis, for a
@@ -148,7 +144,10 @@ impl AffineMap {
     pub fn footprint(t: &Transform, size: (u32, u32), step: crate::geom::Vec2) -> (f64, f64) {
         let [a, b, _, d, e, _] = t.canvas_to_layer_affine(size);
         let (sx, sy) = (f64::from(step.x), f64::from(step.y));
-        ((a * sx).abs() + (b * sy).abs(), (d * sx).abs() + (e * sy).abs())
+        (
+            (a * sx).abs() + (b * sy).abs(),
+            (d * sx).abs() + (e * sy).abs(),
+        )
     }
 
     /// The fraction of super pixel `(i, j)` inside the layer's box, whose footprint is

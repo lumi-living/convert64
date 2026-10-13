@@ -10,7 +10,7 @@ use convert64_core::command::{
     ModifierChange, RecipeChange, Selection, SnapSet, SolveSet,
 };
 use convert64_core::geom::Vec2;
-use convert64_core::layer::{Adjustments, Blend, Recipe, Snap, Transform};
+use convert64_core::layer::{Adjustments, Blend, Downscale, Recipe, Snap, Transform};
 use convert64_core::mask::{Combine, Gradient, Key, PaintMode};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -208,6 +208,13 @@ pub enum JsonCommand {
         layer: LayerRef,
         /// `normal`, `multiply`, `screen` or `overlay`.
         blend: Blend,
+    },
+    /// Set how a layer shrunk a long way is sampled (#235).
+    LayerSetDownscale {
+        /// Layer.
+        layer: LayerRef,
+        /// `auto` (a cached mip level past a 4× shrink) or `exact` (png2c64's).
+        downscale: Downscale,
     },
     /// Place a layer, snapped by the project's setting or `snap`.
     LayerSetTransform {
@@ -521,6 +528,10 @@ mod tests {
             JsonCommand::LayerSetBlend {
                 layer: l.clone(),
                 blend: Blend::Multiply,
+            },
+            JsonCommand::LayerSetDownscale {
+                layer: l.clone(),
+                downscale: Downscale::Exact,
             },
             JsonCommand::LayerSetTransform {
                 layer: l.clone(),

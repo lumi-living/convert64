@@ -54,9 +54,9 @@ use crate::mask::{Mask, Modifiers, SnapToCells};
 use crate::region::Region;
 use crate::scratch;
 use affine::AffineMap;
-use mip::{MipCache, MipLevel};
 use attr::AttrPlanes;
 use blend::RgbaRow;
+use mip::{MipCache, MipLevel};
 use resample::{AxisMap, Planes, resample_into, resample_planes};
 use std::sync::Arc;
 
@@ -515,7 +515,8 @@ impl LayerCache {
         // else the source itself, premultiplied here. Adjustments apply after
         // resampling, in png2c64's order (#190).
         let level = place.level();
-        let colour_level = (level != (0, 0)).then(|| timed(stats, clock, || src.colour_level(level)));
+        let colour_level =
+            (level != (0, 0)).then(|| timed(stats, clock, || src.colour_level(level)));
         if colour_level.is_none() && !matches!(&self.premul, Some((s, _)) if Arc::ptr_eq(s, src)) {
             let premul = src
                 .pixels()
@@ -705,7 +706,7 @@ fn plain_layer<'a>(layers: &'a [Layer], regions: &[Region], grid: SuperGrid) -> 
         && tone_only.is_identity()
         // Shrunk past 4× under Auto it samples a mip level, which png2c64 has not (#235).
         && colour_levels(layer, grid) == (0, 0))
-    .then_some(layer)
+        .then_some(layer)
 }
 
 /// png2c64's front end for a plain layer: its 8-bit source scaled straight to the
