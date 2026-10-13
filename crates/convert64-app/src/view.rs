@@ -13,6 +13,11 @@ pub const SCREEN: Vec2 = vec2(320.0, 200.0);
 /// The border drawn around the result in Result mode, in screen units on each side.
 pub const BORDER: f32 = 32.0;
 
+/// The margin *Fit* leaves around the picture in Source mode, as a fraction of the view on
+/// each side (Figma's zoom-to-fit leaves about as much), so the transform handles on the
+/// picture's edge do not sit on the view's edge (#246).
+pub const FIT_MARGIN: f32 = 0.05;
+
 /// Source zoom steps, as scale factors (points per screen unit): 25 %–800 %.
 pub const SOURCE_STEPS: [f32; 10] = [0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0];
 
@@ -148,13 +153,15 @@ impl Camera {
         self.clamp();
     }
 
-    /// Fits the screen in `view` (`Cmd 0`): fractional in Source mode, the largest integer
-    /// step that fits in Result mode (with the border).
+    /// Fits the screen in `view` (`Cmd 0`): fractional in Source mode, leaving
+    /// [`FIT_MARGIN`] of the view free on each side; the largest integer step that fits
+    /// in Result mode (with the border).
     pub fn fit(&mut self, view: Rect, mode: ViewMode) {
         self.centre = (SCREEN / 2.0).to_pos2();
         match mode {
             ViewMode::Source => {
-                let s = (view.width() / SCREEN.x).min(view.height() / SCREEN.y);
+                let room = view.size() * (1.0 - 2.0 * FIT_MARGIN);
+                let s = (room.x / SCREEN.x).min(room.y / SCREEN.y);
                 self.source_zoom = s.clamp(SOURCE_STEPS[0], SOURCE_STEPS[SOURCE_STEPS.len() - 1]);
             }
             ViewMode::Result => {
@@ -307,8 +314,30 @@ mod tests {
         // (320 + 64) × 2 = 768 ≤ 800 and (200 + 64) × 2 = 528 ≤ 600; × 3 does not fit.
         assert_eq!(cam.result_zoom, 2);
         cam.fit(view(), ViewMode::Source);
-        assert!((cam.source_zoom - 2.5).abs() < 1e-6);
-        assert_eq!(cam.percent(ViewMode::Source), 250);
+        // 800 × 600 less 5 % on each side is 720 × 540: 720 / 320 = 2.25.
+        assert!((cam.source_zoom - 2.25).abs() < 1e-6);
+        assert_eq!(cam.percent(ViewMode::Source), 225);
+    }
+
+    #[test]
+    fn source_fit_leaves_a_margin_of_four_to_six_percent() {
+        for size in [vec2(800.0, 600.0), vec2(1100.0, 400.0), vec2(500.0, 900.0)] {
+            let view = Rect::from_min_size(pos2(10.0, 20.0), size);
+            let mut cam = Camera {
+                centre: pos2(3.0, 4.0),
+                source_zoom: 8.0,
+                result_zoom: 8,
+            };
+            cam.fit(view, ViewMode::Source);
+            let picture = cam.picture_rect(view, ViewMode::Source);
+            assert!(view.contains_rect(picture), "{size:?}: {picture:?}");
+            assert_eq!(picture.center(), view.center(), "{size:?}");
+            // On the axis that binds, the gap on each side is 4–6 % of the view.
+            let gap = ((view.width() - picture.width()) / view.width())
+                .min((view.height() - picture.height()) / view.height())
+                / 2.0;
+            assert!((0.04..=0.06).contains(&gap), "{size:?}: {gap}");
+        }
     }
 
     #[test]
