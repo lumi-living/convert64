@@ -549,9 +549,9 @@ impl eframe::App for App {
 /// `--screenshot <file.png> [--theme light|dark] [--size <w>x<h>] [--view result]
 /// [--overlay grid|clashes|ghost]… [--compare split|flicker|side] [--dialog export]
 /// [--tab recipe|layers|export] [--command <json>]… [--zoom <n>] [--centre <x>,<y>]
-/// [--mask] [--tool <name>] [--drag <x0>,<y0>:<x1>,<y1>] [--export <dir>] [--hide-ui]`:
-/// draws a few frames, saves the window as a PNG and quits. The PR screenshots come from
-/// it (#203).
+/// [--mask] [--tool <name>] [--drag <x0>,<y0>:<x1>,<y1>] [--export <dir>]
+/// [--dock-scroll <points>] [--hide-ui]`: draws a few frames, saves the window as a PNG
+/// and quits. The PR screenshots come from it (#203).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
     use std::path::PathBuf;
@@ -636,6 +636,9 @@ mod screenshot {
         /// `--export <dir>`: once the full solve is in, write the Koala (or Art Studio)
         /// file and the self-displaying PRG there.
         pub(super) export: Option<PathBuf>,
+        /// `--dock-scroll <points>`: the dock's tab content scrolled down this far, to
+        /// show a Recipe group below the fold (#237).
+        pub(super) dock_scroll: Option<f32>,
         /// `--hide-ui`: the UI hidden as `Cmd \` hides it, with its toast (#240).
         pub(super) hide_ui: bool,
         frame: u32,
@@ -671,6 +674,7 @@ mod screenshot {
             let mut tool = None;
             let mut drag = None;
             let mut export = None;
+            let mut dock_scroll = None;
             let mut hide_ui = false;
             while let Some(arg) = args.next() {
                 let mut value = || args.next().ok_or(format!("{arg} needs a value"));
@@ -705,6 +709,13 @@ mod screenshot {
                         );
                     }
                     "--export" => export = Some(PathBuf::from(value()?)),
+                    "--dock-scroll" => {
+                        dock_scroll = Some(
+                            value()?
+                                .parse()
+                                .map_err(|_| "--dock-scroll: a number of points")?,
+                        );
+                    }
                     "--zoom" => zoom = Some(value()?.parse().map_err(|_| "--zoom: a number")?),
                     "--centre" => {
                         let v = value()?;
@@ -749,6 +760,7 @@ mod screenshot {
                     drag,
                     drag_frame: 0,
                     export,
+                    dock_scroll,
                     hide_ui,
                     frame: 0,
                 }),
@@ -895,6 +907,7 @@ fn main() -> eframe::Result {
                         app.shell.tool = t;
                     }
                 }
+                app.shell.dock_scroll = request.dock_scroll;
                 if request.mask {
                     app.shell.toggle_mask_mode();
                 }
