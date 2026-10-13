@@ -124,6 +124,34 @@ impl Document {
         self.saved = self.revision;
     }
 
+    /// Layer `layer`'s evaluated mask on the super grid (sources and modifiers applied),
+    /// 16-bit, row-major; `None` if it has no mask or is hidden.
+    pub fn evaluated_mask(&mut self, layer: usize) -> Option<(u32, u32, Vec<u16>)> {
+        self.session.evaluated_mask(layer).ok()
+    }
+
+    /// Loads a greyscale PNG as `layer`'s mask raster (`mask_load`): linked by `path`
+    /// natively, from the session's store in the browser.
+    pub fn load_mask(
+        &mut self,
+        layer: usize,
+        name: &str,
+        bytes: &[u8],
+        path: Option<&Path>,
+    ) -> Result<(), ProjectError> {
+        let path = match path {
+            Some(p) => p.to_owned(),
+            None => {
+                self.session.store().write(Path::new(name), bytes)?;
+                PathBuf::from(name)
+            }
+        };
+        self.run(JsonCommand::MaskLoad {
+            layer: convert64_project::LayerRef::Index(layer),
+            path,
+        })
+    }
+
     /// Adds a picture as a new layer on top (a file dropped on an open project): its
     /// bytes go into the session's store (browser) or it is linked by `path` (native).
     pub fn add_layer(

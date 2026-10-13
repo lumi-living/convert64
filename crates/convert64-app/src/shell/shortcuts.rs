@@ -70,3 +70,7 @@ pub const HIDE_DOCK: KeyboardShortcut = KeyboardShortcut::new(Modifiers::SHIFT, 
 pub const NEXT_WORST: KeyboardShortcut = shift_cmd(Key::CloseBracket);
 /// Previous worst cell.
 pub const PREVIOUS_WORST: KeyboardShortcut = shift_cmd(Key::OpenBracket);
+/// Layer via cut (with a selection).
+pub const VIA_CUT: KeyboardShortcut = shift_cmd(Key::J);
+/// Mask mode on and off.
+pub const MASK_MODE: KeyboardShortcut = bare(Key::M);

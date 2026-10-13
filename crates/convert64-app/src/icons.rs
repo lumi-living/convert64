@@ -13,8 +13,10 @@ use egui_material_icons::icons as m;
 pub const PIN: Icon = m::ICON_KEEP;
 /// Tool: lock a cell (`L`).
 pub const LOCK: Icon = m::ICON_LOCK;
-/// Tool: paint a region (`R`).
-pub const REGION: Icon = m::ICON_BRUSH;
+/// Tool: paint a region (`R`): a recipe painted over the picture.
+pub const REGION: Icon = m::ICON_FORMAT_PAINT;
+/// Mask tool: brush (`B`), ADR-007's "paint mask".
+pub const BRUSH: Icon = m::ICON_BRUSH;
 /// Tool: nudge a layer (`V`).
 pub const NUDGE: Icon = m::ICON_OPEN_WITH;
 /// The 8 × 8 cell grid overlay.
@@ -67,3 +69,13 @@ pub const DELETE: Icon = m::ICON_DELETE;
 pub const MASK: Icon = m::ICON_MASKS;
 /// Mask linked to its layer (the chain beside a mask thumbnail).
 pub const LINK: Icon = m::ICON_LINK;
+/// Mask tool: lasso / polygon (`W`).
+pub const LASSO: Icon = m::ICON_LASSO_SELECT;
+/// Mask tool: gradient (`G`); feather.
+pub const GRADIENT: Icon = m::ICON_GRADIENT;
+/// Mask tool: key (`K`), sampling a colour.
+pub const KEY: Icon = m::ICON_COLORIZE;
+/// Invert a mask.
+pub const INVERT: Icon = m::ICON_INVERT_COLORS;
+/// Fill a mask.
+pub const FILL: Icon = m::ICON_FORMAT_COLOR_FILL;

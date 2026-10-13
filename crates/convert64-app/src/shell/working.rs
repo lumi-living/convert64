@@ -44,7 +44,11 @@ pub(super) fn show(
         shell.camera.fit(view, ViewMode::Result);
     }
     navigate(shell, ui, &response, view);
-    super::tools::interact(shell, ws, ui, &response, view, actions);
+    if shell.mask.tool.is_some() {
+        super::mask::interact(shell, ws, ui, &response, view, actions);
+    } else {
+        super::tools::interact(shell, ws, ui, &response, view, actions);
+    }
 
     let painter = ui.painter_at(view);
     let pointer = response.hover_pos();
@@ -117,7 +121,17 @@ pub(super) fn show(
         Compare::Off => draw(shell, ws, &painter, view, shell.shown()),
     }
 
+    // The quick-mask overlay (UX §7a): over the picture, in the view mode's geometry.
+    if let Some(tex) = shell.mask_overlay {
+        let picture = shell.camera.picture_rect(view, shell.view);
+        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        painter.image(tex, picture, uv, Color32::WHITE);
+    }
     super::tools::draw_drag(shell, ws, &painter, view);
+    let hover = response
+        .hover_pos()
+        .map(|p| shell.camera.to_picture(view, shell.view, p));
+    super::mask::draw(shell, ws, &painter, view, hover);
 
     // The picture point under the pointer, for the status bar.
     shell.hover = pointer.map(|p| {

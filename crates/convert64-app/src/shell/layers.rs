@@ -146,7 +146,7 @@ pub(super) fn show(shell: &mut Shell, ws: &Workspace, ui: &mut Ui, actions: &mut
     }
 
     ui.separator();
-    strip(shell, ui, actions);
+    strip(shell, layers, ui, actions);
 }
 
 /// An item of the drag list: a stack index.
@@ -214,7 +214,8 @@ fn row(
             }
             if layer.mask().is_some() {
                 ui.label(icon(icons::LINK).weak())
-                    .on_hover_text("Has a mask");
+                    .on_hover_text("The mask moves with the layer");
+                mask_thumb(shell, ws, i, ui);
             }
             // Right-aligned parts first, so the name truncates into what is left.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -283,7 +284,7 @@ fn name(shell: &mut Shell, layer: &Layer, i: usize, ui: &mut Ui, actions: &mut V
 }
 
 /// The bottom icon strip: New from file, Duplicate, Layer via mask, Add mask, Delete.
-fn strip(shell: &Shell, ui: &mut Ui, actions: &mut Vec<Action>) {
+fn strip(shell: &mut Shell, layers: &[Layer], ui: &mut Ui, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         let ctx = ui.ctx().clone();
@@ -307,10 +308,24 @@ fn strip(shell: &Shell, ui: &mut Ui, actions: &mut Vec<Action>) {
                 layer: at(shell.layer),
             }));
         }
-        ui.add_enabled(false, b(icons::MASK))
-            .on_disabled_hover_text("Layer via mask: make a selection with the mask tools first");
-        ui.add_enabled(false, b(icons::LINK))
-            .on_disabled_hover_text("Add mask: arrives with the mask tools (#78)");
+        let has_selection = shell.mask.selection.is_some();
+        let via = ui
+            .add_enabled(has_selection, b(icons::MASK))
+            .on_hover_text(tip("Layer via mask", &super::shortcuts::DUPLICATE_LAYER))
+            .on_disabled_hover_text(
+                "Layer via mask: make a selection with the mask tools first (W, G, K)",
+            );
+        if via.clicked() {
+            super::mask::via_mask(shell, false, actions);
+        }
+        let has_mask = layers.get(shell.layer).is_some_and(|l| l.mask().is_some());
+        let add = ui
+            .add_enabled(!has_mask, b(icons::FILL))
+            .on_hover_text("Add mask (from the picture's alpha if it has any)")
+            .on_disabled_hover_text("The layer has a mask: M edits it");
+        if add.clicked() {
+            actions.push(add_mask(layers, shell.layer));
+        }
         let delete = ui.add(b(icons::DELETE)).on_hover_text("Delete (⌫)");
         if delete.clicked() {
             actions.push(Action::Run(JsonCommand::LayerRemove {
@@ -318,4 +333,39 @@ fn strip(shell: &Shell, ui: &mut Ui, actions: &mut Vec<Action>) {
             }));
         }
     });
+}
+
+/// The mask thumbnail: a click edits the mask (mask mode), `Alt`-click shows it alone.
+fn mask_thumb(shell: &mut Shell, ws: &Workspace, i: usize, ui: &mut Ui) {
+    let Some(tex) = ws.mask_thumbnail(i) else {
+        return;
+    };
+    let side = layout::LAYER_ROW_HEIGHT - 8.0;
+    let [w, h] = tex.size().map(|v| v as f32);
+    let s = side / w.max(h);
+    let image = egui::Image::new((tex.id(), egui::vec2(w * s, h * s))).sense(egui::Sense::click());
+    let thumb = ui
+        .add(image)
+        .on_hover_text("Edit mask · Alt-click: the mask alone");
+    if thumb.clicked() {
+        shell.layer = i;
+        shell.mask.alone = ui.input(|inp| inp.modifiers.alt);
+        if !shell.mask.active {
+            shell.toggle_mask_mode();
+        }
+    }
+}
+
+/// Add mask (UX §6): from the picture's alpha if any pixel is transparent, otherwise
+/// fully opaque.
+pub(super) fn add_mask(layers: &[Layer], i: usize) -> Action {
+    let layer = at(i);
+    let alpha = layers
+        .get(i)
+        .is_some_and(|l| l.source().pixels().iter().any(|p| p[3] < 1.0));
+    Action::Run(if alpha {
+        JsonCommand::MaskFromAlpha { layer }
+    } else {
+        JsonCommand::MaskClear { layer, value: 1.0 }
+    })
 }

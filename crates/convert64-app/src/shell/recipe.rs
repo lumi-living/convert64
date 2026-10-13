@@ -202,6 +202,7 @@ pub(super) fn show(shell: &mut Shell, ws: &Workspace, ui: &mut Ui, actions: &mut
     );
 
     adjustments(&mut f, shell, ws, layer, ui);
+    mask_group(&mut f, shell, ws, layer, ui);
     dither(&mut f, layer.recipe(), ui);
     fitting(&mut f, layer.recipe(), ws, ui);
     advanced(&mut f, layer, &project.solve, ui);
@@ -579,6 +580,189 @@ fn curves(f: &mut Form, shell: &mut Shell, c: &Curves, ui: &mut Ui) {
         let mut pts = points.clone();
         pts.remove(idx);
         set(f, None, pts);
+    }
+}
+
+/// The Mask group (UX §6 item 3): modifiers, the sources list and Edit mask; a layer
+/// without a mask shows one button, Add mask.
+fn mask_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, ui: &mut Ui) {
+    use convert64_core::command::ModifierChange;
+    use convert64_core::mask::{MaskSource, Modifiers, SnapToCells};
+    let Some(mask) = layer.mask() else {
+        let _ = group(ui, "Mask", false, true, |ui| {
+            ui.label(
+                RichText::new("No mask: the whole layer shows.")
+                    .small()
+                    .weak(),
+            );
+            if ui.button("Add mask").clicked() {
+                let layers = &ws.doc.session().project().layers;
+                f.actions.push(super::layers::add_mask(layers, f.layer));
+            }
+            false
+        });
+        return;
+    };
+    let m = mask.modifiers();
+    let d = Modifiers::default();
+    let changed = m != d || !mask.sources().is_empty();
+    let modifier = |f: &mut Form, g: Option<&str>, modifier: ModifierChange| {
+        let layer = LayerRef::Index(f.layer);
+        f.emit(g, JsonCommand::MaskSetModifier { layer, modifier });
+    };
+    let reset = group(ui, "Mask", changed, true, |ui| {
+        let edit = if shell.mask.active {
+            "Done editing"
+        } else {
+            "Edit mask (M)"
+        };
+        if ui.button(edit).clicked() {
+            shell.toggle_mask_mode();
+        }
+        commit(
+            f,
+            "mask feather",
+            slider(
+                ui,
+                "Feather",
+                m.feather(),
+                d.feather(),
+                0.0..=32.0,
+                " px",
+                1,
+            ),
+            |f, g, v| {
+                modifier(f, g, ModifierChange::Feather(v));
+            },
+        );
+        ui.horizontal(|ui| {
+            let lab = label(ui, "Invert", m.invert() != d.invert());
+            let mut v = m.invert();
+            if ui.checkbox(&mut v, "").changed() || (lab.double_clicked() && m.invert()) {
+                modifier(f, None, ModifierChange::Invert(v && !lab.double_clicked()));
+            }
+        });
+        ui.horizontal(|ui| {
+            let lab = label(ui, "Snap to cells", m.snap() != d.snap());
+            egui::ComboBox::from_id_salt("mask_group_snap")
+                .selected_text(format!("{:?}", m.snap()))
+                .show_ui(ui, |ui| {
+                    for s in [
+                        SnapToCells::Off,
+                        SnapToCells::Expand,
+                        SnapToCells::Contract,
+                        SnapToCells::Nearest,
+                    ] {
+                        if ui
+                            .selectable_label(m.snap() == s, format!("{s:?}"))
+                            .clicked()
+                            && m.snap() != s
+                        {
+                            modifier(f, None, ModifierChange::Snap(s));
+                        }
+                    }
+                });
+            if lab.double_clicked() && m.snap() != d.snap() {
+                modifier(f, None, ModifierChange::Snap(d.snap()));
+            }
+        });
+        let lv = m.levels();
+        commit(
+            f,
+            "mask black",
+            slider(
+                ui,
+                "Levels black",
+                lv.black() * 255.0,
+                0.0,
+                0.0..=254.0,
+                "",
+                0,
+            ),
+            |f, g, v| {
+                let black = (v / 255.0).min(lv.white() - 1.0 / 255.0);
+                if let Ok(x) = Levels::new(black, lv.white(), lv.gamma()) {
+                    modifier(f, g, ModifierChange::Levels(x));
+                }
+            },
+        );
+        commit(
+            f,
+            "mask white",
+            slider(
+                ui,
+                "Levels white",
+                lv.white() * 255.0,
+                255.0,
+                1.0..=255.0,
+                "",
+                0,
+            ),
+            |f, g, v| {
+                let white = (v / 255.0).max(lv.black() + 1.0 / 255.0);
+                if let Ok(x) = Levels::new(lv.black(), white, lv.gamma()) {
+                    modifier(f, g, ModifierChange::Levels(x));
+                }
+            },
+        );
+        if !mask.sources().is_empty() {
+            use convert64_core::mask::Combine;
+            ui.label(RichText::new("Sources").small().weak());
+            for (k, e) in mask.sources().iter().enumerate() {
+                let what = match e.source {
+                    MaskSource::Gradient(_) => "Gradient",
+                    MaskSource::Key(_) => "Key",
+                };
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{}. {what}", k + 1)).small());
+                    egui::ComboBox::from_id_salt(("mask_source_combine", k))
+                        .selected_text(RichText::new(format!("{:?}", e.combine)).small())
+                        .width(0.0)
+                        .show_ui(ui, |ui| {
+                            for c in [Combine::Max, Combine::Min, Combine::Multiply] {
+                                if ui
+                                    .selectable_label(e.combine == c, format!("{c:?}"))
+                                    .clicked()
+                                    && e.combine != c
+                                {
+                                    let layer = LayerRef::Index(f.layer);
+                                    f.emit(
+                                        None,
+                                        JsonCommand::MaskSourceSetCombine {
+                                            layer,
+                                            index: k,
+                                            combine: c,
+                                        },
+                                    );
+                                }
+                            }
+                        });
+                    let delete = egui::Button::new(super::icon(crate::icons::DELETE)).frame(false);
+                    if ui.add(delete).on_hover_text("Remove this source").clicked() {
+                        let layer = LayerRef::Index(f.layer);
+                        f.emit(None, JsonCommand::MaskSourceRemove { layer, index: k });
+                    }
+                });
+            }
+        }
+        reset_button(ui, m != d)
+    });
+    if reset {
+        let layer = LayerRef::Index(f.layer);
+        let set = |modifier| JsonCommand::MaskSetModifier {
+            layer: layer.clone(),
+            modifier,
+        };
+        let commands = vec![
+            set(ModifierChange::Invert(d.invert())),
+            set(ModifierChange::Snap(d.snap())),
+            set(ModifierChange::Feather(d.feather())),
+            set(ModifierChange::Levels(d.levels())),
+        ];
+        f.actions.push(Action::RunAll(
+            commands,
+            "Reset the mask's modifiers".to_owned(),
+        ));
     }
 }
 

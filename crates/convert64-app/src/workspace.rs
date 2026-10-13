@@ -26,6 +26,10 @@ pub struct Workspace {
     result: Option<(*const Solution, TextureHandle)>,
     /// One thumbnail per layer, bottom first, keyed by the source it shows.
     thumbs: Vec<(*const convert64_core::SourceImage, TextureHandle)>,
+    /// One mask thumbnail per layer with a mask, rebuilt on every edit.
+    mask_thumbs: (u64, Vec<Option<TextureHandle>>),
+    /// The quick-mask overlay: for which revision, layer and style, and its texture.
+    mask_overlay: Option<((u64, usize, bool), TextureHandle)>,
 }
 
 impl std::fmt::Debug for Workspace {
@@ -64,6 +68,8 @@ impl Workspace {
             source: None,
             result: None,
             thumbs: Vec::new(),
+            mask_thumbs: (u64::MAX, Vec::new()),
+            mask_overlay: None,
         }
     }
 
@@ -96,6 +102,18 @@ impl Workspace {
             thumbs.push((ptr, tex));
         }
         self.thumbs = thumbs;
+        if self.mask_thumbs.0 != rev {
+            let masks = layers
+                .iter()
+                .map(|l| {
+                    let mask = l.mask()?;
+                    let (w, h, rgba) = mask_thumbnail(mask, THUMB);
+                    let image = ColorImage::from_rgba_unmultiplied([w, h], &rgba);
+                    Some(ctx.load_texture("mask", image, TextureOptions::LINEAR))
+                })
+                .collect();
+            self.mask_thumbs = (rev, masks);
+        }
         if let Some(sol) = &self.solution {
             let ptr = Arc::as_ptr(sol);
             if self.result.as_ref().is_none_or(|(p, _)| *p != ptr) {
@@ -106,6 +124,41 @@ impl Workspace {
                 self.result = Some((ptr, tex));
             }
         }
+    }
+
+    /// The quick-mask overlay of `layer` for mask mode (UX §7a): red at 50 % where the
+    /// mask hides the layer, or with `alone` the mask itself in grey. On the super grid,
+    /// covering the screen. `None` if the layer has no mask.
+    pub fn mask_overlay(
+        &mut self,
+        ctx: &egui::Context,
+        layer: usize,
+        alone: bool,
+    ) -> Option<&TextureHandle> {
+        let key = (self.doc.revision(), layer, alone);
+        if self.mask_overlay.as_ref().is_none_or(|(k, _)| *k != key) {
+            let (w, h, values) = self.doc.evaluated_mask(layer)?;
+            let rgba: Vec<u8> = values
+                .iter()
+                .flat_map(|&v| {
+                    let m = (v >> 8) as u8;
+                    if alone {
+                        [m, m, m, 255]
+                    } else {
+                        [255, 0, 0, (255 - m) / 2]
+                    }
+                })
+                .collect();
+            let image = ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+            let tex = ctx.load_texture("mask_overlay", image, TextureOptions::LINEAR);
+            self.mask_overlay = Some((key, tex));
+        }
+        self.mask_overlay.as_ref().map(|(_, t)| t)
+    }
+
+    /// Layer `i`'s mask thumbnail, if it has a mask.
+    pub fn mask_thumbnail(&self, i: usize) -> Option<&TextureHandle> {
+        self.mask_thumbs.1.get(i)?.as_ref()
     }
 
     /// Layer `i`'s thumbnail (stack index, bottom first).
@@ -248,6 +301,31 @@ fn thumbnail(src: &convert64_core::SourceImage, side: u32) -> (usize, usize, Vec
                 [0; 3]
             };
             out.extend([rgb[0], rgb[1], rgb[2], (a * 255.0).round() as u8]);
+        }
+    }
+    (tw as usize, th as usize, out)
+}
+
+/// A mask's raster with its invert applied, box-filtered to fit `side`, as grey RGBA.
+fn mask_thumbnail(mask: &convert64_core::Mask, side: u32) -> (usize, usize, Vec<u8>) {
+    let raster = mask.raster();
+    let (w, h) = raster.size();
+    let s = (side as f32 / w.max(h) as f32).min(1.0);
+    let (tw, th) = (
+        ((w as f32 * s).round() as u32).max(1),
+        ((h as f32 * s).round() as u32).max(1),
+    );
+    let invert = mask.modifiers().invert();
+    let mut out = Vec::with_capacity((tw * th * 4) as usize);
+    for ty in 0..th {
+        for tx in 0..tw {
+            let (x, y) = ((tx * w / tw).min(w - 1), (ty * h / th).min(h - 1));
+            let mut v = raster.get(x, y);
+            if invert {
+                v = 1.0 - v;
+            }
+            let g = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            out.extend([g, g, g, 255]);
         }
     }
     (tw as usize, th as usize, out)
