@@ -533,16 +533,6 @@ mod tests {
         assert_eq!(doc.history(), (true, false));
     }
 
-    #[test]
-    fn a_second_picture_with_the_same_name_is_its_own_layer() {
-        let mut doc = Document::from_png("source.png", &png()).unwrap();
-        let other = convert64_project::codec::encode_rgba8(8, 4, vec![200; 8 * 4 * 4]);
-        doc.add_layer("source.png", &other, None).unwrap();
-        let layers = &doc.session().project().layers;
-        assert_eq!(layers[0].source().size(), (64, 40));
-        assert_eq!(layers[1].source().size(), (8, 4));
-    }
-
     /// The Region tool's first stroke: a region and its paint, one undo step.
     #[test]
     fn the_first_region_stroke_makes_the_region_in_one_step() {

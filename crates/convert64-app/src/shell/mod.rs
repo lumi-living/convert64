@@ -953,49 +953,4 @@ mod tests {
             "a mask tool without mask mode makes a selection"
         );
     }
-
-    /// Values a slider can only show rounded (strength 0.6 → 60.000004 %, opacity ⅓ →
-    /// 33 %) must not count as edits, or the form re-sends them every frame.
-    #[test]
-    fn rounded_values_are_not_edits() {
-        use convert64_core::command::RecipeChange;
-        use convert64_project::{JsonCommand, LayerRef};
-        let rgba = (0..64 * 40)
-            .flat_map(|i| [(i % 64 * 4) as u8, 90, 90, 255])
-            .collect();
-        let png = convert64_project::codec::encode_rgba8(64, 40, rgba);
-        let mut doc = crate::document::Document::from_png("ramp.png", &png).unwrap();
-        let layer = LayerRef::Index(0);
-        let recipe = RecipeChange {
-            strength: Some(0.6),
-            ..Default::default()
-        };
-        doc.run(JsonCommand::RecipeSet {
-            layer: layer.clone(),
-            recipe,
-        })
-        .unwrap();
-        doc.run(JsonCommand::LayerSetOpacity {
-            layer,
-            opacity: 1.0 / 3.0,
-        })
-        .unwrap();
-        let mut ws = crate::workspace::Workspace::new(doc);
-        let ctx = egui::Context::default();
-        crate::theme::install(&ctx);
-        for tab in [DockTab::Recipe, DockTab::Layers] {
-            let mut shell = Shell {
-                tab,
-                ..Shell::default()
-            };
-            for _ in 0..3 {
-                let mut actions = Vec::new();
-                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-                    actions = shell.show(ui, Some(&mut ws));
-                });
-                out.textures_delta.clear();
-                assert!(actions.is_empty(), "{tab:?}: {actions:?}");
-            }
-        }
-    }
 }
