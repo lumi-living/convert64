@@ -68,6 +68,8 @@ For a PNG, a `.kla` or `.art` output also picks the mode when `--mode` is not gi
 | `--smooth` | `recipe.smooth` | native solver |
 | `--gamma` | each layer's `adjustments.gamma` | 0.1–8 |
 | `--match-range` | `adjustments.match_range` | |
+| `--rotate` | each layer's `transform.rotate`, through `layer_rotate` after the project's own commands (#198) | Degrees, clockwise on screen, about the layer's anchor; the project's `snap` applies |
+| `--anchor` | each layer's `transform.anchor`, through `layer_rotate` (the picture stays in place) | `X,Y`, 0–1 across the layer's box: `0,0` top-left, `0.5,0.5` the centre (default). Alone, it moves the pivot and keeps the angle |
 | `--bg` | `solve.background` | `auto` or 0–15 |
 | `--hysteresis` | `solve.hysteresis` | (0, 1]; native solver |
 | `--supersample` | `supersample` | 1–8 |
@@ -153,7 +155,7 @@ One command exports a whole directory to every assembler: `convert64 export art 
 convert64 apply <project.convert64> [--commands steps.json] [--command '<json>']… [-o out.convert64 | --in-place] [--embed | --link]
 ```
 
-Runs commands from the core's registry on a project, exactly as the app runs them (ADR-005), and saves it. Every registry command is available here: masks (`mask_*`, `layer_via_mask`), cell steering (`cell_*`), layers (`layer_add`, `layer_remove`, `layer_reorder`, `layer_set_visible`, `layer_set_opacity`, `layer_set_blend`, `layer_set_transform`, `layer_nudge`, `layer_rename`, `layer_duplicate`), `adjustments_set`, `recipe_set`, and the document's settings (`mode_set`, `palette_set`, `background_pin`, `solve_set`). The `*_set` commands change the fields they name and keep the rest (`null` clears an optional one, such as `solve_set`'s `hysteresis`). This is the CLI's half of GUI/CLI parity: `crates/convert64-cli/tests/parity.rs` fails if a registry command cannot run through it or through the MCP server, or gives a different project than the core in-process.
+Runs commands from the core's registry on a project, exactly as the app runs them (ADR-005), and saves it. Every registry command is available here: masks (`mask_*`, `layer_via_mask`), cell steering (`cell_*`), layers (`layer_add`, `layer_remove`, `layer_reorder`, `layer_set_visible`, `layer_set_opacity`, `layer_set_blend`, `layer_set_transform`, `layer_rotate`, `layer_nudge`, `layer_rename`, `layer_duplicate`), `adjustments_set`, `recipe_set`, and the document's settings (`mode_set`, `palette_set`, `background_pin`, `solve_set`, `snap_set`). `layer_set_transform` and `layer_rotate` round the transform they write to the project's `snap` (ADR-011), or to their own `snap` argument when given; `layer_nudge` moves by exactly what it is given. The `*_set` commands change the fields they name and keep the rest (`null` clears an optional one, such as `solve_set`'s `hysteresis`). This is the CLI's half of GUI/CLI parity: `crates/convert64-cli/tests/parity.rs` fails if a registry command cannot run through it or through the MCP server, or gives a different project than the core in-process.
 
 Commands are `{"command": "<name>", …arguments}` objects. `--commands FILE` holds an array of them (paths inside, such as `mask_load`'s, are relative to the file); each `--command` adds one (paths relative to the working directory); the file's run first. Without `-o` or `--in-place` nothing is written and the commands are only checked. A failing command names itself and its index, and nothing is written (exit 2).
 

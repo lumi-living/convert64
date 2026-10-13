@@ -153,11 +153,34 @@ fn transform_schema() -> Value {
                 "x": { "type": "number", "exclusiveMinimum": 0 },
                 "y": { "type": "number", "exclusiveMinimum": 0 }
             }), &["x", "y"]),
+            "rotate": { "type": "number", "default": 0,
+                        "description": "Degrees about the anchor, clockwise on screen (ADR-011)" },
+            "anchor": anchor_schema(),
             "flip_h": { "type": "boolean", "default": false },
             "flip_v": { "type": "boolean", "default": false }
         }),
         &[],
     )
+}
+
+/// A pivot: fractions of the layer's box, `(0, 0)` its top-left.
+fn anchor_schema() -> Value {
+    let mut s = object_schema(
+        json!({
+            "x": { "type": "number", "minimum": 0, "maximum": 1 },
+            "y": { "type": "number", "minimum": 0, "maximum": 1 }
+        }),
+        &["x", "y"],
+    );
+    s["description"] = json!(
+        "The pivot of the rotation, 0–1 across the layer's box ({x: 0.5, y: 0.5} the centre)"
+    );
+    s
+}
+
+/// A transform snap (ADR-011), not a mask's `snap_to_cells`.
+fn transform_snap_schema(description: &str) -> Value {
+    enum_schema(&["off", "c64-pixel", "cell"], description)
 }
 
 fn blend_schema() -> Value {
@@ -433,8 +456,17 @@ pub fn command_schema(name: &str) -> Option<Value> {
             &["layer", "blend"],
         ),
         "layer_set_transform" => object_schema(
-            json!({ "layer": layer(), "transform": transform_schema() }),
+            json!({ "layer": layer(), "transform": transform_schema(),
+                    "snap": transform_snap_schema("Snap this way instead of by the project's setting") }),
             &["layer", "transform"],
+        ),
+        "layer_rotate" => object_schema(
+            json!({ "layer": layer(),
+                    "degrees": { "type": "number", "description": "The angle, clockwise on screen (or the change, with relative)" },
+                    "relative": { "type": "boolean", "default": false, "description": "Add degrees to the rotation instead of setting it" },
+                    "anchor": anchor_schema(),
+                    "snap": transform_snap_schema("Snap this way instead of by the project's setting") }),
+            &["layer", "degrees"],
         ),
         "layer_nudge" => object_schema(
             json!({ "layer": layer(), "by": point_schema() }),
@@ -476,6 +508,10 @@ pub fn command_schema(name: &str) -> Option<Value> {
                 }
             }),
             &["background"],
+        ),
+        "snap_set" => object_schema(
+            json!({ "snap": transform_snap_schema("What layer_set_transform and layer_rotate round to: off, whole target pixels and 0.5° (c64-pixel), or cells and 15° (cell)") }),
+            &["snap"],
         ),
         "solve_set" => object_schema(
             json!({
@@ -531,8 +567,10 @@ pub fn example(name: &str) -> Option<Value> {
         "layer_set_opacity" => json!({ "layer": 0, "opacity": 0.5 }),
         "layer_set_blend" => json!({ "layer": 1, "blend": "multiply" }),
         "layer_set_transform" => json!({ "layer": 0, "transform": {
-            "translate": { "x": 8, "y": 4 }, "scale": { "x": 2.5, "y": 2.5 }, "flip_h": true } }),
+            "translate": { "x": 8, "y": 4 }, "scale": { "x": 2.5, "y": 2.5 }, "rotate": -12.5,
+            "anchor": { "x": 0, "y": 1 }, "flip_h": true } }),
         "layer_nudge" => json!({ "layer": 0, "by": { "x": 0.5, "y": -1 } }),
+        "layer_rotate" => json!({ "layer": 0, "degrees": 2.5, "anchor": { "x": 0.5, "y": 1 } }),
         "layer_rename" => json!({ "layer": 0, "name": "background" }),
         "layer_duplicate" => json!({ "layer": 0 }),
         "adjustments_set" => json!({ "layer": 0, "adjustments": { "gamma": 1.4,
@@ -544,6 +582,7 @@ pub fn example(name: &str) -> Option<Value> {
         "background_pin" => json!({ "background": { "fixed": 0 } }),
         "solve_set" => json!({ "solver": "native", "divergences": { "chroma_guard": true },
             "hysteresis": 0.97 }),
+        "snap_set" => json!({ "snap": "c64-pixel" }),
         _ => return None,
     };
     let mut v = json!({ "command": name });
