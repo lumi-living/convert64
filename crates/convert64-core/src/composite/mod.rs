@@ -541,7 +541,7 @@ impl LayerCache {
                 Some(values)
             },
         );
-        adjust_planes(&mut rgba, rect.width() as usize, adj);
+        adjust_planes(&mut rgba, rect.width() as usize, adj, grid.n());
         let raster = LayerRaster {
             rect,
             rgba,
@@ -554,9 +554,11 @@ impl LayerCache {
 /// A layer's front end on its resampled, premultiplied planes (`width` wide): png2c64's
 /// preprocessing, then the layer's own adjustments, in png2c64's order (#190, ADR-012).
 ///
-/// 1. png2c64's `preprocess::apply` with the layer's gamma and its other settings
-///    neutral: the gamma (an exact `powf`), then the OKLab round trip and clamp png2c64
-///    puts every pixel through. #228's sharpen belongs between the two.
+/// 1. png2c64's preprocessing with the layer's gamma and sharpen and its other settings
+///    neutral: the gamma (an exact `powf`), the sharpen (#228; png2c64's 3 × 3 at the
+///    target grid, its taps `n` super pixels apart on an `n ×` grid, or a Gaussian, the
+///    blur weighted by alpha so a transparent surround pulls in no halo), then the OKLab
+///    round trip and clamp png2c64 puts every pixel through.
 /// 2. The rest of the layer's adjustments (levels, brightness and contrast, hue,
 ///    saturation and lightness, curves), which png2c64 does not have.
 /// 3. Range matching, png2c64's `match_range_to` over the layer's covered pixels.
@@ -564,8 +566,9 @@ impl LayerCache {
 /// A layer fitted to the screen therefore leaves this step as png2c64's prepared image
 /// (`png2c64_ref::prepare`), and every frame counts as prepared: the reference solver
 /// does not repeat the round trip. Fully transparent pixels stay transparent, so the
-/// planes' extents still hold.
-fn adjust_planes(planes: &mut Planes, width: usize, adj: &Adjustments) {
+/// planes' extents still hold; the sharpen stays inside the layer's rectangle, so the
+/// cells an adjustment can change are the rectangle's.
+fn adjust_planes(planes: &mut Planes, width: usize, adj: &Adjustments, n: u8) {
     use crate::solve::png2c64_ref::{Image, preprocess};
     let len = planes.a.len();
     if len == 0 {
@@ -579,16 +582,23 @@ fn adjust_planes(planes: &mut Planes, width: usize, adj: &Adjustments) {
             [0.0; 3]
         }
     };
-    let mut im = Image::new(width, len / width, (0..len).map(straight).collect());
+    let height = len / width;
+    let mut im = Image::new(width, height, (0..len).map(straight).collect());
+    // png2c64's order: gamma, sharpen, then the round trip (`preprocess::apply` with
+    // gamma 1 skips the power and, with no sharpen, does the rest).
+    preprocess::apply_gamma(&mut im, adj.gamma.get());
+    adj.sharpen
+        .apply_rgb(&mut im.px, &planes.a, (width, height), u32::from(n));
     preprocess::apply(
         &mut im,
         &preprocess::Settings {
-            gamma: adj.gamma.get(),
+            gamma: 1.0,
             ..preprocess::Settings::default()
         },
     );
     let rest = Adjustments {
         gamma: crate::layer::Gamma::IDENTITY,
+        sharpen: crate::layer::Sharpen::default(),
         match_range: None,
         ..adj.clone()
     }
@@ -626,7 +636,8 @@ fn adjust_planes(planes: &mut Planes, width: usize, adj: &Adjustments) {
 /// The one layer a plain project consists of, if it is plain (#190): a bitmap mode, no
 /// regions, one visible layer that is fully opaque 8-bit sRGB, filling the screen
 /// exactly (no offset, no flip, no rotation: #198), at full opacity, Normal blend, with no mask and no
-/// adjustment but gamma and range matching. Such a project gets png2c64's front end.
+/// adjustment but gamma, png2c64's sharpen (its kernel, no threshold: #228) and range
+/// matching. Such a project gets png2c64's front end.
 fn plain_layer<'a>(layers: &'a [Layer], regions: &[Region], grid: SuperGrid) -> Option<&'a Layer> {
     use crate::mode::Mode;
     if !matches!(grid.target(), Mode::MulticolorBitmap | Mode::HiresBitmap) || !regions.is_empty() {
@@ -640,10 +651,12 @@ fn plain_layer<'a>(layers: &'a [Layer], regions: &[Region], grid: SuperGrid) -> 
     let src = layer.source();
     let (w, h) = src.size();
     let t = layer.transform();
+    let adj = layer.adjustments();
     let tone_only = Adjustments {
         gamma: crate::layer::Gamma::IDENTITY,
+        sharpen: crate::layer::Sharpen::default(),
         match_range: None,
-        ..layer.adjustments().clone()
+        ..adj.clone()
     };
     (src.srgb8().is_some()
         && layer.opacity() == 1.0
@@ -654,13 +667,14 @@ fn plain_layer<'a>(layers: &'a [Layer], regions: &[Region], grid: SuperGrid) -> 
         && t.rotate() == 0.0
         && !t.flip_h()
         && !t.flip_v()
+        && (adj.sharpen.is_off() || adj.sharpen.is_png2c64())
         && tone_only.is_identity())
     .then_some(layer)
 }
 
 /// png2c64's front end for a plain layer: its 8-bit source scaled straight to the
-/// target with its Mitchell bicubic, then its preprocessing with the layer's gamma, then
-/// range matching onto the layer's targets (`solve::png2c64_ref::prepare`).
+/// target with its Mitchell bicubic, then its preprocessing with the layer's gamma and
+/// sharpen, then range matching onto the layer's targets (`solve::png2c64_ref::prepare`).
 fn png2c64_front_end(layer: &Layer, grid: SuperGrid) -> Vec<[f32; 3]> {
     use crate::solve::png2c64_ref::{prepare, preprocess, quantize::Mode as RefMode};
     let src = layer.source();
@@ -677,6 +691,7 @@ fn png2c64_front_end(layer: &Layer, grid: SuperGrid) -> Vec<[f32; 3]> {
         mode,
         &preprocess::Settings {
             gamma: adj.gamma.get(),
+            sharpen: adj.sharpen.amount(),
             ..preprocess::Settings::default()
         },
         None,
@@ -974,7 +989,8 @@ impl Compositor {
     }
 
     /// Whether a plain project (one opaque 8-bit layer filling the screen, no mask, no
-    /// regions, no adjustment but gamma and range matching) takes png2c64's front end
+    /// regions, no adjustment but gamma, png2c64's sharpen and range matching) takes
+    /// png2c64's front end
     /// (#190; on by default) or the supersampled composite like any other. The next
     /// update recomposites everything when this changes.
     pub fn set_png2c64_front_end(&mut self, on: bool) {
@@ -1795,16 +1811,25 @@ mod tests {
     /// and without gamma and range matching.
     #[test]
     fn the_general_path_is_png2c64_s_front_end_for_a_plain_layer() {
-        use crate::layer::{Gamma, RangeMatch};
+        use crate::layer::{Gamma, RangeMatch, Sharpen};
         use crate::solve::png2c64_ref::{prepare, preprocess, quantize::Mode as RefMode};
         for (mode, rm) in [
             (Mode::MulticolorBitmap, RefMode::Multicolor),
             (Mode::HiresBitmap, RefMode::Hires),
         ] {
-            for (gamma, range) in [(1.0, false), (1.5, false), (1.5, true)] {
+            // With #228's sharpen too: png2c64's kernel, both ways.
+            for (gamma, range, sharpen) in [
+                (1.0, false, 0.0),
+                (1.5, false, 0.0),
+                (1.5, true, 0.0),
+                (1.5, false, 0.5),
+                (1.5, false, -0.5),
+                (1.0, true, 0.5),
+            ] {
                 let mut layer = plain();
                 let mut adj = layer.adjustments().clone();
                 adj.gamma = Gamma::new(gamma).unwrap();
+                adj.sharpen = Sharpen::png2c64(sharpen).unwrap();
                 let targets = [(0.1, 0.9), (-0.2, 0.2), (-0.25, 0.25)];
                 adj.match_range = range.then(|| {
                     RangeMatch::new(0.01, [0.1, 0.9], [-0.2, 0.2], [-0.25, 0.25]).unwrap()
@@ -1821,6 +1846,7 @@ mod tests {
                     rm,
                     &preprocess::Settings {
                         gamma,
+                        sharpen,
                         ..preprocess::Settings::default()
                     },
                     None,
@@ -1830,7 +1856,11 @@ mod tests {
                 }
                 let got = c.frame().colour();
                 let same = got.iter().zip(&want.px).filter(|(a, b)| a == b).count();
-                assert_eq!(same, want.px.len(), "{mode} gamma {gamma} range {range}");
+                assert_eq!(
+                    same,
+                    want.px.len(),
+                    "{mode} gamma {gamma} range {range} sharpen {sharpen}"
+                );
             }
         }
     }
@@ -1927,6 +1957,139 @@ mod tests {
             let mut c = Compositor::new(g);
             c.update(&layers, &regions);
             assert!(c.front.is_none(), "{what}");
+        }
+    }
+
+    /// #228: a plain layer sharpened with png2c64's kernel and no threshold keeps
+    /// png2c64's front end, with the amount in its preprocessing; a Gaussian radius or a
+    /// threshold, which png2c64 does not have, is composited.
+    #[test]
+    fn png2c64_sharpen_keeps_the_front_end() {
+        use crate::layer::{Radius, Sharpen};
+        use crate::solve::png2c64_ref::{prepare, preprocess, quantize::Mode as RefMode};
+        let base = plain();
+        let with = |s: Sharpen| {
+            let mut l = base.clone();
+            l.set_adjustments(Adjustments {
+                sharpen: s,
+                ..base.adjustments().clone()
+            });
+            l
+        };
+        let g = grid(Mode::MulticolorBitmap, 4);
+        for amount in [0.5, -0.5] {
+            let layer = with(Sharpen::png2c64(amount).unwrap());
+            let mut c = Compositor::new(g);
+            c.update(std::slice::from_ref(&layer), &[]);
+            assert!(c.front.is_some(), "{amount}");
+            let want = prepare(
+                layer.source().srgb8().unwrap(),
+                (200, 125),
+                RefMode::Multicolor,
+                &preprocess::Settings {
+                    sharpen: amount,
+                    ..preprocess::Settings::default()
+                },
+                None,
+            );
+            assert_eq!(c.frame().colour(), &want.px[..], "{amount}");
+            // The sharpen changed the prepared image.
+            let mut plain_c = Compositor::new(g);
+            plain_c.update(std::slice::from_ref(&base), &[]);
+            assert_ne!(plain_c.frame().colour(), c.frame().colour(), "{amount}");
+        }
+        for s in [
+            Sharpen::new(0.5, Radius::gaussian(0.8).unwrap(), 0.0).unwrap(),
+            Sharpen::new(0.5, Radius::Png2c64, 0.01).unwrap(),
+        ] {
+            let mut c = Compositor::new(g);
+            c.update(&[with(s)], &[]);
+            assert!(c.front.is_none(), "{s:?}");
+        }
+    }
+
+    /// #228: sharpening edits, a nudge of a sharpened layer and turning the sharpen
+    /// off update exactly the cells whose output changed, as a full recomposite, and
+    /// stay inside the layer's footprint: the sharpen never spreads past the layer's
+    /// rectangle, so its dirty region is that rectangle's cells.
+    #[test]
+    fn sharpen_updates_equal_a_full_recomposite() {
+        use crate::layer::{Radius, Sharpen};
+        for mode in [Mode::HiresBitmap, Mode::MulticolorBitmap] {
+            let g = grid(mode, 2);
+            let (w, h) = (40, 30);
+            let bg = Layer::new("bg", solid(320, 200, [0.1, 0.2, 0.3, 1.0]));
+            let top = layer_of(
+                pattern(w, h),
+                w,
+                h,
+                Transform::translated(Vec2::new(64.25, 40.5)).unwrap(),
+            );
+            let mut layers = vec![bg, top];
+            let mut c = Compositor::new(g);
+            c.update(&layers, &[]);
+            let set = |l: &mut Vec<Layer>, s: Sharpen| {
+                let a = Adjustments {
+                    sharpen: s,
+                    ..l[1].adjustments().clone()
+                };
+                l[1].set_adjustments(a);
+            };
+            type Edit = Box<dyn Fn(&mut Vec<Layer>)>;
+            let edits: [(&str, Edit); 5] = [
+                (
+                    "png2c64",
+                    Box::new(move |l| set(l, Sharpen::png2c64(1.0).unwrap())),
+                ),
+                (
+                    "gaussian",
+                    Box::new(move |l| {
+                        set(
+                            l,
+                            Sharpen::new(1.0, Radius::gaussian(0.8).unwrap(), 0.0).unwrap(),
+                        );
+                    }),
+                ),
+                (
+                    "nudge",
+                    Box::new(|l| {
+                        let t = l[1].transform().nudged(Vec2::new(0.25, 0.0)).unwrap();
+                        l[1].set_transform(t);
+                    }),
+                ),
+                (
+                    "soften",
+                    Box::new(move |l| set(l, Sharpen::png2c64(-1.0).unwrap())),
+                ),
+                ("off", Box::new(move |l| set(l, Sharpen::default()))),
+            ];
+            for (name, edit) in edits {
+                let (_, before) = full(g, &layers, &[]);
+                let footprint = |l: &[Layer]| {
+                    let (_, rect) = placement(&l[1], g);
+                    CellSet::from_super_rect(g, rect)
+                };
+                let mut allowed = footprint(&layers);
+                edit(&mut layers);
+                allowed = allowed.union(footprint(&layers));
+                let reported = c.update(&layers, &[]);
+                let (canvas, frame) = full(g, &layers, &[]);
+                assert!(c.canvas() == &canvas, "{mode} {name}: canvas");
+                assert!(c.frame() == &frame, "{mode} {name}: frame");
+                let (tw, th) = g.target_size();
+                let changed: CellSet = before
+                    .differing(&frame, PxRect::of_size(tw, th))
+                    .into_iter()
+                    .filter_map(|(x, y)| g.target_px_to_cell(x, y))
+                    .collect();
+                assert_eq!(reported, changed, "{mode} {name}");
+                assert!(!reported.is_empty(), "{mode} {name}: changed nothing?");
+                assert_eq!(
+                    reported.union(allowed),
+                    allowed,
+                    "{mode} {name}: outside the layer"
+                );
+            }
         }
     }
 

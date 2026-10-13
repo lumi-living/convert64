@@ -123,7 +123,14 @@ impl App {
             return;
         }
         match Document::open(name, bytes, path) {
-            Ok(doc) => self.open(doc),
+            Ok(doc) => {
+                // An older project's migration (#236), said once.
+                let message = doc.open_message();
+                self.open(doc);
+                if let Some(message) = message {
+                    self.shell.toast(ctx, message, false);
+                }
+            }
             Err(e) => self.shell.report_error(
                 format!("Can't open {name}"),
                 format!("{e}. Open a PNG or a .convert64 project."),
