@@ -398,8 +398,7 @@ impl RangeMatch {
         let n = px.len();
         match self.method {
             RangeMethod::Box => {
-                let mut im =
-                    crate::solve::png2c64_ref::Image::new(n, 1, std::mem::take(px));
+                let mut im = crate::solve::png2c64_ref::Image::new(n, 1, std::mem::take(px));
                 crate::solve::png2c64_ref::preprocess::match_range_to(
                     &mut im,
                     self.percentile,
@@ -408,8 +407,7 @@ impl RangeMatch {
                 *px = im.px;
             }
             RangeMethod::Hull => {
-                let mut im =
-                    crate::solve::png2amiga_ref::Image::new(n, 1, std::mem::take(px));
+                let mut im = crate::solve::png2amiga_ref::Image::new(n, 1, std::mem::take(px));
                 crate::solve::png2amiga_ref::preprocess::match_palette_range(
                     &mut im,
                     &self.palette_linear(),
@@ -425,7 +423,10 @@ impl RangeMatch {
     pub fn apply(&self, px: &mut [[f32; 4]]) {
         if self.method == RangeMethod::Hull {
             let idx: Vec<usize> = (0..px.len()).filter(|&i| px[i][3] > 0.0).collect();
-            let mut rgb: Vec<[f32; 3]> = idx.iter().map(|&i| [px[i][0], px[i][1], px[i][2]]).collect();
+            let mut rgb: Vec<[f32; 3]> = idx
+                .iter()
+                .map(|&i| [px[i][0], px[i][1], px[i][2]])
+                .collect();
             self.apply_rgb(&mut rgb);
             for (&i, c) in idx.iter().zip(rgb) {
                 px[i][..3].copy_from_slice(&c);

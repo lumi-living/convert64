@@ -203,7 +203,10 @@ pub(crate) fn run() -> Result<(), String> {
         tiles.push((format!("{name} png2c64 S2 {so:.1}"), old));
         tiles.push((format!("{name} png2amiga S2 {sn:.1}"), new));
     }
-    save(&sheet_with(&tiles, 4), &out.join("sheet-reference-baselines.png"))?;
+    save(
+        &sheet_with(&tiles, 4),
+        &out.join("sheet-reference-baselines.png"),
+    )?;
 
     // 2. Range matching off / png2c64's box / png2amiga's hull, and 3. Refine off / on.
     let mut range_tiles = Vec::new();
@@ -211,7 +214,8 @@ pub(crate) fn run() -> Result<(), String> {
     md.push_str(
         "\n| Fixture | off S2 (clash cells) | png2c64 box S2 (clash cells) | png2amiga hull S2 (clash cells) |\n|---|---|---|---|\n",
     );
-    let mut refine_md = String::from("\n| Fixture | Refine off S2 | Refine on S2 | gain |\n|---|---|---|---|\n");
+    let mut refine_md =
+        String::from("\n| Fixture | Refine off S2 | Refine on S2 | gain |\n|---|---|---|---|\n");
     for (name, mode, kind, strength) in FIXTURES {
         let img = source(name)?;
         let reference = prepared(&img, mode);
@@ -276,7 +280,10 @@ pub(crate) fn run() -> Result<(), String> {
         ));
     }
     md.push_str(&refine_md);
-    save(&sheet_with(&range_tiles, 3), &out.join("sheet-match-range.png"))?;
+    save(
+        &sheet_with(&range_tiles, 3),
+        &out.join("sheet-match-range.png"),
+    )?;
     save(&sheet_with(&refine_tiles, 4), &out.join("sheet-refine.png"))?;
 
     // 4. The large sources.
@@ -290,7 +297,10 @@ pub(crate) fn run() -> Result<(), String> {
             0.7,
             Downscale::Auto,
         )?;
-        Ok(draw(&solve(&[layer], mode, &SolveOptions::default())?, &palette))
+        Ok(draw(
+            &solve(&[layer], mode, &SolveOptions::default())?,
+            &palette,
+        ))
     };
     let three = |img: &RgbaImage| -> Result<[RgbImage; 3], String> {
         Ok([
@@ -305,7 +315,10 @@ pub(crate) fn run() -> Result<(), String> {
     );
     let names = ["old Mitchell+mip", "png2amiga exact", "mip-accelerated"];
     let clean = three(&title)?;
-    for (label, img, reference_img) in [("zone plate", &zone, &zone), ("title + grain", &grain, &title)] {
+    for (label, img, reference_img) in [
+        ("zone plate", &zone, &zone),
+        ("title + grain", &grain, &title),
+    ] {
         let reference = prepared(reference_img, mode);
         let solves = three(img)?;
         let scores: Vec<f64> = solves

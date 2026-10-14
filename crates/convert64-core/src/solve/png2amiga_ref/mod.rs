@@ -23,8 +23,8 @@ pub mod preprocess;
 pub mod refine;
 pub mod scale;
 
-pub use super::png2c64_ref::{Image, Rgb};
 pub use super::png2c64_ref::quantize::{Cell, CellRule, Mode, Screen};
+pub use super::png2c64_ref::{Image, Rgb};
 
 /// png2amiga's front end for an 8-bit picture (`png_io::load`, `scale::resample`,
 /// `preprocess::apply`, `match_palette_range`): the bytes, `w × h`, scaled to `mode`'s

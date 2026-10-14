@@ -26,9 +26,9 @@ use super::reference_png2c64::{assemble, previous_cell, rules};
 use super::solver::{Background, Solution, SolveMode, SolveOptions, SolverKind};
 use super::steering::Steering;
 use crate::composite::{AttrSource, TargetFrame};
-use crate::model::CellPos;
 use crate::layer::{CellMetric, DitherKind, FitMode, Metric, Orientation, PatternPhase, Recipe};
 use crate::mode::Mode;
+use crate::model::CellPos;
 use crate::palette::Palette;
 
 /// png2amiga's method for one of our dither kinds: every method of png2amiga's C64 path

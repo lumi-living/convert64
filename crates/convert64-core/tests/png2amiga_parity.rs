@@ -142,15 +142,19 @@ fn cases() -> Vec<Case> {
         sharpen: 0.0,
         match_range: false,
     };
-    let theirs = Front {
-        gamma: 1.0,
-        ..ours
-    };
+    let theirs = Front { gamma: 1.0, ..ours };
     for m in Method::ALL {
         for (set, input, mode, front, error_clamp, metric) in [
             ("card", CARD, Mode::Multicolor, ours, 0.1, Metric::Mse),
             ("card-hires", CARD, Mode::Hires, ours, 0.1, Metric::Mse),
-            ("portrait", PORTRAIT, Mode::Multicolor, theirs, 0.35, Metric::Blur),
+            (
+                "portrait",
+                PORTRAIT,
+                Mode::Multicolor,
+                theirs,
+                0.35,
+                Metric::Blur,
+            ),
         ] {
             out.push(Case {
                 label: format!("{set} {}", m.name()),
@@ -165,7 +169,10 @@ fn cases() -> Vec<Case> {
                     metric,
                 },
                 refine: false,
-                reference: format!("docs/reference/dither-previews/png2amiga-{set}/{}.png", m.name()),
+                reference: format!(
+                    "docs/reference/dither-previews/png2amiga-{set}/{}.png",
+                    m.name()
+                ),
             });
         }
     }

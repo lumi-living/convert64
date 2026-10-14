@@ -23,7 +23,7 @@
 
 use super::Rgb;
 use super::colour::{
-    Lab, fma_dist_sq, linear_to_oklab, linear_to_srgb3, oklab_to_linear, powf, sinf, cosf,
+    Lab, cosf, fma_dist_sq, linear_to_oklab, linear_to_srgb3, oklab_to_linear, powf, sinf,
     srgb_to_linear3,
 };
 
@@ -424,7 +424,11 @@ impl Matrix {
 
     fn literal(w: usize, h: usize, v: &[f32]) -> Self {
         assert_eq!(v.len(), w * h);
-        Self { w, h, v: v.to_vec() }
+        Self {
+            w,
+            h,
+            v: v.to_vec(),
+        }
     }
 
     #[inline]
@@ -435,8 +439,8 @@ impl Matrix {
 
 const BAYER8_RAW: [i32; 64] = [
     0, 32, 8, 40, 2, 34, 10, 42, 48, 16, 56, 24, 50, 18, 58, 26, 12, 44, 4, 36, 14, 46, 6, 38, 60,
-    28, 52, 20, 62, 30, 54, 22, 3, 35, 11, 43, 1, 33, 9, 41, 51, 19, 59, 27, 49, 17, 57, 25, 15, 47,
-    7, 39, 13, 45, 5, 37, 63, 31, 55, 23, 61, 29, 53, 21,
+    28, 52, 20, 62, 30, 54, 22, 3, 35, 11, 43, 1, 33, 9, 41, 51, 19, 59, 27, 49, 17, 57, 25, 15,
+    47, 7, 39, 13, 45, 5, 37, 63, 31, 55, 23, 61, 29, 53, 21,
 ];
 
 /// `make_fractal16`: Bayer-style recursion to 16 × 16, levels reversed.
@@ -1263,9 +1267,7 @@ where
                     }
                 }
                 let mut t = linear_to_oklab(srgb_to_linear3(target_s));
-                if is_diff
-                    && let Some((_, b)) = biases.iter().find(|(m, _)| *m == s.method)
-                {
+                if is_diff && let Some((_, b)) = biases.iter().find(|(m, _)| *m == s.method) {
                     t[0] += b[i];
                 }
                 if s.method.thresholds() {
@@ -1296,8 +1298,7 @@ where
                     *e = [e[0] + q[0] * kw, e[1] + q[1] * kw, e[2] + q[2] * kw];
                 }
             } else {
-                let chosen_s =
-                    linear_to_srgb3(oklab_to_linear(chosen)).map(|v| v.clamp(0.0, 1.0));
+                let chosen_s = linear_to_srgb3(oklab_to_linear(chosen)).map(|v| v.clamp(0.0, 1.0));
                 let q = [
                     (target_s[0] - chosen_s[0]) * s.strength,
                     (target_s[1] - chosen_s[1]) * s.strength,
@@ -1359,7 +1360,10 @@ mod tests {
     #[test]
     fn matrices_match_png2amiga_s_definitions() {
         assert_eq!(ordered_threshold(Method::Bayer4x4, 0, 0), 0.5 / 16.0 - 0.5);
-        assert_eq!(ordered_threshold(Method::Halftone8x8, 1, 1), 0.5 / 32.0 - 0.5);
+        assert_eq!(
+            ordered_threshold(Method::Halftone8x8, 1, 1),
+            0.5 / 32.0 - 0.5
+        );
         assert_eq!(ordered_threshold(Method::VlineChecker, 1, 0), 0.15);
         assert_eq!(ordered_threshold(Method::V4x2, 3, 1), -0.25);
     }

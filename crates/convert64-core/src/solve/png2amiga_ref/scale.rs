@@ -149,7 +149,10 @@ mod tests {
         assert_eq!(support(0.5).1, 3);
         assert_eq!(support(12.8).1, 39);
         let rows = kernel_rows(4096, 320);
-        assert!(rows.iter().all(|r| (r.w.iter().sum::<f32>() - 1.0).abs() < 1e-4));
+        assert!(
+            rows.iter()
+                .all(|r| (r.w.iter().sum::<f32>() - 1.0).abs() < 1e-4)
+        );
         assert_eq!(rows[160].w.len(), 78);
     }
 

@@ -19,7 +19,7 @@
 use super::super::png2c64_ref::colour as p2c;
 use super::Rgb;
 
-pub use p2c::{hex_to_linear, linear_to_srgb, srgb8_to_linear, srgb_to_linear};
+pub use p2c::{hex_to_linear, linear_to_srgb, srgb_to_linear, srgb8_to_linear};
 
 /// OKLab coordinates `[L, a, b]`, png2amiga's `color_space::OKLab`.
 pub type Lab = [f32; 3];

@@ -330,7 +330,11 @@ mod tests {
 
     #[test]
     fn match_range_keeps_grey_and_lightness() {
-        let mut im = Image::new(3, 1, vec![[0.2, 0.2, 0.2], [0.3, 0.1, 0.05], [0.05, 0.1, 0.3]]);
+        let mut im = Image::new(
+            3,
+            1,
+            vec![[0.2, 0.2, 0.2], [0.3, 0.1, 0.05], [0.05, 0.1, 0.3]],
+        );
         let before: Vec<Lab> = im.px.iter().map(|&p| linear_to_oklab(p)).collect();
         match_palette_range(&mut im, &palette_linear(&PEPTO_HEX), 1.0);
         assert_eq!(im.px[0], [0.2, 0.2, 0.2], "grey is left alone");

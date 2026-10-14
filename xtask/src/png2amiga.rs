@@ -165,12 +165,12 @@ pub(crate) fn build(variant: Variant, compiler: &str) -> Result<(), String> {
     println!("configuring {} ({})", variant.dir(), bdir.display());
     output(&mut cmake)?;
     println!("building (a few minutes)");
-    output(
-        Command::new("cmake")
-            .arg("--build")
-            .arg(&bdir)
-            .args(["--target", "png2amiga", "-j", "8"]),
-    )?;
+    output(Command::new("cmake").arg("--build").arg(&bdir).args([
+        "--target",
+        "png2amiga",
+        "-j",
+        "8",
+    ]))?;
     let version = output(Command::new(&out).arg("--version"))?;
     println!("{} → {}", version.trim(), out.display());
     Ok(())
@@ -344,8 +344,11 @@ pub(crate) fn draw(file: &BitmapFile) -> RgbImage {
 
 fn save_png(img: &RgbImage, path: &Path) -> Result<bool, String> {
     let mut bytes = Vec::new();
-    img.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    img.write_to(
+        &mut std::io::Cursor::new(&mut bytes),
+        image::ImageFormat::Png,
+    )
+    .map_err(|e| format!("{}: {e}", path.display()))?;
     if fs::read(path).ok().as_deref() == Some(&bytes[..]) {
         return Ok(false);
     }

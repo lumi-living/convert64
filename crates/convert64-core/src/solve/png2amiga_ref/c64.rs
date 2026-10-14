@@ -262,8 +262,8 @@ fn multicolor_quads(
     let fs = dithered
         .contains(&true)
         .then(|| global_fs_indices(lab, w, h, pal));
-    let blurred = (metric == Metric::Blur && dithered.contains(&false))
-        .then(|| global_blur_3x3(lab, w, h));
+    let blurred =
+        (metric == Metric::Blur && dithered.contains(&false)).then(|| global_blur_3x3(lab, w, h));
     crate::par::map(&cells, |&c| {
         if let Some(f) = hooks.fixed(c) {
             let mut q = [0u8; 4];
@@ -281,7 +281,10 @@ fn multicolor_quads(
             }
             // `top{bg, 0, 0, 0}`: unfilled slots stay colour 0.
             let mut top = [bg, 0, 0, 0];
-            for (s, v) in top[1..].iter_mut().zip(top_colours(hist, 3, Some(bg), rule)) {
+            for (s, v) in top[1..]
+                .iter_mut()
+                .zip(top_colours(hist, 3, Some(bg), rule))
+            {
                 *s = v;
             }
             return top;
@@ -405,9 +408,9 @@ fn hires_pairs(
                     }
                     let (a, bb) = (pal[usize::from(i)], pal[usize::from(j)]);
                     let err = match metric {
-                        Metric::Mse => raw.iter().fold(0.0f32, |t, &p| {
-                            t + dist2(p, a).min(dist2(p, bb))
-                        }),
+                        Metric::Mse => raw
+                            .iter()
+                            .fold(0.0f32, |t, &p| t + dist2(p, a).min(dist2(p, bb))),
                         Metric::Blur => blur_score(&raw, &blur, &[a, bb], cw, ch),
                     };
                     if err < best_err {
@@ -497,7 +500,9 @@ pub fn encode(
             let pixels: Vec<u8> = cell_pixels(mode, c).map(|i| slots[i]).collect();
             let error = cell_pixels(mode, c)
                 .zip(&pixels)
-                .fold(0.0f32, |t, (i, &q)| t + dist2(lab[i], set_lab[c][usize::from(q)]));
+                .fold(0.0f32, |t, (i, &q)| {
+                    t + dist2(lab[i], set_lab[c][usize::from(q)])
+                });
             Cell {
                 colors: sets[c].clone(),
                 px: pixels,

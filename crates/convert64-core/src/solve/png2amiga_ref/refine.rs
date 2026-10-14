@@ -174,7 +174,14 @@ impl Objective {
                 let local: Vec<Lab> = (0..m.choices)
                     .map(|q| palette_lab[usize::from(m.values[m.slots[p][q]])])
                     .collect();
-                let q = dither::pick(s.method, targets[p], &local, p % self.w, p / self.w, s.strength);
+                let q = dither::pick(
+                    s.method,
+                    targets[p],
+                    &local,
+                    p % self.w,
+                    p / self.w,
+                    s.strength,
+                );
                 labels[i] = q;
                 colors[i] = m.palette[usize::from(m.values[m.slots[p][usize::from(q)]])];
             }
@@ -403,7 +410,14 @@ pub fn refine(
     let mut alternative = m.clone();
     let mut alt_render = rendered.clone();
     let improved = refine_passes(source, &mut m, &mut rendered, false, ordered, serpentine);
-    let other = refine_passes(source, &mut alternative, &mut alt_render, true, ordered, serpentine);
+    let other = refine_passes(
+        source,
+        &mut alternative,
+        &mut alt_render,
+        true,
+        ordered,
+        serpentine,
+    );
     let s2 = |px: &[Rgb]| ssimulacra2(&source.px, px, w, h);
     let chosen = if other && (!improved || s2(&alt_render) > s2(&rendered)) {
         alternative
@@ -416,7 +430,12 @@ pub fn refine(
     for c in 0..n {
         let cell = &mut screen.cells[c];
         cell.colors = if mc {
-            vec![new_bg, chosen.values[hi[c]], chosen.values[lo[c]], chosen.values[fg[c]]]
+            vec![
+                new_bg,
+                chosen.values[hi[c]],
+                chosen.values[lo[c]],
+                chosen.values[fg[c]],
+            ]
         } else {
             vec![chosen.values[lo[c]], chosen.values[hi[c]]]
         };
