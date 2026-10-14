@@ -282,11 +282,10 @@ impl App {
             } => Some(i.saturating_sub(1)),
             _ => None,
         };
-        let done = match gesture {
-            Some(id) => ws.doc.run_in_gesture(id, command),
-            None => ws.doc.run(command),
-        };
-        match done {
+        // An arrow key's nudge while the key is held: its repeats are one drag for the
+        // Source view (#264).
+        let held_key = matches!(command, JsonCommand::LayerNudge { .. }) && arrows_down(ctx);
+        match ws.edit(gesture, command, held_key) {
             Ok(()) => {
                 if let Some(i) = select {
                     self.shell.layer = i;
@@ -365,15 +364,18 @@ impl App {
             }
             Action::Gesture(id, command) => self.edit(ctx, Some(id), command),
             Action::CancelGesture => {
-                if let Some(ws) = &mut self.workspace
-                    && ws.doc.cancel_gesture()
-                {
-                    self.resolve();
+                if let Some(ws) = &mut self.workspace {
+                    ws.end_drag();
+                    if ws.doc.cancel_gesture() {
+                        self.resolve();
+                    }
                 }
             }
             Action::EndGesture => {
                 if let Some(ws) = &mut self.workspace {
                     ws.doc.end_gesture();
+                    // The Source view composites at 4× once, next frame (#264).
+                    ws.end_drag();
                 }
                 // The drag's last frame got the fast path: finish with a full solve.
                 self.resolve();
@@ -499,6 +501,21 @@ impl App {
     }
 }
 
+/// Whether an arrow key (they nudge the selected layer) is held down.
+fn arrows_down(ctx: &egui::Context) -> bool {
+    use egui::Key;
+    ctx.input(|i| {
+        [
+            Key::ArrowLeft,
+            Key::ArrowRight,
+            Key::ArrowUp,
+            Key::ArrowDown,
+        ]
+        .into_iter()
+        .any(|k| i.key_down(k))
+    })
+}
+
 /// `10003` as `10 003` (UX §9 sample strings).
 fn group(n: usize) -> String {
     let digits = n.to_string();
@@ -559,6 +576,16 @@ impl eframe::App for App {
         }
         for action in self.shell.show(ui, self.workspace.as_mut()) {
             self.act(ui.ctx(), action);
+        }
+        // A drag holds a pointer button or an arrow key down; without either it is over,
+        // even if no release ended it (a wheel notch's scale), and the Source view
+        // composites at 4× again (#264).
+        if let Some(ws) = &mut self.workspace
+            && ws.dragging()
+            && !ui.input(|i| i.pointer.any_down())
+            && !arrows_down(ui.ctx())
+        {
+            ws.end_drag();
         }
         self.update_title(ui.ctx());
 
