@@ -35,6 +35,16 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## png2amiga (C64 path)
+
+`crates/convert64-core/src/solve/png2amiga_ref/` is a port to Rust of png2amiga's C64
+bitmap path by Tinic Uro, at commit `4a8777653536ac07074a650ee86860347c8755fb`
+(v1.111.2): `scale.cpp`, `preprocess.cpp`, `color_space.hpp`, `dither.cpp`,
+`dither.hpp`, `c64.cpp`, `cell_graph_refine.hpp`, and the tables `void_cluster_64.inc`
+and `cluster_noise_64.inc` (as `void_cluster_64.bin`, `cluster_noise_64.bin`). It is the
+reference solver since ADR-013 (#261); each file names the source file it ports. The same
+MIT licence applies as for png2c64 above and SSIMULACRA2 below, with the same author.
+
 ## SSIMULACRA2 (png2amiga, Cloudinary, libjxl)
 
 `crates/convert64-core/src/quality/ssimulacra2.rs` is a port to Rust of
