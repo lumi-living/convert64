@@ -56,7 +56,12 @@ fn png2amiga_parity_of_convert() {
         ("photo", &multicolor),
         ("lineart", &hires),
     ] {
-        cases.push((name.to_owned(), name, args.clone(), "baseline.png".to_owned()));
+        cases.push((
+            name.to_owned(),
+            name,
+            args.clone(),
+            "baseline.png".to_owned(),
+        ));
         for (flag, render) in [
             ("--match-range", "baseline_match_range.png"),
             ("--cell-refine", "baseline_refine.png"),

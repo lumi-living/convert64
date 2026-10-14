@@ -143,8 +143,7 @@ fn baseline(png2c64: &Path, name: &'static str, kind: Kind) -> Result<Outcome, S
     let work = root.join("target").join("xtask").join("png2c64").join(name);
     let _ = fs::remove_dir_all(&work);
     fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
-    fs::copy(&source, work.join("source.png"))
-        .map_err(|e| format!("{name}/source.png: {e}"))?;
+    fs::copy(&source, work.join("source.png")).map_err(|e| format!("{name}/source.png: {e}"))?;
 
     let stdout = output(
         Command::new(png2c64)
