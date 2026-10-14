@@ -353,7 +353,7 @@ fn reference_render(
     let mode = RefMode::Multicolor;
     let size = (img.width() as usize, img.height() as usize);
     let prepared = prepare(&rgb, size, mode, &preprocess::Settings::default(), None);
-    let method = convert64_core::solve::reference::ref_method(kind)
+    let method = convert64_core::solve::reference_png2c64::ref_method(kind)
         .ok_or_else(|| format!("{kind:?} is not one of png2c64's"))?;
     let (w, h) = mode.screen();
     let px = vec![

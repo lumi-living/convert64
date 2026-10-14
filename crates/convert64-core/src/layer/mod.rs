@@ -9,7 +9,7 @@ pub mod snap;
 
 pub use adjust::{
     AdjustCache, AdjustError, AdjustPlan, Adjustments, BrightnessContrast, Curve, Curves, Gamma,
-    Hsl, Levels, Radius, RangeMatch, Sharpen, suggest_range_match,
+    Hsl, Levels, Radius, RangeMatch, RangeMethod, Sharpen, suggest_range_match,
 };
 pub use recipe::{
     CellMetric, CustomMatrix, DitherFamily, DitherKind, FitMode, Method, Metric, OrderedSemantics,

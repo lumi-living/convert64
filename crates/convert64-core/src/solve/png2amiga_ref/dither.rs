@@ -1337,7 +1337,7 @@ mod tests {
         }
         assert_eq!(Method::ALL.len(), 68);
         let diff: Vec<_> = Method::ALL.iter().filter(|m| m.diffuses()).collect();
-        assert_eq!(diff.len(), 11, "{diff:?}");
+        assert_eq!(diff.len(), 10, "{diff:?}");
         assert!(!Method::Gilbert.diffuses() && !Method::Gilbert.is_ordered());
         assert!(!Method::Dbs.diffuses() && !Method::Dbs.is_ordered());
     }
@@ -1348,7 +1348,9 @@ mod tests {
             for y in 0..200 {
                 for x in 0..320 {
                     let t = ordered_threshold(m, x, y);
-                    assert!((-0.55..=0.55).contains(&t), "{m:?} at {x},{y}: {t}");
+                    // Truchet reaches √2 − ½ (its distance to a far corner), as
+                    // png2amiga.
+                    assert!((-0.5..=0.915).contains(&t), "{m:?} at {x},{y}: {t}");
                 }
             }
         }

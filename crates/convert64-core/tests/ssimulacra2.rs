@@ -3,7 +3,7 @@
 //! `tests/data/ssimulacra2/reference.toml`.
 //!
 //! The pairs are built from committed fixtures, so nothing large is checked in:
-//! png2c64's baselines against our renders, distortions of a baseline (blur, noise, a
+//! png2c64's (archived, `fixtures/archive/png2c64/`) baselines against our renders, distortions of a baseline (blur, noise, a
 //! crop, the identical image), and png2amiga's own C64 pairing, a prepared source against
 //! a C64 render at the logical raster. To regenerate the reference scores, dump the
 //! pairs and score them with the harness (`tests/data/ssimulacra2/README.md`):
@@ -143,7 +143,7 @@ impl Pair {
 fn prepared_pair(name: &str, fixture: &str, mode: Mode) -> Pair {
     let (sw, sh, src) = rgb8(&format!("fixtures/{fixture}/source.png"));
     let prepared = prepare(&src, (sw, sh), mode, &preprocess::Settings::default(), None);
-    let (_, _, base) = rgb8(&format!("fixtures/{fixture}/baseline.png"));
+    let (_, _, base) = rgb8(&format!("fixtures/archive/png2c64/{fixture}/baseline.png"));
     let render = match mode {
         Mode::Multicolor => wide(&base),
         Mode::Hires => base,
@@ -156,7 +156,7 @@ fn pairs() -> Vec<Pair> {
     for f in [
         "photo", "portrait", "title", "gradient", "lineart", "terrain",
     ] {
-        let (w, h, base) = rgb8(&format!("fixtures/{f}/baseline.png"));
+        let (w, h, base) = rgb8(&format!("fixtures/archive/png2c64/{f}/baseline.png"));
         let (_, _, ours) = rgb8(&format!("fixtures/{f}/expected_native.png"));
         out.push(Pair::new(
             &format!("{f}-baseline-vs-native"),
@@ -166,7 +166,7 @@ fn pairs() -> Vec<Pair> {
             linear(&ours),
         ));
     }
-    let (w, h, photo) = rgb8("fixtures/photo/baseline.png");
+    let (w, h, photo) = rgb8("fixtures/archive/png2c64/photo/baseline.png");
     out.push(Pair::new(
         "photo-identical",
         w,
@@ -181,7 +181,7 @@ fn pairs() -> Vec<Pair> {
         linear(&photo),
         linear(&box_blur(w, h, &photo)),
     ));
-    let (_, _, portrait) = rgb8("fixtures/portrait/baseline.png");
+    let (_, _, portrait) = rgb8("fixtures/archive/png2c64/portrait/baseline.png");
     out.push(Pair::new(
         "portrait-noise24",
         w,
@@ -205,7 +205,7 @@ fn pairs() -> Vec<Pair> {
         linear(&wide(&portrait)),
         linear(&wide(&native)),
     ));
-    let (_, _, title) = rgb8("fixtures/title/baseline.png");
+    let (_, _, title) = rgb8("fixtures/archive/png2c64/title/baseline.png");
     let (_, _, title_ours) = rgb8("fixtures/title/expected.png");
     out.push(Pair::new(
         "title-baseline-vs-expected",
@@ -214,7 +214,7 @@ fn pairs() -> Vec<Pair> {
         linear(&title),
         linear(&title_ours),
     ));
-    let (_, _, grad) = rgb8("fixtures/gradient/baseline.png");
+    let (_, _, grad) = rgb8("fixtures/archive/png2c64/gradient/baseline.png");
     let (_, _, grad_ours) = rgb8("fixtures/gradient/expected_native.png");
     out.push(Pair::new(
         "gradient-crop-37x29",
@@ -295,7 +295,7 @@ fn ssimulacra2_matches_png2amiga() {
 
 #[test]
 fn identical_pair_scores_100() {
-    let (w, h, px) = rgb8("fixtures/portrait/baseline.png");
+    let (w, h, px) = rgb8("fixtures/archive/png2c64/portrait/baseline.png");
     let lin = linear(&px);
     assert_eq!(ssimulacra2(&lin, &lin, w, h), 100.0);
 }
@@ -305,7 +305,7 @@ fn identical_pair_scores_100() {
 #[test]
 #[ignore = "timing; run in release with --nocapture"]
 fn ssimulacra2_timing() {
-    let (w, h, base) = rgb8("fixtures/photo/baseline.png");
+    let (w, h, base) = rgb8("fixtures/archive/png2c64/photo/baseline.png");
     let (_, _, ours) = rgb8("fixtures/photo/expected_native.png");
     for (label, w, a, b) in [
         ("320 × 200", w, linear(&base), linear(&ours)),

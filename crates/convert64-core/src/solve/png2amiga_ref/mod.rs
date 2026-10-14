@@ -20,6 +20,7 @@ pub mod c64;
 pub mod colour;
 pub mod dither;
 pub mod preprocess;
+pub mod refine;
 pub mod scale;
 
 pub use super::png2c64_ref::{Image, Rgb};

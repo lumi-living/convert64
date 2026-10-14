@@ -383,7 +383,8 @@ fn solver_and_divergences_from_the_command_line() {
         "--diverge",
         "pair-bias=0.01",
     ]);
-    assert_eq!(d["solver"], "reference");
+    // Divergences are png2c64 options: the png2c64 port solves (ADR-013).
+    assert_eq!(d["solver"], "png2c64");
     assert_eq!(d["legal"], true);
     // A native recipe knob asks for the native solver.
     let k = json(&["--max-luma-diff", "0"]);
