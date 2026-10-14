@@ -292,8 +292,9 @@ impl std::fmt::Debug for MethodThumbs {
 /// Thumbnail textures kept (every method on two sources, twice over).
 const CAPACITY: usize = 4 * convert64_core::preview::catalogue::CATALOGUE.len();
 
-/// The wasm driver's work per frame, ms (the solve scheduler has its own 10 ms).
-pub const FRAME_BUDGET_MS: f64 = 4.0;
+/// The wasm driver's work per frame, ms (the solve scheduler has its own 10 ms; while
+/// the picker is open it is usually idle): two thumbnails a frame at about 4 ms each.
+pub const FRAME_BUDGET_MS: f64 = 8.0;
 
 impl Default for MethodThumbs {
     fn default() -> Self {

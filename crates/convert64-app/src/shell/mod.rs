@@ -702,8 +702,11 @@ impl Shell {
         // Single keys only while no text field is being edited (a `TextEdit`, or a
         // `DragValue` taking typed digits); a focused slider or button leaves them be
         // (#244). Arrows, though, belong to whichever widget has focus.
-        let typing = ctx.text_edit_focused();
-        let widget_focused = ctx.egui_wants_keyboard_input();
+        // The open method picker takes typing and the arrows (UX §6a), from its first
+        // frame on, before its search field has the focus.
+        let picker = self.picker.open.is_some();
+        let typing = ctx.text_edit_focused() || picker;
+        let widget_focused = ctx.egui_wants_keyboard_input() || picker;
         let delete_applies = self.delete_keys_apply(ctx);
         let mut hide_ui = None;
         ctx.input_mut(|i| {
@@ -1051,6 +1054,23 @@ mod tests {
             });
             output.textures_delta.clear();
         }
+    }
+
+    /// #260: while the method picker is open, arrows move in its grid and letters
+    /// search; neither nudges the layer nor picks a tool.
+    #[test]
+    fn the_open_picker_keeps_arrows_and_letters() {
+        let mut shell = Shell::default();
+        shell.picker.open(RecipeTarget::Layer(0));
+        let none = egui::Modifiers::NONE;
+        let (shell, actions) = frame(
+            shell,
+            vec![key(egui::Key::ArrowRight, none), key(egui::Key::P, none)],
+        );
+        assert!(actions.is_empty(), "{actions:?}");
+        assert_eq!(shell.tool, Tool::Nudge);
+        // Not drawn (no document): it closed.
+        assert!(shell.picker.open.is_none());
     }
 
     /// #240: `Tab` and `Shift Tab` are egui's focus traversal and hide nothing.
