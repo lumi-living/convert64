@@ -15,7 +15,7 @@ expression: "source(\"portrait\", BitmapFormat::Koala, asm, DataStyle::IncludePi
 .const PORTRAIT_SCREEN_SIZE = 1000
 .const PORTRAIT_COLOUR_SIZE = 1000
 .const PORTRAIT_BACKGROUND_SIZE = 1
-.const PORTRAIT_BACKGROUND_COLOUR = $09
+.const PORTRAIT_BACKGROUND_COLOUR = $00
 
 * = $6000 "portrait"
 portrait_bitmap:
