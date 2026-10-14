@@ -26,6 +26,10 @@ pub struct Workspace {
     pub solve_started: Option<f64>,
     /// The user paused the solve (UX §11); the result on screen is stale until Resume.
     pub paused: bool,
+    /// The method picker's thumbnails (UX §6a).
+    pub method_thumbs: crate::thumbs::MethodThumbs,
+    /// The method picker's live preview on the result, while one is showing.
+    pub preview: Option<MethodPreview>,
     source: Option<(u64, TextureHandle)>,
     result: Option<(*const Solution, TextureHandle)>,
     /// One thumbnail per layer, bottom first, keyed by the source it shows.
@@ -47,6 +51,18 @@ impl std::fmt::Debug for Workspace {
             .field("solving", &self.solving)
             .finish_non_exhaustive()
     }
+}
+
+/// A method previewing on the result (UX §6a): which, and the committed result to
+/// show again when the preview ends.
+#[derive(Debug, Clone)]
+pub struct MethodPreview {
+    /// The method's display name, for the result header (`Preview: Atkinson`).
+    pub name: &'static str,
+    /// The result before the preview started.
+    pub committed: Option<Arc<Solution>>,
+    /// A full solve was running when the preview started (its result never came).
+    pub was_solving: bool,
 }
 
 /// What the status bar says about one cell of the result.
@@ -74,6 +90,8 @@ impl Workspace {
             solving: true,
             solve_started: None,
             paused: false,
+            method_thumbs: crate::thumbs::MethodThumbs::default(),
+            preview: None,
             source: None,
             result: None,
             thumbs: Vec::new(),
@@ -81,6 +99,94 @@ impl Workspace {
             mask_overlay: None,
             regions: None,
         }
+    }
+
+    /// Starts (or moves) the method picker's live preview (UX §6a): what to solve on
+    /// the interactive path, the project as it is with `method` in `target`'s recipe and
+    /// the committed result as the previous solution. Nothing enters the history.
+    pub fn preview_snapshot(
+        &mut self,
+        target: crate::shell::RecipeTarget,
+        method: convert64_core::layer::Method,
+    ) -> crate::scheduler::Snapshot {
+        use crate::shell::RecipeTarget;
+        let name = convert64_core::preview::catalogue::info(method.kind).name;
+        let committed = match &mut self.preview {
+            Some(p) => {
+                p.name = name;
+                p.committed.clone()
+            }
+            None => {
+                let committed = self.solution.clone();
+                self.preview = Some(MethodPreview {
+                    name,
+                    committed: committed.clone(),
+                    was_solving: self.solving,
+                });
+                committed
+            }
+        };
+        let mut snapshot = self.doc.snapshot(committed);
+        match target {
+            RecipeTarget::Layer(i) => {
+                if let Some(l) = snapshot.layers.get_mut(i) {
+                    let r = l.recipe().with_dither_method(method);
+                    l.set_recipe(r);
+                }
+            }
+            RecipeTarget::Region(i) => {
+                if let Some(r) = snapshot.regions.get_mut(i) {
+                    let recipe = r.recipe().with_dither_method(method);
+                    r.set_recipe(recipe);
+                }
+            }
+        }
+        self.solving = true;
+        snapshot
+    }
+
+    /// Ends the live preview, showing the committed result again. Returns whether the
+    /// app must solve instead: there was no committed result, or a full solve was
+    /// running when the preview started.
+    pub fn revert_preview(&mut self) -> bool {
+        let Some(p) = self.preview.take() else {
+            return false;
+        };
+        if p.was_solving || p.committed.is_none() {
+            if p.committed.is_some() {
+                self.solution = p.committed;
+            }
+            return true;
+        }
+        self.solution = p.committed;
+        self.solving = false;
+        false
+    }
+
+    /// Ends the live preview for an edit (a commit from the picker, or anything else):
+    /// the result on screen stays until the edit's solve replaces it, so a committed
+    /// preview does not flash back to the old method.
+    pub fn end_preview(&mut self) {
+        self.preview = None;
+    }
+
+    /// Brings the method picker's thumbnails up to date (once per frame before
+    /// drawing): `source` is what they show, `cell` the last cell hovered. They are
+    /// solved against the committed result's background.
+    pub fn prepare_thumbs(
+        &mut self,
+        ctx: &egui::Context,
+        source: crate::thumbs::PreviewSource,
+        cell: Option<CellPos>,
+    ) {
+        self.method_thumbs.source = source;
+        let shown = match &self.preview {
+            Some(p) => p.committed.as_ref(),
+            None => self.solution.as_ref(),
+        };
+        let background = shown.and_then(|s| s.background);
+        self.method_thumbs
+            .prepare(ctx, &mut self.doc, background, cell);
     }
 
     /// Rebuilds whichever texture is out of date. Call once per frame before drawing.
@@ -372,4 +478,107 @@ fn mask_thumbnail(mask: &convert64_core::Mask, side: u32) -> (usize, usize, Vec<
         }
     }
     (tw as usize, th as usize, out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scheduler::{Config, Scheduler};
+    use crate::shell::RecipeTarget;
+    use convert64_core::layer::{DitherKind, Method};
+    use convert64_core::solve::SolveMode;
+    use convert64_project::codec::encode_rgba8;
+    use convert64_project::{JsonCommand, LayerRef};
+
+    fn workspace() -> Workspace {
+        let rgba = (0..64 * 40)
+            .flat_map(|i| [(i % 64 * 4) as u8, (i / 64 * 6) as u8, 120, 255])
+            .collect();
+        let doc = Document::from_png("g.png", &encode_rgba8(64, 40, rgba)).unwrap();
+        Workspace::new(doc)
+    }
+
+    fn solve(s: &mut Scheduler, ws: &mut Workspace, mode: SolveMode) {
+        s.submit(ws.doc.snapshot(ws.solution.clone()), mode);
+        while s.tick() {}
+        let r = s.poll().expect("a result");
+        ws.solving = r.provisional;
+        ws.solution = Some(r.solution);
+    }
+
+    fn method(ws: &Workspace) -> DitherKind {
+        ws.doc.session().project().layers[0].recipe().method().kind
+    }
+
+    /// UX §6a: a preview solves the picture with the method but changes neither the
+    /// project nor the history; moving off shows the committed result again; a commit
+    /// is one undo step.
+    #[test]
+    fn a_preview_reverts_and_a_commit_is_one_undo_step() {
+        let mut s = Scheduler::stepping(Config::default());
+        let mut ws = workspace();
+        solve(&mut s, &mut ws, SolveMode::Full);
+        let committed = ws.solution.clone().unwrap();
+        let history = ws.doc.history();
+        let before = method(&ws);
+        assert_eq!(before, DitherKind::FloydSteinberg);
+
+        let target = RecipeTarget::Layer(0);
+        let snap = ws.preview_snapshot(target, Method::new(DitherKind::Bayer4));
+        assert_eq!(snap.layers[0].recipe().method().kind, DitherKind::Bayer4);
+        s.submit(
+            snap,
+            SolveMode::Interactive {
+                dirty: convert64_core::CellSet::all(),
+            },
+        );
+        while s.tick() {}
+        ws.solution = Some(s.poll().unwrap().solution);
+        assert_ne!(
+            ws.solution.as_deref(),
+            Some(&*committed),
+            "the result shows Bayer 4×4"
+        );
+        assert_eq!(ws.preview.as_ref().unwrap().name, "Bayer 4×4");
+        assert_eq!(method(&ws), before, "the project is unchanged");
+        assert_eq!(ws.doc.history(), history, "nothing in the history");
+
+        // Arrowing on moves the preview; the committed result stays the one to return to.
+        let _ = ws.preview_snapshot(target, Method::new(DitherKind::Atkinson));
+        assert_eq!(ws.preview.as_ref().unwrap().name, "Atkinson");
+        assert!(!ws.revert_preview(), "no solve needed to revert");
+        assert!(Arc::ptr_eq(ws.solution.as_ref().unwrap(), &committed));
+        assert!(ws.preview.is_none());
+
+        // Preview, then commit: one command, one undo step.
+        let _ = ws.preview_snapshot(target, Method::new(DitherKind::Atkinson));
+        ws.end_preview();
+        let recipe = convert64_core::command::RecipeChange {
+            method: Some(Method::new(DitherKind::Atkinson)),
+            ..Default::default()
+        };
+        ws.doc
+            .run(JsonCommand::RecipeSet {
+                layer: LayerRef::Index(0),
+                recipe,
+            })
+            .unwrap();
+        assert_eq!(method(&ws), DitherKind::Atkinson);
+        assert!(ws.doc.undo());
+        assert_eq!(method(&ws), before, "one undo restores the old method");
+        assert_eq!(
+            ws.doc.history(),
+            (history.0, true),
+            "back where it was, with a redo"
+        );
+    }
+
+    /// A preview started while a full solve was running asks for a solve on revert.
+    #[test]
+    fn reverting_a_preview_over_a_running_solve_solves_again() {
+        let mut ws = workspace();
+        ws.solving = true;
+        let _ = ws.preview_snapshot(RecipeTarget::Layer(0), Method::new(DitherKind::Checker));
+        assert!(ws.revert_preview());
+    }
 }

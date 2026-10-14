@@ -11,6 +11,7 @@ mod export_dialog;
 mod layers;
 mod mask;
 mod menu;
+pub mod method_picker;
 mod recipe;
 pub mod shortcuts;
 mod status;
@@ -28,6 +29,7 @@ use convert64_core::mode::Mode;
 pub use crate::view::ViewMode;
 pub use export_dialog::ExportDialog;
 pub use mask::{MaskState, MaskTool};
+pub use method_picker::{PickerState, RecipeTarget};
 
 /// The four steering tools (`docs/UX.md` §7), in toolbar order. Nudge (`V`, Move in
 /// Photoshop and Figma) is the default: a stray click with it selects a layer and
@@ -176,6 +178,10 @@ pub enum Action {
     PauseSolve,
     /// Resume a paused solve.
     ResumeSolve,
+    /// The method picker's live preview (UX §6a): solve the result with this method in
+    /// place of the recipe's (interactively, nothing in the history), or with `None`
+    /// show the committed result again.
+    PreviewMethod(Option<(RecipeTarget, convert64_core::layer::Method)>),
 }
 
 /// The smallest and largest dock width (`docs/UX.md` §3: 260–420 px). Not a Figma
@@ -272,6 +278,13 @@ pub struct Shell {
     /// `--dock-scroll <points>` (screenshots only): the dock's tab content held scrolled
     /// down this far, to show a group below the fold.
     pub dock_scroll: Option<f32>,
+    /// The dither method picker (UX §6a).
+    pub picker: PickerState,
+    /// The dock's left edge last frame, where the picker hangs from.
+    dock_left: Option<f32>,
+    /// The last cell the pointer was over on the picture: the picker's Picture
+    /// thumbnails are cropped there.
+    pub last_cell: Option<convert64_core::model::CellPos>,
 }
 
 impl Default for Shell {
@@ -319,6 +332,9 @@ impl Default for Shell {
             layers_rect: None,
             canvas_id: None,
             dock_scroll: None,
+            picker: PickerState::default(),
+            dock_left: None,
+            last_cell: None,
         }
     }
 }
@@ -498,8 +514,10 @@ impl Shell {
                 .options_mut(|o| o.input_options.surrender_focus_on = presses);
         }
         self.handle_shortcuts(ui.ctx(), &mut actions);
+        self.picker.drawn = false;
         if let Some(ws) = ws.as_deref_mut() {
             ws.prepare(ui.ctx());
+            ws.prepare_thumbs(ui.ctx(), self.picker.source, self.last_cell);
             if std::mem::take(&mut self.export_requested) {
                 self.open_export(ws);
             }
@@ -577,12 +595,13 @@ impl Shell {
                 .exact_size(layout::STATUS_HEIGHT)
                 .show(ui, |ui| status::show(self, ws.as_deref(), ui, &mut actions));
             if !self.dock_hidden {
-                egui::Panel::right("dock")
+                let dock = egui::Panel::right("dock")
                     .resizable(true)
                     .default_size(layout::DOCK_WIDTH)
                     .size_range(DOCK_WIDTH_RANGE)
                     .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(0))
                     .show(ui, |ui| dock::show(self, ws.as_deref(), ui, &mut actions));
+                self.dock_left = Some(dock.response.rect.left());
             }
         }
 
@@ -597,6 +616,21 @@ impl Shell {
                 working::show(self, ui, ws.as_deref(), &mut actions)
             });
         export_dialog::show(self, ws.as_deref(), ui.ctx(), &mut actions);
+        // The picker closes (reverting its preview) when its recipe is no longer shown.
+        if self.picker.open.is_some() && !self.picker.drawn {
+            self.picker.close(&mut actions);
+        }
+        if self.picker.open.is_none()
+            && let Some(ws) = ws.as_deref()
+            && let Some((_, (x, y))) = self
+                .hover
+                .and_then(|p| crate::view::target_at(ws.doc.grid(), p))
+        {
+            self.last_cell = Some(convert64_core::model::CellPos::new(x as u16, y as u16));
+        }
+        if let Some(ws) = ws.as_deref_mut() {
+            ws.method_thumbs.flush();
+        }
         if let Some(ws) = ws.as_deref() {
             self.announce_deletes(ui.ctx(), ws, &actions);
         }
@@ -668,8 +702,11 @@ impl Shell {
         // Single keys only while no text field is being edited (a `TextEdit`, or a
         // `DragValue` taking typed digits); a focused slider or button leaves them be
         // (#244). Arrows, though, belong to whichever widget has focus.
-        let typing = ctx.text_edit_focused();
-        let widget_focused = ctx.egui_wants_keyboard_input();
+        // The open method picker takes typing and the arrows (UX §6a), from its first
+        // frame on, before its search field has the focus.
+        let picker = self.picker.open.is_some();
+        let typing = ctx.text_edit_focused() || picker;
+        let widget_focused = ctx.egui_wants_keyboard_input() || picker;
         let delete_applies = self.delete_keys_apply(ctx);
         let mut hide_ui = None;
         ctx.input_mut(|i| {
@@ -1089,6 +1126,23 @@ mod tests {
             });
             output.textures_delta.clear();
         }
+    }
+
+    /// #260: while the method picker is open, arrows move in its grid and letters
+    /// search; neither nudges the layer nor picks a tool.
+    #[test]
+    fn the_open_picker_keeps_arrows_and_letters() {
+        let mut shell = Shell::default();
+        shell.picker.open(RecipeTarget::Layer(0));
+        let none = egui::Modifiers::NONE;
+        let (shell, actions) = frame(
+            shell,
+            vec![key(egui::Key::ArrowRight, none), key(egui::Key::P, none)],
+        );
+        assert!(actions.is_empty(), "{actions:?}");
+        assert_eq!(shell.tool, Tool::Nudge);
+        // Not drawn (no document): it closed.
+        assert!(shell.picker.open.is_none());
     }
 
     /// #240: `Tab` and `Shift Tab` are egui's focus traversal and hide nothing.

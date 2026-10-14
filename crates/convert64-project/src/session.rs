@@ -804,6 +804,13 @@ impl Session {
         Ok((w, h, out))
     }
 
+    /// The composite on the target grid, brought up to date: what the solver solves
+    /// (the method picker crops its Picture thumbnails from it, UX §6a).
+    pub fn target_frame(&mut self) -> &convert64_core::TargetFrame {
+        self.composite();
+        self.compositor.frame()
+    }
+
     /// The composite on the target grid as RGBA8 (straight sRGB, alpha = coverage).
     pub fn composite_rgba(&mut self) -> (u32, u32, Vec<u8>) {
         self.composite();
