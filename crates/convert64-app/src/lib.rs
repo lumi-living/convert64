@@ -8,5 +8,6 @@ pub mod icons;
 pub mod scheduler;
 pub mod shell;
 pub mod theme;
+pub mod thumbs;
 pub mod view;
 pub mod workspace;

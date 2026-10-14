@@ -891,6 +891,13 @@ impl Recipe {
         )
     }
 
+    /// This recipe with `method` in place of its own, every other setting kept (the
+    /// method picker's thumbnails and live preview, UX §6a).
+    pub const fn with_dither_method(mut self, method: Method) -> Self {
+        self.method = method;
+        self
+    }
+
     /// The dither method.
     pub const fn method(&self) -> Method {
         self.method

@@ -15,6 +15,7 @@ pub mod mode;
 pub mod model;
 pub mod palette;
 pub mod par;
+pub mod preview;
 pub mod region;
 pub mod rule;
 mod scratch;

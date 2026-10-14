@@ -54,7 +54,7 @@ pub const ZOOM_FIT: KeyboardShortcut = cmd(Key::Num0);
 pub const ZOOM_100: KeyboardShortcut = cmd(Key::Num1);
 /// Cell grid overlay.
 pub const GRID: KeyboardShortcut = cmd(Key::Quote);
-/// Clash heatmap overlay.
+/// The colour-limited cells overlay (the clash heatmap; #243).
 pub const CLASHES: KeyboardShortcut = KeyboardShortcut::new(Modifiers::SHIFT, Key::C);
 /// Border around the result.
 pub const BORDER: KeyboardShortcut = cmd(Key::B);
