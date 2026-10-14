@@ -22,8 +22,8 @@ Generated programmatically by this repository's maintainers (no external source)
 
 <!-- vice-check-exports:start -->
 - VICE check of Convert64's own exports (`cargo xtask vice-check`): VICE 3.10, the same `x64sc` options, on display PRGs of `source.png` solved in each mode with the harness's png2c64-like recipe. Exports: `write` (the Koala / Art Studio writer), `stable` / `frequency` / `packed` (bitpair policies) and `raw` (the raw set read back from its manifest). Captures are not committed; the fingerprint is FNV-1a of the `write` file, to tell which solve was checked.
-  - multicolor (Koala) solve `e4db3facd3a36868`: `write` 100.000 % (1000/1000 cells), `stable` 100.000 % (1000/1000 cells), `frequency` 100.000 % (1000/1000 cells), `packed` 100.000 % (1000/1000 cells), `raw` 100.000 % (1000/1000 cells)
-  - hi-res (Art Studio) solve `49dc4c36e93a1132`: `write` 100.000 % (1000/1000 cells), `stable` 100.000 % (1000/1000 cells), `frequency` 100.000 % (1000/1000 cells), `packed` 100.000 % (1000/1000 cells), `raw` 100.000 % (1000/1000 cells)
+  - multicolor (Koala) solve `945643c917cac18f`: `write` 100.000 % (1000/1000 cells), `stable` 100.000 % (1000/1000 cells), `frequency` 100.000 % (1000/1000 cells), `packed` 100.000 % (1000/1000 cells), `raw` 100.000 % (1000/1000 cells)
+  - hi-res (Art Studio) solve `e97ef270979debd8`: `write` 100.000 % (1000/1000 cells), `stable` 100.000 % (1000/1000 cells), `frequency` 100.000 % (1000/1000 cells), `packed` 100.000 % (1000/1000 cells), `raw` 100.000 % (1000/1000 cells)
 <!-- vice-check-exports:end -->
 
 <!-- png2amiga-baseline:start -->
