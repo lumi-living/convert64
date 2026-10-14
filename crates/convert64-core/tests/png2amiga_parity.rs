@@ -7,7 +7,8 @@
 //!   `docs/reference/dither-previews/png2amiga-card/`, `png2amiga-card-hires/` and
 //!   `png2amiga-portrait/`.
 //! - Every fixture with its baseline's settings (`fixtures/<name>/README.md`), with
-//!   `--match-range` too, and the portrait with `--sharpen 0.5` and `--sharpen -0.5`.
+//!   `--match-range` and with `--cell-refine` (the Refine step) too, and the portrait
+//!   with `--sharpen 0.5` and `--sharpen -0.5`.
 //!
 //! Each must be at least 99 % identical. The report lists every case's percentage and,
 //! for a case below 100 %, the first differing cell with both colour sets. The renders
@@ -16,9 +17,9 @@
 
 use convert64_core::solve::png2amiga_ref::c64::Metric;
 use convert64_core::solve::png2amiga_ref::colour::{PEPTO_HEX, palette_linear};
-use convert64_core::solve::png2amiga_ref::dither::Method;
+use convert64_core::solve::png2amiga_ref::dither::{Method, PxSettings};
 use convert64_core::solve::png2amiga_ref::{
-    Image, Mode, Screen, Settings, convert, prepare, preprocess,
+    Image, Mode, Screen, Settings, convert, prepare, preprocess, refine,
 };
 use std::path::PathBuf;
 
@@ -85,6 +86,7 @@ struct Case {
     mode: Mode,
     front: Front,
     settings: Settings,
+    refine: bool,
     reference: String,
 }
 
@@ -162,6 +164,7 @@ fn cases() -> Vec<Case> {
                     serpentine: true,
                     metric,
                 },
+                refine: false,
                 reference: format!("docs/reference/dither-previews/png2amiga-{set}/{}.png", m.name()),
             });
         }
@@ -185,6 +188,7 @@ fn cases() -> Vec<Case> {
                 },
                 "baseline_match_range.png",
             ),
+            (" --cell-refine", ours, "baseline_refine.png"),
         ];
         if name == "portrait" {
             variants.push((
@@ -211,6 +215,7 @@ fn cases() -> Vec<Case> {
                 mode,
                 front,
                 settings: baseline_settings(mode),
+                refine: suffix == " --cell-refine",
                 reference: format!("fixtures/{name}/{render}"),
             });
         }
@@ -221,12 +226,18 @@ fn cases() -> Vec<Case> {
 /// Runs one case: the percentage of identical pixels and, below 100 %, the first
 /// difference.
 fn run(case: &Case, image: &Image) -> (f64, Option<String>) {
-    let screen = convert(
-        image,
-        &palette_linear(&PEPTO_HEX),
-        case.mode,
-        &case.settings,
-    );
+    let pal = palette_linear(&PEPTO_HEX);
+    let mut screen = convert(image, &pal, case.mode, &case.settings);
+    if case.refine {
+        let s = &case.settings;
+        let px = PxSettings {
+            method: s.method,
+            strength: s.strength,
+            error_clamp: s.error_clamp,
+            origin: (0, 0),
+        };
+        refine::refine(image, &mut screen, &pal, &px, s.serpentine);
+    }
     let theirs = render_indices(&case.reference, case.mode);
     let ours = screen.indices();
     let same = ours.iter().zip(&theirs).filter(|(a, b)| a == b).count();

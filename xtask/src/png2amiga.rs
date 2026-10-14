@@ -384,7 +384,10 @@ pub(crate) fn renders(bin: Option<PathBuf>, skip_previews: bool) -> Result<(), S
         if save_png(&draw(&file), &dir.join("baseline.png"))? {
             changed.push(format!("{name}/baseline.png"));
         }
-        let mut extra = vec![("match_range", vec!["--match-range"])];
+        let mut extra = vec![
+            ("match_range", vec!["--match-range"]),
+            ("refine", vec!["--cell-refine"]),
+        ];
         if name == "portrait" {
             extra.push(("sharpen_0.5", vec!["--sharpen", "0.5"]));
             extra.push(("sharpen_-0.5", vec!["--sharpen", "-0.5"]));
@@ -478,7 +481,7 @@ fn write_readme_section(
            ```sh\n  png2amiga source.png baseline.{ext} {}\n  ```\n\n\
          - Files: `{file}` is the picture png2amiga writes (`.{ext}`, the same bytes); \
            `baseline.png` is it drawn at 320 × 200 through Pepto. `baseline_match_range.png` \
-           adds `--match-range`.{extra}\n\
+           adds `--match-range`, `baseline_refine.png` `--cell-refine`.{extra}\n\
          - png2amiga's SSIMULACRA2 (its own, against its preprocessed input): {scores}\n\
          {END}",
         args.join(" ")
