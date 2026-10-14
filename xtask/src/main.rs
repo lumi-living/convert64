@@ -19,6 +19,8 @@
 //!   with png2c64's kernel, 1.0 with a Gaussian of σ 0.8).
 //! - `png2c64-previews --png2c64 <path>`: regenerate png2c64's own renders and contact
 //!   sheets in `docs/reference/dither-previews/`, the parity test's reference.
+//! - `reference-sheet` (#261): the sheets of the move to png2amiga's reference, every
+//!   tile with its SSIMULACRA2.
 //! - `png2amiga build [--variant reference|strict|default|clang]` and `png2amiga renders
 //!   [--bin <path>]` (#261, ADR-013): clone and build the pinned png2amiga (strict IEEE,
 //!   the maths shim), and render the fixture baselines and every method's previews the
@@ -34,6 +36,7 @@ mod frontend;
 mod goldens;
 mod png2amiga;
 mod previews;
+mod reference_sheet;
 mod sharpen;
 mod sheet;
 mod tokens;
@@ -166,6 +169,11 @@ enum Command {
         #[arg(long, conflicts_with = "input")]
         reason: Option<String>,
     },
+    /// The sheets of the move to png2amiga's reference (#261): the baselines old and new,
+    /// range matching off / png2c64's / png2amiga's, Refine off / on, and the 4096 px
+    /// sources under the old scaler, png2amiga's exact one and the mip-accelerated one,
+    /// each tile with its SSIMULACRA2, in `docs/reference/dither-previews/convert64-sheets/`.
+    ReferenceSheet,
     /// The reference png2amiga (ADR-013): build it, or render the baselines and previews.
     Png2amiga {
         #[command(subcommand)]
@@ -277,6 +285,7 @@ fn main() -> ExitCode {
             Some(n) => goldens::set_pr(&repo_root(), n),
             None => goldens::run(accept, reason.as_deref(), pr),
         },
+        Command::ReferenceSheet => reference_sheet::run(),
         Command::Png2amiga { action } => match action {
             Png2amigaAction::Build { variant, compiler } => png2amiga::build(variant, &compiler),
             Png2amigaAction::Renders { bin, skip_previews } => {

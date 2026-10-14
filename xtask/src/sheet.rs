@@ -176,14 +176,19 @@ fn render_all(input: &Input) -> Result<Vec<(DitherKind, RgbImage, Vec<Rgb8>)>, S
         .collect()
 }
 
-/// A grid of labelled tiles.
+/// A grid of labelled tiles, six across.
 pub(crate) fn sheet(tiles: &[(String, RgbImage)]) -> RgbImage {
-    let rows = (tiles.len() as u32).div_ceil(COLUMNS);
-    let w = COLUMNS * TILE_W + (COLUMNS + 1) * GAP;
+    sheet_with(tiles, COLUMNS)
+}
+
+/// A grid of labelled tiles, `columns` across.
+pub(crate) fn sheet_with(tiles: &[(String, RgbImage)], columns: u32) -> RgbImage {
+    let rows = (tiles.len() as u32).div_ceil(columns);
+    let w = columns * TILE_W + (columns + 1) * GAP;
     let h = rows * (TILE_H + LABEL) + (rows + 1) * GAP;
     let mut img = RgbImage::from_pixel(w, h, Rgb(BACKGROUND));
     for (i, (label, tile)) in tiles.iter().enumerate() {
-        let (col, row) = (i as u32 % COLUMNS, i as u32 / COLUMNS);
+        let (col, row) = (i as u32 % columns, i as u32 / columns);
         let x = GAP + col * (TILE_W + GAP);
         let y = GAP + row * (TILE_H + LABEL + GAP);
         // Labels too long for the tile at double size go single size.
