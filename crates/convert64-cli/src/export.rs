@@ -163,6 +163,7 @@ fn export_one(
     let (mut session, _) = convert::load(r, project, job.overrides, None)?;
     r.set("mode", session.target());
     let sol = r.time("solve", || session.solve(true).clone());
+    let s2 = r.time("ssimulacra2", || session.ssimulacra2());
     let opts = EmitOptions::new(name).with_data(job.data.style());
     let mut sources = Vec::new();
     let mut written: Vec<PathBuf> = Vec::new();
@@ -181,5 +182,5 @@ fn export_one(
         }
     }
     r.set("sources", Value::Array(sources));
-    convert::finish_solve(r, &sol, false, job.max_clashes)
+    convert::finish_solve(r, &sol, s2, false, job.max_clashes)
 }

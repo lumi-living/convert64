@@ -96,9 +96,10 @@ pub struct TargetFrame {
     colour: Vec<[f32; 3]>,
     coverage: Vec<f32>,
     attributes: AttributeMap,
-    /// The colour has been through png2c64's preprocessing already, which the reference
-    /// solver then does not repeat: png2c64's prepared image (#190), or a composite,
-    /// whose every layer went through it (ADR-012).
+    /// The colour has been through the reference's preprocessing already (png2amiga's,
+    /// ADR-013), which the reference solver then does not repeat: png2amiga's prepared
+    /// image of a plain layer (#190), or a composite, whose every layer went through it
+    /// (ADR-012).
     prepared: bool,
 }
 
@@ -117,7 +118,7 @@ impl TargetFrame {
     }
 
     /// A frame from its parts, as [`Self::colour`], [`Self::coverage`],
-    /// [`Self::attributes`] and [`Self::png2c64_prepared`] return them: for a solve in
+    /// [`Self::attributes`] and [`Self::prepared`] return them: for a solve in
     /// another process or a web worker (#265), which then sees exactly this frame.
     ///
     /// # Panics
@@ -145,15 +146,16 @@ impl TargetFrame {
         }
     }
 
-    /// Whether the colour has been through png2c64's preprocessing (its gamma and OKLab
-    /// round trip): png2c64's prepared image of one plain layer (#190), or the
-    /// compositor's composite, whose layers each went through it (ADR-012).
-    pub const fn png2c64_prepared(&self) -> bool {
+    /// Whether the colour has been through the reference's preprocessing (png2amiga's
+    /// gamma and OKLab round trip, ADR-013): png2amiga's prepared image of one plain
+    /// layer (#190), or the compositor's composite, whose layers each went through it
+    /// (ADR-012).
+    pub const fn prepared(&self) -> bool {
         self.prepared
     }
 
-    /// Replaces the colour with png2c64's prepared image, or (`None`) keeps the
-    /// compositor's composite; both have been through png2c64's preprocessing.
+    /// Replaces the colour with png2amiga's prepared image, or (`None`) keeps the
+    /// compositor's composite; both have been through png2amiga's preprocessing.
     pub(crate) fn set_prepared(&mut self, colour: Option<&[[f32; 3]]>) {
         if let Some(c) = colour {
             self.colour.copy_from_slice(c);

@@ -51,10 +51,15 @@ impl Default for Project {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SolveSettings {
-    /// The solver: `reference` (png2c64's pipeline, the default) or `native`.
+    /// The solver: `reference` (png2amiga's C64 path, the default since ADR-013),
+    /// `png2c64` (png2c64's port) or `native`.
     #[serde(default)]
     pub solver: SolverKind,
-    /// The reference solver's named divergences from png2c64, all off by default.
+    /// png2amiga's `--cell-refine` after the reference solve (#261), kept only if
+    /// SSIMULACRA2 improves; off by default, written only when on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub refine: bool,
+    /// The png2c64 port's named divergences, all off by default.
     #[serde(default, skip_serializing_if = "Divergences::none")]
     pub divergences: Divergences,
     /// Background: `auto` (default) or `{"fixed": n}`.
@@ -86,6 +91,7 @@ impl Default for SolveSettings {
     fn default() -> Self {
         Self {
             solver: SolverKind::default(),
+            refine: false,
             divergences: Divergences::default(),
             background: Background::default(),
             hysteresis: None,
@@ -124,6 +130,7 @@ impl SolveSettings {
     pub fn options(&self, mode: SolveMode, layer_origins: Vec<(i64, i64)>) -> SolveOptions {
         SolveOptions {
             solver: self.solver,
+            refine: self.refine,
             divergences: self.divergences,
             mode,
             background: self.background,

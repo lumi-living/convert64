@@ -84,7 +84,7 @@ fn the_portrait_s_background_and_cell_sets_are_png2c64_s() {
     let pal = palette_linear(&PEPTO_HEX);
     let thr = checker(0.7);
     let screen = quantize(&im, &pal, Mode::Multicolor, Some(&thr), 0.7);
-    let (bg, theirs) = koala_cells("fixtures/portrait/baseline.kla");
+    let (bg, theirs) = koala_cells("fixtures/archive/png2c64/portrait/baseline.kla");
     let (sets, pixels) = agreement(&screen, &theirs);
     println!(
         "portrait checker 0.7: background {} (png2c64 {bg}), cell sets {sets}/1000, pixels {:.3} %",
@@ -125,7 +125,7 @@ fn lineart_hires_none_is_png2c64_s_global_fs_choice() {
     let screen = quantize(&im, &palette_linear(&PEPTO_HEX), Mode::Hires, None, 0.0);
     let pct = percent_equal(
         &screen.indices(),
-        &render_indices("fixtures/lineart/baseline.png", Mode::Hires),
+        &render_indices("fixtures/archive/png2c64/lineart/baseline.png", Mode::Hires),
     );
     println!("lineart hi-res none: {pct:.3} %");
     assert!(pct >= 99.0, "{pct:.3} %");

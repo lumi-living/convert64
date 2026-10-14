@@ -54,7 +54,7 @@ pub struct SourceTile {
     origin: CellPos,
     /// Row-major straight linear RGB, `block_px(mode)` in size.
     colour: Vec<[f32; 3]>,
-    /// The colours have been through png2c64's preprocessing (a composite's have).
+    /// The colours have been through the reference's preprocessing (a composite's have).
     prepared: bool,
     /// The background the tile is solved against (multicolor): the current result's.
     background: Option<ColourIndex>,
@@ -179,7 +179,7 @@ impl SourceTile {
                 });
             }
         }
-        Self::new(mode, origin, colour, frame.png2c64_prepared(), background)
+        Self::new(mode, origin, colour, frame.prepared(), background)
     }
 
     fn new(

@@ -108,6 +108,8 @@ pub(crate) fn run(run: &mut Run, path: &Path, format: Option<ReadFormat>) -> Res
             })?;
             run.notes_of(&session);
             let sol = run.time("solve", || session.solve(true).clone());
+            let s2 = run.time("ssimulacra2", || session.ssimulacra2());
+            run.set("ssimulacra2", s2);
             run.set("clashes", sol.report.summary().clashes);
             run.time("validate", || Report {
                 file,

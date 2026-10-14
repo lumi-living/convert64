@@ -118,37 +118,150 @@ impl From<Gamma> for f32 {
     }
 }
 
-#[derive(Deserialize)]
-struct RangeMatchData {
-    percentile: f32,
-    l: [f32; 2],
-    a: [f32; 2],
-    b: [f32; 2],
+/// How range matching maps the source onto the palette.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RangeMethod {
+    /// png2amiga's (ADR-013, #261): per (lightness, hue), each pixel's chroma scaled
+    /// by the palette's reachable chroma over the source's 95th percentile, clipped at
+    /// the palette's; hue and lightness kept (`png2amiga_ref::preprocess`).
+    #[default]
+    Hull,
+    /// png2c64's: each OKLab axis stretched from the source's percentile range to the
+    /// palette's bounding box, shrunk by a margin.
+    Box,
 }
 
-/// png2c64's `--match-range` (OKLab range matching): the image's OKLab extent, taken
-/// between the `percentile` and `1 − percentile` quantiles of its opaque pixels, is
-/// mapped onto a target extent. L is stretched linearly; a and b are scaled around zero
-/// so greys stay grey. The target is a palette's extent shrunk by a margin
-/// ([`Self::for_palette`]), stored so a project file is self-contained.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "RangeMatchData")]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RangeMatchData {
+    #[serde(default)]
+    method: Option<RangeMethod>,
+    #[serde(default)]
+    palette: Option<Vec<String>>,
+    #[serde(default)]
+    amount: Option<f32>,
+    #[serde(default)]
+    percentile: Option<f32>,
+    #[serde(default)]
+    l: Option<[f32; 2]>,
+    #[serde(default)]
+    a: Option<[f32; 2]>,
+    #[serde(default)]
+    b: Option<[f32; 2]>,
+}
+
+/// Range matching (png2c64's and png2amiga's `--match-range`), applied last.
+///
+/// - [`RangeMethod::Hull`] (since #261, the reference's): png2amiga's per-(L, hue)
+///   chroma stretch onto the palette's reachable hull, with an **amount** (0–1) that
+///   blends the source's chroma (0) with the matched (1, png2amiga's). The palette is
+///   stored (its sRGB bytes) so a project file is self-contained.
+/// - [`RangeMethod::Box`] (png2c64's, the only one before #261): the image's OKLab
+///   extent, between the `percentile` and `1 − percentile` quantiles, mapped onto a
+///   target extent: L stretched linearly, a and b scaled around zero so greys stay grey.
+///   Projects saved before #261 hold this one and keep it.
+///
+/// On disk a box is `{ percentile, l, a, b }` as before #261; a hull is
+/// `{ method = "hull", palette = [16 × "#rrggbb"], amount }`, `amount` written only when
+/// not 1.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RangeMatch {
+    method: RangeMethod,
     percentile: f32,
     l: [f32; 2],
     a: [f32; 2],
     b: [f32; 2],
+    palette: [[u8; 3]; 16],
+    amount: f32,
 }
 
 impl TryFrom<RangeMatchData> for RangeMatch {
     type Error = AdjustError;
     fn try_from(d: RangeMatchData) -> Result<Self, AdjustError> {
-        Self::new(d.percentile, d.l, d.a, d.b)
+        let method = d.method.unwrap_or(if d.l.is_some() {
+            RangeMethod::Box
+        } else {
+            RangeMethod::Hull
+        });
+        match method {
+            RangeMethod::Box => {
+                let missing = |what: &'static str| AdjustError::OutOfRange {
+                    what,
+                    value: f32::NAN,
+                };
+                Self::new(
+                    d.percentile.unwrap_or(Self::DEFAULT_PERCENTILE),
+                    d.l.ok_or_else(|| missing("range L"))?,
+                    d.a.ok_or_else(|| missing("range a"))?,
+                    d.b.ok_or_else(|| missing("range b"))?,
+                )
+            }
+            RangeMethod::Hull => {
+                let hex = d.palette.unwrap_or_default();
+                let bad = AdjustError::OutOfRange {
+                    what: "range palette (16 \"#rrggbb\")",
+                    value: hex.len() as f32,
+                };
+                if hex.len() != 16 {
+                    return Err(bad);
+                }
+                let mut palette = [[0u8; 3]; 16];
+                for (slot, h) in palette.iter_mut().zip(&hex) {
+                    let v = h
+                        .strip_prefix('#')
+                        .filter(|t| t.len() == 6)
+                        .and_then(|t| u32::from_str_radix(t, 16).ok())
+                        .ok_or(bad.clone())?;
+                    let [_, r, g, b] = v.to_be_bytes();
+                    *slot = [r, g, b];
+                }
+                Self::hull_bytes(palette, d.amount.unwrap_or(1.0))
+            }
+        }
+    }
+}
+
+impl Serialize for RangeMatch {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        match self.method {
+            RangeMethod::Box => {
+                let mut st = s.serialize_struct("RangeMatch", 4)?;
+                st.serialize_field("percentile", &self.percentile)?;
+                st.serialize_field("l", &self.l)?;
+                st.serialize_field("a", &self.a)?;
+                st.serialize_field("b", &self.b)?;
+                st.end()
+            }
+            RangeMethod::Hull => {
+                let n = if self.amount == 1.0 { 2 } else { 3 };
+                let mut st = s.serialize_struct("RangeMatch", n)?;
+                st.serialize_field("method", &RangeMethod::Hull)?;
+                let hex: Vec<String> = self
+                    .palette
+                    .iter()
+                    .map(|[r, g, b]| format!("#{r:02x}{g:02x}{b:02x}"))
+                    .collect();
+                st.serialize_field("palette", &hex)?;
+                if self.amount != 1.0 {
+                    st.serialize_field("amount", &self.amount)?;
+                }
+                st.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RangeMatch {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let data = RangeMatchData::deserialize(d)?;
+        Self::try_from(data).map_err(serde::de::Error::custom)
     }
 }
 
 impl RangeMatch {
-    /// The OKLab target ranges `(lo, hi)` of L, a and b.
+    /// The OKLab target ranges `(lo, hi)` of L, a and b (a box's).
     pub const fn targets(&self) -> [(f32, f32); 3] {
         [
             (self.l[0], self.l[1]),
@@ -163,8 +276,8 @@ impl RangeMatch {
     /// png2c64's inward margin on the palette extent, 5 %.
     pub const DEFAULT_MARGIN: f32 = 0.05;
 
-    /// Range matching with `percentile` in `0..0.5` onto target ranges `[lo, hi]` of
-    /// OKLab L, a and b (finite, `lo ≤ hi`).
+    /// png2c64's box matching with `percentile` in `0..0.5` onto target ranges
+    /// `[lo, hi]` of OKLab L, a and b (finite, `lo ≤ hi`).
     pub fn new(
         percentile: f32,
         l: [f32; 2],
@@ -177,14 +290,43 @@ impl RangeMatch {
             check(what, r[1], r[0], 2.0)?;
         }
         Ok(Self {
+            method: RangeMethod::Box,
             percentile,
             l,
             a,
             b,
+            palette: [[0; 3]; 16],
+            amount: 1.0,
         })
     }
 
-    /// png2c64's matching onto `palette`: its OKLab extent shrunk by `margin` (a
+    /// png2amiga's hull matching onto `palette` at `amount` (0–1; 1 is png2amiga's).
+    pub fn hull(palette: &Palette, amount: f32) -> Result<Self, AdjustError> {
+        Self::hull_bytes(palette.rgb_table().map(|c| [c.r, c.g, c.b]), amount)
+    }
+
+    fn hull_bytes(palette: [[u8; 3]; 16], amount: f32) -> Result<Self, AdjustError> {
+        check("range amount", amount, 0.0, 1.0)?;
+        Ok(Self {
+            method: RangeMethod::Hull,
+            percentile: Self::DEFAULT_PERCENTILE,
+            l: [0.0, 1.0],
+            a: [0.0, 0.0],
+            b: [0.0, 0.0],
+            palette,
+            amount,
+        })
+    }
+
+    /// The same matching with another amount (hull only; a box ignores it).
+    pub fn with_amount(self, amount: f32) -> Result<Self, AdjustError> {
+        match self.method {
+            RangeMethod::Hull => Self::hull_bytes(self.palette, amount),
+            RangeMethod::Box => Ok(self),
+        }
+    }
+
+    /// png2c64's box matching onto `palette`: its OKLab extent shrunk by `margin` (a
     /// fraction of each span, `0..0.5`) on each side.
     pub fn for_palette(
         palette: &Palette,
@@ -210,29 +352,87 @@ impl RangeMatch {
         )
     }
 
-    /// Tail fraction ignored at each end.
+    /// Which matching this is.
+    pub const fn method(&self) -> RangeMethod {
+        self.method
+    }
+
+    /// The hull's amount, 0–1 (1 for a box).
+    pub const fn amount(&self) -> f32 {
+        self.amount
+    }
+
+    /// The hull's palette in linear light (through png2c64's/png2amiga's sRGB table).
+    pub fn palette_linear(&self) -> [[f32; 3]; 16] {
+        self.palette
+            .map(|[r, g, b]| crate::solve::png2amiga_ref::colour::srgb8_to_linear(r, g, b))
+    }
+
+    /// Tail fraction ignored at each end (a box's).
     pub const fn percentile(&self) -> f32 {
         self.percentile
     }
 
-    /// Target L range.
+    /// Target L range (a box's).
     pub const fn l(&self) -> [f32; 2] {
         self.l
     }
 
-    /// Target a range.
+    /// Target a range (a box's).
     pub const fn a(&self) -> [f32; 2] {
         self.a
     }
 
-    /// Target b range.
+    /// Target b range (a box's).
     pub const fn b(&self) -> [f32; 2] {
         self.b
+    }
+
+    /// Matches linear RGB pixels (all of them measured and changed) in place, as the
+    /// reference ports do: a box with png2c64's `match_range_to`, a hull with
+    /// png2amiga's `match_palette_range` at the amount.
+    pub fn apply_rgb(&self, px: &mut Vec<[f32; 3]>) {
+        if px.is_empty() {
+            return;
+        }
+        let n = px.len();
+        match self.method {
+            RangeMethod::Box => {
+                let mut im = crate::solve::png2c64_ref::Image::new(n, 1, std::mem::take(px));
+                crate::solve::png2c64_ref::preprocess::match_range_to(
+                    &mut im,
+                    self.percentile,
+                    self.targets(),
+                );
+                *px = im.px;
+            }
+            RangeMethod::Hull => {
+                let mut im = crate::solve::png2amiga_ref::Image::new(n, 1, std::mem::take(px));
+                crate::solve::png2amiga_ref::preprocess::match_palette_range(
+                    &mut im,
+                    &self.palette_linear(),
+                    self.amount,
+                );
+                *px = im.px;
+            }
+        }
     }
 
     /// Remaps `px` (straight-alpha linear RGBA) in place; fully transparent pixels are
     /// neither measured nor changed.
     pub fn apply(&self, px: &mut [[f32; 4]]) {
+        if self.method == RangeMethod::Hull {
+            let idx: Vec<usize> = (0..px.len()).filter(|&i| px[i][3] > 0.0).collect();
+            let mut rgb: Vec<[f32; 3]> = idx
+                .iter()
+                .map(|&i| [px[i][0], px[i][1], px[i][2]])
+                .collect();
+            self.apply_rgb(&mut rgb);
+            for (&i, c) in idx.iter().zip(rgb) {
+                px[i][..3].copy_from_slice(&c);
+            }
+            return;
+        }
         let mut labs: Vec<(usize, Oklab)> = px
             .iter()
             .enumerate()
@@ -310,9 +510,10 @@ fn scale_around_zero(v: f32, src: [f32; 2], dst: [f32; 2]) -> f32 {
 /// [`suggest_range_match`] measures them) has a narrow range.
 const NARROW_RANGE: f32 = 0.6;
 
-/// An "Auto levels" suggestion for `source` (#142): range matching onto `palette` with
-/// png2c64's defaults when the source's OKLab L range (1st–99th percentile) covers less
-/// than 60 % of the palette's. Only a suggestion: nothing applies it unless asked.
+/// An "Auto levels" suggestion for `source` (#142): range matching onto `palette`
+/// (png2amiga's hull at amount 1 since #261) when the source's OKLab L range (1st–99th
+/// percentile) covers less than 60 % of the palette's box extent with png2c64's
+/// defaults. Only a suggestion: nothing applies it unless asked.
 pub fn suggest_range_match(source: &SourceImage, palette: &Palette) -> Option<RangeMatch> {
     let ls: Vec<f32> = source
         .pixels()
@@ -338,7 +539,8 @@ pub fn suggest_range_match(source: &SourceImage, palette: &Palette) -> Option<Ra
     )
     .expect("png2c64's defaults are valid");
     let [lo, hi] = source_range(ls, RangeMatch::DEFAULT_PERCENTILE);
-    (hi - lo < NARROW_RANGE * (m.l[1] - m.l[0])).then_some(m)
+    (hi - lo < NARROW_RANGE * (m.l[1] - m.l[0]))
+        .then(|| RangeMatch::hull(palette, 1.0).expect("amount 1 is valid"))
 }
 
 #[derive(Deserialize)]
@@ -735,9 +937,10 @@ impl Sharpen {
 
     /// Sharpens `px` (straight linear RGB, `w × h`, row-major, with its `alpha`) in place
     /// on a grid `scale ×` the target grid. Pixels of alpha 0 are neither used nor
-    /// changed. Each pixel the kernel changes goes through png2c64's OKLab round trip and
-    /// clamp, as in png2c64; with every alpha 1 and `scale` 1, png2c64's radius is
-    /// png2c64's `apply_sharpen` bit for bit.
+    /// changed. Each pixel the kernel changes goes through the reference's OKLab round
+    /// trip and clamp, with png2amiga's OKLab conversions (ADR-013); with every alpha 1
+    /// and `scale` 1, png2c64's radius (the 3 × 3 kernel png2amiga keeps) is png2amiga's
+    /// `apply_sharpen` bit for bit.
     pub fn apply_rgb(
         &self,
         px: &mut [[f32; 3]],
@@ -745,7 +948,7 @@ impl Sharpen {
         (w, h): (usize, usize),
         scale: u32,
     ) {
-        use crate::solve::png2c64_ref::colour::{clamped, linear_to_oklab, oklab_to_linear};
+        use crate::solve::png2amiga_ref::colour::{clamped, linear_to_oklab, oklab_to_linear};
         use crate::solve::png2c64_ref::preprocess::unsharp_box;
         if self.is_off() || px.is_empty() {
             return;
@@ -1511,7 +1714,7 @@ mod tests {
         };
         assert!(suggest_range_match(&ramp(0, 255), &p).is_none());
         let narrow = suggest_range_match(&ramp(70, 140), &p).expect("narrow source");
-        assert_eq!(narrow.percentile(), RangeMatch::DEFAULT_PERCENTILE);
+        assert_eq!(narrow.method(), RangeMethod::Hull);
     }
 
     #[test]
@@ -1569,11 +1772,11 @@ mod tests {
     }
 
     fn lab(p: [f32; 4]) -> [f32; 3] {
-        crate::solve::png2c64_ref::colour::linear_to_oklab([p[0], p[1], p[2]])
+        crate::solve::png2amiga_ref::colour::linear_to_oklab([p[0], p[1], p[2]])
     }
 
     fn from_lab(l: [f32; 3], a: f32) -> [f32; 4] {
-        let [r, g, b] = crate::solve::png2c64_ref::colour::oklab_to_linear(l);
+        let [r, g, b] = crate::solve::png2amiga_ref::colour::oklab_to_linear(l);
         [r, g, b, a]
     }
 
@@ -1614,11 +1817,12 @@ mod tests {
         );
     }
 
-    /// #228: the png2c64 kernel at the target grid is png2c64's `apply_sharpen`, bit for
-    /// bit, both ways (sharpen and soften), after the same gamma.
+    /// #228: the png2c64 kernel at the target grid is png2amiga's `apply_sharpen` (the
+    /// same kernel, png2amiga's OKLab conversions; ADR-013), bit for bit, both ways
+    /// (sharpen and soften), after the same gamma.
     #[test]
-    fn png2c64_kernel_equals_png2c64_s_apply_sharpen() {
-        use crate::solve::png2c64_ref::{Image, preprocess};
+    fn png2c64_kernel_equals_png2amiga_s_apply_sharpen() {
+        use crate::solve::png2amiga_ref::{Image, preprocess};
         let (w, h) = (31, 19);
         let src = noise(w, h, 0x2545_f491);
         for amount in [0.5, 1.7, 3.0, -0.5, -1.0] {

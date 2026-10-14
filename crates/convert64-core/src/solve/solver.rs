@@ -33,14 +33,19 @@ pub enum Background {
     Fixed(ColourIndex),
 }
 
-/// Which solver solves a bitmap frame (#181).
+/// Which solver solves a bitmap frame (#181, ADR-013).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SolverKind {
-    /// png2c64's pipeline, ported (`png2c64_ref`; the default). Frames it cannot solve
-    /// yet fall back to the native solver ([`Solution::fallback`] says why).
+    /// The reference: png2amiga's C64 path, ported (`png2amiga_ref`; the default since
+    /// ADR-013, #261). A frame it cannot solve goes to the png2c64 port if that can solve
+    /// it, else to the native solver ([`Solution::fallback`] says why).
     #[default]
     Reference,
+    /// png2c64's pipeline, ported (`png2c64_ref`; the reference of ADR-010, kept until
+    /// the png2amiga port has stood, ADR-013). Frames it cannot solve fall back to the
+    /// native solver.
+    Png2c64,
     /// Convert64's own solver (E5, #157): background search, dither and refinement.
     Native,
 }
@@ -66,8 +71,12 @@ pub enum SolveMode {
 pub struct SolveOptions {
     /// Which solver (the reference by default).
     pub solver: SolverKind,
-    /// The reference solver's named extras, all off by default (#181 step 7).
+    /// The png2c64 port's named extras, all off by default (#181 step 7). The png2amiga
+    /// reference has none: a frame asking for one goes to the png2c64 port.
     pub divergences: super::png2c64_ref::Divergences,
+    /// png2amiga's `--cell-refine` after the reference solve (#261): keeps the result only
+    /// if its full-image SSIMULACRA2 improves. Off by default.
+    pub refine: bool,
     /// Full search or the interactive fast path.
     pub mode: SolveMode,
     /// Background choice.
@@ -95,6 +104,7 @@ impl Default for SolveOptions {
         Self {
             solver: SolverKind::Reference,
             divergences: super::png2c64_ref::Divergences::default(),
+            refine: false,
             mode: SolveMode::Full,
             background: Background::Auto,
             luma_pair_bias: 0.0,
@@ -186,6 +196,17 @@ impl Solver {
         previous: Option<&Solution>,
         opts: &SolveOptions,
     ) -> Solution {
+        let png2c64 = |why: Option<String>| match super::reference_png2c64::unsupported(frame, opts)
+        {
+            None => Ok(Solution {
+                fallback: why.clone(),
+                ..super::reference_png2c64::solve(frame, self.palette(), steering, previous, opts)
+            }),
+            Some(own) => Err(match why {
+                Some(w) => format!("{w}; png2c64 port: {own}"),
+                None => own,
+            }),
+        };
         let fallback = match opts.solver {
             SolverKind::Native => None,
             SolverKind::Reference => match super::reference::unsupported(frame, opts) {
@@ -198,7 +219,14 @@ impl Solver {
                         opts,
                     );
                 }
-                why => why,
+                Some(why) => match png2c64(Some(why)) {
+                    Ok(sol) => return sol,
+                    Err(why) => Some(why),
+                },
+            },
+            SolverKind::Png2c64 => match png2c64(None) {
+                Ok(sol) => return sol,
+                Err(why) => Some(why),
             },
         };
         // The fast path needs tables only for the cells it re-solves.
@@ -503,16 +531,16 @@ mod tests {
         c.frame().clone()
     }
 
-    /// The reference path on a frame is png2c64's port run on the frame's colours, bit
-    /// for bit, in both modes and for ordered, diffusion and `none` recipes. The
-    /// compositor's frames have been through png2c64's preprocessing already (ADR-012),
-    /// so the solver takes their colours as they are.
+    /// The reference path on a frame is png2amiga's port run on the frame's colours, bit
+    /// for bit, in both modes and for ordered, diffusion, palette-aware and `none`
+    /// recipes. The compositor's frames have been through the front end's preprocessing
+    /// already, so the solver takes their colours as they are.
     #[test]
     fn the_reference_path_is_the_port_on_the_frame() {
-        use super::super::png2c64_ref::dither::{PxSettings, Settings};
-        use super::super::png2c64_ref::quantize::Mode as RefMode;
-        use super::super::png2c64_ref::{Image, colour, convert};
+        use super::super::png2amiga_ref::c64::Metric as RefMetric;
+        use super::super::png2amiga_ref::{Image, Mode as RefMode, Settings, colour, convert};
         let s = Solver::new(&Palette::pepto_pal());
+        let recipe = Recipe::default();
         for (mode, rm) in [
             (Mode::MulticolorBitmap, RefMode::Multicolor),
             (Mode::HiresBitmap, RefMode::Hires),
@@ -521,24 +549,25 @@ mod tests {
                 DitherKind::None,
                 DitherKind::Bayer4,
                 DitherKind::FloydSteinberg,
-                DitherKind::Ostromoukhov,
+                DitherKind::Yliluoma1,
+                DitherKind::OptChecker,
             ] {
                 let f = frame(mode, kind);
                 let sol = s.solve(&f, &Steering::new(), None, &SolveOptions::default());
                 assert_eq!(sol.solver, SolverKind::Reference, "{mode} {kind:?}");
                 assert_eq!(sol.fallback, None);
                 let (w, h) = rm.screen();
-                assert!(f.png2c64_prepared());
+                assert!(f.prepared());
                 let im = Image::new(w, h, f.colour().to_vec());
+                let strength = f.attributes().pixels()[0].strength;
+                assert_eq!(strength, f.attributes().pixels()[w * h / 2].strength);
                 let settings = Settings {
                     method: super::super::reference::ref_method(kind).unwrap(),
-                    strength: f.attributes().pixels()[0].strength,
-                    ..Settings::default()
+                    strength,
+                    error_clamp: recipe.error_clamp(),
+                    serpentine: true,
+                    metric: RefMetric::Mse,
                 };
-                assert_eq!(
-                    PxSettings::from(&settings).strength,
-                    f.attributes().pixels()[w * h / 2].strength
-                );
                 let port = convert(
                     &im,
                     &colour::palette_of(&Palette::pepto_pal()),
@@ -558,16 +587,61 @@ mod tests {
         }
     }
 
+    /// `--solver png2c64` keeps png2c64's port (ADR-013): its output is the port's on
+    /// the frame, as before #261.
+    #[test]
+    fn the_png2c64_solver_is_png2c64_s_port_on_the_frame() {
+        use super::super::png2c64_ref::dither::Settings;
+        use super::super::png2c64_ref::quantize::Mode as RefMode;
+        use super::super::png2c64_ref::{Image, colour, convert};
+        let s = Solver::new(&Palette::pepto_pal());
+        let opts = SolveOptions {
+            solver: SolverKind::Png2c64,
+            ..SolveOptions::default()
+        };
+        for kind in [DitherKind::Bayer4, DitherKind::Ostromoukhov] {
+            let f = frame(Mode::MulticolorBitmap, kind);
+            let sol = s.solve(&f, &Steering::new(), None, &opts);
+            assert_eq!(sol.solver, SolverKind::Png2c64, "{kind:?}");
+            assert_eq!(sol.fallback, None);
+            let (w, h) = RefMode::Multicolor.screen();
+            let im = Image::new(w, h, f.colour().to_vec());
+            let settings = Settings {
+                method: super::super::reference_png2c64::ref_method(kind).unwrap(),
+                strength: f.attributes().pixels()[0].strength,
+                ..Settings::default()
+            };
+            let port = convert(
+                &im,
+                &colour::palette_of(&Palette::pepto_pal()),
+                RefMode::Multicolor,
+                &settings,
+            );
+            let ours: Vec<u8> = indices(&sol).iter().map(|c| c.get()).collect();
+            assert_eq!(ours, port.indices(), "{kind:?}");
+        }
+    }
+
     #[test]
     fn frames_the_reference_cannot_solve_fall_back_to_native() {
         let s = Solver::new(&Palette::pepto_pal());
-        let f = frame(Mode::MulticolorBitmap, DitherKind::Yliluoma1);
+        // png2c64 has Ostromoukhov, png2amiga has not: the png2c64 port solves it.
+        let f = frame(Mode::MulticolorBitmap, DitherKind::Ostromoukhov);
+        let sol = s.solve(&f, &Steering::new(), None, &SolveOptions::default());
+        assert_eq!(sol.solver, SolverKind::Png2c64);
+        assert!(
+            sol.fallback
+                .as_deref()
+                .is_some_and(|w| w.contains("png2amiga"))
+        );
+        // Neither has three-row Sierra: native, and both reasons are given.
+        let f = frame(Mode::MulticolorBitmap, DitherKind::Sierra);
         let sol = s.solve(&f, &Steering::new(), None, &SolveOptions::default());
         assert_eq!(sol.solver, SolverKind::Native);
         assert!(
             sol.fallback
                 .as_deref()
-                .is_some_and(|w| w.contains("png2c64"))
+                .is_some_and(|w| w.contains("png2amiga") && w.contains("png2c64"))
         );
         let knob = frame_with(
             Mode::MulticolorBitmap,
@@ -834,7 +908,13 @@ mod tests {
         for mode in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
             for (name, kind, div) in cases {
                 let f = frame(mode, kind);
-                let off = s.solve(&f, &Steering::new(), None, &SolveOptions::default());
+                let png2c64 = SolveOptions {
+                    solver: SolverKind::Png2c64,
+                    ..SolveOptions::default()
+                };
+                let off = s.solve(&f, &Steering::new(), None, &png2c64);
+                // A divergence is a png2c64 option: the reference hands such a frame
+                // to the png2c64 port.
                 let on = s.solve(
                     &f,
                     &Steering::new(),
@@ -844,7 +924,7 @@ mod tests {
                         ..SolveOptions::default()
                     },
                 );
-                assert_eq!(on.solver, SolverKind::Reference, "{mode} {name}");
+                assert_eq!(on.solver, SolverKind::Png2c64, "{mode} {name}");
                 assert_eq!(validate(&on.image.to_indexed()), Ok(()), "{mode} {name}");
                 assert_ne!(indices(&on), indices(&off), "{mode} {name} changes nothing");
             }
@@ -1177,7 +1257,12 @@ mod tests {
             );
             let mut c = Compositor::new(SuperGrid::new(Mode::HiresBitmap, 1).unwrap());
             c.update(&[bg_layer.clone(), red], &[]);
-            Solver::new(&p).solve(c.frame(), &Steering::new(), None, &SolveOptions::default())
+            // Force is the native solver's: compare it with the native Adaptive.
+            let native = SolveOptions {
+                solver: SolverKind::Native,
+                ..SolveOptions::default()
+            };
+            Solver::new(&p).solve(c.frame(), &Steering::new(), None, &native)
         };
         let adaptive = solve(FitMode::Adaptive);
         let force = solve(FitMode::Force);
@@ -1635,16 +1720,24 @@ mod tests {
             },
         );
         assert!(sol.rounds.len() <= 3, "at most two refinement rounds");
-        if sol.rounds.len() == 3 {
-            let flips = (0..sol.rounds[0].len())
-                .filter(|&i| {
-                    sol.rounds[1][i] != sol.rounds[0][i] && sol.rounds[2][i] == sol.rounds[0][i]
-                })
-                .count();
-            assert_eq!(flips, 0, "a cell went back to its first set");
-        }
+        let flips = |r: &[Vec<ColourSet>]| {
+            if r.len() < 3 {
+                return 0;
+            }
+            (0..r[0].len())
+                .filter(|&i| r[1][i] != r[0][i] && r[2][i] == r[0][i])
+                .count()
+        };
         // Hysteresis only ever keeps more cells unchanged than accepting every re-pick.
         let free = solve_native(&f);
+        // Since png2amiga's front end (#261) one cell of this noise frame still flips
+        // back under 0.97; hysteresis must not add flips, and leaves at most that one.
+        assert!(
+            flips(&sol.rounds) <= flips(&free.rounds).min(1),
+            "cells went back to their first set: {} with hysteresis, {} without",
+            flips(&sol.rounds),
+            flips(&free.rounds)
+        );
         let changed = |r: &[Vec<ColourSet>]| {
             r.windows(2)
                 .map(|w| w[0].iter().zip(&w[1]).filter(|(a, b)| a != b).count())

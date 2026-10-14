@@ -118,7 +118,61 @@ most converters lack.
 
 `mse` (default), `blur` (Pappas–Neuhoff: compare after a small blur — models
 the eye at viewing distance, good for charsets/PETSCII), `ssim` (Wang).
-These choose cell colour sets; the dither method then places pixels.
+These choose cell colour sets; the dither method then places pixels. On the png2amiga
+reference (#261) `mse` and `blur` are png2amiga's and choose the colours only of cells
+whose method is `none`; png2amiga's own default is `blur`, Convert64's stays `mse`.
+
+## 7. png2amiga's methods (#261, ADR-013)
+
+Since ADR-013 the reference solver is png2amiga's C64 path
+([png2amiga-reference.md](png2amiga-reference.md)), and every method it offers for C64
+is a kind, solved by the reference exactly as png2amiga solves it (the parity test covers
+all 68 of its ids on the card, multicolor and hi-res, and the portrait). On png2amiga's
+path **every method runs after the cell colours are chosen**: ordered and noise
+thresholds offset the target (`L + 0.15·t·s`, `a, b + 0.03·t·s`), diffusion spreads the
+residual in gamma-encoded sRGB, palette-aware methods pick from the cell's 2 or 4 colours.
+Renders: `dither-previews/png2amiga-card/`, `png2amiga-card-hires/`,
+`png2amiga-portrait/`.
+
+Kinds Convert64 already had take png2amiga's algorithm on the reference path where the
+ids match: `bayer2/4/8`, `checker`, `h2x4`, `clustered4`, `halftone8`, `diagonal8`,
+`spiral5`, `hex5`, `hex8`, `line-h2/4/8`, `line-v2/4/8`, `line-checker`, `blue-noise`,
+`ign`, `r2`, `white-noise`, `crosshatch`, `radial` (centred at (160, 128), as png2amiga),
+`value-noise`, `floyd-steinberg`, `atkinson`, `jarvis-judice-ninke`, `stucki` (the last
+three with png2amiga's OKLab-tuned weights), `sierra-lite`, `zhou-fang` (png2amiga's:
+Floyd–Steinberg with hashed noise on L), `riemersma` (png2amiga's: a 16-deep exponential
+history in scan order), `yliluoma1`, `yliluoma2`, `knoll`. Kinds png2amiga lacks
+(`fs-wide`, `line-fs`, `ostromoukhov`) go to the png2c64 port; the rest (`bayer16`,
+`clustered8`, `dot`, `diamond`, `star`, `diag-*`, `custom`, `false-fs`, `burkes`,
+`sierra`, `sierra2`, `stevenson-arce`, `shiau-fan1/2`, `yliluoma3`, `luma`, `pair`) to the
+native solver.
+
+New kinds (png2amiga's spelling accepted as an alias where it differs):
+
+| Id | Family | What |
+|---|---|---|
+| `bayer3`, `bayer5`, `bayer6`, `bayer7` (`bayer3x3`…) | Ordered | dispersed-dot magic-square permutations, non-power-of-2 |
+| `v4x2`, `bayer4x2`, `bayer2x4` | Ordered | non-square matrices |
+| `line-v-checker` (`vline-checker`) | Ordered | column-biased 2 × 2 |
+| `fractal16` | Ordered | 16 × 16 self-nested Bayer (Obra Dinn) |
+| `aseprite-old`, `libcaca3`, `libcaca6`, `pegasus` | Ordered | hand-tuned matrices |
+| `void-cluster`, `cluster-noise` | Noise | 64 × 64 void-and-cluster blue noise, tight or clustered |
+| `cranley-bayer` | Noise | Bayer 8 with a hashed per-tile offset |
+| `ign-tri`, `r2-tri` | Noise | IGN / R2 remapped to a triangular distribution (less banding at the ends) |
+| `quasicrystal`, `truchet` | Effects | sum of cosines; quarter-arc Truchet tiles |
+| `floyd-steinberg-oklab` | Diffusion | the residual carried in OKLab (a/b clamped at half the limit) |
+| `structure-fs`, `contrast-fs` | Diffusion | Floyd–Steinberg with a Laplacian / local-contrast bias on L, gated by the 5 × 5 deviation |
+| `gilbert`, `dbs` | Diffusion | png2amiga's curve diffusion and direct binary search; **on its C64 path neither has a kernel, so both are a plain nearest pick**, ported as such |
+| `yliluoma` | Palette-aware | 64-entry greedy plan on Bayer 8 (png2amiga's plain alg. 2) |
+| `opt-checker`, `opt-line`, `opt-vline` | Palette-aware | the nearest colour and its best partner (a separation penalty growing as strength drops), alternated by checker / row / column |
+| `opt-line-checker`, `opt-vline-checker` | Palette-aware | a 4-entry plan on the line / column checker |
+| `tri-tone` | Palette-aware | Yliluoma's tri-tone: a 4-entry plan on Bayer 2 |
+
+On the native solver (`--solver native`, or a frame it must take) the new threshold
+kinds use png2amiga's thresholds (shifted into 0–1, Truchet clamped); the others stand in
+for the nearest native method (`DitherKind::native`): the Floyd–Steinberg variants for
+`floyd-steinberg`, `gilbert` and `dbs` for `none`, `yliluoma` for `yliluoma2`, the
+optimal pairs and plans for `pair`, `tri-tone` for `knoll`.
 
 ## Implementation order (E5)
 

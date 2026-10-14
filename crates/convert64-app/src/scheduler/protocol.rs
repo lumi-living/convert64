@@ -180,6 +180,7 @@ pub fn encode_solve(
         hysteresis,
         layer_origins,
         input,
+        refine,
     } = options;
     let head = json!({
         "grid": to_json!(frame.grid()),
@@ -195,7 +196,7 @@ pub fn encode_solve(
     let mut w = Writer::message(Kind::Solve, ticket);
     w.bytes(&head);
     // The frame.
-    w.bool(frame.png2c64_prepared());
+    w.bool(frame.prepared());
     let px = frame.colour().len();
     w.u32(len32(px));
     w.0.reserve(px * 22);
@@ -236,6 +237,7 @@ pub fn encode_solve(
     }
     // The options not in the header.
     w.f32(*luma_pair_bias);
+    w.bool(*refine);
     w.u8(*refinements);
     w.u8(*finalists);
     w.opt_f32(*hysteresis);
@@ -337,6 +339,7 @@ pub fn decode_solve(msg: &[u8]) -> Res<SolveRequest> {
     let palette = Palette::from_rgb(name, rgb);
 
     let luma_pair_bias = r.f32()?;
+    let refine = r.bool()?;
     let refinements = r.u8()?;
     let finalists = r.u8()?;
     let hysteresis = r.opt_f32()?;
@@ -358,6 +361,7 @@ pub fn decode_solve(msg: &[u8]) -> Res<SolveRequest> {
         hysteresis,
         layer_origins,
         input,
+        refine,
     };
 
     let preview = if r.bool()? { Some(r.cells()?) } else { None };
@@ -607,6 +611,7 @@ impl Writer {
         self.u8(match solver {
             SolverKind::Reference => 0,
             SolverKind::Native => 1,
+            SolverKind::Png2c64 => 2,
         });
         match fallback {
             Some(f) => {
@@ -820,6 +825,7 @@ impl<'a> Reader<'a> {
         let solver = match self.u8()? {
             0 => SolverKind::Reference,
             1 => SolverKind::Native,
+            2 => SolverKind::Png2c64,
             s => return err(format!("unknown solver {s}")),
         };
         let fallback = if self.bool()? {

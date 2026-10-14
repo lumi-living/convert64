@@ -789,7 +789,8 @@ mod tests {
 
     #[test]
     fn kernel_weights_sum_to_their_divisor_or_less() {
-        for kind in DitherKind::ALL {
+        // The stand-ins for png2amiga's kinds (#261) run as their native kind.
+        for kind in DitherKind::ALL.into_iter().filter(|k| k.native() == *k) {
             let has = kernel(kind).is_some();
             let diffusion = kind.family() == DitherFamily::Diffusion;
             assert_eq!(has, diffusion && kind != DitherKind::Riemersma, "{kind:?}");

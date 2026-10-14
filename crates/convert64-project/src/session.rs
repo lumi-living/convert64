@@ -743,6 +743,20 @@ impl Session {
         self.last.as_ref()
     }
 
+    /// SSIMULACRA2 of the last solve against the frame it was solved from, the prepared
+    /// composite on the target grid (ADR-013 §4, [`convert64_core::quality::score_bitmap`]
+    /// gives the pairing). `None` before the first solve. Call it right after
+    /// [`Self::solve`]: anything that composites again in between (an edit, a preview)
+    /// moves the frame on. About 2 ms native and 8 ms in wasm for 320 × 200.
+    pub fn ssimulacra2(&self) -> Option<f64> {
+        let sol = self.last.as_ref()?;
+        Some(convert64_core::quality::score_bitmap(
+            self.compositor.frame(),
+            &sol.image,
+            &self.solver_palette,
+        ))
+    }
+
     /// The last solve's clash report as JSON: the status-bar summary and the `worst`
     /// worst cells (wanted, chosen and dropped colours).
     pub fn clash_report_json(&self, worst: usize) -> Option<serde_json::Value> {
@@ -937,7 +951,7 @@ fn preview_compositor(
     clock: Option<convert64_core::composite::Clock>,
 ) -> Compositor {
     let mut c = Compositor::new(grid);
-    c.set_png2c64_front_end(false);
+    c.set_reference_front_end(false);
     c.set_clock(clock);
     c
 }

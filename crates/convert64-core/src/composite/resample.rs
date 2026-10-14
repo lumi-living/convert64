@@ -2,20 +2,29 @@
 //!
 //! An axis-aligned transform (translate, scale, flip; `rotate == 0`) is resampled in two
 //! 1-D passes driven by per-axis weight tables ([`AxisMap`]); a rotated one goes through
-//! `affine` instead (#198). Both use png2c64's Mitchell bicubic (ADR-012, #227): per
-//! output pixel, four source taps around the sample position, weighted by the
-//! Mitchell–Netravali kernel at their distance and divided by the weights' sum, exactly
-//! as png2c64's `scale::bicubic` does (taps clamped to the source, unwidened when
-//! scaling down). Sub-pixel placement is the kernel's phase. A layer that spans a whole
-//! number of output pixels from 0 (one fitted to the screen) samples at png2c64's
-//! positions, `(x + ½) · src / dst − ½`, so it is resampled bit for bit as png2c64
-//! scales; an axis at 1:1 with no sub-pixel offset is copied, as png2c64 copies a source
-//! that is already the target's size. Samples clamp to the layer's edge pixels; the
-//! layer's own edge is instead expressed as **coverage**, the exact fraction of each
-//! super pixel's footprint inside the layer's box, so a sub-pixel nudge moves its edge
-//! coverage linearly.
+//! `affine` instead (#198).
+//!
+//! **Colour** is resampled with png2amiga's Lanczos-3 widened by the shrink (ADR-013,
+//! #261; `solve::png2amiga_ref::scale`), exactly as its `scale::resample` does: per
+//! output pixel the source taps within `⌈3 · max(1, ratio)⌉` of the sample position, cut
+//! at the source's edges (not clamped), weighted by `lanczos3(distance / max(1, ratio))`
+//! and normalised before the sum, the horizontal pass first, each pass clamped to
+//! `0..=1`. **Masks** keep png2c64's Mitchell bicubic (ADR-012): four taps around the
+//! position, clamped to the source, the sum divided by the weights' sum, as png2c64's
+//! `scale::bicubic` does; they are coverage, and Lanczos would ring on a hard edge.
+//!
+//! Sub-pixel placement is the kernel's phase. A layer that spans a whole number of output
+//! pixels from 0 (one fitted to the screen) samples at png2amiga's positions,
+//! `(x + ½) · src / dst − ½`, so it is resampled bit for bit as png2amiga scales. An
+//! axis at 1:1 with no sub-pixel offset is copied when the other axis is too, as
+//! png2amiga copies a source that is already the target's size; one 1:1 axis beside a
+//! scaled one is filtered, as png2amiga filters it. Sample positions clamp to the
+//! layer's edge pixels; the layer's own edge is instead expressed as **coverage**, the
+//! exact fraction of each super pixel's footprint inside the layer's box, so a sub-pixel
+//! nudge moves its edge coverage linearly.
 
 use crate::scratch;
+use crate::solve::png2amiga_ref::scale::{kernel_row_into, support};
 use crate::solve::png2c64_ref::scale::mitchell;
 
 /// A pixel value that can be accumulated with weights.
@@ -26,6 +35,8 @@ pub(crate) trait Px: Copy + Send + Sync + crate::scratch::Scratch {
     fn madd(&mut self, w: f32, v: Self);
     /// `self × s`, each channel.
     fn scaled(self, s: f32) -> Self;
+    /// Each channel clamped to `0..=1`, as png2amiga clamps each pass of its scaler.
+    fn clamped01(self) -> Self;
 
     /// `Σ_k wy[k] · Σ_j wx[j] · taps[k][j]`, a 4 × 4 separable kernel on a block of
     /// pixels (the rotated path's Mitchell, #198, ADR-012): each row summed across, then the
@@ -53,6 +64,10 @@ impl Px for f32 {
     #[inline]
     fn scaled(self, s: f32) -> Self {
         self * s
+    }
+    #[inline]
+    fn clamped01(self) -> Self {
+        self.clamp(0.0, 1.0)
     }
 
     /// For one channel, the columns are summed down first, then across.
@@ -84,6 +99,31 @@ impl Px for [f32; 4] {
     fn scaled(self, s: f32) -> Self {
         self.map(|v| v * s)
     }
+    #[inline]
+    fn clamped01(self) -> Self {
+        self.map(|v| v.clamp(0.0, 1.0))
+    }
+}
+
+/// The kernel an [`AxisMap`] resamples with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kernel {
+    /// png2amiga's Lanczos-3 widened by the shrink, each pass clamped to `0..=1` (colour,
+    /// ADR-013). With `copy`, an axis at 1:1 on whole pixels is copied; the caller asks
+    /// for that only when the other axis is copied too (png2amiga copies a picture that
+    /// is already the target's size and filters both axes of any other).
+    Lanczos {
+        /// Copy an axis at 1:1 on whole pixels.
+        copy: bool,
+    },
+    /// png2c64's Mitchell bicubic (masks, ADR-012); an axis at 1:1 on whole pixels is
+    /// copied.
+    Mitchell,
+}
+
+impl Kernel {
+    /// The colour kernel, copying an axis at 1:1.
+    pub const COLOUR: Self = Self::Lanczos { copy: true };
 }
 
 /// One axis of a layer's placement on the super grid: which super pixels it touches,
@@ -96,10 +136,15 @@ pub(crate) struct AxisMap {
     start: Vec<u32>,
     /// Source pixel index of each tap.
     src: Vec<u32>,
-    /// Weight of each tap, as the kernel gives it.
+    /// Weight of each tap: Mitchell's as the kernel gives it, Lanczos' normalised.
     w: Vec<f32>,
-    /// Per output, `1 / Σ w`: the taps' sum is scaled by it afterwards, as png2c64 does.
+    /// Per output, `1 / Σ w`: the taps' sum is scaled by it afterwards, as png2c64 does;
+    /// 1 (exact) for Lanczos, whose weights are normalised already, as png2amiga's are.
     inv: Vec<f32>,
+    /// Every output is clamped to `0..=1` (Lanczos: png2amiga clamps each pass).
+    pub clamp: bool,
+    /// Every output is a copy of one source pixel (1:1 on whole pixels).
+    pub copy: bool,
     /// Fraction of each output's footprint inside the layer.
     pub cov: Vec<f32>,
     /// The source's mip level the taps index (#235); 0 for the source itself.
@@ -110,14 +155,19 @@ impl AxisMap {
     /// The map for a source axis of `src_len` pixels placed at `translate` with `scale`
     /// canvas pixels per source pixel (`flip` mirrors it), onto `out_len` super pixels of
     /// `step` canvas pixels each, its taps on the source's mip `level` along this axis
-    /// (#235; 0 for the source itself). The placement, the coverage and the sample
-    /// positions are the original's; a level only divides the positions by `2^level`
-    /// (exact in f32) and clamps the taps to the level's length.
+    /// (#235; 0 for the source itself), with `kernel`. The placement, the coverage and
+    /// the sample positions are the original's; a level only divides the positions by
+    /// `2^level` (exact in f32) and limits the taps to the level's length, and Lanczos is
+    /// widened by the shrink left on the level (`ratio / 2^level`).
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::cast_precision_loss,
         reason = "indices are clamped to the super grid and the source before casting"
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the axis' placement, the grid, the level and the kernel"
     )]
     pub fn new(
         src_len: u32,
@@ -127,8 +177,9 @@ impl AxisMap {
         step: f32,
         out_len: u32,
         level: u32,
+        kernel: Kernel,
     ) -> Self {
-        // Output pixels the layer spans, and source pixels per output pixel: png2c64's
+        // Output pixels the layer spans, and source pixels per output pixel: png2amiga's
         // `src / dst` when the span is a whole number (a layer fitted to the screen), whose
         // end is then exactly on an output edge (`320 / 637 · 637` rounds just short).
         let span = f64::from(scale) * f64::from(src_len) / f64::from(step);
@@ -148,15 +199,20 @@ impl AxisMap {
         let first = ((lo / step).floor().max(0.0) as u32).min(out_len);
         let last = ((hi / step).ceil().max(0.0) as u32).min(out_len);
         // The layer's offset in output pixels; 0 for a layer at the origin, so its
-        // positions are png2c64's `(x + ½) · ratio`.
+        // positions are png2amiga's `(x + ½) · ratio`.
         let offset = translate / step;
-        let identity = ratio == 1.0 && offset.fract() == 0.0 && level == 0;
+        let identity = ratio == 1.0
+            && offset.fract() == 0.0
+            && level == 0
+            && kernel != (Kernel::Lanczos { copy: false });
         let mut map = Self {
             out0: first,
             start: vec![0],
             src: Vec::new(),
             w: Vec::new(),
             inv: Vec::new(),
+            clamp: matches!(kernel, Kernel::Lanczos { .. }),
+            copy: identity,
             cov: Vec::new(),
             level,
         };
@@ -164,6 +220,9 @@ impl AxisMap {
         // `2^−level`, exact.
         let inv_mip = 1.0 / (1u32 << level) as f32;
         let max_j = len as i64 - 1;
+        // Lanczos' widening and reach for the shrink left on the level: png2amiga's
+        // `filter_scale` and `support` for the ratio on the original.
+        let (filter_scale, reach) = support(if level > 0 { ratio * inv_mip } else { ratio });
         for i in first..last {
             let a = i as f32 * step;
             let b = a + step;
@@ -176,10 +235,22 @@ impl AxisMap {
                 u *= inv_mip;
             }
             if identity {
-                // 1:1 and on whole pixels: a copy, as png2c64 copies a source that is
+                // 1:1 and on whole pixels: a copy, as png2amiga copies a source that is
                 // already the target's size.
                 map.src.push((u.floor() as i64).clamp(0, max_j) as u32);
                 map.w.push(1.0);
+                map.inv.push(1.0);
+            } else if map.clamp {
+                // png2amiga's `build_kernel_rows`: the taps within `reach` of `pos`, cut
+                // at the source's edges, weighted by Lanczos-3 widened by `filter_scale`
+                // and normalised. An edge output's centre can lie past the layer (its
+                // coverage says how much it overlaps): it samples at the edge, as on the
+                // Mitchell path. A fitted layer's positions are always inside, so this
+                // changes nothing there.
+                let pos = (u - 0.5).clamp(-0.5, len as f32 - 0.5);
+                let first = kernel_row_into(pos, len as usize, filter_scale, reach, &mut map.w);
+                let n = map.w.len() - map.src.len();
+                map.src.extend((0..n).map(|k| (first + k) as u32));
                 map.inv.push(1.0);
             } else {
                 // png2c64's `sample`: the four pixels around `pos`, clamped, each weighted
@@ -260,6 +331,24 @@ impl AxisMap {
         let lo = taps.iter().min().expect("every output has a tap");
         let hi = taps.iter().max().expect("every output has a tap");
         (*lo, *hi)
+    }
+}
+
+/// A colour layer's two axis maps, `x(kernel)` and `y(kernel)` building each: Lanczos,
+/// an axis at 1:1 on whole pixels copied only when the other one is too. png2amiga
+/// copies a picture that is already the target's size and filters both axes of any
+/// other, and at 1:1 its kernel is not quite a copy (`lanczos3(±1)` is about `−2e−8` in
+/// f32), so a fitted layer with one axis at 1:1 is resampled bit for bit as it is.
+pub(crate) fn colour_pair(
+    x: impl Fn(Kernel) -> AxisMap,
+    y: impl Fn(Kernel) -> AxisMap,
+) -> (AxisMap, AxisMap) {
+    let filtered = Kernel::Lanczos { copy: false };
+    let (mx, my) = (x(Kernel::COLOUR), y(Kernel::COLOUR));
+    match (mx.copy, my.copy) {
+        (true, false) => (x(filtered), my),
+        (false, true) => (mx, y(filtered)),
+        _ => (mx, my),
     }
 }
 
@@ -349,6 +438,12 @@ fn horizontal<T: Px>(
                 }
             }
         }
+        if mx.clamp {
+            // png2amiga clamps its horizontal pass before the vertical one reads it.
+            for out in row.iter_mut() {
+                *out = out.clamped01();
+            }
+        }
     }
 }
 
@@ -389,13 +484,19 @@ fn vertical<T: Px>(tmp: &[T], r0: u32, my: &AxisMap, k: usize, row: &mut [T]) {
             }
         }
     }
+    if my.clamp {
+        for o in row.iter_mut() {
+            *o = o.clamped01();
+        }
+    }
 }
 
 /// [`vertical`] for interleaved colour, split into the planes `out` as it is written,
-/// each pixel scaled by its coverage (`cov[x] × my.cov[k]`), colour as resampled
-/// (Mitchell's negative lobes kept, as png2c64 keeps them) and alpha clamped to `0..=1`,
-/// or exactly the coverage when the source is `opaque`. `inner` is where `cov` is 1: on a row whose own coverage is 1
-/// too, the scale there is 1 and is skipped, since `v × 1 = v` (#139).
+/// each pixel clamped to `0..=1` when `my` clamps (Lanczos, as png2amiga's vertical
+/// pass), then scaled by its coverage (`cov[x] × my.cov[k]`), alpha clamped to `0..=1`,
+/// or exactly the coverage when the source is `opaque`. `inner` is where `cov` is 1: on
+/// a row whose own coverage is 1 too, the scale there is 1 and is skipped, since
+/// `v × 1 = v` (#139).
 #[inline(always)]
 #[expect(
     clippy::too_many_arguments,
@@ -431,6 +532,7 @@ fn vertical_split(
                 cy,
                 inner,
                 opaque,
+                my.clamp,
             );
         }
         (Some((j0, w0)), Some((j1, w1)), None) => {
@@ -447,6 +549,7 @@ fn vertical_split(
                 cy,
                 inner,
                 opaque,
+                my.clamp,
             );
         }
         _ => split_row(
@@ -462,6 +565,7 @@ fn vertical_split(
             cy,
             inner,
             opaque,
+            my.clamp,
         ),
     }
 }
@@ -475,15 +579,18 @@ fn split_row(
     cy: f32,
     inner: std::ops::Range<usize>,
     opaque: bool,
+    clamp: bool,
 ) {
     let ow = cov.len();
     let [r, g, b, a] = out;
+    // png2amiga clamps its vertical pass (Lanczos); Mitchell keeps its lobes.
+    let sum = |x: usize| if clamp { sum(x).clamped01() } else { sum(x) };
     let (r, g, b, a) = (&mut r[..ow], &mut g[..ow], &mut b[..ow], &mut a[..ow]);
     for x in (0..inner.start).chain(inner.end.max(inner.start)..ow) {
         let v = sum(x);
         let s = cov[x] * cy;
-        // Colour keeps the kernel's slight negative ringing, as png2c64's scaler does;
-        // the layer's front end clamps it in its OKLab round trip (ADR-012).
+        // Colour is clamped already (Lanczos, as png2amiga); a Mitchell sum would keep
+        // its slight negative ringing, as png2c64's scaler does.
         r[x] = v[0] * s;
         g[x] = v[1] * s;
         b[x] = v[2] * s;
@@ -638,9 +745,10 @@ impl Planes {
 }
 
 /// Resamples premultiplied colour (`sw` wide) through `mx` and `my` into planes, scaled
-/// by coverage (`mx.cov × my.cov`): alpha clamped to `0..=1`. Colour is left as the
-/// kernel gives it, slight negative ringing included (png2c64's scaler does not clamp;
-/// the layer's front end does, ADR-012). With `opaque` (every source alpha 1) the alpha
+/// by coverage (`mx.cov × my.cov`): alpha clamped to `0..=1`. With Lanczos maps every
+/// channel is clamped to `0..=1` after each pass, as png2amiga's scaler clamps (for an
+/// opaque source exactly png2amiga's); with Mitchell maps colour is left as the kernel
+/// gives it, slight negative ringing included. With `opaque` (every source alpha 1) the alpha
 /// is the coverage itself. `extent` gets, per output row, the columns outside
 /// which the row is all zero.
 ///
@@ -723,50 +831,82 @@ mod tests {
         m.taps(k).map(|(_, w)| w).sum::<f32>() * m.inv[k]
     }
 
+    /// Both kernels: colour's Lanczos and the masks' Mitchell.
+    const KERNELS: [Kernel; 2] = [Kernel::COLOUR, Kernel::Mitchell];
+
     #[test]
     fn identity_at_1x_is_one_tap_per_pixel() {
-        let m = AxisMap::new(10, 0.0, 1.0, false, 1.0, 320, 0);
-        assert_eq!((m.out0, m.len()), (0, 10));
-        for k in 0..10 {
-            let taps: Vec<_> = m.taps(k).filter(|t| t.1 != 0.0).collect();
-            assert_eq!(taps, vec![(k as u32, 1.0)]);
-            assert_eq!(m.cov[k], 1.0);
+        for kernel in KERNELS {
+            let m = AxisMap::new(10, 0.0, 1.0, false, 1.0, 320, 0, kernel);
+            assert_eq!((m.out0, m.len()), (0, 10));
+            assert!(m.copy);
+            for k in 0..10 {
+                let taps: Vec<_> = m.taps(k).filter(|t| t.1 != 0.0).collect();
+                assert_eq!(taps, vec![(k as u32, 1.0)]);
+                assert_eq!(m.cov[k], 1.0);
+            }
         }
+        // Filtered at 1:1, Lanczos is not quite a copy (png2amiga's `sin(π)` in f32).
+        let filtered = Kernel::Lanczos { copy: false };
+        let m = AxisMap::new(10, 0.0, 1.0, false, 1.0, 320, 0, filtered);
+        assert!(!m.copy && m.taps(5).count() == 6);
     }
 
-    /// ADR-012: a layer fitted to the target is resampled bit for bit as png2c64's
-    /// `scale::bicubic` scales, in both modes' geometry, upscaled and downscaled.
+    /// A fitted layer's colour maps on a `tw`-wide grid of `step` canvas px (both modes'
+    /// geometry), as the compositor builds them.
+    fn fitted_maps(w: usize, h: usize, tw: u32, step: f32) -> (AxisMap, AxisMap) {
+        colour_pair(
+            |k| AxisMap::new(w as u32, 0.0, 320.0 / w as f32, false, step, tw, 0, k),
+            |k| AxisMap::new(h as u32, 0.0, 200.0 / h as f32, false, 1.0, 200, 0, k),
+        )
+    }
+
+    /// ADR-013 (#261): a layer fitted to the target is resampled bit for bit as
+    /// png2amiga's `scale::resample` scales (widened Lanczos-3, edges cut, each pass
+    /// clamped), in both modes' geometry, shrunk (up to 12.8×), enlarged, and with one
+    /// axis at 1:1 beside a scaled one (png2amiga filters it too).
     #[test]
-    fn a_fitted_layer_is_png2c64_s_bicubic_bit_for_bit() {
-        use crate::solve::png2c64_ref::{Image, scale};
+    fn a_fitted_layer_is_png2amiga_s_resample_bit_for_bit() {
+        use crate::solve::png2amiga_ref::{Image, scale};
         for (w, h, tw, step) in [
-            (200usize, 125usize, 160u32, 2.0f32),
+            (637usize, 398usize, 160u32, 2.0f32),
             (1024, 637, 320, 1.0),
+            (1024, 640, 160, 2.0),
+            (2048, 1280, 160, 2.0),
+            (200, 125, 160, 2.0),
             (97, 61, 160, 2.0),
+            (320, 150, 320, 1.0),
+            (160, 211, 160, 2.0),
+            (320, 200, 320, 1.0),
         ] {
+            // Steps that overshoot under the kernel, ramps, and the extremes.
             let px: Vec<[f32; 3]> = (0..w * h)
                 .map(|i| {
-                    let (x, y) = ((i % w) as f32, (i / w) as f32);
+                    let (x, y) = (i % w, i / w);
                     [
-                        (x * 0.013).fract(),
-                        (y * 0.027).fract(),
-                        ((x + y) * 0.051).fract(),
+                        (x as f32 * 0.013).fract(),
+                        if (x / 7 + y / 5) % 2 == 0 { 1.0 } else { 0.0 },
+                        ((x + y) as f32 * 0.051).fract(),
                     ]
                 })
                 .collect();
-            let want = scale::bicubic(
-                &Image::new(w, h, px.clone()),
-                tw as usize,
-                200,
-                scale::Kernel::MitchellNetravali,
-            );
+            let im = Image::new(w, h, px.clone());
+            let want = if (w, h) == (tw as usize, 200) {
+                im
+            } else {
+                scale::resample(&im, tw as usize, 200)
+            };
             let src: Vec<[f32; 4]> = px.iter().map(|p| [p[0], p[1], p[2], 1.0]).collect();
-            let mx = AxisMap::new(w as u32, 0.0, 320.0 / w as f32, false, step, tw, 0);
-            let my = AxisMap::new(h as u32, 0.0, 200.0 / h as f32, false, 1.0, 200, 0);
+            let (mx, my) = fitted_maps(w, h, tw, step);
             let (mut got, mut extent) = (Planes::default(), Vec::new());
             resample_planes(&src, w as u32, &mx, &my, &mut got, &mut extent, true);
+            assert_eq!(got.r.len(), want.px.len());
             for (i, p) in want.px.iter().enumerate() {
-                assert_eq!([got.r[i], got.g[i], got.b[i]], *p, "{w}×{h} → {tw}: {i}");
+                assert_eq!(
+                    [got.r[i], got.g[i], got.b[i]].map(f32::to_bits),
+                    p.map(f32::to_bits),
+                    "{w}×{h} → {tw}: {i}"
+                );
                 assert_eq!(got.a[i], 1.0);
             }
         }
@@ -774,69 +914,94 @@ mod tests {
 
     #[test]
     fn weights_sum_to_one_and_coverage_tracks_the_edge() {
-        for (scale, step) in [(1.0, 0.25), (3.0, 0.5), (0.1, 0.25), (0.37, 1.0)] {
-            let m = AxisMap::new(50, 2.3, scale, false, step, 2000, 0);
-            for k in 0..m.len() as usize {
+        for kernel in KERNELS {
+            for (scale, step) in [(1.0, 0.25), (3.0, 0.5), (0.1, 0.25), (0.37, 1.0)] {
+                let m = AxisMap::new(50, 2.3, scale, false, step, 2000, 0, kernel);
+                for k in 0..m.len() as usize {
+                    assert!(
+                        (sum_weights(&m, k) - 1.0).abs() < 1e-5,
+                        "{kernel:?} {scale} {step} {k}: {:?} {}",
+                        m.taps(k).collect::<Vec<_>>(),
+                        m.inv[k]
+                    );
+                }
+                let total: f32 = m.cov.iter().sum::<f32>() * step;
                 assert!(
-                    (sum_weights(&m, k) - 1.0).abs() < 1e-5,
-                    "{scale} {step} {k}: {:?} {}",
-                    m.taps(k).collect::<Vec<_>>(),
-                    m.inv[k]
+                    (total - 50.0 * scale).abs() < 1e-3,
+                    "{kernel:?} {scale} {step}: {total}"
                 );
             }
-            let total: f32 = m.cov.iter().sum::<f32>() * step;
-            assert!(
-                (total - 50.0 * scale).abs() < 1e-3,
-                "{scale} {step}: {total}"
-            );
         }
+    }
+
+    /// Lanczos is widened by the shrink: 3 taps a side at 1:1 and when enlarging,
+    /// `⌈3 · shrink⌉` when shrinking, and on a mip level by the shrink left there.
+    #[test]
+    fn lanczos_widens_with_the_shrink_left_on_the_level() {
+        let taps = |m: &AxisMap, k| m.taps(k).count();
+        let fit = 320.0 / 4096.0;
+        let m = AxisMap::new(4096, 0.0, fit, false, 1.0, 320, 0, Kernel::COLOUR);
+        assert_eq!(taps(&m, 160), 78);
+        // The 512 px level: a shrink of 1.6 left, ⌈4.8⌉ = 5 a side.
+        let m = AxisMap::new(4096, 0.0, fit, false, 1.0, 320, 3, Kernel::COLOUR);
+        assert_eq!(taps(&m, 160), 10);
+        let m = AxisMap::new(50, 0.3, 3.0, false, 1.0, 320, 0, Kernel::COLOUR);
+        assert_eq!(taps(&m, 60), 6);
     }
 
     #[test]
     fn flip_mirrors_taps() {
-        let a = AxisMap::new(8, 0.0, 1.0, false, 0.5, 100, 0);
-        let b = AxisMap::new(8, 0.0, 1.0, true, 0.5, 100, 0);
-        let n = a.len() as usize;
-        for k in 0..n {
-            let ta: Vec<_> = a.taps(k).collect();
-            // Output k of the plain layer reads the pixels output n−1−k of the mirrored one does.
-            let tb: Vec<_> = b.taps(n - 1 - k).collect();
-            let mut ta = ta;
-            let mut tb = tb;
-            ta.sort_by_key(|t| t.0);
-            tb.sort_by_key(|t| t.0);
-            assert_eq!(ta.len(), tb.len());
-            for (x, y) in ta.iter().zip(&tb) {
-                assert_eq!(x.0, y.0);
-                assert!((x.1 - y.1).abs() < 1e-6);
+        for kernel in KERNELS {
+            let a = AxisMap::new(8, 0.0, 1.0, false, 0.5, 100, 0, kernel);
+            let b = AxisMap::new(8, 0.0, 1.0, true, 0.5, 100, 0, kernel);
+            let n = a.len() as usize;
+            // Output k of the plain layer reads the pixels output n−1−k of the mirrored
+            // one does (a tap of weight 0 at the end of Lanczos' reach aside).
+            let nonzero = |m: &AxisMap, k| -> Vec<(u32, f32)> {
+                let mut t: Vec<_> = m.taps(k).filter(|t| t.1 != 0.0).collect();
+                t.sort_by_key(|t| t.0);
+                t
+            };
+            for k in 0..n {
+                let (ta, tb) = (nonzero(&a, k), nonzero(&b, n - 1 - k));
+                assert_eq!(ta.len(), tb.len(), "{kernel:?} {k}");
+                for (x, y) in ta.iter().zip(&tb) {
+                    assert_eq!(x.0, y.0);
+                    assert!((x.1 - y.1).abs() < 1e-6);
+                }
             }
         }
     }
 
     #[test]
     fn clipped_to_the_grid() {
-        let m = AxisMap::new(10, -5.0, 1.0, false, 1.0, 3, 0);
-        assert_eq!((m.out0, m.len()), (0, 3));
-        let m = AxisMap::new(10, 400.0, 1.0, false, 1.0, 320, 0);
-        assert_eq!(m.len(), 0);
+        for kernel in KERNELS {
+            let m = AxisMap::new(10, -5.0, 1.0, false, 1.0, 3, 0, kernel);
+            assert_eq!((m.out0, m.len()), (0, 3));
+            let m = AxisMap::new(10, 400.0, 1.0, false, 1.0, 320, 0, kernel);
+            assert_eq!(m.len(), 0);
+        }
     }
 
     #[test]
     fn a_downscale_preserves_flat_fields() {
-        let src = vec![[0.5, 0.25, 1.0, 1.0]; 40 * 40];
-        let mx = AxisMap::new(40, 0.0, 0.25, false, 1.0, 320, 0);
-        let my = AxisMap::new(40, 0.0, 0.25, false, 1.0, 200, 0);
-        let out = resample(&src, 40, &mx, &my);
-        assert_eq!(out.len(), 100);
-        for p in out {
-            for (a, b) in p.iter().zip([0.5, 0.25, 1.0, 1.0]) {
-                assert!((a - b).abs() < 1e-5);
+        for kernel in KERNELS {
+            let src = vec![[0.5, 0.25, 1.0, 1.0]; 40 * 40];
+            let mx = AxisMap::new(40, 0.0, 0.25, false, 1.0, 320, 0, kernel);
+            let my = AxisMap::new(40, 0.0, 0.25, false, 1.0, 200, 0, kernel);
+            let out = resample(&src, 40, &mx, &my);
+            assert_eq!(out.len(), 100);
+            for p in out {
+                for (a, b) in p.iter().zip([0.5, 0.25, 1.0, 1.0]) {
+                    assert!((a - b).abs() < 1e-5);
+                }
             }
         }
     }
 
     /// The resample as written before #139, one output at a time: each output's taps in
-    /// order, horizontally then vertically, from `0`.
+    /// order, horizontally then vertically, from `0`, each pass clamped when its map
+    /// clamps.
     fn reference<T: Px>(src: &[T], sw: u32, mx: &AxisMap, my: &AxisMap) -> Vec<T> {
         let (ow, oh) = (mx.len() as usize, my.len() as usize);
         let rows: Vec<Vec<T>> = src
@@ -848,7 +1013,8 @@ mod tests {
                         for (j, w) in mx.taps(k) {
                             acc.madd(w, line[j as usize]);
                         }
-                        acc.scaled(mx.inv[k])
+                        let v = acc.scaled(mx.inv[k]);
+                        if mx.clamp { v.clamped01() } else { v }
                     })
                     .collect()
             })
@@ -862,6 +1028,9 @@ mod tests {
             }
             for o in row.iter_mut() {
                 *o = o.scaled(my.inv[k]);
+                if my.clamp {
+                    *o = o.clamped01();
+                }
             }
         }
         out
@@ -905,10 +1074,16 @@ mod tests {
 
     #[test]
     fn colour_planes_match_the_reference_bit_for_bit() {
+        for kernel in KERNELS.into_iter().chain([Kernel::Lanczos { copy: false }]) {
+            colour_planes_match_with(kernel);
+        }
+    }
+
+    fn colour_planes_match_with(kernel: Kernel) {
         for (sx, tx, kx, fx, step_x, gx) in axes() {
             for (sy, ty, ky, fy, step_y, gy) in axes() {
-                let mx = AxisMap::new(sx, tx, kx, fx, step_x, gx, 0);
-                let my = AxisMap::new(sy, ty, ky, fy, step_y, gy, 0);
+                let mx = AxisMap::new(sx, tx, kx, fx, step_x, gx, 0, kernel);
+                let my = AxisMap::new(sy, ty, ky, fy, step_y, gy, 0, kernel);
                 let src = source(sx, sy);
                 let mut want = reference(&src, sx, &mx, &my);
                 let ow = mx.len() as usize;
@@ -928,7 +1103,7 @@ mod tests {
                     let q = [got.r[i], got.g[i], got.b[i], got.a[i]];
                     assert!(
                         p.iter().zip(q).all(|(a, b)| a.to_bits() == b.to_bits()),
-                        "{sx} {tx} {kx} × {sy} {ty} {ky}: {i}: {p:?} {q:?}"
+                        "{kernel:?} {sx} {tx} {kx} × {sy} {ty} {ky}: {i}: {p:?} {q:?}"
                     );
                 }
                 for (row, e) in want.chunks(ow.max(1)).zip(&extent) {
@@ -947,8 +1122,8 @@ mod tests {
     fn half_resolution_mask_matches_resample_then_reduce() {
         for (sx, tx, kx, fx, step_x, gx) in axes() {
             for (sy, ty, ky, fy, step_y, gy) in axes() {
-                let mx = AxisMap::new(sx, tx, kx, fx, step_x, gx, 0);
-                let my = AxisMap::new(sy, ty, ky, fy, step_y, gy, 0);
+                let mx = AxisMap::new(sx, tx, kx, fx, step_x, gx, 0, Kernel::Mitchell);
+                let my = AxisMap::new(sy, ty, ky, fy, step_y, gy, 0, Kernel::Mitchell);
                 let src: Vec<f32> = source(sx, sy).iter().map(|p| p[0] + p[3]).collect();
                 let (ow, oh) = (mx.len() as usize, my.len() as usize);
                 let finish = |row: &mut [f32]| {

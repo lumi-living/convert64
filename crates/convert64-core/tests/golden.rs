@@ -617,9 +617,11 @@ mod flat_areas {
             Gamma::IDENTITY,
         );
         for y in 152..200 {
-            // The column on either side of a swatch edge blends through the resampler,
-            // and png2c64's ordered semantics (#156) dither a blend, as they should.
-            for x in (0..160).filter(|x| !matches!(x % 10, 0 | 9)) {
+            // The three columns on either side of a swatch edge blend through the
+            // resampler (png2amiga's Lanczos-3, widened by the 8× shrink of the 1280 px
+            // source, reaches 24 source px, three columns, each way; ADR-013), and
+            // png2c64's ordered semantics (#156) dither a blend, as they should.
+            for x in (0..160).filter(|x| matches!(x % 10, 3..=6)) {
                 assert_eq!(
                     s.output.pixel(x, y),
                     ColourIndex::ALL[(x / 10) as usize],

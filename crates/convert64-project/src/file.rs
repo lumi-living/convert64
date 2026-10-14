@@ -898,4 +898,55 @@ mod tests {
         let bad = old.replace(r#""a.png"}"#, r#""a.png","downscale":"area"}"#);
         assert!(ProjectFile::parse(&bad).is_err());
     }
+
+    /// #261: `solve.refine` is written only when on; a hull `match_range` is written
+    /// with its palette, and its `amount` only when not 1; an older box loads as a box;
+    /// all of them round-trip.
+    #[test]
+    fn refine_and_hull_range_matching_round_trip() {
+        use convert64_core::layer::{RangeMatch, RangeMethod};
+        use convert64_core::solve::SolverKind;
+        let old = r#"{"schema_version":3,"target":"multicolor-bitmap","layers":[
+            {"name":"a","source":"a.png","adjustments":{"match_range":
+             {"percentile":0.01,"l":[0.1,0.9],"a":[-0.2,0.2],"b":[-0.25,0.25]}}}]}"#;
+        let p = ProjectFile::parse(old).unwrap();
+        assert!(!p.solve.refine);
+        let m = p.layers[0].adjustments.match_range.expect("a box");
+        assert_eq!(m.method(), RangeMethod::Box);
+        let text = p.to_json();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(v["solve"].get("refine").is_none(), "{text}");
+        let m = &v["layers"][0]["adjustments"]["match_range"];
+        assert!(m.get("method").is_none() && m["l"].is_array(), "{text}");
+        assert_eq!(ProjectFile::parse(&text).unwrap(), p);
+
+        let mut q = p.clone();
+        q.migrated_from = None;
+        q.solve.refine = true;
+        q.solve.solver = SolverKind::Png2c64;
+        let pal = convert64_core::Palette::pepto_pal();
+        q.layers[0].adjustments.match_range = Some(RangeMatch::hull(&pal, 0.4).unwrap());
+        let text = q.to_json();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["solve"]["refine"], true, "{text}");
+        assert_eq!(v["solve"]["solver"], "png2c64", "{text}");
+        let m = &v["layers"][0]["adjustments"]["match_range"];
+        assert_eq!(m["method"], "hull", "{text}");
+        assert_eq!(m["palette"].as_array().unwrap().len(), 16, "{text}");
+        assert_eq!(m["palette"][0], "#000000", "{text}");
+        assert!((m["amount"].as_f64().unwrap() - 0.4).abs() < 1e-6, "{text}");
+        assert!(m.get("l").is_none(), "{text}");
+        let back = ProjectFile::parse(&text).unwrap();
+        assert_eq!(back, q);
+        let m = back.layers[0].adjustments.match_range.unwrap();
+        assert_eq!((m.method(), m.amount()), (RangeMethod::Hull, 0.4));
+
+        // At amount 1 (png2amiga's), no `amount` is written.
+        q.layers[0].adjustments.match_range = Some(RangeMatch::hull(&pal, 1.0).unwrap());
+        let text = q.to_json();
+        assert!(!text.contains("amount"), "{text}");
+        assert_eq!(ProjectFile::parse(&text).unwrap(), q);
+        let bad = text.replace(r##""#000000","##, "");
+        assert!(ProjectFile::parse(&bad).is_err(), "15 colours");
+    }
 }

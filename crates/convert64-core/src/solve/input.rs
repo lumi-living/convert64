@@ -183,7 +183,7 @@ impl Input {
                     coords: metric.coords(colour),
                     metric,
                     weight: frame.coverage()[i],
-                    kind: method.kind,
+                    kind: method.kind.native(),
                     orientation: method.orientation,
                     strength: a.strength,
                     phase: recipe.phase(),
