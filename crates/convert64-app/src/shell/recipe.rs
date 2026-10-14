@@ -1985,6 +1985,7 @@ fn advanced(f: &mut Form, layer: &Layer, s: &SolveSettings, ui: &mut Ui) {
             None,
             SolveSet {
                 solver: Some(d.solver),
+                refine: Some(d.refine),
                 divergences: Some(d.divergences),
                 hysteresis: Some(d.hysteresis),
                 luma_pair_bias: Some(d.luma_pair_bias),

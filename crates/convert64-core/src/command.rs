@@ -648,9 +648,12 @@ pub struct BackgroundPin {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SolveSet {
-    /// `reference` or `native`.
+    /// `reference`, `png2c64` or `native`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solver: Option<SolverKind>,
+    /// png2amiga's Refine step after the reference solve (#261).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refine: Option<bool>,
     /// The reference solver's divergences from png2c64, as a whole: those not named are
     /// off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -678,6 +681,7 @@ impl SolveSet {
     pub fn apply(&self, s: &SolveSettings) -> SolveSettings {
         SolveSettings {
             solver: self.solver.unwrap_or(s.solver),
+            refine: self.refine.unwrap_or(s.refine),
             divergences: self.divergences.unwrap_or(s.divergences),
             background: s.background,
             hysteresis: self.hysteresis.unwrap_or(s.hysteresis),
