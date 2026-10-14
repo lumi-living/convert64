@@ -2,6 +2,7 @@
 //! (`cargo test -p convert64-app`). The binary (`main.rs`) is the egui front end.
 
 pub mod document;
+pub mod drag;
 pub mod export;
 pub mod files;
 pub mod icons;

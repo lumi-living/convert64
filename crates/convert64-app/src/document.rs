@@ -395,6 +395,12 @@ impl Document {
         }
         out
     }
+
+    /// The composite the solve reads (1× by default) as RGBA8, for the Source view while
+    /// a slider is dragged (#264).
+    pub fn solve_canvas_rgba(&mut self) -> (u32, u32, Vec<u8>) {
+        self.session.solve_canvas_rgba()
+    }
 }
 
 /// `solution` as RGBA8 on the target grid (160 × 200 multicolor, 320 × 200 hi-res), every

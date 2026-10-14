@@ -849,15 +849,9 @@ impl Session {
             self.compositor.canvas()
         } else {
             let p = self.editor.project();
-            let grid = SuperGrid::new(p.target, Self::PREVIEW_N).expect("a bitmap grid");
-            // Only the canvas is drawn, so png2c64's front end (a frame) is skipped.
+            let grid = self.preview_grid();
             let clock = self.clock;
-            let fresh = || {
-                let mut c = Compositor::new(grid);
-                c.set_png2c64_front_end(false);
-                c.set_clock(clock);
-                c
-            };
+            let fresh = || preview_compositor(grid, clock);
             let preview = self.preview.get_or_insert_with(fresh);
             if preview.grid() != grid {
                 *preview = fresh();
@@ -865,19 +859,52 @@ impl Session {
             preview.update(&p.layers, &p.regions);
             preview.canvas()
         };
-        let (w, h) = canvas.grid().size();
-        let rgba = canvas
-            .pixels()
-            .iter()
-            .flat_map(|&[r, g, b, a]| {
-                if a <= 0.0 {
-                    return [0; 4];
-                }
-                let [r, g, b] = [r, g, b].map(|c| linear_to_srgb8(c / a));
-                [r, g, b, (a.min(1.0) * 255.0).round() as u8]
-            })
-            .collect();
-        (w, h, rgba)
+        canvas_rgba8(canvas)
+    }
+
+    /// The session's own composite, on the grid the solve reads (the project's factor,
+    /// 1× by default), as RGBA8 like [`Self::canvas_rgba`]. The app's Source view shows it,
+    /// upscaled, while a slider is dragged (#264): it costs a fraction of the preview's 4×.
+    pub fn solve_canvas_rgba(&mut self) -> (u32, u32, Vec<u8>) {
+        self.composite();
+        canvas_rgba8(self.compositor.canvas())
+    }
+
+    /// The layers `range` (stack indices, bottom first) composited by themselves, on the
+    /// grid of [`Self::canvas_rgba`], as RGBA8 like it. With Normal blends the stack is
+    /// the layers below, a layer and the layers above, each composited alone and laid over
+    /// each other; the app does that on the GPU while a layer is moved (#264). A fresh
+    /// compositor each time: nothing is cached between calls.
+    pub fn layers_canvas_rgba(&self, range: std::ops::Range<usize>) -> (u32, u32, Vec<u8>) {
+        let mut c = preview_compositor(self.preview_grid(), self.clock);
+        let layers = self.editor.project().layers.get(range).unwrap_or_default();
+        canvas_rgba8(c.composite(layers))
+    }
+
+    /// Layer `layer` by itself at `transform` instead of its own, like
+    /// [`Self::layers_canvas_rgba`]: the app's texture of a layer being moved, made at the
+    /// transform it had when the drag started (#264). Transparent for an unknown layer.
+    pub fn layer_canvas_rgba_at(
+        &self,
+        layer: usize,
+        transform: convert64_core::Transform,
+    ) -> (u32, u32, Vec<u8>) {
+        let mut c = preview_compositor(self.preview_grid(), self.clock);
+        let mut moved = self.editor.project().layers.get(layer).cloned();
+        if let Some(l) = &mut moved {
+            l.set_transform(transform);
+        }
+        canvas_rgba8(c.composite(moved.as_slice()))
+    }
+
+    /// The grid the Source view is drawn at: [`Self::PREVIEW_N`] or the project's factor,
+    /// whichever is larger.
+    fn preview_grid(&self) -> SuperGrid {
+        let grid = self.compositor.grid();
+        if grid.n() >= Self::PREVIEW_N {
+            return grid;
+        }
+        SuperGrid::new(self.editor.project().target, Self::PREVIEW_N).expect("a bitmap grid")
     }
 
     /// The attribute map's debug render on the target grid as RGBA8 (hue = dither
@@ -894,6 +921,36 @@ impl Session {
             .collect();
         (w, h, rgba)
     }
+}
+
+/// A compositor for the Source view on `grid`. Only its canvas is drawn, so png2c64's
+/// front end (a frame) is skipped.
+fn preview_compositor(
+    grid: SuperGrid,
+    clock: Option<convert64_core::composite::Clock>,
+) -> Compositor {
+    let mut c = Compositor::new(grid);
+    c.set_png2c64_front_end(false);
+    c.set_clock(clock);
+    c
+}
+
+/// `canvas` (premultiplied linear light) as straight sRGB RGBA8, alpha = coverage; width
+/// and height first.
+fn canvas_rgba8(canvas: &convert64_core::composite::Canvas) -> (u32, u32, Vec<u8>) {
+    let (w, h) = canvas.grid().size();
+    let rgba = canvas
+        .pixels()
+        .iter()
+        .flat_map(|&[r, g, b, a]| {
+            if a <= 0.0 {
+                return [0; 4];
+            }
+            let [r, g, b] = [r, g, b].map(|c| linear_to_srgb8(c / a));
+            [r, g, b, (a.min(1.0) * 255.0).round() as u8]
+        })
+        .collect();
+    (w, h, rgba)
 }
 
 /// Paths on disk, for the native front-ends.

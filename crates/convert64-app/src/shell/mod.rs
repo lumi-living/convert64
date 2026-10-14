@@ -499,7 +499,7 @@ impl Shell {
         }
         self.handle_shortcuts(ui.ctx(), &mut actions);
         if let Some(ws) = ws.as_deref_mut() {
-            ws.prepare(ui.ctx());
+            ws.prepare(ui.ctx(), self.overlays.ghost);
             if std::mem::take(&mut self.export_requested) {
                 self.open_export(ws);
             }
