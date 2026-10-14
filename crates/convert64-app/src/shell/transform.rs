@@ -227,9 +227,7 @@ pub(super) fn interact(
     // once the pointer has moved past its drag threshold, by which time it can be off
     // the handle (#239).
     if response.drag_started_by(egui::PointerButton::Primary)
-        && let Some(p) = ui
-            .input(|i| i.pointer.press_origin())
-            .or_else(|| response.interact_pointer_pos())
+        && let Some(p) = super::drag_origin(ui, response)
         && let Some(grab) = grab_at(&quad, &mid, anchor, p)
     {
         shell.transform_drag = Some(TransformDrag {
@@ -363,46 +361,21 @@ mod tests {
 
     /// The working view in the headless runs, in points.
     fn view() -> Rect {
-        Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(800.0, 600.0))
+        super::super::drag_test::VIEW
     }
 
     /// Presses the primary button at `from`, moves through `path` one frame per point
-    /// (as a real mouse does: the first steps stay inside egui's drag threshold) and
-    /// releases; returns the transform the last gesture command set, if any.
+    /// and releases (`drag_test::drag`); returns the transform the last gesture command
+    /// set, if any.
     fn drag(ws: &Workspace, from: Pos2, path: &[Pos2]) -> Option<Transform> {
-        let ctx = egui::Context::default();
         let mut shell = Shell {
             tool: super::super::Tool::Transform,
             ..Shell::default()
         };
-        let button = |pos, pressed| egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::NONE,
-        };
-        let last = *path.last().unwrap_or(&from);
-        let mut frames = vec![
-            vec![egui::Event::PointerMoved(from)],
-            vec![button(from, true)],
-        ];
-        frames.extend(path.iter().map(|p| vec![egui::Event::PointerMoved(*p)]));
-        frames.push(vec![button(last, false)]);
-        frames.push(vec![]);
         let mut set = None;
-        for (n, events) in frames.into_iter().enumerate() {
-            let input = egui::RawInput {
-                screen_rect: Some(view()),
-                time: Some(n as f64 / 60.0),
-                events,
-                ..Default::default()
-            };
+        super::super::drag_test::drag(from, path, |ui, response| {
             let mut actions = Vec::new();
-            let mut output = ctx.run_ui(input, |ui| {
-                let response = ui.allocate_rect(view(), egui::Sense::click_and_drag());
-                interact(&mut shell, ws, ui, &response, view(), &mut actions);
-            });
-            output.textures_delta.clear();
+            interact(&mut shell, ws, ui, response, view(), &mut actions);
             for a in actions {
                 if let Action::Gesture(GESTURE, JsonCommand::LayerSetTransform { transform, .. }) =
                     a
@@ -410,7 +383,7 @@ mod tests {
                     set = Some(transform);
                 }
             }
-        }
+        });
         set
     }
 
@@ -424,8 +397,7 @@ mod tests {
     /// then one past the 9 pt handle radius (where the old code decided the grab), then
     /// the target.
     fn path(from: Pos2, to: Pos2) -> Vec<Pos2> {
-        let dir = (to - from).normalized();
-        vec![from + dir * 2.0, from + dir * 4.0, from + dir * 12.0, to]
+        super::super::drag_test::path(from, to)
     }
 
     #[test]
