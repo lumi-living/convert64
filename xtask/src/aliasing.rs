@@ -201,19 +201,30 @@ pub(crate) fn area_averaged(img: &RgbaImage, tw: u32, th: u32, space: Space) -> 
 /// The SSIMULACRA2 score of a solve against its prepared frame, both 320 × 200 tiles as
 /// [`three_ways`] returns them: `(prepared, solved)`.
 ///
-/// **SSIMULACRA2 slots in here** (#261, ADR-013 §4): `None` until the port
-/// (`convert64_core::quality`) is on this branch. Its pairing is the prepared input (the
-/// `TargetFrame`'s linear colour on the logical raster) against the rendered solve, so
-/// the implementation may want the frame and the solution rather than these 8-bit tiles.
+/// png2amiga's pairing (#261, ADR-013 §4): the prepared input against the solve at the
+/// multicolor logical raster (every other column of the 320 × 200 tiles), in linear
+/// light. The prepared tile is 8-bit here, so this is within a quantisation step of
+/// `quality::score_bitmap`; `cargo xtask reference-sheet` scores against the exact
+/// prepared image instead.
 #[cfg_attr(
     not(test),
-    expect(
-        dead_code,
-        reason = "only the measurement reads it until the sheet shows S2"
-    )
+    expect(dead_code, reason = "only the measurement reads it")
 )]
-pub(crate) fn ssimulacra2(_prepared: &RgbImage, _solved: &RgbImage) -> Option<f64> {
-    None
+pub(crate) fn ssimulacra2(prepared: &RgbImage, solved: &RgbImage) -> Option<f64> {
+    let lin = |img: &RgbImage| -> Vec<[f32; 3]> {
+        (0..160 * 200)
+            .map(|i| {
+                let p = img.get_pixel((i % 160) * 2, i / 160).0;
+                p.map(srgb8_to_linear)
+            })
+            .collect()
+    };
+    Some(convert64_core::quality::ssimulacra2(
+        &lin(prepared),
+        &lin(solved),
+        160,
+        200,
+    ))
 }
 
 /// The share of pixels (in percent) that differ between two solves.

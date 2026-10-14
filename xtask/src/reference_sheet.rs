@@ -317,7 +317,7 @@ pub(crate) fn run() -> Result<(), String> {
     let clean = three(&title)?;
     for (label, img, reference_img) in [
         ("zone plate", &zone, &zone),
-        ("title + grain", &grain, &title),
+        ("title grain", &grain, &title),
     ] {
         let reference = prepared(reference_img, mode);
         let solves = three(img)?;
