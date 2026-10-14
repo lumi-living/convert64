@@ -1,7 +1,7 @@
 //! The status bar (Figma `Status Bar`, UX §4.2 cursor readout): mode and size, the working
 //! view, the cell and pixel under the cursor with the cell's colours, error and steering,
-//! and the zoom on the left; clashes (in the `clash` colour) and the last solve on the
-//! right.
+//! and the zoom on the left; the colour-limited cell count (neutral text, #243) and the
+//! last solve on the right.
 
 use super::{Action, Shell};
 use crate::theme::{Theme, layout};
@@ -20,6 +20,31 @@ pub(super) fn mode_name(mode: convert64_core::mode::Mode) -> &'static str {
         Mode::EcmCharset => "ECM charset",
         _ => "Sprite",
     }
+}
+
+/// The count of colour-limited cells ("clashes" in the core's report) as the status bar
+/// and the result header show it: a neutral diagnostic, not an error, since the result
+/// is legal either way (#243, usability review M1).
+pub(super) fn limited_cells(n: usize) -> String {
+    format!("Colour-limited cells: {n}")
+}
+
+/// What the colour-limited cell count measures: the tooltip on it.
+pub(super) fn limited_cells_tip(ctx: &egui::Context) -> String {
+    format!(
+        "Cells where the solver wanted more colours than the mode allows, so it used the \
+         closest ones it may. The picture is still legal and exports as it is. {} shows \
+         them.",
+        ctx.format_shortcut(&super::shortcuts::CLASHES)
+    )
+}
+
+/// The status bar's link that turns the overlay on, suggested once (UX §11).
+pub(super) fn show_limited_cells(ctx: &egui::Context) -> String {
+    format!(
+        "Show colour-limited cells ({})",
+        ctx.format_shortcut(&super::shortcuts::CLASHES)
+    )
 }
 
 /// A solve running longer than this (seconds) shows progress and Pause (UX §11).
@@ -115,9 +140,9 @@ pub(super) fn show(
                 ui.label(small(format!("solve {ms:.0} ms")));
             }
             if let Some(n) = ws.clashes() {
-                let colour = Theme::current(ui.ctx()).clash;
-                let word = if n == 1 { "clash" } else { "clashes" };
-                ui.label(small(format!("{n} {word}")).color(colour));
+                // Neutral text: red is kept for what blocks export (#243).
+                ui.label(small(limited_cells(n)))
+                    .on_hover_text(limited_cells_tip(ui.ctx()));
                 // Suggested once, never switched on by itself (UX §11).
                 if n > 0 && !shell.overlays.clashes && !shell.clash_hint_dismissed {
                     let close =
@@ -125,10 +150,7 @@ pub(super) fn show(
                     if ui.add(close).on_hover_text("Dismiss").clicked() {
                         shell.clash_hint_dismissed = true;
                     }
-                    if ui
-                        .link(small("Show clashes (Shift C)".to_owned()))
-                        .clicked()
-                    {
+                    if ui.link(small(show_limited_cells(ui.ctx()))).clicked() {
                         shell.overlays.clashes = true;
                         shell.clash_hint_dismissed = true;
                     }
