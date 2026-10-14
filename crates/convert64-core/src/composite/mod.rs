@@ -609,7 +609,8 @@ impl LayerCache {
 ///    round trip and clamp png2c64 puts every pixel through.
 /// 2. The rest of the layer's adjustments (levels, brightness and contrast, hue,
 ///    saturation and lightness, curves), which png2c64 does not have.
-/// 3. Range matching, png2c64's `match_range_to` over the layer's covered pixels.
+/// 3. Range matching over the layer's covered pixels ([`crate::layer::RangeMatch::apply_rgb`]: png2amiga's hull, or
+///    png2c64's box for projects that hold one).
 ///
 /// A layer fitted to the screen therefore leaves this step as png2c64's prepared image
 /// (`png2c64_ref::prepare`), and every frame counts as prepared: the reference solver
@@ -666,7 +667,7 @@ fn adjust_planes(planes: &mut Planes, width: usize, adj: &Adjustments, n: u8) {
             usize::from(!covered.is_empty()),
             covered.iter().map(|&i| im.px[i]).collect(),
         );
-        preprocess::match_range_to(&mut cov, m.percentile(), m.targets());
+        m.apply_rgb(&mut cov.px);
         for (&i, p) in covered.iter().zip(&cov.px) {
             im.px[i] = *p;
         }
@@ -748,7 +749,7 @@ fn png2c64_front_end(layer: &Layer, grid: SuperGrid) -> Vec<[f32; 3]> {
         None,
     );
     if let Some(m) = &adj.match_range {
-        preprocess::match_range_to(&mut im, m.percentile(), m.targets());
+        m.apply_rgb(&mut im.px);
     }
     im.px
 }
