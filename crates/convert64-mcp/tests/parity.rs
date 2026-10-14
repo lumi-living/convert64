@@ -104,6 +104,10 @@ fn mcp_tools_match_a_recipe_file() {
     }
     let solved = call("tools/call", tool("solve", json!({ "full": true })));
     assert_eq!(solved["result"]["isError"], false, "{solved}");
+    let text = solved["result"]["content"][0]["text"].as_str().unwrap();
+    let v: Value = serde_json::from_str(text).unwrap();
+    let s2 = v["ssimulacra2"].as_f64().expect("ssimulacra2 score");
+    assert!(s2.is_finite() && s2 <= 100.0, "{s2}");
     let report = call("tools/call", tool("clash_report", json!({ "worst": 3 })));
     let text = report["result"]["content"][0]["text"].as_str().unwrap();
     let v: Value = serde_json::from_str(text).unwrap();

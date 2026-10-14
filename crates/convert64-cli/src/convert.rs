@@ -677,6 +677,7 @@ pub(crate) fn run(run: &mut Run, job: &ConvertJob<'_>) -> Result<u8, Fail> {
     let started = std::time::Instant::now();
     let sol = run.time("solve", || session.solve(true).clone());
     let ms = started.elapsed().as_secs_f64() * 1000.0;
+    let s2 = run.time("ssimulacra2", || session.ssimulacra2());
     let file = bitmap.write(&sol.image).map_err(Fail::input)?;
     let mut written = Vec::new();
     for (path, f) in &outputs {
@@ -717,13 +718,15 @@ pub(crate) fn run(run: &mut Run, job: &ConvertJob<'_>) -> Result<u8, Fail> {
         ));
     }
     run.set("outputs", written);
-    finish_solve(run, &sol, job.report, job.max_clashes)
+    finish_solve(run, &sol, s2, job.report, job.max_clashes)
 }
 
-/// Reports a solve: clashes, legality and the clash report; returns the exit code.
+/// Reports a solve: its SSIMULACRA2 score `s2` (`Session::ssimulacra2`), clashes,
+/// legality and the clash report; returns the exit code.
 pub(crate) fn finish_solve(
     run: &mut Run,
     sol: &Solution,
+    s2: Option<f64>,
     worst: bool,
     max_clashes: Option<usize>,
 ) -> Result<u8, Fail> {
@@ -734,6 +737,7 @@ pub(crate) fn finish_solve(
         .flatten()
         .map(|v| v.to_string())
         .collect();
+    run.set("ssimulacra2", s2);
     run.set("background", sol.background);
     run.set("clashes", summary.clashes);
     run.set("max_clashes", max_clashes);
@@ -757,7 +761,7 @@ pub(crate) fn finish_solve(
     run.set("summary", summary);
     run.set("worst", cells);
     if worst {
-        run.say(summary_line(sol));
+        run.say(summary_line(sol, s2));
     }
     if !violations.is_empty() {
         for v in &violations {
@@ -774,11 +778,11 @@ pub(crate) fn finish_solve(
     Ok(0)
 }
 
-/// The clash summary as the status bar would show it.
-pub(crate) fn summary_line(sol: &Solution) -> String {
+/// The clash summary as the status bar would show it, with the SSIMULACRA2 score.
+pub(crate) fn summary_line(sol: &Solution, s2: Option<f64>) -> String {
     let s = sol.report.summary();
     format!(
-        "solved: background {}, error {:.4}, {} clash{}{}",
+        "solved: background {}, error {:.4}, {} clash{}{}{}",
         sol.background
             .map_or_else(|| "none".to_owned(), |b| b.to_string()),
         s.total_error,
@@ -786,6 +790,8 @@ pub(crate) fn summary_line(sol: &Solution) -> String {
         if s.clashes == 1 { "" } else { "es" },
         s.worst
             .map(|c| format!(", worst cell {c}"))
+            .unwrap_or_default(),
+        s2.map(|v| format!(", SSIMULACRA2 {v:.2}"))
             .unwrap_or_default()
     )
 }
