@@ -62,36 +62,49 @@ pub fn support(ratio: f32) -> (f32, i64) {
 /// The taps of one destination pixel whose centre is at source position `src_center`
 /// (`(i + ½) · ratio − ½` for png2amiga), on a source axis of `src_len` pixels:
 /// `build_kernel_rows`' body.
+pub fn kernel_row(src_center: f32, src_len: usize, filter_scale: f32, support: i64) -> KernelRow {
+    let mut w = Vec::new();
+    let first = kernel_row_into(src_center, src_len, filter_scale, support, &mut w);
+    KernelRow { first, w }
+}
+
+/// [`kernel_row`] appending the normalised weights to `out` instead (the compositor's
+/// axis maps, which keep every output's taps in one buffer); returns the first source
+/// index. The same operations in the same order.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_precision_loss,
     reason = "indices are clamped to the source before casting"
 )]
-pub fn kernel_row(src_center: f32, src_len: usize, filter_scale: f32, support: i64) -> KernelRow {
+pub fn kernel_row_into(
+    src_center: f32,
+    src_len: usize,
+    filter_scale: f32,
+    support: i64,
+    out: &mut Vec<f32>,
+) -> usize {
     let center = src_center.floor() as i64;
     let lo = (center - support + 1).max(0);
     let hi = (center + support).min(src_len as i64 - 1);
     let count = (hi - lo + 1).max(0) as usize;
-    let mut w = Vec::with_capacity(count);
+    let start = out.len();
+    out.reserve(count);
     let mut wsum = 0.0f32;
     for k in 0..count {
         let sx = lo + k as i64;
         let dist = (src_center - sx as f32) / filter_scale;
         let v = lanczos3(dist);
-        w.push(v);
+        out.push(v);
         wsum += v;
     }
     if wsum > 0.0 {
         let inv = 1.0 / wsum;
-        for v in &mut w {
+        for v in &mut out[start..] {
             *v *= inv;
         }
     }
-    KernelRow {
-        first: lo.max(0) as usize,
-        w,
-    }
+    lo.max(0) as usize
 }
 
 /// `build_kernel_rows(src_size, dst_size)`.
@@ -149,7 +162,10 @@ mod tests {
         assert_eq!(support(0.5).1, 3);
         assert_eq!(support(12.8).1, 39);
         let rows = kernel_rows(4096, 320);
-        assert!(rows.iter().all(|r| (r.w.iter().sum::<f32>() - 1.0).abs() < 1e-4));
+        assert!(
+            rows.iter()
+                .all(|r| (r.w.iter().sum::<f32>() - 1.0).abs() < 1e-4)
+        );
         assert_eq!(rows[160].w.len(), 78);
     }
 

@@ -13,9 +13,10 @@
 //!   grain that leaks into the dither.
 //!
 //! Each is solved three ways at the baselines' recipe (multicolor, checker 0.7, error
-//! clamp 0.1, gamma 1.5, pepto): **exact** (`Downscale::Exact`: png2c64's four Mitchell
-//! taps on the original, png2c64's own front end), **auto** (`Downscale::Auto`: the mip
-//! level, #235) and the **reference**, the source box-averaged in linear light to the
+//! clamp 0.1, gamma 1.5, pepto): **exact** (`Downscale::Exact`: png2amiga's Lanczos-3,
+//! widened by the shrink, on the original, its own front end; ADR-013), **auto**
+//! (`Downscale::Auto`: the same kernel on the mip level, #235) and the **reference**, the
+//! source box-averaged in linear light to the
 //! 320 × 200 grid first (8-bit sRGB, as a file would hold it), then the same front end
 //! and solver. The grain leakage is also given for the source box-averaged on its 8-bit
 //! sRGB values, as an image editor's box filter does: that is how the evidence's 2.8 %
@@ -197,6 +198,24 @@ pub(crate) fn area_averaged(img: &RgbaImage, tw: u32, th: u32, space: Space) -> 
     })
 }
 
+/// The SSIMULACRA2 score of a solve against its prepared frame, both 320 × 200 tiles as
+/// [`three_ways`] returns them: `(prepared, solved)`.
+///
+/// **SSIMULACRA2 slots in here** (#261, ADR-013 §4): `None` until the port
+/// (`convert64_core::quality`) is on this branch. Its pairing is the prepared input (the
+/// `TargetFrame`'s linear colour on the logical raster) against the rendered solve, so
+/// the implementation may want the frame and the solution rather than these 8-bit tiles.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "only the measurement reads it until the sheet shows S2"
+    )
+)]
+pub(crate) fn ssimulacra2(_prepared: &RgbImage, _solved: &RgbImage) -> Option<f64> {
+    None
+}
+
 /// The share of pixels (in percent) that differ between two solves.
 pub(crate) fn changed(a: &RgbImage, b: &RgbImage) -> f64 {
     let n = a.pixels().zip(b.pixels()).filter(|(x, y)| x != y).count();
@@ -314,8 +333,10 @@ mod tests {
         assert!(a.pixels().all(|p| p.0[0] == p.0[1] && p.0[1] == p.0[2]));
     }
 
-    /// #235's gate on the sheet's sources (4096 px, a 12.8× shrink): under Auto at most
-    /// 5 % of the output pixels change with the grain, against 24 % under Exact.
+    /// #235's gate on the sheet's sources (4096 px, a 12.8× shrink): at most 5 % of the
+    /// output pixels change with the grain, under Auto and, since png2amiga's widened
+    /// Lanczos-3 (ADR-013), under Exact too (png2c64's Mitchell leaked 24 % there).
+    /// Measured: exact 4.05 %, auto 3.94 %, the area-averaged reference 4.15 %.
     #[test]
     fn grain_leakage_under_auto_is_within_the_gate() {
         let (_, title, grain) = sources(4096).unwrap();
@@ -323,8 +344,46 @@ mod tests {
         let grainy = three_ways("title", &grain).unwrap();
         let [exact, auto, reference, srgb] = leakage((&title, &clean), (&grain, &grainy)).unwrap();
         assert!(
-            auto <= LEAKAGE_GATE && auto < exact / 4.0,
+            auto <= LEAKAGE_GATE && exact <= LEAKAGE_GATE,
             "exact {exact:.1} %, auto {auto:.1} %, reference {reference:.1} % (sRGB {srgb:.1} %)"
+        );
+    }
+
+    /// #261's numbers for the review, on the sheet's 4096 px sources: how much of
+    /// Exact's solve (png2amiga's widened Lanczos-3 on the original) Auto's (the same
+    /// kernel on the mip level) reproduces, the grain leakage, and SSIMULACRA2 once it is
+    /// in ([`ssimulacra2`]).
+    ///
+    /// ```sh
+    /// cargo test --release -p xtask large_source_numbers -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "measurement: run in release with --ignored --nocapture"]
+    fn large_source_numbers() {
+        let (zone, title, grain) = sources(4096).unwrap();
+        let zone3 = three_ways("zoneplate-4096", &zone).unwrap();
+        let clean = three_ways("title-4096", &title).unwrap();
+        let grainy = three_ways("title-grain-4096", &grain).unwrap();
+        let [exact, auto, reference, srgb] = leakage((&title, &clean), (&grain, &grainy)).unwrap();
+        for (name, three) in [
+            ("zoneplate-4096", &zone3),
+            ("title-4096", &clean),
+            ("title-grain-4096", &grainy),
+        ] {
+            let same = 100.0 - changed(&three[0].1, &three[1].1);
+            let s2 = |(p, s): &(RgbImage, RgbImage)| {
+                ssimulacra2(p, s).map_or_else(|| "n/a".to_owned(), |v| format!("{v:.2}"))
+            };
+            println!(
+                "{name}: auto reproduces {same:.2} % of exact's solve; SSIMULACRA2 exact {}, \
+                 auto {}",
+                s2(&three[0]),
+                s2(&three[1])
+            );
+        }
+        println!(
+            "grain leakage: exact {exact:.2} %, auto {auto:.2} %, reference {reference:.2} % \
+             (sRGB-space box {srgb:.2} %)"
         );
     }
 }

@@ -735,9 +735,10 @@ impl Sharpen {
 
     /// Sharpens `px` (straight linear RGB, `w × h`, row-major, with its `alpha`) in place
     /// on a grid `scale ×` the target grid. Pixels of alpha 0 are neither used nor
-    /// changed. Each pixel the kernel changes goes through png2c64's OKLab round trip and
-    /// clamp, as in png2c64; with every alpha 1 and `scale` 1, png2c64's radius is
-    /// png2c64's `apply_sharpen` bit for bit.
+    /// changed. Each pixel the kernel changes goes through the reference's OKLab round
+    /// trip and clamp, with png2amiga's OKLab conversions (ADR-013); with every alpha 1
+    /// and `scale` 1, png2c64's radius (the 3 × 3 kernel png2amiga keeps) is png2amiga's
+    /// `apply_sharpen` bit for bit.
     pub fn apply_rgb(
         &self,
         px: &mut [[f32; 3]],
@@ -745,7 +746,7 @@ impl Sharpen {
         (w, h): (usize, usize),
         scale: u32,
     ) {
-        use crate::solve::png2c64_ref::colour::{clamped, linear_to_oklab, oklab_to_linear};
+        use crate::solve::png2amiga_ref::colour::{clamped, linear_to_oklab, oklab_to_linear};
         use crate::solve::png2c64_ref::preprocess::unsharp_box;
         if self.is_off() || px.is_empty() {
             return;
@@ -1569,11 +1570,11 @@ mod tests {
     }
 
     fn lab(p: [f32; 4]) -> [f32; 3] {
-        crate::solve::png2c64_ref::colour::linear_to_oklab([p[0], p[1], p[2]])
+        crate::solve::png2amiga_ref::colour::linear_to_oklab([p[0], p[1], p[2]])
     }
 
     fn from_lab(l: [f32; 3], a: f32) -> [f32; 4] {
-        let [r, g, b] = crate::solve::png2c64_ref::colour::oklab_to_linear(l);
+        let [r, g, b] = crate::solve::png2amiga_ref::colour::oklab_to_linear(l);
         [r, g, b, a]
     }
 
@@ -1614,11 +1615,12 @@ mod tests {
         );
     }
 
-    /// #228: the png2c64 kernel at the target grid is png2c64's `apply_sharpen`, bit for
-    /// bit, both ways (sharpen and soften), after the same gamma.
+    /// #228: the png2c64 kernel at the target grid is png2amiga's `apply_sharpen` (the
+    /// same kernel, png2amiga's OKLab conversions; ADR-013), bit for bit, both ways
+    /// (sharpen and soften), after the same gamma.
     #[test]
-    fn png2c64_kernel_equals_png2c64_s_apply_sharpen() {
-        use crate::solve::png2c64_ref::{Image, preprocess};
+    fn png2c64_kernel_equals_png2amiga_s_apply_sharpen() {
+        use crate::solve::png2amiga_ref::{Image, preprocess};
         let (w, h) = (31, 19);
         let src = noise(w, h, 0x2545_f491);
         for amount in [0.5, 1.7, 3.0, -0.5, -1.0] {

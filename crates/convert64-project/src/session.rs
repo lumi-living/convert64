@@ -850,11 +850,11 @@ impl Session {
         } else {
             let p = self.editor.project();
             let grid = SuperGrid::new(p.target, Self::PREVIEW_N).expect("a bitmap grid");
-            // Only the canvas is drawn, so png2c64's front end (a frame) is skipped.
+            // Only the canvas is drawn, so the reference's front end (a frame) is skipped.
             let clock = self.clock;
             let fresh = || {
                 let mut c = Compositor::new(grid);
-                c.set_png2c64_front_end(false);
+                c.set_reference_front_end(false);
                 c.set_clock(clock);
                 c
             };
