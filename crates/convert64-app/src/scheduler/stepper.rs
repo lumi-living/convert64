@@ -44,6 +44,12 @@ impl Stepper {
         }
     }
 
+    /// Continues the ticket numbers of another driver: the next submission's ticket
+    /// follows `last`.
+    pub const fn continue_tickets(&mut self, last: u64) {
+        self.last_ticket = last;
+    }
+
     /// Queues `snapshot` for solving in `mode`, superseding any earlier submission: its
     /// remaining stages are dropped and its undelivered result is discarded. Returns the
     /// submission's ticket (increasing from 1).
