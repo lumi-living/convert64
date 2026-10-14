@@ -964,7 +964,9 @@ fn main() -> eframe::Result {
 }
 
 /// Web entry point for `trunk`: mounts the app on the `convert64_canvas`
-/// element of `index.html` and removes the loading text once it runs.
+/// element of `index.html` and removes the loading text once it runs. In the solve
+/// worker (`solve-worker.js` loads this same module, #265) there is no window: it serves
+/// solve requests instead.
 ///
 /// `eframe::WebRunner` installs eframe's panic handler, so a Rust panic is
 /// logged to the browser console. Everything web-specific is reached through
@@ -973,6 +975,11 @@ fn main() -> eframe::Result {
 fn main() {
     use eframe::wasm_bindgen::JsCast as _;
     use eframe::web_sys;
+
+    if web_sys::window().is_none() {
+        convert64_app::scheduler::serve_worker();
+        return;
+    }
 
     web_sys::js_sys::futures::spawn_local(async {
         let document = web_sys::window()

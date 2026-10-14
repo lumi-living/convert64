@@ -7,6 +7,8 @@
 
     <!-- trunk: build this crate's binary for wasm32 and run wasm-opt on release builds. -->
     <link data-trunk rel="rust" data-bin="convert64-app" data-wasm-opt="2" />
+    <!-- trunk: the solve worker's script (#265), which loads the same module. -->
+    <link data-trunk rel="copy-file" href="solve-worker.js" />
     <base data-trunk-public-url />
 
     <style>
