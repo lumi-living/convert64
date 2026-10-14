@@ -69,6 +69,7 @@ The 16-bit composite of all layers at any zoom, with the C64 cell grid projected
 | Aspect | square source pixels; the projected cell grid shows the 2:1 stretch of multicolor modes as 4×8-equivalent rectangles |
 | Overlays | **Cell grid** `Cmd/Ctrl '`, **Pins & locks**, **Regions**, **Colour-limited cells** `Shift+C` (the heatmap projected onto source cells), **Result ghost** (result at 30 % over the source — the reverse of the ghost in Result mode) |
 | Selection | the selected layer's bounds are outlined; its transform handles are drawn in Source mode only |
+| While dragging | a transform drag (nudge, scale, rotate, held arrow keys) moves the layer's cached picture, at full detail, until release (a translucent layer, a blend mode or a mask over other layers: as a slider drag); a slider drag shows the picture at the solve's resolution (1×, square-edged pixels) until release. On release the full-detail view returns. The full-detail view takes about 60 ms per frame to make in the browser; this takes a few (#264) |
 
 ### 4.2 Result mode
 
