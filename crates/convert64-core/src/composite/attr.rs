@@ -107,6 +107,11 @@ impl AttributeMap {
         self.regions = regions;
     }
 
+    /// The layer and region recipe tables, copied.
+    pub(crate) fn recipes(&self) -> (Vec<Recipe>, Vec<Recipe>) {
+        (self.layers.clone(), self.regions.clone())
+    }
+
     /// Mutable target pixels, for the compositor's fused fold-and-filter.
     pub(crate) fn pixels_mut(&mut self) -> &mut [TargetAttr] {
         &mut self.px

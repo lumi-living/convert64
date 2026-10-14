@@ -7,6 +7,7 @@
 //! before a label whose value differs from the default; a double click on a label
 //! resets that value; each group has a Reset.
 
+use super::method_picker::RecipeTarget;
 use super::{Action, Shell};
 use crate::theme::{Theme, layout};
 use crate::workspace::Workspace;
@@ -14,8 +15,8 @@ use convert64_core::ColourIndex;
 use convert64_core::SolveSettings;
 use convert64_core::command::{AdjustmentsChange, RecipeChange, SolveSet};
 use convert64_core::layer::{
-    Adjustments, BrightnessContrast, Curve, Curves, DitherFamily, DitherKind, FitMode, Gamma, Hsl,
-    Layer, Levels, Method, Metric, Orientation, PatternPhase, Radius, RangeMatch, Recipe, Sharpen,
+    Adjustments, BrightnessContrast, Curve, Curves, DitherFamily, FitMode, Gamma, Hsl, Layer,
+    Levels, Method, Metric, Orientation, PatternPhase, Radius, RangeMatch, Recipe, Sharpen,
 };
 use convert64_core::solve::{Divergences, SolverKind};
 use convert64_project::{JsonCommand, LayerRef};
@@ -252,7 +253,7 @@ pub(super) fn show(shell: &mut Shell, ws: &Workspace, ui: &mut Ui, actions: &mut
     adjustments(&mut f, shell, ws, layer, ui);
     sharpen(&mut f, layer.adjustments().sharpen, ui);
     mask_group(&mut f, shell, ws, layer, ui);
-    dither(&mut f, layer.recipe(), ui);
+    dither(&mut f, shell, ws, layer.recipe(), ui);
     fitting(&mut f, layer.recipe(), ws, ui);
     advanced(&mut f, layer, &project.solve, ui);
 }
@@ -972,7 +973,7 @@ fn regions(f: &mut Form, shell: &mut Shell, ws: &Workspace, ui: &mut Ui) {
             .weak(),
     );
     f.region = Some(shell.region);
-    dither(f, region.recipe(), ui);
+    dither(f, shell, ws, region.recipe(), ui);
     fitting(f, region.recipe(), ws, ui);
 }
 
@@ -1446,88 +1447,49 @@ fn mask_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, ui
     }
 }
 
-/// A dither method's name for menus, e.g. `Floyd–Steinberg`, `Bayer 4×4`.
-fn method_name(kind: DitherKind) -> String {
-    let id = serde_json::to_value(kind)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default();
-    match id.as_str() {
-        "floyd-steinberg" => "Floyd–Steinberg".to_owned(),
-        "jarvis-judice-ninke" => "Jarvis–Judice–Ninke".to_owned(),
-        _ => {
-            let mut c = id.chars();
-            c.next()
-                .map_or_else(String::new, |f| {
-                    f.to_uppercase().chain(c).collect::<String>()
-                })
-                .replace('-', " ")
-        }
-    }
-}
-
-const FAMILIES: [(DitherFamily, &str); 6] = [
-    (DitherFamily::None, "None"),
-    (DitherFamily::Ordered, "Ordered"),
-    (DitherFamily::Diffusion, "Diffusion"),
-    (DitherFamily::Noise, "Noise"),
-    (DitherFamily::Effects, "Effects"),
-    (DitherFamily::PaletteAware, "Palette-aware"),
-];
-
-fn dither(f: &mut Form, r: &Recipe, ui: &mut Ui) {
+/// The Dither recipe group (UX §6 item 4): the Method field and its picker (§6a),
+/// Strength, Phase, Orientation and, for diffusion, the error clamp.
+fn dither(f: &mut Form, shell: &mut Shell, ws: &Workspace, r: &Recipe, ui: &mut Ui) {
     let d = Recipe::default();
     let changed = r.method() != d.method()
         || r.strength() != d.strength()
         || r.phase() != d.phase()
         || r.error_clamp() != d.error_clamp();
+    let target = match f.region {
+        Some(i) => RecipeTarget::Region(i),
+        None => RecipeTarget::Layer(f.layer),
+    };
     let reset = group(ui, "Dither recipe", changed, true, |ui| {
-        let kind = r.method().kind;
-        let family = kind.family();
-        // Family first (Ditherista's lesson), then the method within it.
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            for (fam, name) in FAMILIES {
-                if ui.selectable_label(family == fam, name).clicked() && family != fam {
-                    let first = DitherKind::ALL
-                        .into_iter()
-                        .find(|k| k.family() == fam)
-                        .unwrap_or(DitherKind::None);
-                    f.recipe(
-                        None,
-                        RecipeChange {
-                            method: Some(Method {
-                                kind: first,
-                                ..r.method()
-                            }),
-                            ..Default::default()
-                        },
-                    );
-                }
-            }
-        });
+        let family = r.method().kind.family();
+        let mut jobs = Vec::new();
+        let mut out = super::method_picker::FieldOutcome::default();
         ui.horizontal(|ui| {
             label(ui, "Method", r.method() != d.method());
-            egui::ComboBox::from_id_salt("dither_method")
-                .selected_text(method_name(kind))
-                .width(ui.available_width())
-                .show_ui(ui, |ui| {
-                    for k in DitherKind::ALL.into_iter().filter(|k| k.family() == family) {
-                        if ui.selectable_label(k == kind, method_name(k)).clicked() && k != kind {
-                            f.recipe(
-                                None,
-                                RecipeChange {
-                                    method: Some(Method {
-                                        kind: k,
-                                        ..r.method()
-                                    }),
-                                    ..Default::default()
-                                },
-                            );
-                        }
-                    }
-                });
+            out = super::method_picker::field(shell, ws, r, ui, &mut jobs);
         });
+        if out.toggle {
+            if shell.picker.open.is_some() {
+                shell.picker.close(f.actions);
+            } else {
+                shell.picker.open(target);
+            }
+        }
+        let picked = match out.step {
+            Some(m) => Some(m),
+            None => {
+                super::method_picker::popover(shell, ws, target, r, ui.ctx(), f.actions, &mut jobs)
+            }
+        };
+        ws.method_thumbs.want(jobs);
+        if let Some(m) = picked.filter(|m| *m != r.method()) {
+            f.recipe(
+                None,
+                RecipeChange {
+                    method: Some(m),
+                    ..Default::default()
+                },
+            );
+        }
         commit(
             f,
             "strength",

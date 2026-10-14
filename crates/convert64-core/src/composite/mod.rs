@@ -49,7 +49,7 @@ pub use attr::{AttrSource, AttributeMap, TargetAttr, debug_colour};
 pub use frame::TargetFrame;
 
 use crate::geom::{CellSet, PxRect, SuperGrid, Vec2};
-use crate::layer::{Adjustments, Blend, Downscale, Layer, SourceImage, Transform};
+use crate::layer::{Adjustments, Blend, Downscale, Layer, Recipe, SourceImage, Transform};
 use crate::mask::{Mask, Modifiers, SnapToCells};
 use crate::region::Region;
 use crate::scratch;
@@ -1233,7 +1233,35 @@ impl Compositor {
             // The frame held png2c64's image: composite everything afresh.
             self.last = None;
         }
+        let first = self.last.is_none();
+        let old = self.frame.attributes().recipes();
         let mut cells = self.update_composite(layers, regions);
+        // A recipe change that blends the same (the method, the metric: anything but
+        // the strength) recomposites nothing, but the frame must carry the new recipes
+        // and its pixels' cells are dirty for the solver (#260).
+        let new = (
+            layers.iter().map(|l| *l.recipe()).collect::<Vec<_>>(),
+            regions.iter().map(|r| *r.recipe()).collect::<Vec<_>>(),
+        );
+        if !first && (old.0 != new.0 || old.1 != new.1) {
+            let changed = |i: usize, old: &[Recipe], new: &[Recipe]| old.get(i) != new.get(i);
+            let (w, _) = self.grid.target_size();
+            let (cw, ch) = self.grid.cell_size();
+            for (i, a) in self.frame.attributes().pixels().iter().enumerate() {
+                let differs = match a.source {
+                    AttrSource::None => false,
+                    AttrSource::Layer(l) => changed(usize::from(l), &old.0, &new.0),
+                    AttrSource::Region(r) => changed(usize::from(r), &old.1, &new.1),
+                };
+                if differs {
+                    let (x, y) = ((i as u32) % w, (i as u32) / w);
+                    if let Some(cell) = self.grid.target_px_to_cell(x / cw * cw, y / ch * ch) {
+                        cells.insert(cell);
+                    }
+                }
+            }
+        }
+        self.frame.attributes_mut().set_recipes(new.0, new.1);
         let Some(layer) = plain else {
             self.frame.set_prepared(None);
             return cells;

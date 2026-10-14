@@ -89,3 +89,11 @@ pub const FLIP: Icon = m::ICON_FLIP;
 pub const CHAIN: Icon = m::ICON_LINK;
 /// Unlinked W/H.
 pub const CHAIN_OFF: Icon = m::ICON_LINK_OFF;
+/// Method field: open the picker (UX §6a).
+pub const DROP_DOWN: Icon = m::ICON_ARROW_DROP_DOWN;
+/// Method field: the previous method.
+pub const STEP_UP: Icon = m::ICON_KEYBOARD_ARROW_UP;
+/// Method field: the next method.
+pub const STEP_DOWN: Icon = m::ICON_KEYBOARD_ARROW_DOWN;
+/// Method picker: the search field.
+pub const SEARCH: Icon = m::ICON_SEARCH;

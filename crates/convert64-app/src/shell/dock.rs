@@ -76,6 +76,15 @@ fn result_header(
                     }
                 });
         });
+        // The method picker's live preview (UX §6a).
+        if let Some(p) = ws.and_then(|ws| ws.preview.as_ref()) {
+            let accent = Theme::current(ui.ctx()).accent;
+            ui.label(
+                RichText::new(format!("Preview: {}", p.name))
+                    .small()
+                    .color(accent),
+            );
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             let enabled = ws.is_some();
