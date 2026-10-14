@@ -779,7 +779,9 @@ fn curves(f: &mut Form, shell: &mut Shell, c: &Curves, ui: &mut Ui) {
     };
     let drag_key = ui.id().with("curve_drag");
     if response.drag_started() {
-        let hit = response.interact_pointer_pos().and_then(near);
+        // The point under the press, not under the pointer once the drag threshold is
+        // passed (#263).
+        let hit = super::drag_origin(ui, &response).and_then(near);
         ui.data_mut(|d| d.insert_temp(drag_key, hit));
     }
     if response.dragged()

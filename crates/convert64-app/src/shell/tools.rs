@@ -110,9 +110,11 @@ pub(super) fn interact(
     let to_picture = |p: Pos2| shell.camera.to_picture(view, shell.view, p);
     let primary = response.dragged_by(egui::PointerButton::Primary) && !space;
 
+    // The rectangle and the nudge start where the button went down, not where egui
+    // noticed the drag (#263).
     if response.drag_started_by(egui::PointerButton::Primary)
         && !space
-        && let Some(p) = response.interact_pointer_pos()
+        && let Some(p) = super::drag_origin(ui, response)
     {
         let p = to_picture(p);
         shell.drag = Some(ToolDrag { start: p, now: p });
@@ -464,6 +466,88 @@ mod tests {
         shell.reset_tool();
         assert_eq!(shell.tool, Tool::Nudge);
         assert!(!shell.mask.active && shell.mask.tool.is_none());
+    }
+
+    /// Drags with `shell`'s tool from picture point `from` by `by` points, in small
+    /// steps that start inside egui's drag threshold, and returns every action.
+    fn drag_tool(shell: &mut Shell, ws: &Workspace, from: Pos2, by: egui::Vec2) -> Vec<Action> {
+        use super::super::drag_test::{VIEW, drag, path};
+        let picture = shell.camera.picture_rect(VIEW, shell.view);
+        let from = picture.min + from.to_vec2() * shell.camera.scale(shell.view);
+        let mut actions = Vec::new();
+        drag(from, &path(from, from + by), |ui, response| {
+            interact(shell, ws, ui, response, VIEW, &mut actions);
+        });
+        actions
+    }
+
+    /// The cells the pin or lock commands in `actions` cover.
+    fn steered_cells(actions: &[Action]) -> Vec<Cell> {
+        let mut cells: Vec<Cell> = actions
+            .iter()
+            .flat_map(|a| match a {
+                Action::RunAll(cmds, _) => cmds.clone(),
+                _ => Vec::new(),
+            })
+            .flat_map(|c| match c {
+                JsonCommand::CellPin(p) => p.cells,
+                JsonCommand::CellLock(l) => l.cells,
+                _ => Vec::new(),
+            })
+            .map(|p| (u32::from(p.x), u32::from(p.y)))
+            .collect();
+        cells.sort_unstable_by_key(|&(x, y)| (y, x));
+        cells
+    }
+
+    /// #263: a Nudge drag moves the layer by the whole distance from where the button
+    /// went down, not from where egui noticed the drag (it lost about 6 pt).
+    #[test]
+    fn a_nudge_drag_moves_by_the_whole_distance() {
+        let ws = solved();
+        let mut shell = Shell::default();
+        assert_eq!(shell.tool, Tool::Nudge);
+        let actions = drag_tool(
+            &mut shell,
+            &ws,
+            egui::pos2(20.0, 12.0),
+            egui::vec2(40.0, 20.0),
+        );
+        let by = actions
+            .iter()
+            .rev()
+            .find_map(|a| match a {
+                Action::Gesture(NUDGE_GESTURE, JsonCommand::LayerNudge { by, .. }) => Some(*by),
+                _ => None,
+            })
+            .expect("a nudge");
+        // 40 × 20 points at the default 2× zoom is 20 × 10 screen units.
+        assert!(
+            (by.x - 20.0).abs() < 1e-3 && (by.y - 10.0).abs() < 1e-3,
+            "{by:?}"
+        );
+        assert!(matches!(actions.last(), Some(Action::EndGesture)));
+    }
+
+    /// #263: a Pin or Lock rectangle starts at the cell where the button went down.
+    /// The press is 1 unit left of a cell edge; egui notices the drag 6 units later, in
+    /// the next cell.
+    #[test]
+    fn a_pin_or_lock_rectangle_starts_at_the_press_cell() {
+        let ws = solved();
+        for tool in [Tool::Pin, Tool::Lock] {
+            let mut shell = Shell {
+                tool,
+                ..Shell::default()
+            };
+            // Multicolor cells are 8 × 8 screen units: (7, 4) is in cell (0, 0).
+            let actions = drag_tool(&mut shell, &ws, egui::pos2(7.0, 4.0), egui::vec2(32.0, 0.0));
+            assert_eq!(
+                steered_cells(&actions),
+                vec![(0, 0), (1, 0), (2, 0)],
+                "{tool:?}: {actions:?}"
+            );
+        }
     }
 
     #[test]

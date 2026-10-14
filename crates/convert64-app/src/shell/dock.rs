@@ -45,8 +45,8 @@ pub(super) fn show(
     });
 }
 
-/// `Result Header`: the title, the mode dropdown, the clash count (a button to the worst
-/// clash) and the compare and fit buttons.
+/// `Result Header`: the title, the mode dropdown, the colour-limited cell count (a button
+/// to the worst one) and the compare and fit buttons.
 fn result_header(
     shell: &mut Shell,
     ws: Option<&Workspace>,
@@ -92,12 +92,15 @@ fn result_header(
                 shell.compare = shell.compare.next();
             }
             if let Some((ws, n)) = ws.and_then(|ws| Some((ws, ws.clashes()?))) {
-                let colour = Theme::current(ui.ctx()).clash;
-                let word = if n == 1 { "clash" } else { "clashes" };
-                let label = RichText::new(format!("{n} {word}")).small().color(colour);
+                // Neutral text, as in the status bar (#243).
+                let label = RichText::new(super::status::limited_cells(n)).small();
+                let tip = format!(
+                    "{}\nClick to show the worst one on the result.",
+                    super::status::limited_cells_tip(ui.ctx())
+                );
                 let clicked = ui
                     .add(Button::new(label).frame(false))
-                    .on_hover_text("Show the worst clash")
+                    .on_hover_text(tip)
                     .clicked();
                 if clicked {
                     shell.show_worst(ws);
@@ -108,7 +111,8 @@ fn result_header(
 }
 
 /// The C64 result at 1× with its border (`layout::RESULT_HEIGHT` tall, the dock's
-/// width), clash dots and, in Result mode, the navigator rectangle. A click or drag
+/// width), the colour-limited cell dots while that overlay is on, and, in Result mode,
+/// the navigator rectangle. A click or drag
 /// centres the working view there (switching a Source view to Result, UX §3).
 fn result(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui) {
     let theme = Theme::current(ui.ctx());
@@ -170,9 +174,8 @@ fn result(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui) {
         }
     }
     let to_panel = |p: egui::Pos2| screen.min + p.to_vec2() * scale;
-    // Clash dots only, not the heatmap (UX §4.3).
     let grid = ws.doc.grid();
-    for cell in ws.clash_cells() {
+    for cell in panel_dots(shell, ws) {
         painter.circle_filled(to_panel(cell_rect(grid, cell).center()), 1.5, theme.clash);
     }
     if shell.view == ViewMode::Result
@@ -191,6 +194,17 @@ fn result(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui) {
         if response.clicked() {
             shell.view = ViewMode::Result;
         }
+    }
+}
+
+/// The cells dotted on the result panel: the colour-limited ones, only while their
+/// overlay (`Shift C`) is on, so the main output is clean by default (UX §4.3, #243).
+/// Dots only, not the heatmap.
+fn panel_dots(shell: &Shell, ws: &Workspace) -> Vec<(u32, u32)> {
+    if shell.overlays.clashes {
+        ws.clash_cells()
+    } else {
+        Vec::new()
     }
 }
 
@@ -269,5 +283,110 @@ fn export_tab(shell: &mut Shell, ws: &Workspace, ui: &mut Ui) {
             .small()
             .weak(),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::Document;
+    use convert64_core::solve::SolveMode;
+
+    /// A busy 64×40 picture, solved: plenty of cells want more colours than multicolor
+    /// allows.
+    fn solved() -> Workspace {
+        let rgba = (0..64u32 * 40)
+            .flat_map(|i| {
+                let v = |k: u32| ((i * k) % 256) as u8;
+                [v(37), v(91), v(53), 255]
+            })
+            .collect();
+        let png = convert64_project::codec::encode_rgba8(64, 40, rgba);
+        let mut ws = Workspace::new(Document::from_png("busy.png", &png).unwrap());
+        let mut scheduler = crate::scheduler::Scheduler::stepping(Default::default());
+        scheduler.submit(ws.doc.snapshot(None), SolveMode::Full);
+        ws.solution = loop {
+            scheduler.tick();
+            if let Some(r) = scheduler.poll().filter(|r| !r.provisional) {
+                break Some(r.solution);
+            }
+        };
+        ws
+    }
+
+    /// #243: the result panel shows no dots until the overlay is turned on.
+    #[test]
+    fn the_result_panel_has_no_dots_by_default() {
+        let ws = solved();
+        assert!(ws.clashes().unwrap() > 0, "the test picture has none");
+        let mut shell = Shell::default();
+        assert!(!shell.overlays.clashes);
+        assert_eq!(panel_dots(&shell, &ws), vec![]);
+        shell.overlays.clashes = true;
+        assert_eq!(panel_dots(&shell, &ws), ws.clash_cells());
+        // The result header's count still turns the overlay on, and with it the dots.
+        let mut shell = Shell::default();
+        shell.show_worst(&ws);
+        assert!(!panel_dots(&shell, &ws).is_empty());
+    }
+
+    /// #243: the count reads as what it measures, in neutral text (not the `clash` red),
+    /// in both the status bar and the result header, with a tooltip.
+    #[test]
+    fn the_count_is_neutral_and_says_what_it_measures() {
+        let mut ws = solved();
+        let n = ws.clashes().unwrap();
+        assert_eq!(
+            super::super::status::limited_cells(367),
+            "Colour-limited cells: 367"
+        );
+        for theme in [egui::Theme::Light, egui::Theme::Dark] {
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx);
+            ctx.set_theme(theme);
+            let mut shell = Shell::default();
+            let mut texts = Vec::new();
+            for _ in 0..2 {
+                let input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1400.0, 900.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut output = ctx.run_ui(input, |ui| {
+                    shell.show(ui, Some(&mut ws));
+                });
+                output.textures_delta.clear();
+                texts = output
+                    .shapes
+                    .into_iter()
+                    .filter_map(|s| match s.shape {
+                        egui::Shape::Text(t) => Some(t),
+                        _ => None,
+                    })
+                    .filter(|t| t.galley.text().contains("Colour-limited cells:"))
+                    .collect::<Vec<_>>();
+            }
+            // One in the status bar, one in the result header.
+            assert_eq!(texts.len(), 2, "{theme:?}");
+            let tip = super::super::status::limited_cells_tip(&ctx);
+            assert!(tip.contains("still legal"), "{tip}");
+            let clash = Theme::current(&ctx).clash;
+            for t in &texts {
+                assert_eq!(t.galley.text(), format!("Colour-limited cells: {n}"));
+                let colours = t
+                    .galley
+                    .job
+                    .sections
+                    .iter()
+                    .map(|s| s.format.color)
+                    .chain(t.override_text_color)
+                    .chain([t.fallback_color]);
+                for c in colours {
+                    assert_ne!(c, clash, "{theme:?}");
+                }
+            }
+        }
     }
 }

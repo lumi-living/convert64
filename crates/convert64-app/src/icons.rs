@@ -51,7 +51,7 @@ pub const UNDO: Icon = m::ICON_UNDO;
 pub const REDO: Icon = m::ICON_REDO;
 /// The empty working view: add an image.
 pub const ADD_IMAGE: Icon = m::ICON_ADD_PHOTO_ALTERNATE;
-/// Clash warning.
+/// A warning: an error in the status bar.
 pub const WARNING: Icon = m::ICON_WARNING;
 /// Light theme.
 pub const LIGHT_MODE: Icon = m::ICON_LIGHT_MODE;
