@@ -163,7 +163,7 @@ pub(crate) fn solve(
     let (w, h) = mode.screen();
     let mut image = Image::new(w, h, frame.colour().to_vec());
     // png2c64's front end (#190) has run its preprocessing already.
-    if !frame.png2c64_prepared() {
+    if !frame.prepared() {
         preprocess::apply(
             &mut image,
             &preprocess::Settings {

@@ -557,7 +557,7 @@ mod tests {
                 assert_eq!(sol.solver, SolverKind::Reference, "{mode} {kind:?}");
                 assert_eq!(sol.fallback, None);
                 let (w, h) = rm.screen();
-                assert!(f.png2c64_prepared());
+                assert!(f.prepared());
                 let im = Image::new(w, h, f.colour().to_vec());
                 let strength = f.attributes().pixels()[0].strength;
                 assert_eq!(strength, f.attributes().pixels()[w * h / 2].strength);

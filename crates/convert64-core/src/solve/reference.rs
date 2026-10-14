@@ -221,7 +221,7 @@ pub(crate) fn solve(
     let mode = ref_mode(target).expect("a bitmap mode");
     let (w, h) = mode.screen();
     let mut image = Image::new(w, h, frame.colour().to_vec());
-    if !frame.png2c64_prepared() {
+    if !frame.prepared() {
         preprocess::apply(&mut image, &preprocess::Settings::default());
     }
     let attrs = frame.attributes();

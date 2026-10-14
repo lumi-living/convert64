@@ -39,7 +39,7 @@ pub fn render_linear(image: &BitmapImage, palette: &Palette) -> Vec<[f32; 3]> {
 /// multicolor, so one value per wide pixel; 320 × 200 for hi-res), in linear light. The
 /// input is the prepared source: scaled to the target grid and preprocessed, with
 /// transparent pixels set to black. Here that is the frame's colour (in a session it has
-/// been through the front end's preprocessing, `TargetFrame::png2c64_prepared`), with
+/// been through the front end's preprocessing, `TargetFrame::prepared`), with
 /// pixels under half covered set to black, as png2amiga's transparency mask does.
 ///
 /// # Panics
