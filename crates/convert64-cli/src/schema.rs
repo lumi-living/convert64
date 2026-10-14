@@ -312,15 +312,25 @@ fn adjustments_properties() -> Value {
             "master": curve.clone(), "red": curve.clone(), "green": curve.clone(), "blue": curve
         }), &[]),
         "match_range": {
-            "description": "OKLab range matching (a project file's form), or null to turn it off",
+            "description": "Range matching (a project file's form), applied last, or null to turn it off: png2amiga's hull (each pixel's chroma scaled toward the palette's reachable hull, lightness and hue kept; the reference's since #261) or png2c64's box (each OKLab axis stretched onto a target extent)",
             "oneOf": [
                 { "type": "null" },
                 object_schema(json!({
-                    "percentile": { "type": "number" },
+                    "method": { "type": "string", "enum": ["hull"] },
+                    "palette": { "type": "array", "minItems": 16, "maxItems": 16,
+                                 "items": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+                                 "description": "The palette matched onto, 16 \"#rrggbb\" in VIC-II index order (normally the project's)" },
+                    "amount": { "type": "number", "minimum": 0, "maximum": 1, "default": 1,
+                                "description": "How much of the matching: 1 is png2amiga's, 0 keeps the source's chroma" }
+                }), &["method", "palette"]),
+                object_schema(json!({
+                    "method": { "type": "string", "enum": ["box"] },
+                    "percentile": { "type": "number", "minimum": 0, "maximum": 0.499, "default": 0.01,
+                                    "description": "Tail fraction ignored at each end" },
                     "l": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
                     "a": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
                     "b": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }
-                }), &["percentile", "l", "a", "b"])
+                }), &["l", "a", "b"])
             ]
         }
     })
@@ -351,7 +361,7 @@ fn divergences_schema() -> Value {
         &[],
     );
     schema["description"] = json!(
-        "The reference solver's named divergences from png2c64 (docs/reference/png2c64-reference.md), as a whole: those not named are off"
+        "The png2c64 solver's named divergences (docs/reference/png2c64-reference.md), as a whole: those not named are off; asking for one solves with png2c64's port"
     );
     schema
 }
@@ -619,7 +629,9 @@ pub fn command_schema(name: &str) -> Option<Value> {
         ),
         "solve_set" => object_schema(
             json!({
-                "solver": enum_schema(&["reference", "native"], "png2c64's pipeline (reference) or Convert64's own (native)"),
+                "solver": enum_schema(&["reference", "png2c64", "native"], "png2amiga's C64 path (reference, the default since ADR-013), png2c64's pipeline (png2c64, the old reference) or Convert64's own (native)"),
+                "refine": { "type": "boolean", "default": false,
+                            "description": "png2amiga's cell refine after the reference solve (its --cell-refine): the result is kept only if its SSIMULACRA2 improves" },
                 "divergences": divergences_schema(),
                 "hysteresis": { "type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 1,
                                 "description": "Refinement hysteresis ratio; null turns it off" },
@@ -687,8 +699,7 @@ pub fn example(name: &str) -> Option<Value> {
         "mode_set" => json!({ "mode": "hires-bitmap" }),
         "palette_set" => json!({ "palette": "colodore" }),
         "background_pin" => json!({ "background": { "fixed": 0 } }),
-        "solve_set" => json!({ "solver": "native", "divergences": { "chroma_guard": true },
-            "hysteresis": 0.97 }),
+        "solve_set" => json!({ "solver": "reference", "refine": true, "hysteresis": 0.97 }),
         "snap_set" => json!({ "snap": "c64-pixel" }),
         "mask_source_remove" => json!({ "layer": 1, "index": 0 }),
         "mask_source_set_combine" => json!({ "layer": 1, "index": 0, "combine": "min" }),

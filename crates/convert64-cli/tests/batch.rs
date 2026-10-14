@@ -256,3 +256,57 @@ fn validate_reads_display_prgs_and_projects() {
         Some(1)
     );
 }
+
+/// #261: a manifest takes `solver = "png2c64"`, `cell-refine`, `match-range-amount` and
+/// `match-range-method`, as convert's options; a bad amount fails that file.
+#[test]
+fn manifest_takes_the_png2amiga_options() {
+    let dir = temp("batch-261");
+    let art = dir.join("art");
+    std::fs::create_dir_all(&art).unwrap();
+    picture(&art.join("a.png"), 0);
+    picture(&art.join("b.png"), 1);
+    picture(&art.join("c.png"), 2);
+    std::fs::write(
+        art.join("batch.toml"),
+        r#"
+[defaults]
+match-range = true
+outputs = ["kla"]
+
+[files."a.png"]
+cell-refine = true
+match-range-amount = 40
+
+[files."b.png"]
+solver = "png2c64"
+match-range-method = "box"
+
+[files."c.png"]
+match-range-amount = 400
+"#,
+    )
+    .unwrap();
+    let r = convert64(&dir, &["batch", "art", "--json"]);
+    let v = report(&r);
+    assert_eq!(r.status.code(), Some(2), "{v:#}");
+    let file = |name: &str| {
+        v["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["input"] == name)
+            .unwrap_or_else(|| panic!("{name}: {v:#}"))
+            .clone()
+    };
+    let a = file("a.png");
+    assert_eq!(
+        (a["ok"].clone(), a["refine"].clone()),
+        (true.into(), true.into()),
+        "{a:#}"
+    );
+    let b = file("b.png");
+    assert_eq!(b["solver"], "png2c64", "{b:#}");
+    assert_eq!(b["refine"], false, "{b:#}");
+    assert_eq!(file("c.png")["exit_code"], 2);
+}

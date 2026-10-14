@@ -51,8 +51,9 @@ For a PNG, a `.kla` or `.art` output also picks the mode when `--mode` is not gi
 
 | Option | Overrides | Values |
 |---|---|---|
-| `--solver` | `solve.solver` | `reference` (default: png2c64's pipeline, #181), `native` |
-| `--diverge` | `solve.divergences` | The reference solver's named divergences from png2c64, all off by default: `chroma-guard`, `max-luma-diff=N` (0–8), `pair-bias=X` (−1–1), `cell-clamp`, `mix-levels=N` (1–16), `bridging`; repeatable or comma-separated ([png2c64-reference.md](png2c64-reference.md#divergences)) |
+| `--solver` | `solve.solver` | `reference` (default: png2amiga's C64 path, ported; the reference since [ADR-013](../adr/ADR-013-png2amiga-c64-reference.md), #261), `png2c64` (png2c64's pipeline, ported in #181: the reference before ADR-013, kept for comparison), `native` (Convert64's own). A frame the reference cannot solve goes to png2c64's port if that can solve it, else to native; the report's `solver_fallback` says why |
+| `--cell-refine` | `solve.refine` | After the reference solve, png2amiga's cell refine (its `--cell-refine`): the result is kept only if its SSIMULACRA2 improves. Off by default; the reference solver only |
+| `--diverge` | `solve.divergences` | The png2c64 solver's named divergences, all off by default: `chroma-guard`, `max-luma-diff=N` (0–8), `pair-bias=X` (−1–1), `cell-clamp`, `mix-levels=N` (1–16), `bridging`; repeatable or comma-separated ([png2c64-reference.md](png2c64-reference.md#divergences)). Asking for one solves with png2c64's port |
 | `--mode` | `target` | `koala` (also `mc`, `multicolor`), `hires` (also `hi-res`, `art`) |
 | `--palette` | `palette` | `pepto` / `pepto-pal`, `pepto-ntsc`, `colodore`, or a `.vpl` path |
 | `--dither` | each layer's `recipe.method.kind` | Any id in [dither-methods.md](dither-methods.md) |
@@ -68,7 +69,9 @@ For a PNG, a `.kla` or `.art` output also picks the mode when `--mode` is not gi
 | `--mix-levels` | `recipe.mix_levels` | 0–16; native solver |
 | `--smooth` | `recipe.smooth` | native solver |
 | `--gamma` | each layer's `adjustments.gamma` | 0.1–8 |
-| `--match-range` | `adjustments.match_range` | |
+| `--match-range` | each layer's `adjustments.match_range` | png2amiga's `--match-range` (#261): each pixel's chroma scaled toward what the project's palette can reach at its lightness and hue, lightness and hue kept (`{"method": "hull", …}`). Before #261 it was png2c64's box |
+| `--match-range-amount` | `adjustments.match_range.amount` | With `--match-range`: 0–100 % of the matching (default 100, png2amiga's; 0 keeps the source's chroma). Hull only. Without `--match-range`, or with `--match-range-method box`, it is an error (exit 2) |
+| `--match-range-method` | `adjustments.match_range` | With `--match-range`: `hull` (default, png2amiga's) or `box` (png2c64's: each OKLab axis stretched onto the palette's extent shrunk by 5 %, the 1st–99th percentiles of the source; kept for comparison). Without `--match-range` it is an error (exit 2) |
 | `--sharpen` | each layer's `adjustments.sharpen.amount` (#228) | −1–3, png2c64's `--sharpen`: positive sharpens lightness at the C64 grid, negative blends toward a blur; 0 is off |
 | `--sharpen-radius` | `adjustments.sharpen.radius` | `png2c64` (its 3×3 box, the default) or a Gaussian σ in C64 pixels, 0.3–3 |
 | `--sharpen-threshold` | `adjustments.sharpen.threshold` | 0–0.1 in OKLab L; pixels nearer the blur than this are not sharpened (png2c64 has none: 0) |
@@ -88,7 +91,7 @@ Other options:
 | `--save-project PATH` | Also save the project, overrides applied, as `.convert64` (sources linked relative to it) |
 | `--embed` / `--link` | With `--save-project`: embed every source PNG, or link every one |
 
-JSON fields: `input`, `mode`, `palette` (its name), `outputs` (`path`, `format`), `ssimulacra2` (below), `background`, `clashes`, `max_clashes`, `legal`, `violations`, `solve_error`, `solver` (`reference` or `native`), `solver_fallback` (why the native solver ran, when the reference was asked for), `summary` (`clashes`, `total_error`, `dropped_cost`, `worst`, `luma_crossings`) and `worst`.
+JSON fields: `input`, `mode`, `palette` (its name), `outputs` (`path`, `format`), `ssimulacra2` (below), `background`, `clashes`, `max_clashes`, `legal`, `violations`, `solve_error`, `solver` (the solver that made the result: `reference`, `png2c64` or `native`), `solver_fallback` (why another solver stood in for the one asked for), `refine` (whether `solve.refine` was on), `summary` (`clashes`, `total_error`, `dropped_cost`, `worst`, `luma_crossings`) and `worst`.
 
 `ssimulacra2` is the result's SSIMULACRA2 score (ADR-013 §4), the quality number of the sheets and, later, the app's status bar. It scores the solved picture against the frame it was solved from, the way png2amiga scores its C64 output:
 
@@ -147,7 +150,7 @@ max-clashes = 20
 skip = true
 ```
 
-Every table takes `convert`'s options in kebab-case (`solver`, `diverge` (a list), `mode`, `palette`, `dither`, `strength`, `metric`, `cell-metric`, `no-cell-clamp`, `max-luma-diff`, `ordered-semantics`, `no-chroma-guard`, `error-clamp`, `adaptive`, `mix-levels`, `smooth`, `gamma`, `match-range`, `sharpen`, `sharpen-radius`, `sharpen-threshold`, `downscale`, `bg`, `hysteresis`, `supersample`), plus `outputs` (`kla`, `art`, `prg`, `png`, `raw`), `max-clashes`, `zoom` (PNG previews) and `skip`. Unknown keys are errors. A file's table wins over `[defaults]`; options on the command line win over both.
+Every table takes `convert`'s options in kebab-case (`solver`, `cell-refine`, `diverge` (a list), `mode`, `palette`, `dither`, `strength`, `metric`, `cell-metric`, `no-cell-clamp`, `max-luma-diff`, `ordered-semantics`, `no-chroma-guard`, `error-clamp`, `adaptive`, `mix-levels`, `smooth`, `gamma`, `match-range`, `match-range-amount`, `match-range-method`, `sharpen`, `sharpen-radius`, `sharpen-threshold`, `downscale`, `bg`, `hysteresis`, `supersample`), plus `outputs` (`kla`, `art`, `prg`, `png`, `raw`), `max-clashes`, `zoom` (PNG previews) and `skip`. Unknown keys are errors. A file's table wins over `[defaults]`; options on the command line win over both.
 
 Files convert independently: one failure does not stop the others. The exit code is the worst file's (3, then 2, then 1). JSON fields: `dir`, `manifest`, `out`, `converted`, `failed`, `skipped` (`input`, `reason`) and `files`, one `convert` report per file with its `input`.
 

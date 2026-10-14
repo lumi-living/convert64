@@ -108,6 +108,8 @@ fn mcp_tools_match_a_recipe_file() {
     let v: Value = serde_json::from_str(text).unwrap();
     let s2 = v["ssimulacra2"].as_f64().expect("ssimulacra2 score");
     assert!(s2.is_finite() && s2 <= 100.0, "{s2}");
+    // #261: which solver made it, as `convert --json` reports.
+    assert_eq!(v["solver"], "reference", "{v}");
     let report = call("tools/call", tool("clash_report", json!({ "worst": 3 })));
     let text = report["result"]["content"][0]["text"].as_str().unwrap();
     let v: Value = serde_json::from_str(text).unwrap();

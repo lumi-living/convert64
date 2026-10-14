@@ -397,7 +397,7 @@ pub enum JsonCommand {
 mod tests {
     use super::*;
     use convert64_core::ColourIndex;
-    use convert64_core::layer::{DitherKind, Gamma, Levels, Sharpen};
+    use convert64_core::layer::{DitherKind, Gamma, Levels, RangeMatch, Sharpen};
     use convert64_core::mask::{
         GradientKind, KeyChannel, MaskSource, Modifiers, SnapToCells, SourceEntry,
     };
@@ -574,6 +574,26 @@ mod tests {
                     ..AdjustmentsChange::default()
                 },
             },
+            // #261: png2amiga's hull at an amount, and png2c64's box.
+            JsonCommand::AdjustmentsSet {
+                layer: LayerRef::Index(0),
+                adjustments: AdjustmentsChange {
+                    match_range: Some(Some(
+                        RangeMatch::hull(&convert64_core::Palette::pepto_pal(), 0.4).unwrap(),
+                    )),
+                    ..AdjustmentsChange::default()
+                },
+            },
+            JsonCommand::AdjustmentsSet {
+                layer: LayerRef::Index(0),
+                adjustments: AdjustmentsChange {
+                    match_range: Some(Some(
+                        RangeMatch::for_palette(&convert64_core::Palette::pepto_pal(), 0.01, 0.05)
+                            .unwrap(),
+                    )),
+                    ..AdjustmentsChange::default()
+                },
+            },
             JsonCommand::RecipeSet {
                 layer: l,
                 recipe: RecipeChange {
@@ -594,6 +614,12 @@ mod tests {
             JsonCommand::SolveSet(SolveSet {
                 solver: Some(SolverKind::Native),
                 hysteresis: Some(None),
+                ..SolveSet::default()
+            }),
+            // #261: png2c64's port by name, and png2amiga's Refine.
+            JsonCommand::SolveSet(SolveSet {
+                solver: Some(SolverKind::Png2c64),
+                refine: Some(true),
                 ..SolveSet::default()
             }),
             JsonCommand::SnapSet(SnapSet {

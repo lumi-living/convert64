@@ -83,8 +83,19 @@ The palette is the one the picture is solved and previewed with (CLAUDE.md non-n
 | `blend` | `"normal"` | `normal`, `multiply`, `screen`, `overlay` |
 | `downscale` | `"auto"` | How the layer is sampled when shrunk a long way (#235, ADR-012 amendment): `auto` samples a box-reduced mip level of the source past a 4× shrink, `exact` always the original (png2c64's sampling). Written only when `exact`, so older files load and save unchanged. The mip levels are a cache, never saved |
 | `recipe` | Floyd–Steinberg 100 % | The dither recipe (ADR-002): `method` (`kind`, `orientation`, `custom`), `strength`, `phase`, `metric`, `allowed`, `fit_mode`, `cell_clamp`, `max_luma_diff`, `adaptive`, `mix_levels`, `smooth`, `cell_metric`, `error_clamp`. Method ids are in [dither-methods.md](dither-methods.md); defaults are in TAD §4 "E5 in summary". |
-| `adjustments` | identity | `gamma`, `sharpen` (#228: `amount` −1–3, `radius` `"png2c64"` or a σ of 0.3–3 C64 px, `threshold` 0–0.1 in OKLab L; written only when not off, so older files load unchanged), `levels`, `brightness_contrast`, `hsl`, `curves`, `match_range`. Applied in that order, after the layer is resampled (#190) |
+| `adjustments` | identity | `gamma`, `sharpen` (#228: `amount` −1–3, `radius` `"png2c64"` or a σ of 0.3–3 C64 px, `threshold` 0–0.1 in OKLab L; written only when not off, so older files load unchanged), `levels`, `brightness_contrast`, `hsl`, `curves`, `match_range` ([below](#range-matching)). Applied in that order, after the layer is resampled (#190) |
 | `mask` | none (opaque) | The layer mask (ADR-008), below |
+
+### Range matching
+
+`adjustments.match_range` is absent (off) or one of two methods (#261):
+
+| Form | Meaning |
+|---|---|
+| `{"method": "hull", "palette": ["#000000", …16 colours], "amount": 0.4}` | png2amiga's `--match-range` (`match_palette_range`): per lightness and hue, each pixel's chroma scaled by the palette's reachable chroma over the source's 95th percentile, clipped at the palette's; lightness and hue kept. `palette` is the palette matched onto, 16 `"#rrggbb"` in VIC-II index order (the project's when it was made), so the file stands alone. `amount`, 0–1, blends the source's chroma (0) with the matched (1, png2amiga's); written only when not 1. What `convert --match-range` and the app's Range make |
+| `{"percentile": 0.01, "l": [lo, hi], "a": [lo, hi], "b": [lo, hi]}` | png2c64's `--match-range`: the source's OKLab extent between the `percentile` and `1 − percentile` quantiles mapped onto the target ranges, L linearly, a and b around zero. The only form before #261; such projects load and save unchanged (`"method": "box"` may be given and is not written). `convert --match-range --match-range-method box` makes it |
+
+A `match_range` with `l` and no `method` is a box; one with neither is a hull and needs `palette`.
 
 ### Sources
 
@@ -134,8 +145,9 @@ Cells are `x` 0–39, `y` 0–24; colours are indices 0–15. A pin names 1–4 
 
 | Field | Default | Meaning |
 |---|---|---|
-| `solver` | `"reference"` | `"reference"` (png2c64's pipeline, ported, #181) or `"native"` (Convert64's own solver). The reference falls back to native for frames it cannot solve yet; `refinements`, `finalists`, `hysteresis` and `luma_pair_bias` and the recipes' `cell_clamp`, `max_luma_diff`, `mix_levels`, `smooth`, `ordered_semantics` and `chroma_guard` are the native solver's |
-| `divergences` | all off (omitted) | The reference solver's named divergences: `{"chroma_guard": bool, "max_luma_diff": n or null, "pair_bias": x, "cell_clamp": bool, "mix_levels": n or null, "bridging": bool}`, any subset ([png2c64-reference.md](png2c64-reference.md#divergences)) |
+| `solver` | `"reference"` | `"reference"` (png2amiga's C64 path, ported; the reference since [ADR-013](../adr/ADR-013-png2amiga-c64-reference.md), #261), `"png2c64"` (png2c64's pipeline, ported in #181: the reference before ADR-013, kept for comparison) or `"native"` (Convert64's own solver). A frame the reference cannot solve goes to png2c64's port if that can solve it, else to native; `refinements`, `finalists`, `hysteresis` and `luma_pair_bias` and the recipes' `cell_clamp`, `max_luma_diff`, `mix_levels`, `smooth`, `ordered_semantics` and `chroma_guard` are the native solver's. Projects saved before #261 with `"reference"` now solve with png2amiga's port; `"png2c64"` keeps the old result |
+| `refine` | `false` (omitted) | png2amiga's cell refine (`--cell-refine`) after the reference solve: the result is kept only if its SSIMULACRA2 improves. Written only when `true` |
+| `divergences` | all off (omitted) | The png2c64 solver's named divergences (asking for one solves with png2c64's port): `{"chroma_guard": bool, "max_luma_diff": n or null, "pair_bias": x, "cell_clamp": bool, "mix_levels": n or null, "bridging": bool}`, any subset ([png2c64-reference.md](png2c64-reference.md#divergences)) |
 | `background` | `"auto"` | `"auto"` (search all 16) or `{"fixed": n}` (multicolor) |
 | `hysteresis` | none | Refinement hysteresis ratio in (0, 1], e.g. `0.97` |
 | `luma_pair_bias` | `0.0` | Same-luma pair bias per pair (positive penalises, negative rewards) |

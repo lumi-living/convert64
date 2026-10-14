@@ -375,8 +375,14 @@ fn solver_and_divergences_from_the_command_line() {
         );
         serde_json::from_slice(&r.stdout).expect("JSON report")
     };
-    assert_eq!(json(&[])["solver"], "reference");
+    let default = json(&[]);
+    assert_eq!(default["solver"], "reference");
+    assert_eq!(default["refine"], false);
     assert_eq!(json(&["--solver", "native"])["solver"], "native");
+    // #261: png2c64's port, the old reference, by name.
+    let old = json(&["--solver", "png2c64"]);
+    assert_eq!(old["solver"], "png2c64");
+    assert_eq!(old["legal"], true);
     let d = json(&[
         "--diverge",
         "chroma-guard,max-luma-diff=1",
@@ -515,4 +521,181 @@ fn downscale_from_the_command_line() {
         dir.join("bad.kla").to_str().unwrap(),
     ]);
     assert_eq!(r.status.code(), Some(2));
+}
+
+/// #261: `--cell-refine` turns on png2amiga's Refine (`solve.refine`): the report says
+/// so, the saved project holds it, and the result is legal.
+#[test]
+fn cell_refine_from_the_command_line() {
+    let dir = temp("cell-refine");
+    let png = source(&dir);
+    let out = dir.join("refined.kla");
+    let project = dir.join("refined.convert64");
+    let r = convert(&[
+        "--json",
+        "convert",
+        png.to_str().unwrap(),
+        "--cell-refine",
+        "--save-project",
+        project.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&r.stdout).unwrap();
+    assert_eq!(v["refine"], true, "{v}");
+    assert_eq!(v["solver"], "reference", "{v}");
+    assert_eq!(v["legal"], true, "{v}");
+    let check = convert(&["validate", out.to_str().unwrap()]);
+    assert_eq!(String::from_utf8_lossy(&check.stdout).trim(), "legal");
+    let p: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&project).unwrap()).unwrap();
+    assert_eq!(p["solve"]["refine"], true, "{p}");
+    // Off, it is not written.
+    let plain = dir.join("plain.convert64");
+    let r = convert(&[
+        "convert",
+        png.to_str().unwrap(),
+        "--save-project",
+        plain.to_str().unwrap(),
+    ]);
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let p: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&plain).unwrap()).unwrap();
+    assert!(p["solve"].get("refine").is_none(), "{p}");
+}
+
+/// #261: `--match-range` is png2amiga's hull onto the project's palette, at
+/// `--match-range-amount` (written as `amount` only when not 100 %);
+/// `--match-range-method box` is png2c64's. The amount and method need --match-range.
+#[test]
+fn match_range_amount_and_method_from_the_command_line() {
+    let dir = temp("match-range");
+    let png = source(&dir);
+    let run = |name: &str, extra: &[&str]| -> (Vec<u8>, serde_json::Value) {
+        let out = dir.join(format!("{name}.kla"));
+        let project = dir.join(format!("{name}.convert64"));
+        let mut args = vec![
+            "convert",
+            png.to_str().unwrap(),
+            "--match-range",
+            "-o",
+            out.to_str().unwrap(),
+            "--save-project",
+            project.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        let r = convert(&args);
+        assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+        let check = convert(&["validate", out.to_str().unwrap()]);
+        assert_eq!(String::from_utf8_lossy(&check.stdout).trim(), "legal");
+        let p: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&project).unwrap()).unwrap();
+        let m = p["layers"][0]["adjustments"]["match_range"].clone();
+        (std::fs::read(out).unwrap(), m)
+    };
+    let (full, m) = run("full", &[]);
+    assert_eq!(m["method"], "hull", "{m}");
+    assert_eq!(m["palette"].as_array().map(Vec::len), Some(16), "{m}");
+    assert!(m.get("amount").is_none(), "amount 1 is not written: {m}");
+    let (half, m) = run("half", &["--match-range-amount", "50"]);
+    assert_eq!(m["method"], "hull", "{m}");
+    assert_eq!(m["amount"], 0.5, "{m}");
+    assert_ne!(full, half, "50 % matches less than 100 %");
+    let (_, m) = run("box", &["--match-range-method", "box"]);
+    assert!(
+        m.get("method").is_none(),
+        "a box is written as before #261: {m}"
+    );
+    assert!(
+        m["l"].is_array() && m["a"].is_array() && m["b"].is_array(),
+        "{m}"
+    );
+    let out = dir.join("bad.kla");
+    for bad in [
+        &["--match-range-amount", "50"][..],
+        &["--match-range-method", "hull"],
+        &["--match-range", "--match-range-amount", "150"],
+        &["--match-range", "--match-range-amount=-1"],
+        &[
+            "--match-range",
+            "--match-range-method",
+            "box",
+            "--match-range-amount",
+            "50",
+        ],
+        &["--match-range", "--match-range-method", "cube"],
+    ] {
+        let mut args = vec![
+            "convert",
+            png.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ];
+        args.extend_from_slice(bad);
+        let r = convert(&args);
+        assert_eq!(r.status.code(), Some(2), "{bad:?}");
+    }
+}
+
+/// png2amiga's methods (#261), with png2amiga's spellings of some of them.
+const PNG2AMIGA_IDS: &[&str] = &[
+    "bayer3",
+    "bayer5",
+    "bayer6",
+    "bayer7",
+    "v4x2",
+    "bayer4x2",
+    "bayer2x4",
+    "line-v-checker",
+    "fractal16",
+    "aseprite-old",
+    "libcaca3",
+    "libcaca6",
+    "pegasus",
+    "void-cluster",
+    "cluster-noise",
+    "cranley-bayer",
+    "ign-tri",
+    "r2-tri",
+    "quasicrystal",
+    "truchet",
+    "floyd-steinberg-oklab",
+    "gilbert",
+    "dbs",
+    "structure-fs",
+    "contrast-fs",
+    "yliluoma",
+    "opt-checker",
+    "opt-line",
+    "opt-line-checker",
+    "opt-vline",
+    "opt-vline-checker",
+    "tri-tone",
+    "bayer3x3",
+    "bayer7x7",
+    "vline-checker",
+    "zhoufang",
+];
+
+#[test]
+fn convert_accepts_png2amiga_method_ids() {
+    let dir = temp("convert-png2amiga-ids");
+    let png = source(&dir);
+    let out = dir.join("id.kla");
+    for id in PNG2AMIGA_IDS {
+        let r = convert(&[
+            "convert",
+            png.to_str().unwrap(),
+            "--dither",
+            id,
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+        assert!(
+            r.status.success(),
+            "{id}: {}",
+            String::from_utf8_lossy(&r.stderr)
+        );
+    }
 }
