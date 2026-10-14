@@ -475,8 +475,8 @@ impl Shell {
         }
     }
 
-    /// Shows the worst clash: Clashes overlay on, Result mode, centred on that cell (the
-    /// result header's clash button; UX §4.3).
+    /// Shows the worst colour-limited cell: that overlay on, Result mode, centred on the
+    /// cell (the result header's count is a button; UX §4.3).
     pub fn show_worst(&mut self, ws: &Workspace) {
         self.overlays.clashes = true;
         self.view = ViewMode::Result;

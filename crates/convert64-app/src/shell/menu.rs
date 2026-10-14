@@ -135,7 +135,7 @@ fn view_menu(shell: &mut Shell, ui: &mut Ui, actions: &mut Vec<Action>) {
     let o = &mut shell.overlays;
     for (on, label, shortcut) in [
         (&mut o.grid, "Cell Grid", Some(&s::GRID)),
-        (&mut o.clashes, "Clashes", Some(&s::CLASHES)),
+        (&mut o.clashes, "Colour-Limited Cells", Some(&s::CLASHES)),
         (&mut o.steering, "Pins & Locks", None),
         (&mut o.ghost, "Ghost of the Other Image", None),
         (&mut o.border, "Border", Some(&s::BORDER)),
