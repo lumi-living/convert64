@@ -491,8 +491,8 @@ impl Shell {
         }
     }
 
-    /// Shows the worst clash: Clashes overlay on, Result mode, centred on that cell (the
-    /// result header's clash button; UX §4.3).
+    /// Shows the worst colour-limited cell: that overlay on, Result mode, centred on the
+    /// cell (the result header's count is a button; UX §4.3).
     pub fn show_worst(&mut self, ws: &Workspace) {
         self.overlays.clashes = true;
         self.view = ViewMode::Result;
@@ -946,6 +946,78 @@ fn release_focus(ctx: &egui::Context) {
     let drag_ended = ctx.drag_stopped_id() == Some(id);
     if drag_widget && (enter || drag_ended) {
         ctx.memory_mut(|m| m.surrender_focus(id));
+    }
+}
+
+/// Where the drag `response` reports began: where the button went down. egui reports a
+/// drag on a widget that also senses clicks only once the pointer has moved past its
+/// drag threshold (6 pt), by which time the pointer is that far from the press, so a
+/// tool that reads its start point at `drag_started` must take it from here (#239, #263).
+pub(super) fn drag_origin(ui: &egui::Ui, response: &egui::Response) -> Option<egui::Pos2> {
+    ui.input(|i| i.pointer.press_origin())
+        .or_else(|| response.interact_pointer_pos())
+}
+
+/// How far `response`'s drag moved the pointer this frame, counting the movement inside
+/// the drag threshold on the frame the drag starts (#263): `drag_delta` alone loses it.
+pub(super) fn drag_step(response: &egui::Response) -> egui::Vec2 {
+    if response.drag_started() {
+        response
+            .total_drag_delta()
+            .unwrap_or_else(|| response.drag_delta())
+    } else {
+        response.drag_delta()
+    }
+}
+
+/// Headless drags with real pointer events, for the canvas tools' tests (#248, #263).
+#[cfg(test)]
+pub(super) mod drag_test {
+    use egui::{Pos2, Rect, Response, Ui, pos2};
+
+    /// The working view in the headless runs, in points.
+    pub const VIEW: Rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 600.0));
+
+    /// A path from `from` towards `to`: two small steps inside egui's 6 pt drag
+    /// threshold, one past it (where egui reports the drag), then the target.
+    pub fn path(from: Pos2, to: Pos2) -> Vec<Pos2> {
+        let dir = (to - from).normalized();
+        vec![from + dir * 2.0, from + dir * 4.0, from + dir * 12.0, to]
+    }
+
+    /// Presses the primary button at `from`, moves through `path` one frame per point
+    /// (as a real mouse does: the first steps stay inside egui's drag threshold) and
+    /// releases. Each frame allocates a click-and-drag area over [`VIEW`] and hands its
+    /// response to `f`.
+    pub fn drag(from: Pos2, path: &[Pos2], mut f: impl FnMut(&Ui, &Response)) {
+        let ctx = egui::Context::default();
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let last = *path.last().unwrap_or(&from);
+        let mut frames = vec![
+            vec![egui::Event::PointerMoved(from)],
+            vec![button(from, true)],
+        ];
+        frames.extend(path.iter().map(|p| vec![egui::Event::PointerMoved(*p)]));
+        frames.push(vec![button(last, false)]);
+        frames.push(vec![]);
+        for (n, events) in frames.into_iter().enumerate() {
+            let input = egui::RawInput {
+                screen_rect: Some(VIEW),
+                time: Some(n as f64 / 60.0),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                let response = ui.allocate_rect(VIEW, egui::Sense::click_and_drag());
+                f(ui, &response);
+            });
+            output.textures_delta.clear();
+        }
     }
 }
 

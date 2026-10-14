@@ -411,8 +411,9 @@ pub(super) fn interact(
         shell.mask.mode
     };
 
+    // A stroke starts where the button went down, not where egui noticed the drag (#263).
     if response.drag_started_by(egui::PointerButton::Primary)
-        && let Some(p) = response.interact_pointer_pos()
+        && let Some(p) = super::drag_origin(ui, response)
     {
         shell.mask.stroke = vec![to_picture(p)];
     }
@@ -673,8 +674,9 @@ pub(super) fn region_interact(
         return;
     }
     let to_picture = |p: Pos2| shell.camera.to_picture(view, shell.view, p);
+    // A stroke starts where the button went down, not where egui noticed the drag (#263).
     if response.drag_started_by(egui::PointerButton::Primary)
-        && let Some(p) = response.interact_pointer_pos()
+        && let Some(p) = super::drag_origin(ui, response)
     {
         shell.mask.stroke = vec![to_picture(p)];
     }
@@ -734,4 +736,112 @@ pub(super) fn region_interact(
         "Painted the region"
     };
     actions.push(Action::RunAll(commands, message.to_owned()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::Document;
+
+    fn workspace() -> Workspace {
+        let rgba = (0..64 * 40)
+            .flat_map(|i| [(i % 64 * 4) as u8, 90, 90, 255])
+            .collect();
+        let png = convert64_project::codec::encode_rgba8(64, 40, rgba);
+        Workspace::new(Document::from_png("ramp.png", &png).unwrap())
+    }
+
+    type Handler = fn(&mut Shell, &Workspace, &Ui, &Response, Rect, &mut Vec<Action>);
+
+    /// Drags from picture point `from` by `by` points in small steps that start inside
+    /// egui's drag threshold, with `handle` (the mask tools or the Region tool) on each
+    /// frame, and returns every action.
+    fn drag_with(
+        shell: &mut Shell,
+        ws: &Workspace,
+        from: Pos2,
+        by: egui::Vec2,
+        handle: Handler,
+    ) -> Vec<Action> {
+        use super::super::drag_test::{VIEW, drag, path};
+        let picture = shell.camera.picture_rect(VIEW, shell.view);
+        let from = picture.min + from.to_vec2() * shell.camera.scale(shell.view);
+        let mut actions = Vec::new();
+        drag(from, &path(from, from + by), |ui, response| {
+            handle(shell, ws, ui, response, VIEW, &mut actions);
+        });
+        actions
+    }
+
+    fn close(a: Vec2, b: Vec2) -> bool {
+        (a.x - b.x).abs() < 1e-3 && (a.y - b.y).abs() < 1e-3
+    }
+
+    /// #263: a mask brush stroke starts where the button went down, not 6 pt along.
+    #[test]
+    fn a_mask_stroke_starts_at_the_press_point() {
+        let ws = workspace();
+        let mut shell = Shell::default();
+        shell.mask.active = true;
+        shell.mask.tool = Some(MaskTool::Brush);
+        let press = egui::pos2(100.0, 60.0);
+        let actions = drag_with(&mut shell, &ws, press, egui::vec2(40.0, 0.0), interact);
+        let points = actions
+            .iter()
+            .find_map(|a| match a {
+                Action::Run(JsonCommand::MaskStroke { points, .. }) => Some(points.clone()),
+                _ => None,
+            })
+            .expect("a stroke");
+        let start = to_layer(&ws, 0, press).unwrap();
+        assert!(close(points[0], start), "{:?} != {start:?}", points[0]);
+        // It ends where the button came up: 40 points at the default 2× is 20 units on.
+        let end = to_layer(&ws, 0, press + egui::vec2(20.0, 0.0)).unwrap();
+        let last = *points.last().unwrap();
+        assert!(close(last, end), "{last:?} != {end:?}");
+    }
+
+    /// #263: a gradient runs from the press point.
+    #[test]
+    fn a_gradient_runs_from_the_press_point() {
+        let ws = workspace();
+        let mut shell = Shell::default();
+        shell.mask.active = true;
+        shell.mask.tool = Some(MaskTool::Gradient);
+        let press = egui::pos2(100.0, 60.0);
+        let actions = drag_with(&mut shell, &ws, press, egui::vec2(60.0, 0.0), interact);
+        let from = actions
+            .iter()
+            .find_map(|a| match a {
+                Action::Run(JsonCommand::MaskGradient { gradient, .. }) => Some(gradient.from()),
+                _ => None,
+            })
+            .expect("a gradient");
+        let start = to_layer(&ws, 0, press).unwrap();
+        assert!(close(from, start), "{from:?} != {start:?}");
+    }
+
+    /// #263: a Region brush stroke starts at the press point too.
+    #[test]
+    fn a_region_stroke_starts_at_the_press_point() {
+        let ws = workspace();
+        let mut shell = Shell {
+            tool: super::super::Tool::Region,
+            ..Shell::default()
+        };
+        let press = egui::pos2(100.0, 60.0);
+        let by = egui::vec2(40.0, 0.0);
+        let actions = drag_with(&mut shell, &ws, press, by, region_interact);
+        let points = actions
+            .iter()
+            .find_map(|a| match a {
+                Action::RunAll(cmds, _) => cmds.iter().find_map(|c| match c {
+                    JsonCommand::RegionStroke { points, .. } => Some(points.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .expect("a region stroke");
+        assert!(close(points[0], v2(press)), "{:?}", points[0]);
+    }
 }

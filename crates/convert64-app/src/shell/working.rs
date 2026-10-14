@@ -208,7 +208,7 @@ fn navigate(shell: &mut Shell, ui: &Ui, response: &egui::Response, view: Rect) {
     let panning = response.dragged_by(egui::PointerButton::Middle)
         || ((space || shell.hand) && response.dragged_by(egui::PointerButton::Primary));
     if panning {
-        shell.camera.pan(mode, response.drag_delta());
+        shell.camera.pan(mode, super::drag_step(response));
     }
 }
 
@@ -413,6 +413,32 @@ fn empty(ui: &mut Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #263: a pan with the Hand moves the picture by the whole drag, counting the
+    /// movement inside egui's drag threshold.
+    #[test]
+    fn a_hand_drag_pans_by_the_whole_distance() {
+        use super::super::drag_test::{VIEW, drag, path};
+        let mut shell = Shell {
+            hand: true,
+            ..Shell::default()
+        };
+        let before = shell.camera.centre;
+        let from = VIEW.center();
+        drag(
+            from,
+            &path(from, from + vec2(40.0, 20.0)),
+            |ui, response| {
+                navigate(&mut shell, ui, response, VIEW);
+            },
+        );
+        // 40 × 20 points at the default 2× zoom is 20 × 10 screen units.
+        let moved = before - shell.camera.centre;
+        assert!(
+            (moved.x - 20.0).abs() < 1e-3 && (moved.y - 10.0).abs() < 1e-3,
+            "{moved:?}"
+        );
+    }
 
     /// The first frame after an open fits the Source view with a margin around the
     /// picture (#246).
