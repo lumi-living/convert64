@@ -1,4 +1,5 @@
-//! `cargo xtask png2c64-baselines`: regenerate the png2c64 baselines (#39).
+//! `cargo xtask png2c64-baselines`: regenerate the png2c64 baselines (#39), archived in
+//! `fixtures/archive/png2c64/` and ungated since ADR-013 (#261).
 //!
 //! png2c64's command-line tool writes a 320×200 PNG preview plus a display PRG; its
 //! Koala and Art Studio writers (`prg::koala_raw`, `prg::hires_raw`) are only reachable
@@ -136,11 +137,13 @@ pub(crate) fn png2c64_commit(binary: &Path) -> String {
 
 fn baseline(png2c64: &Path, name: &'static str, kind: Kind) -> Result<Outcome, String> {
     let root = repo_root();
-    let fixture = root.join("fixtures").join(name);
+    // Since ADR-013 (#261) png2c64's baselines live in the archive, ungated.
+    let fixture = root.join("fixtures/archive/png2c64").join(name);
+    let source = root.join("fixtures").join(name).join("source.png");
     let work = root.join("target").join("xtask").join("png2c64").join(name);
     let _ = fs::remove_dir_all(&work);
     fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
-    fs::copy(fixture.join("source.png"), work.join("source.png"))
+    fs::copy(&source, work.join("source.png"))
         .map_err(|e| format!("{name}/source.png: {e}"))?;
 
     let stdout = output(
@@ -254,7 +257,10 @@ fn write_readme_section(
     version: &str,
     commit: &str,
 ) -> Result<(), String> {
-    let path = repo_root().join("fixtures").join(o.name).join("README.md");
+    let path = repo_root()
+        .join("fixtures/archive/png2c64")
+        .join(o.name)
+        .join("README.md");
     let readme = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mode = match kind {
         Kind::Multicolor => "multicolor bitmap (Koala)",
@@ -269,7 +275,7 @@ fn write_readme_section(
            ```sh\n  png2c64 {} source.png baseline.png\n  ```\n\n\
          - Files: `baseline.png` is png2c64's 320×200 preview; `{}` is the picture data from \
            the display PRG png2c64 writes, with the format's load address in front (see \
-           [fixtures/README.md](../README.md#png2c64-baselines)).\n\
+           [fixtures/README.md](../../../README.md#png2c64-baselines-archived)).\n\
          - png2c64 total error (sum of per-cell OKLab errors, two decimals): {}\n\
          - `convert64 validate {}`: {}\n\
          {END}",
