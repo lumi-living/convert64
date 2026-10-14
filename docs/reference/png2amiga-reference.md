@@ -2,7 +2,7 @@
 
 `convert64_core::solve::png2amiga_ref` ports png2amiga's C64 bitmap path (multicolor and
 hi-res) so that our output is pixel-identical to png2amiga's. It is the reference solver
-(`SolverKind::Reference`) since [ADR-013](../adr/), which moved the reference from
+(`SolverKind::Reference`) since [ADR-013](../adr/ADR-013-png2amiga-c64-reference.md) (in PR #262), which moved the reference from
 png2c64 ([png2c64-reference.md](png2c64-reference.md), kept behind `--solver png2c64`).
 This page records which png2amiga build is "the reference", why, what differs from the
 png2c64 port, and how the test data was produced.
