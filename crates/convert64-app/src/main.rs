@@ -12,6 +12,9 @@ use convert64_core::solve::SolveMode;
 /// `localStorage` in the browser).
 const THEME_KEY: &str = "theme";
 
+/// The storage key of the method picker's *Preview on* choice (UX §6a: remembered).
+const PREVIEW_SOURCE_KEY: &str = "method_preview_source";
+
 /// Top-level UI state; every frame is drawn from the held document.
 #[derive(Debug, Default)]
 struct App {
@@ -48,6 +51,13 @@ impl App {
         if let Some(preference) = stored {
             app.set_theme(&cc.egui_ctx, preference);
         }
+        if let Some(source) = cc
+            .storage
+            .and_then(|s| s.get_string(PREVIEW_SOURCE_KEY))
+            .and_then(|s| convert64_app::thumbs::PreviewSource::parse(&s))
+        {
+            app.shell.picker.source = source;
+        }
         let ctx = cc.egui_ctx.clone();
         app.scheduler
             .set_waker(std::sync::Arc::new(move || ctx.request_repaint()));
@@ -63,7 +73,13 @@ impl App {
     fn open(&mut self, doc: Document) {
         self.scheduler.cancel();
         let mut ws = Workspace::new(doc);
+        let ctx = self.ctx.clone();
+        ws.method_thumbs
+            .set_waker(std::sync::Arc::new(move || ctx.request_repaint()));
         Self::submit(&mut self.scheduler, &mut ws, &self.ctx, SolveMode::Full);
+        // Recent methods are this project's.
+        self.shell.picker.close(&mut Vec::new());
+        self.shell.picker.recent.clear();
         self.workspace = Some(ws);
         self.shell.reset_tool();
         self.shell.fit_on_next_frame();
@@ -86,6 +102,35 @@ impl App {
         }
         let previous = ws.solution.clone();
         scheduler.submit(ws.doc.snapshot(previous), mode);
+    }
+
+    /// The method picker's live preview (UX §6a): the result solved with `method` in
+    /// `target`'s recipe on the interactive path, nothing in the history; or (`None`)
+    /// the committed result again.
+    fn preview_method(
+        &mut self,
+        preview: Option<(
+            convert64_app::shell::RecipeTarget,
+            convert64_core::layer::Method,
+        )>,
+    ) {
+        let Some(ws) = &mut self.workspace else {
+            return;
+        };
+        match preview {
+            Some((target, method)) => {
+                let snapshot = ws.preview_snapshot(target, method);
+                let dirty = convert64_core::CellSet::all();
+                self.scheduler
+                    .submit(snapshot, SolveMode::Interactive { dirty });
+            }
+            None => {
+                self.scheduler.cancel();
+                if ws.revert_preview() {
+                    self.resolve();
+                }
+            }
+        }
     }
 
     /// Re-solves after an edit: the whole picture, since #205's edits change settings or
@@ -227,6 +272,7 @@ impl App {
         let Some(ws) = &mut self.workspace else {
             return;
         };
+        ws.end_preview();
         let select = match &command {
             JsonCommand::LayerDuplicate {
                 layer: LayerRef::Index(i),
@@ -277,6 +323,7 @@ impl App {
                     convert64_project::JsonCommand::ModeSet(convert64_core::command::ModeSet {
                         mode,
                     });
+                ws.end_preview();
                 match ws.doc.run(command) {
                     Ok(()) => {
                         ws.solution = None;
@@ -301,11 +348,13 @@ impl App {
                 }
             }
             Action::ResumeSolve => self.resolve(),
+            Action::PreviewMethod(preview) => self.preview_method(preview),
             Action::Run(command) => self.edit(ctx, None, command),
             Action::RunAll(commands, message) => {
                 let Some(ws) = &mut self.workspace else {
                     return;
                 };
+                ws.end_preview();
                 match ws.doc.run_all(commands) {
                     Ok(()) => {
                         self.shell.toast(ctx, message, false);
@@ -348,6 +397,7 @@ impl App {
                 let Some(ws) = &mut self.workspace else {
                     return;
                 };
+                ws.end_preview();
                 let done = if action == Action::Undo {
                     Ok(ws.doc.undo())
                 } else {
@@ -486,6 +536,12 @@ impl eframe::App for App {
         if self.scheduler.tick() {
             ui.ctx().request_repaint();
         }
+        // This frame's batch of method thumbnails (wasm; natively a worker renders them).
+        if let Some(ws) = &mut self.workspace
+            && ws.method_thumbs.tick()
+        {
+            ui.ctx().request_repaint();
+        }
         if let Some(result) = self.scheduler.poll()
             && let Some(ws) = &mut self.workspace
         {
@@ -510,8 +566,12 @@ impl eframe::App for App {
         let mut delete = false;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(request) = &mut self.screenshot {
-            // Wait for the first full solve when a picture is open.
-            let ready = self.workspace.as_ref().is_none_or(|ws| !ws.solving);
+            // Wait for the first full solve when a picture is open, and for the method
+            // picker's thumbnails when it is open.
+            let ready = self
+                .workspace
+                .as_ref()
+                .is_none_or(|ws| !ws.solving && !ws.method_thumbs.is_busy());
             if ready && let (Some(dir), Some(ws)) = (request.export.take(), &self.workspace) {
                 screenshot::export(&dir, ws);
             }
@@ -559,6 +619,10 @@ impl eframe::App for App {
             return;
         }
         storage.set_string(THEME_KEY, theme_to_str(self.shell.theme).to_owned());
+        storage.set_string(
+            PREVIEW_SOURCE_KEY,
+            self.shell.picker.source.as_str().to_owned(),
+        );
     }
 }
 
@@ -566,8 +630,9 @@ impl eframe::App for App {
 /// [--overlay grid|clashes|ghost]… [--compare split|flicker|side] [--dialog export]
 /// [--tab recipe|layers|export] [--command <json>]… [--zoom <n>] [--centre <x>,<y>]
 /// [--mask] [--tool <name>] [--drag <x0>,<y0>:<x1>,<y1>] [--export <dir>]
-/// [--dock-scroll <points>] [--hide-ui] [--delete-layer]`: draws a few frames, saves the
-/// window as a PNG and quits. The PR screenshots come from it (#203).
+/// [--dock-scroll <points>] [--hide-ui] [--delete-layer]
+/// [--method-picker gradient|picture]`: draws a few frames, saves the window as a PNG and
+/// quits. The PR screenshots come from it (#203).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
     use std::path::PathBuf;
@@ -659,6 +724,9 @@ mod screenshot {
         pub(super) dock_scroll: Option<f32>,
         /// `--hide-ui`: the UI hidden as `Cmd \` hides it, with its toast (#240).
         pub(super) hide_ui: bool,
+        /// `--method-picker gradient|picture`: the method picker open on the selected
+        /// layer's recipe, its thumbnails on that source (#260).
+        pub(super) method_picker: Option<String>,
         frame: u32,
     }
 
@@ -695,6 +763,7 @@ mod screenshot {
             let mut delete_layer = false;
             let mut dock_scroll = None;
             let mut hide_ui = false;
+            let mut method_picker = None;
             while let Some(arg) = args.next() {
                 let mut value = || args.next().ok_or(format!("{arg} needs a value"));
                 match arg.as_str() {
@@ -714,6 +783,7 @@ mod screenshot {
                     "--mask" => mask = true,
                     "--delete-layer" => delete_layer = true,
                     "--hide-ui" => hide_ui = true,
+                    "--method-picker" => method_picker = Some(value()?),
                     "--tool" => tool = Some(value()?),
                     "--drag" => {
                         let v = value()?;
@@ -783,6 +853,7 @@ mod screenshot {
                     delete_layer,
                     dock_scroll,
                     hide_ui,
+                    method_picker,
                     frame: 0,
                 }),
             })
@@ -931,6 +1002,15 @@ fn main() -> eframe::Result {
                 app.shell.dock_scroll = request.dock_scroll;
                 if request.mask {
                     app.shell.toggle_mask_mode();
+                }
+                if let Some(source) = &request.method_picker {
+                    use convert64_app::thumbs::PreviewSource;
+                    app.shell.picker.source =
+                        PreviewSource::parse(source).unwrap_or(PreviewSource::Gradient);
+                    let layer = app.shell.layer;
+                    app.shell
+                        .picker
+                        .open(convert64_app::shell::RecipeTarget::Layer(layer));
                 }
                 if request.zoom.is_some() || request.centre.is_some() {
                     app.shell.keep_camera();

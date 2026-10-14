@@ -361,6 +361,12 @@ impl Document {
         self.session.palette()
     }
 
+    /// The composite on the target grid (the solver's input), up to date: the method
+    /// picker crops its Picture thumbnails from it.
+    pub fn target_frame(&mut self) -> &convert64_core::TargetFrame {
+        self.session.target_frame()
+    }
+
     /// Everything a solve reads, for the scheduler.
     pub fn snapshot(&self, previous: Option<Arc<Solution>>) -> Snapshot {
         let p = self.session.project();
