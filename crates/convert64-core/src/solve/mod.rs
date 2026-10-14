@@ -11,6 +11,7 @@ pub mod input;
 pub mod metric;
 pub mod mix;
 pub mod ordered;
+pub mod png2amiga_ref;
 pub mod png2c64_ref;
 pub mod reference;
 pub mod report;

@@ -1,11 +1,12 @@
-//! The standing parity bar (#181): the reference solver (`solve::png2c64_ref`) against
-//! png2c64's committed output, pixel for pixel.
+//! The png2c64 parity bar of #181, no longer a gate since ADR-013 (#261; the gate is
+//! `png2amiga_parity.rs`): the png2c64 port (`solve::png2c64_ref`, `--solver png2c64`)
+//! against png2c64's committed output, pixel for pixel. Run it with `--ignored`.
 //!
 //! - Every one of png2c64's 30 method ids on the dither-preview test card (strength 1.0)
 //!   and on the portrait (png2c64's defaults), against
 //!   `docs/reference/dither-previews/png2c64-card/` and `png2c64-portrait/`.
-//! - Every fixture with the settings its `baseline.png` was made with
-//!   (`fixtures/<name>/README.md`).
+//! - Every fixture with the settings its archived baseline was made with
+//!   (`fixtures/archive/png2c64/<name>/`).
 //!
 //! Each must be at least 99 % identical. The report lists the percentage of every case
 //! and, for a case under the bar, the first differing cell with both colour sets. The
@@ -133,7 +134,7 @@ fn cases() -> Vec<Case> {
                 error_clamp: 0.1,
                 ..Settings::default()
             },
-            reference: format!("fixtures/{name}/baseline.png"),
+            reference: format!("fixtures/archive/png2c64/{name}/baseline.png"),
         });
     }
     out
@@ -161,6 +162,7 @@ fn run(case: &Case, image: &Image) -> (f64, Option<String>) {
 }
 
 #[test]
+#[ignore = "not a gate since ADR-013 (#261); run with --ignored"]
 fn png2c64_parity_every_method_and_fixture() {
     let cases = cases();
     let threads = std::thread::available_parallelism().map_or(2, |n| n.get());

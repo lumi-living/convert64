@@ -19,6 +19,10 @@
 //!   with png2c64's kernel, 1.0 with a Gaussian of σ 0.8).
 //! - `png2c64-previews --png2c64 <path>`: regenerate png2c64's own renders and contact
 //!   sheets in `docs/reference/dither-previews/`, the parity test's reference.
+//! - `png2amiga build [--variant reference|strict|default|clang]` and `png2amiga renders
+//!   [--bin <path>]` (#261, ADR-013): clone and build the pinned png2amiga (strict IEEE,
+//!   the maths shim), and render the fixture baselines and every method's previews the
+//!   parity tests compare with.
 //! - `tokens [--check]`: generate the app theme (`crates/convert64-app/src/theme/generated.rs`)
 //!   from the Figma variables in `design/tokens.json`; `--check` fails if it is stale.
 
@@ -28,6 +32,7 @@ mod bluenoise;
 mod font;
 mod frontend;
 mod goldens;
+mod png2amiga;
 mod previews;
 mod sharpen;
 mod sheet;
@@ -161,6 +166,11 @@ enum Command {
         #[arg(long, conflicts_with = "input")]
         reason: Option<String>,
     },
+    /// The reference png2amiga (ADR-013): build it, or render the baselines and previews.
+    Png2amiga {
+        #[command(subcommand)]
+        action: Png2amigaAction,
+    },
     /// Generate the app theme from the Figma variables.
     ///
     /// Reads `design/tokens.json` and writes `crates/convert64-app/src/theme/generated.rs`
@@ -171,6 +181,31 @@ enum Command {
         /// Write nothing; fail if the committed file differs from the generated one.
         #[arg(long)]
         check: bool,
+    },
+}
+
+/// `png2amiga`'s actions.
+#[derive(Subcommand)]
+enum Png2amigaAction {
+    /// Clone the pinned commit into `target/xtask/png2amiga-src` (once) and build it into
+    /// `target/xtask/png2amiga-build/<variant>`.
+    Build {
+        /// Which build: the strict reference with the maths shim, or a comparison build.
+        #[arg(long, value_enum, default_value = "reference")]
+        variant: png2amiga::Variant,
+        /// The GCC driver (Homebrew `g++-15` or `g++-16`); ignored by `clang`.
+        #[arg(long, default_value = "g++-15")]
+        compiler: String,
+    },
+    /// Render every fixture baseline (with `--match-range`, and `--sharpen ±0.5` on the
+    /// portrait) and every method's previews with a png2amiga binary.
+    Renders {
+        /// The binary (default: the `reference` build).
+        #[arg(long)]
+        bin: Option<PathBuf>,
+        /// Only the fixture baselines.
+        #[arg(long)]
+        skip_previews: bool,
     },
 }
 
@@ -241,6 +276,12 @@ fn main() -> ExitCode {
         } => match set_pr {
             Some(n) => goldens::set_pr(&repo_root(), n),
             None => goldens::run(accept, reason.as_deref(), pr),
+        },
+        Command::Png2amiga { action } => match action {
+            Png2amigaAction::Build { variant, compiler } => png2amiga::build(variant, &compiler),
+            Png2amigaAction::Renders { bin, skip_previews } => {
+                png2amiga::renders(bin, skip_previews)
+            }
         },
         Command::Tokens { check } => tokens::run(&repo_root(), check),
     };
