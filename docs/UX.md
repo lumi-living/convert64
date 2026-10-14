@@ -135,7 +135,7 @@ Controls: `Slider` for bounded values with the value field editable on click; `D
 
 ## 7. Cell tools (steering)
 
-Three tools in the toolbar, all operate on the preview, all additive to the project, all undoable. **Nudge** (`V`, Move in Photoshop and Figma) is the default, on first run and for every picture opened, so a stray click selects a layer and changes nothing; Pin, Lock and Region act only once picked, and a click outside the picture (on the border or the pasteboard) never pins, locks or paints (#242):
+Three tools in the toolbar, all operate on the preview, all additive to the project, all undoable. **Nudge** (`V`, Move in Photoshop and Figma) is the default, on first run and for every picture opened, so a stray click selects a layer and changes nothing; Pin, Lock and Region act only once picked, and a click outside the picture (on the border or the pasteboard) never pins, locks or paints (#242). Every drag, with these tools, the mask tools (§7a) and the Hand, counts from where the button went down, not from where the pointer passed egui's 6 pt drag threshold: a nudge moves by the whole drag, and a rectangle, stroke or gradient starts at the press (#263):
 
 | Tool | Key | Click | Drag | Feedback |
 |---|---|---|---|---|
