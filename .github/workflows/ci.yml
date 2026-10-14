@@ -42,15 +42,15 @@ jobs:
       - name: cargo xtask tokens --check
         if: runner.os == 'Linux'
         run: cargo xtask tokens --check
-      # The png2c64 parity test runs in its own step below, so its report shows.
+      # The png2amiga parity tests run in their own step below, so their report shows.
       - name: cargo test
-        run: cargo test --workspace -- --skip png2c64_parity
-      # The standing bar of #181: the reference solver against png2c64's renders,
+        run: cargo test --workspace -- --skip png2amiga_parity
+      # The standing bar of ADR-013 (#261): the reference solver against png2amiga renders,
       # >= 99 % identical per method id and input; prints every percentage.
-      - name: png2c64 parity
+      - name: png2amiga parity
         run: |
-          cargo test -p convert64-core --test png2c64_parity -- --nocapture
-          cargo test -p convert64-cli --test png2c64_convert -- --nocapture
+          cargo test -p convert64-core --test png2amiga_parity -- --nocapture
+          cargo test -p convert64-cli --test png2amiga_convert -- --nocapture
       # The No Glory title screen builds from make with the CLI alone (#167); `cargo
       # test` has just built target/debug/convert64. Windows runners have no make.
       - name: make check (examples/no-glory)
