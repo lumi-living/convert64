@@ -117,6 +117,35 @@ impl TargetFrame {
         }
     }
 
+    /// A frame from its parts, as [`Self::colour`], [`Self::coverage`],
+    /// [`Self::attributes`] and [`Self::prepared`] return them: for a solve in
+    /// another process or a web worker (#265), which then sees exactly this frame.
+    ///
+    /// # Panics
+    /// If `colour`, `coverage` or the attribute map is not one entry per target pixel
+    /// of `grid`, or the map belongs to another grid.
+    pub fn from_parts(
+        grid: SuperGrid,
+        colour: Vec<[f32; 3]>,
+        coverage: Vec<f32>,
+        attributes: AttributeMap,
+        prepared: bool,
+    ) -> Self {
+        let (w, h) = grid.target_size();
+        let len = w as usize * h as usize;
+        assert!(
+            colour.len() == len && coverage.len() == len && attributes.grid() == grid,
+            "a target frame needs one colour, coverage and attribute per target pixel"
+        );
+        Self {
+            grid,
+            colour,
+            coverage,
+            attributes,
+            prepared,
+        }
+    }
+
     /// Whether the colour has been through the reference's preprocessing (png2amiga's
     /// gamma and OKLab round trip, ADR-013): png2amiga's prepared image of one plain
     /// layer (#190), or the compositor's composite, whose layers each went through it
