@@ -30,6 +30,10 @@ fn repo() -> PathBuf {
 }
 
 /// A PNG as 8-bit sRGB: width, height, pixels.
+/// Copies of goldens as they were when the reference scores were taken (before #261
+/// regenerated them), so the pairs stay what png2amiga scored.
+const PINNED: &str = "crates/convert64-core/tests/data/ssimulacra2/pinned";
+
 fn rgb8(path: &str) -> (usize, usize, Vec<[u8; 3]>) {
     let img = image::open(repo().join(path))
         .unwrap_or_else(|e| panic!("{path}: {e}"))
@@ -157,7 +161,7 @@ fn pairs() -> Vec<Pair> {
         "photo", "portrait", "title", "gradient", "lineart", "terrain",
     ] {
         let (w, h, base) = rgb8(&format!("fixtures/archive/png2c64/{f}/baseline.png"));
-        let (_, _, ours) = rgb8(&format!("fixtures/{f}/expected_native.png"));
+        let (_, _, ours) = rgb8(&format!("{PINNED}/{f}-expected_native.png"));
         out.push(Pair::new(
             &format!("{f}-baseline-vs-native"),
             w,
@@ -189,7 +193,7 @@ fn pairs() -> Vec<Pair> {
         linear(&portrait),
         linear(&noise(&portrait)),
     ));
-    let (_, _, fs) = rgb8("fixtures/portrait/expected_fs-unclamped.png");
+    let (_, _, fs) = rgb8(&format!("{PINNED}/portrait-expected_fs-unclamped.png"));
     out.push(Pair::new(
         "portrait-baseline-vs-fs-unclamped",
         w,
@@ -197,7 +201,7 @@ fn pairs() -> Vec<Pair> {
         linear(&portrait),
         linear(&fs),
     ));
-    let (_, _, native) = rgb8("fixtures/portrait/expected_native.png");
+    let (_, _, native) = rgb8(&format!("{PINNED}/portrait-expected_native.png"));
     out.push(Pair::new(
         "portrait-wide-baseline-vs-native",
         160,
@@ -206,7 +210,7 @@ fn pairs() -> Vec<Pair> {
         linear(&wide(&native)),
     ));
     let (_, _, title) = rgb8("fixtures/archive/png2c64/title/baseline.png");
-    let (_, _, title_ours) = rgb8("fixtures/title/expected.png");
+    let (_, _, title_ours) = rgb8(&format!("{PINNED}/title-expected.png"));
     out.push(Pair::new(
         "title-baseline-vs-expected",
         w,
@@ -215,7 +219,7 @@ fn pairs() -> Vec<Pair> {
         linear(&title_ours),
     ));
     let (_, _, grad) = rgb8("fixtures/archive/png2c64/gradient/baseline.png");
-    let (_, _, grad_ours) = rgb8("fixtures/gradient/expected_native.png");
+    let (_, _, grad_ours) = rgb8(&format!("{PINNED}/gradient-expected_native.png"));
     out.push(Pair::new(
         "gradient-crop-37x29",
         37,
@@ -306,7 +310,7 @@ fn identical_pair_scores_100() {
 #[ignore = "timing; run in release with --nocapture"]
 fn ssimulacra2_timing() {
     let (w, h, base) = rgb8("fixtures/archive/png2c64/photo/baseline.png");
-    let (_, _, ours) = rgb8("fixtures/photo/expected_native.png");
+    let (_, _, ours) = rgb8(&format!("{PINNED}/photo-expected_native.png"));
     for (label, w, a, b) in [
         ("320 × 200", w, linear(&base), linear(&ours)),
         (

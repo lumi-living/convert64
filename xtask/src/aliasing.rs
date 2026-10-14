@@ -206,10 +206,7 @@ pub(crate) fn area_averaged(img: &RgbaImage, tw: u32, th: u32, space: Space) -> 
 /// light. The prepared tile is 8-bit here, so this is within a quantisation step of
 /// `quality::score_bitmap`; `cargo xtask reference-sheet` scores against the exact
 /// prepared image instead.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "only the measurement reads it")
-)]
+#[cfg_attr(not(test), expect(dead_code, reason = "only the measurement reads it"))]
 pub(crate) fn ssimulacra2(prepared: &RgbImage, solved: &RgbImage) -> Option<f64> {
     let lin = |img: &RgbImage| -> Vec<[f32; 3]> {
         (0..160 * 200)
