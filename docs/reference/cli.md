@@ -23,7 +23,7 @@ Every command exits with one of these:
 | `ok` | `exit_code == 0` |
 | `exit_code` | As above |
 | `error` | The error message, or `null` |
-| `timing_ms` | `total`, plus each phase the command ran: `load`, `apply`, `solve`, `write`, `validate`, `convert` (batch) |
+| `timing_ms` | `total`, plus each phase the command ran: `load`, `apply`, `solve`, `ssimulacra2` (scoring the solve), `write`, `validate`, `convert` (batch) |
 | `files_written` | Every file written, in order, as given on the command line |
 | `notes` | What loading the input changed, said once; `[]` when nothing did. Today the one note is an older project's migration ([project-file.md](project-file.md#versions)): `"Updated project from v2: now uses 1× resampling"`. Without `--json` each note is a `note: …` line on stderr. In `batch` and `export` each file's report has its own `notes` |
 
@@ -88,7 +88,14 @@ Other options:
 | `--save-project PATH` | Also save the project, overrides applied, as `.convert64` (sources linked relative to it) |
 | `--embed` / `--link` | With `--save-project`: embed every source PNG, or link every one |
 
-JSON fields: `input`, `mode`, `palette` (its name), `outputs` (`path`, `format`), `background`, `clashes`, `max_clashes`, `legal`, `violations`, `solve_error`, `solver` (`reference` or `native`), `solver_fallback` (why the native solver ran, when the reference was asked for), `summary` (`clashes`, `total_error`, `dropped_cost`, `worst`, `luma_crossings`) and `worst`.
+JSON fields: `input`, `mode`, `palette` (its name), `outputs` (`path`, `format`), `ssimulacra2` (below), `background`, `clashes`, `max_clashes`, `legal`, `violations`, `solve_error`, `solver` (`reference` or `native`), `solver_fallback` (why the native solver ran, when the reference was asked for), `summary` (`clashes`, `total_error`, `dropped_cost`, `worst`, `luma_crossings`) and `worst`.
+
+`ssimulacra2` is the result's SSIMULACRA2 score (ADR-013 §4), the quality number of the sheets and, later, the app's status bar. It scores the solved picture against the frame it was solved from, the way png2amiga scores its C64 output:
+
+- **Reference:** the prepared source, that is the composite on the target grid after the front end's preprocessing, in linear light. Pixels less than half covered count as black, as png2amiga's transparency mask makes them.
+- **Distorted:** the picture rendered through the palette at the mode's logical raster: 160 × 200 for multicolor (one value per wide pixel), 320 × 200 for hi-res.
+
+Scores run to 100: 90 is visually lossless, 70 high, 50 fair, 30 low, and a dithered C64 picture of a photograph is often below 0. Compare scores of the same source, not across sources. The port matches png2amiga's to the bit (`crates/convert64-core/tests/data/ssimulacra2/`). Scoring takes about 2 ms for 320 × 200 (release build). With `--report` the summary line ends in `SSIMULACRA2 <score>`.
 
 A `Makefile` rule:
 
@@ -112,7 +119,7 @@ Checks a file against [vic-ii-constraints.md](vic-ii-constraints.md) §6 and pri
 | Raw set (its `.json` manifest) | The manifest read, every block file beside it checked for size (rule 6) and the picture validated |
 | Project (`.convert64`, or a version-1 recipe `.json`) | Loaded, solved, and the solved picture validated; `clashes` is reported |
 
-The format comes from `--format`, else the extension (a `.json` whose `format` is `convert64-raw-bitmap` is a raw set, any other a recipe), else the size of a picture file. JSON fields: `file`, `format`, `mode`, `legal`, `violations` (`rule`, `location`, `message`), and `clashes` for a project.
+The format comes from `--format`, else the extension (a `.json` whose `format` is `convert64-raw-bitmap` is a raw set, any other a recipe), else the size of a picture file. JSON fields: `file`, `format`, `mode`, `legal`, `violations` (`rule`, `location`, `message`), and `clashes` and `ssimulacra2` (as in `convert`) for a project.
 
 ## `batch`
 

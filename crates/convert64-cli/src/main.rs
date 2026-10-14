@@ -455,7 +455,8 @@ fn run_recipe(run: &mut Run, file: &Path, o: &RecipeOutputs<'_>) -> Result<u8, F
     }
     if o.report {
         let sol = run.time("solve", || session.solve(true).clone());
-        return convert::finish_solve(run, &sol, true, None);
+        let s2 = run.time("ssimulacra2", || session.ssimulacra2());
+        return convert::finish_solve(run, &sol, s2, true, None);
     }
     Ok(0)
 }

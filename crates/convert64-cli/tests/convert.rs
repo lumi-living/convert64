@@ -52,6 +52,10 @@ fn converts_to_legal_koala_and_art_studio() {
         assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
         let v: serde_json::Value = serde_json::from_slice(&r.stdout).unwrap();
         assert!(v["summary"]["clashes"].is_u64());
+        // ADR-013 §4: the result's SSIMULACRA2 against the prepared frame.
+        let s2 = v["ssimulacra2"].as_f64().expect("ssimulacra2 score");
+        assert!(s2.is_finite() && s2 <= 100.0, "{s2}");
+        assert!(v["timing_ms"]["ssimulacra2"].is_f64());
         let check = convert(&["validate", out.to_str().unwrap()]);
         assert_eq!(
             String::from_utf8_lossy(&check.stdout).trim(),

@@ -69,7 +69,7 @@ fn tools() -> Value {
     }));
     list.push(json!({
         "name": "solve",
-        "description": "Solve the picture into legal C64 cells. full: background search and refinement; otherwise the interactive fast path re-solves only changed cells.",
+        "description": "Solve the picture into legal C64 cells. full: background search and refinement; otherwise the interactive fast path re-solves only changed cells. Returns background, error, clashes, worst and ssimulacra2 (the SSIMULACRA2 score of the result against the composite it was solved from, up to 100; higher is better).",
         "inputSchema": object_schema(json!({ "full": { "type": "boolean", "default": true } }), &[]),
     }));
     list.push(json!({
@@ -223,15 +223,17 @@ impl Server {
             }
             "solve" => {
                 let full = args.get("full").and_then(Value::as_bool).unwrap_or(true);
-                let sol = self.session()?.solve(full);
+                let session = self.session()?;
+                let sol = session.solve(full);
                 let s = sol.report.summary();
-                Ok(serde_json::to_string(&json!({
+                let mut v = json!({
                     "background": sol.background,
                     "error": sol.error,
                     "clashes": s.clashes,
                     "worst": s.worst,
-                }))
-                .expect("serialisable"))
+                });
+                v["ssimulacra2"] = json!(session.ssimulacra2());
+                Ok(serde_json::to_string(&v).expect("serialisable"))
             }
             "clash_report" => {
                 let worst = args.get("worst").and_then(Value::as_u64).unwrap_or(10);
