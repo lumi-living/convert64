@@ -13,6 +13,7 @@ One file per decision, `ADR-NNN-short-title.md`, copied from `ADR-000-template.m
 | [007](ADR-007-light-dark-theme-and-material-icons.md) | Light and dark themes; Material Symbols icon font | Accepted |
 | [008](ADR-008-layer-masks-raster-plus-parametric.md) | Layer masks: one raster plus parametric modifiers, edited in-app | Accepted |
 | [009](ADR-009-project-file.md) | The `.convert64` project file: versioned JSON in the CLI library | Accepted |
-| [010](ADR-010-png2c64-reference-solver.md) | png2c64's pipeline, ported, as the default bitmap solver | Accepted |
+| [010](ADR-010-png2c64-reference-solver.md) | png2c64's pipeline, ported, as the default bitmap solver | Accepted; reference superseded by 013 |
 | [011](ADR-011-layer-transform-affine-subpixel.md) | Layer transform: translate, scale, rotate; sub-pixel by default, snapping on request | Accepted (resampling amended by 012) |
-| [012](ADR-012-mitchell-resampling-every-layer.md) | png2c64's Mitchell bicubic for every layer, on the target grid | Accepted |
+| [012](ADR-012-mitchell-resampling-every-layer.md) | png2c64's Mitchell bicubic for every layer, on the target grid | Accepted; kernel superseded by 013 |
+| [013](ADR-013-png2amiga-c64-reference.md) | png2amiga's C64 path as the reference (supersedes 010's choice of png2c64) | Accepted |

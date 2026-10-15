@@ -1,6 +1,6 @@
 # ADR-010: png2c64's pipeline, ported, as the default bitmap solver
 
-**Status:** Accepted
+**Status:** Accepted — the choice of png2c64 as the reference is superseded by [ADR-013](ADR-013-png2amiga-c64-reference.md); the method (faithful port, parity test, divergence by decision) stands.
 **Date:** 2026-10-12
 **Deciders:** Jaakko Haaparanta
 
