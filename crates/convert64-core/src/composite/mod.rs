@@ -42,19 +42,21 @@ mod affine;
 mod attr;
 mod blend;
 mod frame;
+pub(crate) mod mip;
 mod resample;
 
 pub use attr::{AttrSource, AttributeMap, TargetAttr, debug_colour};
 pub use frame::TargetFrame;
 
 use crate::geom::{CellSet, PxRect, SuperGrid, Vec2};
-use crate::layer::{Adjustments, Blend, Layer, SourceImage, Transform};
+use crate::layer::{Adjustments, Blend, Downscale, Layer, Recipe, SourceImage, Transform};
 use crate::mask::{Mask, Modifiers, SnapToCells};
 use crate::region::Region;
 use crate::scratch;
 use affine::AffineMap;
 use attr::AttrPlanes;
 use blend::RgbaRow;
+use mip::{MipCache, MipLevel};
 use resample::{AxisMap, Planes, resample_into, resample_planes};
 use std::sync::Arc;
 
@@ -178,6 +180,7 @@ struct RasterKey {
     source: Arc<SourceImage>,
     adjustments: Adjustments,
     transform: Transform,
+    downscale: Downscale,
     mask_generation: Option<u64>,
     grid: SuperGrid,
 }
@@ -188,6 +191,7 @@ impl RasterKey {
             source: Arc::clone(layer.source()),
             adjustments: layer.adjustments().clone(),
             transform: layer.transform(),
+            downscale: layer.downscale(),
             mask_generation: layer.mask().map(crate::mask::Mask::generation),
             grid,
         }
@@ -197,6 +201,7 @@ impl RasterKey {
         Arc::ptr_eq(&self.source, layer.source())
             && self.adjustments == *layer.adjustments()
             && self.transform == layer.transform()
+            && self.downscale == layer.downscale()
             && self.mask_generation == layer.mask().map(crate::mask::Mask::generation)
             && self.grid == grid
     }
@@ -231,22 +236,16 @@ struct Spare {
     values: Vec<f32>,
 }
 
-/// The source pixels premultiplied, with the source they came from.
-/// A source's pixels premultiplied, and whether every one is opaque (its resampled
-/// alpha is then its coverage, exactly).
-type Premultiplied = (Arc<SourceImage>, Vec<[f32; 4]>, bool);
+/// A source's pixels premultiplied, with the source they came from.
+type Premultiplied = (Arc<SourceImage>, Vec<[f32; 4]>);
 
-/// A mip of the premultiplied pixels: its level, pixels and size.
-type ColourMip = ((u32, u32), Vec<[f32; 4]>, (u32, u32));
-
-/// A mip of a mask's layer-space values, with what it was made from.
+/// The mip levels of a mask's layer-space values (#235), with what they were made from:
+/// they change only with the mask's content or the source, never with the transform.
 #[derive(Debug)]
-struct MaskMip {
+struct MaskMips {
     generation: u64,
     source: Arc<SourceImage>,
-    level: (u32, u32),
-    values: Vec<f32>,
-    size: (u32, u32),
+    cache: MipCache<f32>,
 }
 
 /// Where a layer lands on the super grid: two axis maps for an axis-aligned layer (the
@@ -257,27 +256,63 @@ enum Placement {
 }
 
 impl Placement {
-    /// The mip level a rotated layer samples, if above level 0.
-    fn mip_level(&self) -> Option<(u32, u32)> {
+    /// The mip level it samples along each layer axis; `(0, 0)` is the source itself.
+    fn level(&self) -> (u32, u32) {
         match self {
-            Self::Affine(map) if map.level != (0, 0) => Some(map.level),
-            _ => None,
+            Self::Axis(mx, my) => (mx.level, my.level),
+            Self::Affine(map) => map.level,
         }
     }
 }
 
+/// Where a layer's mask is resampled: its placement, and for a grid coarser than
+/// [`MASK_N`] the rectangle it touches on the finer grid and how much finer that is.
+struct MaskPlace {
+    place: Placement,
+    fine: Option<(PxRect, u32)>,
+}
+
+/// What a layer's refresh did, for the compositor's counters.
+#[derive(Clone, Copy, Debug, Default)]
+struct Refreshed {
+    resampled: bool,
+    evaluated: bool,
+    /// Mip reductions made (#235), colour and mask.
+    mip_levels: u32,
+    /// Milliseconds they took, by the compositor's clock (0 without one).
+    mip_ms: f64,
+}
+
+/// A monotonic clock in milliseconds, supplied by the front end: the core has no
+/// platform clock (CLAUDE.md non-negotiable 2).
+pub type Clock = fn() -> f64;
+
+/// Runs `f`, which builds `n` mip reductions, and adds them and their time to `stats`.
+fn timed<T>(stats: &mut Refreshed, clock: Option<Clock>, f: impl FnOnce() -> (T, u32)) -> T {
+    let t0 = clock.map(|c| c());
+    let (v, n) = f();
+    if n > 0 {
+        stats.mip_levels += n;
+        if let (Some(c), Some(t0)) = (clock, t0) {
+            stats.mip_ms += c() - t0;
+        }
+    }
+    v
+}
+
 #[derive(Debug, Default)]
 struct LayerCache {
+    /// Whether every source pixel is opaque (its resampled alpha is then its coverage,
+    /// exactly), keyed by the source's identity.
+    opaque: Option<(Arc<SourceImage>, bool)>,
     /// The source pixels premultiplied, keyed by the source's identity (adjustments
-    /// apply after resampling, #190).
+    /// apply after resampling, #190); made only when the layer samples the source itself,
+    /// not one of its mip levels (#235), which the source keeps.
     premul: Option<Premultiplied>,
-    /// A rotated layer's mip of `premul` (#198): its level, pixels and size; dropped
-    /// with `premul`.
-    colour_mip: Option<ColourMip>,
     /// The mask's layer-space values when it has sources.
     values: Option<LayerValues>,
-    /// A rotated layer's mip of the mask's layer-space values (#198).
-    mask_mip: Option<MaskMip>,
+    /// The mip levels of the mask's layer-space values (#235).
+    mask_mips: Option<MaskMips>,
     raster: Option<(RasterKey, Arc<LayerRaster>)>,
     /// The feather cache: rebuilt only when the modifiers or the raster change.
     mask: Option<EvaluatedMask>,
@@ -289,35 +324,41 @@ struct LayerCache {
 
 impl LayerCache {
     /// Brings the raster and the evaluated mask up to date with `layer`; returns whether
-    /// it resampled the layer and whether it evaluated the mask.
-    fn refresh(&mut self, layer: &Layer, grid: SuperGrid, full_res: bool) -> (bool, bool) {
+    /// it resampled the layer, whether it evaluated the mask, and the mip levels it built.
+    fn refresh(
+        &mut self,
+        layer: &Layer,
+        grid: SuperGrid,
+        full_res: bool,
+        clock: Option<Clock>,
+    ) -> Refreshed {
+        let mut stats = Refreshed::default();
         let fresh = match &self.raster {
             Some((key, _)) => !key.matches(layer, grid),
             None => true,
         };
         if fresh {
-            let (raster, values) = self.build_raster(layer, grid, full_res);
+            let (raster, values) = self.build_raster(layer, grid, full_res, clock, &mut stats);
             let raster = Arc::new(raster);
             let key = RasterKey::of(layer, grid);
             if let Some((_, old)) = self.raster.replace((key, Arc::clone(&raster))) {
                 self.retired.0 = Some(old);
             }
-            return match (layer.mask(), values) {
+            stats.resampled = true;
+            match (layer.mask(), values) {
                 (Some(m), Some(values)) => {
                     self.set_mask(m.modifiers(), raster, values);
-                    (true, true)
+                    stats.evaluated = true;
                 }
-                _ => {
-                    self.mask = None;
-                    (true, false)
-                }
-            };
+                _ => self.mask = None,
+            }
+            return stats;
         }
         let (_, raster) = self.raster.as_ref().expect("not fresh");
         let raster = Arc::clone(raster);
         let Some(m) = layer.mask().filter(|_| !raster.rect.is_empty()) else {
             self.mask = None;
-            return (false, false);
+            return stats;
         };
         let modifiers = m.modifiers();
         let stale = self
@@ -325,29 +366,33 @@ impl LayerCache {
             .as_ref()
             .is_none_or(|e| e.modifiers != modifiers || !Arc::ptr_eq(&e.from, &raster));
         if !stale {
-            return (false, false);
+            return stats;
         }
         // A modifier changed: resample the mask again (the raster's colour stays) and
         // evaluate it.
-        let (place, _) = placement(layer, grid);
+        let mp = mask_placement(layer, grid);
         let mut values = std::mem::take(&mut self.spare.values);
         self.update_mask_source(m, layer.source());
-        self.update_mask_mip(m, layer.source(), &place);
-        let (src, size) = self.mask_input(m, layer.source().size(), &place);
-        let rect = raster.rect;
-        let fine = mask_placement(layer, grid);
+        let level = timed(&mut stats, clock, || {
+            self.mask_level(m, layer.source(), mp.place.level())
+        });
+        let (src, size) = match &level {
+            Some(l) => (&l.px[..], l.size),
+            None => (self.mask_source(m), layer.source().size()),
+        };
         evaluate_mask(
             src,
             size,
-            (&place, fine.as_ref()),
-            rect,
+            &mp,
+            raster.rect,
             grid,
             &modifiers,
             full_res,
             &mut values,
         );
         self.set_mask(modifiers, raster, values);
-        (false, true)
+        stats.evaluated = true;
+        stats
     }
 
     /// Caches `values` as the evaluated mask of `raster`, with where it is above zero.
@@ -411,42 +456,32 @@ impl LayerCache {
         }
     }
 
-    /// Brings the mask's mip up to date for a rotated `place` that samples one, after
-    /// [`Self::update_mask_source`]; it changes only with the mask, the source or the
-    /// level.
-    fn update_mask_mip(&mut self, m: &Mask, src: &Arc<SourceImage>, place: &Placement) {
-        let Some(level) = place.mip_level() else {
-            return;
-        };
-        let fresh = matches!(&self.mask_mip, Some(x)
-            if x.generation == m.generation() && Arc::ptr_eq(&x.source, src) && x.level == level);
+    /// Mip `level` of the mask's layer-space values (#235), after
+    /// [`Self::update_mask_source`], and the reductions building it took; `None` at level
+    /// `(0, 0)`, where the values themselves are sampled. The levels are kept until the
+    /// mask's content or the source changes.
+    fn mask_level(
+        &mut self,
+        m: &Mask,
+        src: &Arc<SourceImage>,
+        level: (u32, u32),
+    ) -> (Option<Arc<MipLevel<f32>>>, u32) {
+        if level == (0, 0) {
+            return (None, 0);
+        }
+        let fresh = matches!(&self.mask_mips, Some(x)
+            if x.generation == m.generation() && Arc::ptr_eq(&x.source, src));
         if !fresh {
-            let (w, h) = src.size();
-            let (values, size) = affine::mip(self.mask_source(m), w, h, level.0, level.1);
-            self.mask_mip = Some(MaskMip {
+            self.mask_mips = Some(MaskMips {
                 generation: m.generation(),
                 source: Arc::clone(src),
-                level,
-                values,
-                size,
+                cache: MipCache::default(),
             });
         }
-    }
-
-    /// What `place` resamples `m` from and its size: the mask's layer-space values, or
-    /// their mip for a rotated, scaled-down layer (after [`Self::update_mask_mip`]).
-    fn mask_input<'a>(
-        &'a self,
-        m: &'a Mask,
-        size: (u32, u32),
-        place: &Placement,
-    ) -> (&'a [f32], (u32, u32)) {
-        if place.mip_level().is_some() {
-            let x = self.mask_mip.as_ref().expect("updated by the caller");
-            (&x.values, x.size)
-        } else {
-            (self.mask_source(m), size)
-        }
+        let values = self.mask_source(m);
+        let cache = &self.mask_mips.as_ref().expect("set above").cache;
+        let (l, n) = cache.level(src.size(), |i| values[i], level);
+        (Some(l), n)
     }
 
     /// Resamples the layer (adjusted, premultiplied) onto the grid and, alongside, its
@@ -456,10 +491,12 @@ impl LayerCache {
         layer: &Layer,
         grid: SuperGrid,
         full_res: bool,
+        clock: Option<Clock>,
+        stats: &mut Refreshed,
     ) -> (LayerRaster, Option<Vec<f32>>) {
         let src = layer.source();
         let (sw, sh) = src.size();
-        let (place, rect) = placement(layer, grid);
+        let (place, rect) = placement(layer, grid, colour_levels(layer, grid));
         if rect.is_empty() {
             let raster = LayerRaster {
                 rect: PxRect::EMPTY,
@@ -469,48 +506,60 @@ impl LayerCache {
             return (raster, None);
         }
         let adj = layer.adjustments();
-        // Adjustments apply after resampling, in png2c64's order (#190): the source is
-        // only premultiplied here.
-        if !matches!(&self.premul, Some((s, _, _)) if Arc::ptr_eq(s, src)) {
+        if !matches!(&self.opaque, Some((s, _)) if Arc::ptr_eq(s, src)) {
+            let opaque = src.pixels().iter().all(|p| p[3] == 1.0);
+            self.opaque = Some((Arc::clone(src), opaque));
+        }
+        let opaque = self.opaque.as_ref().expect("filled above").1;
+        // Shrunk far enough, the colour samples a mip level the source keeps (#235);
+        // else the source itself, premultiplied here. Adjustments apply after
+        // resampling, in png2c64's order (#190).
+        let level = place.level();
+        let colour_level =
+            (level != (0, 0)).then(|| timed(stats, clock, || src.colour_level(level)));
+        if colour_level.is_none() && !matches!(&self.premul, Some((s, _)) if Arc::ptr_eq(s, src)) {
             let premul = src
                 .pixels()
                 .iter()
                 .map(|p| [p[0] * p[3], p[1] * p[3], p[2] * p[3], p[3]])
                 .collect();
-            let opaque = src.pixels().iter().all(|p| p[3] == 1.0);
-            self.premul = Some((Arc::clone(src), premul, opaque));
-            self.colour_mip = None;
-        }
-        if let Some(level) = place.mip_level()
-            && self.colour_mip.as_ref().is_none_or(|(l, _, _)| *l != level)
-        {
-            let (_, premul, _) = self.premul.as_ref().expect("filled above");
-            let (px, size) = affine::mip(premul, sw, sh, level.0, level.1);
-            self.colour_mip = Some((level, px, size));
+            self.premul = Some((Arc::clone(src), premul));
         }
         let mut rgba = std::mem::take(&mut self.spare.rgba);
         let mut values = std::mem::take(&mut self.spare.values);
         let mask = layer.mask();
-        if let Some(m) = mask {
-            self.update_mask_source(m, src);
-            self.update_mask_mip(m, src, &place);
-        }
-        let mask_src = mask.map(|m| self.mask_input(m, (sw, sh), &place));
-        let (_, premul, opaque) = self.premul.as_ref().expect("filled above");
-        let opaque = *opaque;
-        debug_assert_eq!(sh as usize * sw as usize, premul.len());
-        // A rotated layer scaled down samples a mip of the pixels.
-        let colour = match (&self.colour_mip, place.mip_level()) {
-            (Some((_, px, size)), Some(_)) => (&px[..], *size),
-            _ => (&premul[..], (sw, sh)),
+        let mp = mask.map(|_| mask_placement(layer, grid));
+        let mask_level = match (mask, &mp) {
+            (Some(m), Some(mp)) => {
+                self.update_mask_source(m, src);
+                timed(stats, clock, || self.mask_level(m, src, mp.place.level()))
+            }
+            _ => None,
         };
+        let mask_src = mask.map(|m| match &mask_level {
+            Some(l) => (&l.px[..], l.size),
+            None => (self.mask_source(m), (sw, sh)),
+        });
+        let colour: (&[[f32; 4]], (u32, u32)) = match &colour_level {
+            Some(l) => (&l.px, l.size),
+            None => (&self.premul.as_ref().expect("filled above").1, (sw, sh)),
+        };
+        debug_assert_eq!(colour.1.0 as usize * colour.1.1 as usize, colour.0.len());
         // The colour and the mask are independent: resample them side by side.
         let (extent, values) = crate::par::join(
             || {
                 let mut extent = Vec::new();
                 match &place {
                     Placement::Axis(mx, my) => {
-                        resample_planes(premul, sw, mx, my, &mut rgba, &mut extent, opaque);
+                        resample_planes(
+                            colour.0,
+                            colour.1.0,
+                            mx,
+                            my,
+                            &mut rgba,
+                            &mut extent,
+                            opaque,
+                        );
                     }
                     Placement::Affine(map) => {
                         affine::resample_planes_affine(
@@ -527,11 +576,10 @@ impl LayerCache {
             || {
                 let (m, (mask_src, size)) = mask.zip(mask_src)?;
                 let modifiers = m.modifiers();
-                let fine = mask_placement(layer, grid);
                 evaluate_mask(
                     mask_src,
                     size,
-                    (&place, fine.as_ref()),
+                    mp.as_ref().expect("placed with the mask"),
                     rect,
                     grid,
                     &modifiers,
@@ -637,7 +685,8 @@ fn adjust_planes(planes: &mut Planes, width: usize, adj: &Adjustments, n: u8) {
 /// regions, one visible layer that is fully opaque 8-bit sRGB, filling the screen
 /// exactly (no offset, no flip, no rotation: #198), at full opacity, Normal blend, with no mask and no
 /// adjustment but gamma, png2c64's sharpen (its kernel, no threshold: #228) and range
-/// matching. Such a project gets png2c64's front end.
+/// matching, and sampling the source itself (no mip level, #235). Such a project gets
+/// png2c64's front end.
 fn plain_layer<'a>(layers: &'a [Layer], regions: &[Region], grid: SuperGrid) -> Option<&'a Layer> {
     use crate::mode::Mode;
     if !matches!(grid.target(), Mode::MulticolorBitmap | Mode::HiresBitmap) || !regions.is_empty() {
@@ -668,8 +717,10 @@ fn plain_layer<'a>(layers: &'a [Layer], regions: &[Region], grid: SuperGrid) -> 
         && !t.flip_h()
         && !t.flip_v()
         && (adj.sharpen.is_off() || adj.sharpen.is_png2c64())
-        && tone_only.is_identity())
-    .then_some(layer)
+        && tone_only.is_identity()
+        // Shrunk past 4× under Auto it samples a mip level, which png2c64 has not (#235).
+        && colour_levels(layer, grid) == (0, 0))
+        .then_some(layer)
 }
 
 /// png2c64's front end for a plain layer: its 8-bit source scaled straight to the
@@ -704,29 +755,69 @@ fn png2c64_front_end(layer: &Layer, grid: SuperGrid) -> Vec<[f32; 3]> {
 
 /// Where `layer` lands on `grid` and the super rectangle it touches: the separable axis
 /// maps when it is axis-aligned (`rotate == 0`, unchanged by #198), else the inverse
-/// affine map, whose rectangle is the rotated quad's bounding box on the grid.
-fn placement(layer: &Layer, grid: SuperGrid) -> (Placement, PxRect) {
+/// affine map, whose rectangle is the rotated quad's bounding box on the grid. Either
+/// samples the source's mip `level` along each layer axis ((0, 0): the source itself,
+/// #235); the rectangle and the coverage do not depend on it.
+fn placement(layer: &Layer, grid: SuperGrid, level: (u32, u32)) -> (Placement, PxRect) {
     let t = layer.transform();
     if t.is_axis_aligned() {
-        let (mx, my, rect) = axis_maps(layer, grid);
+        let (mx, my, rect) = axis_maps(layer, grid, level);
         (Placement::Axis(mx, my), rect)
     } else {
-        let map = AffineMap::new(&t, layer.source().size(), grid);
+        let map = AffineMap::new(&t, layer.source().size(), grid, level);
         let rect = map.rect;
         (Placement::Affine(map), rect)
     }
 }
 
 /// A layer's per-axis resampling maps onto `grid` and the super rectangle it touches.
-fn axis_maps(layer: &Layer, grid: SuperGrid) -> (AxisMap, AxisMap, PxRect) {
+fn axis_maps(layer: &Layer, grid: SuperGrid, level: (u32, u32)) -> (AxisMap, AxisMap, PxRect) {
     let (sw, sh) = layer.source().size();
     let t = layer.transform();
     let step = grid.super_px_in_canvas();
     let (gw, gh) = grid.size();
-    let mx = AxisMap::new(sw, t.translate().x, t.scale().x, t.flip_h(), step.x, gw);
-    let my = AxisMap::new(sh, t.translate().y, t.scale().y, t.flip_v(), step.y, gh);
+    let mx = AxisMap::new(
+        sw,
+        t.translate().x,
+        t.scale().x,
+        t.flip_h(),
+        step.x,
+        gw,
+        level.0,
+    );
+    let my = AxisMap::new(
+        sh,
+        t.translate().y,
+        t.scale().y,
+        t.flip_v(),
+        step.y,
+        gh,
+        level.1,
+    );
     let rect = PxRect::new(mx.out0, my.out0, mx.out0 + mx.len(), my.out0 + my.len());
     (mx, my, rect)
+}
+
+/// The mip level `layer` samples along each layer axis when one pixel of a grid spans
+/// `step` canvas pixels: from the source pixels that pixel spans along the axis (the
+/// shrink; `step / scale` unrotated), by [`mip::level_for`]. `(0, 0)` under
+/// [`Downscale::Exact`].
+fn levels_at(layer: &Layer, step: Vec2) -> (u32, u32) {
+    if layer.downscale() == Downscale::Exact {
+        return (0, 0);
+    }
+    let size = layer.source().size();
+    let (fu, fv) = AffineMap::footprint(&layer.transform(), size, step);
+    (mip::level_for(fu, size.0), mip::level_for(fv, size.1))
+}
+
+/// The mip level `layer`'s colour samples on `grid` (#235): the shrink is measured on
+/// the hi-res target grid, 320 · n pixels across in either mode (a canvas pixel is a
+/// hi-res pixel, and a supersampled grid is n times finer), so a source up to 1280 px
+/// wide fitted to the screen samples the original.
+fn colour_levels(layer: &Layer, grid: SuperGrid) -> (u32, u32) {
+    let s = 1.0 / f32::from(grid.n());
+    levels_at(layer, Vec2::new(s, s))
 }
 
 /// The supersample factor a mask's edge is resampled at, at least (ADR-012): measured
@@ -734,21 +825,34 @@ fn axis_maps(layer: &Layer, grid: SuperGrid) -> (AxisMap, AxisMap, PxRect) {
 /// by at most 0.014.
 const MASK_N: u8 = 4;
 
-/// Where a layer's mask is resampled when `grid` is coarser than [`MASK_N`]: the
-/// placement on the grid `k` times finer and the rectangle it touches there, and `k`.
-fn mask_placement(layer: &Layer, grid: SuperGrid) -> Option<(Placement, PxRect, u32)> {
+/// The grid a layer's mask is resampled on for `grid`, and how many times finer it is:
+/// `grid` itself from [`MASK_N`] up, else the grid `k` times finer.
+fn mask_grid(grid: SuperGrid) -> (SuperGrid, Option<u32>) {
     let n = grid.n();
     if n >= MASK_N {
-        return None;
+        return (grid, None);
     }
     let k = MASK_N.div_ceil(n);
     let fine = SuperGrid::new(grid.target(), n * k).expect("a factor of at most 8");
+    (fine, Some(u32::from(k)))
+}
+
+/// Where a layer's mask is resampled (ADR-012 §5): on `grid` from [`MASK_N`] up, else
+/// on the grid `k` times finer, with the rectangle it touches there. It samples the
+/// mask's mip level for the shrink measured on that grid (#235): source pixels per mask
+/// pixel, so a mask on the 4× grid switches to a level only past a 4× shrink there.
+fn mask_placement(layer: &Layer, grid: SuperGrid) -> MaskPlace {
+    let (mgrid, k) = mask_grid(grid);
+    let level = levels_at(layer, mgrid.super_px_in_canvas());
     // Rotated, the fine grid is sampled bilinearly (`affine::resample_mask_affine`):
     // Mitchell's sixteen taps per fine pixel cost a rotated layer 60–130 ms more than
     // bilinear's four, and after the box reduction the edge is still within 0.014 of
     // an 8× composite (0.006 with Mitchell).
-    let (place, rect) = placement(layer, fine);
-    Some((place, rect, u32::from(k)))
+    let (place, rect) = placement(layer, mgrid, level);
+    MaskPlace {
+        place,
+        fine: k.map(|k| (rect, k)),
+    }
 }
 
 /// Box-reduces `fine` (a mask on `frect` of the grid `k` times finer) onto `rect`: each
@@ -779,11 +883,12 @@ fn reduce_mask(fine: &[f32], frect: PxRect, k: u32, rect: PxRect, out: &mut Vec<
     });
 }
 
-/// Resamples a mask's layer-space values (`size`) onto `rect` of `grid` through `place`
-/// into `out` and applies `modifiers`: a rotated layer's mask goes through the same
-/// affine map as its colour (ADR-008), then its modifiers. With a finer placement
-/// ([`mask_placement`]) the mask is resampled there, inverted and levelled, box-reduced
-/// to `grid`, then snapped and feathered on `grid` (σ in target px either way). On the separable path, a
+/// Resamples a mask's layer-space values (`size`: the source's, or the mip level's that
+/// `mp` samples, #235) onto `rect` of `grid` through `mp` into `out` and applies
+/// `modifiers`: a rotated layer's mask goes through the same affine map as its colour
+/// (ADR-008), then its modifiers. With a finer placement ([`mask_placement`]) the mask
+/// is resampled there, inverted and levelled, box-reduced to `grid`, then snapped and
+/// feathered on `grid` (σ in target px either way). On the separable path, a
 /// feather blurred at half resolution with no snap before it reduces the resampled rows
 /// to half resolution as they are made ([`resample::resample_half`]), so the
 /// full-resolution mask is never stored before the feather writes it (#139); the values
@@ -795,7 +900,7 @@ fn reduce_mask(fine: &[f32], frect: PxRect, k: u32, rect: PxRect, out: &mut Vec<
 fn evaluate_mask(
     values: &[f32],
     size: (u32, u32),
-    (place, fine): (&Placement, Option<&(Placement, PxRect, u32)>),
+    mp: &MaskPlace,
     rect: PxRect,
     grid: SuperGrid,
     modifiers: &Modifiers,
@@ -803,9 +908,10 @@ fn evaluate_mask(
     out: &mut Vec<f32>,
 ) {
     use crate::mask::eval;
-    if let Some((fplace, frect, k)) = fine {
+    let place = &mp.place;
+    if let Some((frect, k)) = &mp.fine {
         let mut fv = Vec::new();
-        match fplace {
+        match place {
             Placement::Axis(mx, my) => resample_mask(values, size.0, mx, my, &mut fv),
             Placement::Affine(map) => {
                 affine::resample_mask_affine(values, size, map, true, &mut fv);
@@ -945,6 +1051,11 @@ pub struct Compositor {
     full_res_feather: bool,
     resamples: u64,
     mask_evals: u64,
+    /// Mip reductions built for this compositor (#235), and the milliseconds they took.
+    mip_builds: u64,
+    mip_ms: f64,
+    /// The clock that times them ([`Self::set_clock`]).
+    clock: Option<Clock>,
     /// png2c64's prepared image of the last plain layer (#190), with what it was made
     /// from.
     front: Option<FrontEnd>,
@@ -983,9 +1094,33 @@ impl Compositor {
             full_res_feather: false,
             resamples: 0,
             mask_evals: 0,
+            mip_builds: 0,
+            mip_ms: 0.0,
+            clock: None,
             front: None,
             front_end: true,
         }
+    }
+
+    /// Times the mip levels this compositor builds with `clock` (milliseconds from any
+    /// fixed origin), for [`Self::mip_build_ms`]. The core has no clock of its own; the
+    /// app passes the browser's `performance.now()` in wasm.
+    pub fn set_clock(&mut self, clock: Option<Clock>) {
+        self.clock = clock;
+    }
+
+    /// How many mip reductions (#235) composites have built through this compositor:
+    /// levels of a source's colour, which the source keeps for every compositor, and of
+    /// a mask. A scale, rotation or nudge drag of a layer shrunk past 4× builds none
+    /// after its first composite.
+    pub const fn mip_builds(&self) -> u64 {
+        self.mip_builds
+    }
+
+    /// The milliseconds [`Self::mip_builds`] took, by the clock of [`Self::set_clock`]
+    /// (0 without one).
+    pub const fn mip_build_ms(&self) -> f64 {
+        self.mip_ms
     }
 
     /// Whether a plain project (one opaque 8-bit layer filling the screen, no mask, no
@@ -1013,6 +1148,9 @@ impl Compositor {
             *self = Self {
                 resamples: self.resamples,
                 mask_evals: self.mask_evals,
+                mip_builds: self.mip_builds,
+                mip_ms: self.mip_ms,
+                clock: self.clock,
                 full_res_feather: self.full_res_feather,
                 front_end: self.front_end,
                 ..Self::new(grid)
@@ -1095,7 +1233,35 @@ impl Compositor {
             // The frame held png2c64's image: composite everything afresh.
             self.last = None;
         }
+        let first = self.last.is_none();
+        let old = self.frame.attributes().recipes();
         let mut cells = self.update_composite(layers, regions);
+        // A recipe change that blends the same (the method, the metric: anything but
+        // the strength) recomposites nothing, but the frame must carry the new recipes
+        // and its pixels' cells are dirty for the solver (#260).
+        let new = (
+            layers.iter().map(|l| *l.recipe()).collect::<Vec<_>>(),
+            regions.iter().map(|r| *r.recipe()).collect::<Vec<_>>(),
+        );
+        if !first && (old.0 != new.0 || old.1 != new.1) {
+            let changed = |i: usize, old: &[Recipe], new: &[Recipe]| old.get(i) != new.get(i);
+            let (w, _) = self.grid.target_size();
+            let (cw, ch) = self.grid.cell_size();
+            for (i, a) in self.frame.attributes().pixels().iter().enumerate() {
+                let differs = match a.source {
+                    AttrSource::None => false,
+                    AttrSource::Layer(l) => changed(usize::from(l), &old.0, &new.0),
+                    AttrSource::Region(r) => changed(usize::from(r), &old.1, &new.1),
+                };
+                if differs {
+                    let (x, y) = ((i as u32) % w, (i as u32) / w);
+                    if let Some(cell) = self.grid.target_px_to_cell(x / cw * cw, y / ch * ch) {
+                        cells.insert(cell);
+                    }
+                }
+            }
+        }
+        self.frame.attributes_mut().set_recipes(new.0, new.1);
         let Some(layer) = plain else {
             self.frame.set_prepared(None);
             return cells;
@@ -1266,20 +1432,22 @@ impl Compositor {
     fn prepare(&mut self, layers: &[Layer]) -> Vec<Option<Blendable>> {
         assert!(layers.len() < 0x8000, "at most 32767 layers");
         self.caches.resize_with(layers.len(), LayerCache::default);
-        let (grid, full_res) = (self.grid, self.full_res_feather);
+        let (grid, full_res, clock) = (self.grid, self.full_res_feather, self.clock);
         let shown = |l: &Layer| l.visible() && l.opacity() > 0.0;
-        let mut work: Vec<(&Layer, &mut LayerCache, (bool, bool))> = layers
+        let mut work: Vec<(&Layer, &mut LayerCache, Refreshed)> = layers
             .iter()
             .zip(&mut self.caches)
             .filter(|(l, _)| shown(l))
-            .map(|(l, c)| (l, c, (false, false)))
+            .map(|(l, c)| (l, c, Refreshed::default()))
             .collect();
         crate::par::for_each(&mut work, |(layer, cache, done)| {
-            *done = cache.refresh(layer, grid, full_res);
+            *done = cache.refresh(layer, grid, full_res, clock);
         });
-        for (_, _, (resampled, evaluated)) in work {
-            self.resamples += u64::from(resampled);
-            self.mask_evals += u64::from(evaluated);
+        for (_, _, done) in work {
+            self.resamples += u64::from(done.resampled);
+            self.mask_evals += u64::from(done.evaluated);
+            self.mip_builds += u64::from(done.mip_levels);
+            self.mip_ms += done.mip_ms;
         }
         layers
             .iter()
@@ -1662,15 +1830,19 @@ pub fn mask_change_cells(grid: SuperGrid, layer: &Layer, layer_rect: PxRect) -> 
         grid.canvas_to_super(t.layer_to_canvas(size, Vec2::new(x as f32, y as f32)))
     };
     let step = grid.super_px_in_canvas();
+    // The mask's mip level on the grid it is resampled on (#235).
+    let level = levels_at(layer, mask_grid(grid).0.super_px_in_canvas());
     let (a, b, reach_x, reach_y) = if t.is_axis_aligned() {
         let (a, b) = (
             corner(layer_rect.x0, layer_rect.y0),
             corner(layer_rect.x1, layer_rect.y1),
         );
-        // Mitchell reaches two source pixels each way (ADR-012); three super pixels at
-        // least, for the edge.
-        let reach_x = (2.0 * t.scale().x / step.x).max(3.0).ceil() as u32 + 1;
-        let reach_y = (2.0 * t.scale().y / step.y).max(3.0).ceil() as u32 + 1;
+        // Mitchell reaches two source pixels each way (ADR-012), on a mip level two of
+        // its pixels and the one a source pixel was averaged into; three super pixels
+        // at least, for the edge.
+        let src = |l: u32| if l == 0 { 2.0 } else { (3u32 << l) as f32 };
+        let reach_x = (src(level.0) * t.scale().x / step.x).max(3.0).ceil() as u32 + 1;
+        let reach_y = (src(level.1) * t.scale().y / step.y).max(3.0).ceil() as u32 + 1;
         (a, b, reach_x, reach_y)
     } else {
         // Rotated (#198): the bounding box of the rect's four corners, grown by what a
@@ -1687,7 +1859,7 @@ pub fn mask_change_cells(grid: SuperGrid, layer: &Layer, layer_rect: PxRect) -> 
         let hi = q
             .iter()
             .fold(q[0], |m, p| Vec2::new(m.x.max(p.x), m.y.max(p.y)));
-        let map = AffineMap::new(&t, size, grid);
+        let map = AffineMap::new(&t, size, grid, level);
         let canvas = map.reach_src() as f32 * t.scale().x.max(t.scale().y);
         let reach = (canvas / step.x.min(step.y)).max(3.0).ceil() as u32 + 2;
         (lo, hi, reach, reach)
@@ -2066,7 +2238,7 @@ mod tests {
             for (name, edit) in edits {
                 let (_, before) = full(g, &layers, &[]);
                 let footprint = |l: &[Layer]| {
-                    let (_, rect) = placement(&l[1], g);
+                    let (_, rect) = placement(&l[1], g, colour_levels(&l[1], g));
                     CellSet::from_super_rect(g, rect)
                 };
                 let mut allowed = footprint(&layers);
@@ -3262,6 +3434,202 @@ mod tests {
                 let footprint = CellSet::from_super_rect(g, old.union(new));
                 assert_eq!(reported.intersection(footprint), reported, "{mode} {name}");
             }
+        }
+    }
+
+    /// An opaque 8-bit `w × h` source with detail everywhere, fitted to the screen.
+    fn fitted(w: u32, h: u32, downscale: Downscale) -> Layer {
+        let rgba: Vec<u8> = (0..w * h)
+            .flat_map(|i| {
+                let (x, y) = (i % w, i / w);
+                [
+                    (x * 7 + y * 3) as u8,
+                    (x ^ y) as u8,
+                    ((x * x + y) / 3) as u8,
+                    255,
+                ]
+            })
+            .collect();
+        let src = Arc::new(SourceImage::from_srgba8(w, h, &rgba).unwrap());
+        let mut l = layer_of_src(src, (320.0 / w as f32, 200.0 / h as f32));
+        l.set_downscale(downscale);
+        l
+    }
+
+    fn layer_of_src(src: Arc<SourceImage>, (sx, sy): (f32, f32)) -> Layer {
+        let mut l = Layer::new("s", src);
+        l.set_transform(Transform::new(Vec2::ZERO, Vec2::new(sx, sy), false, false).unwrap());
+        l.set_adjustments(Adjustments {
+            gamma: crate::layer::Gamma::PNG2C64,
+            ..Adjustments::default()
+        });
+        l
+    }
+
+    /// #235: up to a 4× shrink on the 320 grid (every source up to 1280 px wide fitted to
+    /// the screen) Auto samples the original: the frame and the canvas are Exact's bit
+    /// for bit, in both modes, through png2c64's front end and through the composite, and
+    /// no mip level is built.
+    #[test]
+    fn auto_is_exact_up_to_a_4x_shrink() {
+        for (w, h) in [
+            (200, 125),
+            (640, 400),
+            (1024, 637),
+            (1280, 720),
+            (1280, 800),
+        ] {
+            for mode in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
+                for front_end in [true, false] {
+                    let run = |d: Downscale| {
+                        let mut c = Compositor::new(grid(mode, 1));
+                        c.set_png2c64_front_end(front_end);
+                        c.update(&[fitted(w, h, d)], &[]);
+                        assert_eq!(c.mip_builds(), 0, "{w}×{h} {mode} {d:?}");
+                        (c.frame().colour().to_vec(), c.canvas().clone())
+                    };
+                    let (auto, exact) = (run(Downscale::Auto), run(Downscale::Exact));
+                    let same = auto
+                        .0
+                        .iter()
+                        .zip(&exact.0)
+                        .all(|(a, b)| a.map(f32::to_bits) == b.map(f32::to_bits));
+                    assert!(same, "{w}×{h} {mode} front end {front_end}");
+                    assert_eq!(auto.1, exact.1, "{w}×{h} {mode} front end {front_end}");
+                }
+            }
+        }
+    }
+
+    /// #235: past a 4× shrink a plain picture leaves png2c64's front end under Auto
+    /// (png2c64 has no mip levels), and keeps it under Exact.
+    #[test]
+    fn a_large_shrink_leaves_the_compatibility_path_under_auto() {
+        let g = SuperGrid::with_default_factor(Mode::MulticolorBitmap).unwrap();
+        let auto = fitted(1600, 1000, Downscale::Auto);
+        let exact = fitted(1600, 1000, Downscale::Exact);
+        assert!(plain_layer(std::slice::from_ref(&auto), &[], g).is_none());
+        assert!(plain_layer(std::slice::from_ref(&exact), &[], g).is_some());
+        assert_eq!(colour_levels(&auto, g), (2, 2));
+        // The Source view's 4× grid is four times finer: the same source is no shrink
+        // past 4× there.
+        let fine = SuperGrid::new(Mode::MulticolorBitmap, 4).unwrap();
+        assert_eq!(colour_levels(&auto, fine), (0, 0));
+    }
+
+    /// #235: scale, rotation and nudge drags of a layer shrunk past 4× reuse its mip
+    /// levels (colour and mask); a level is built once, when first needed, and never
+    /// again while the source and mask are unchanged.
+    #[test]
+    fn drags_reuse_the_mip_levels() {
+        let (w, h) = (1024, 640);
+        let src = Arc::new(SourceImage::from_linear(w, h, pattern(w, h)).unwrap());
+        // 5 %: a 20× shrink, colour level 4; the mask's 4× grid, a 5× shrink, level 2.
+        let mut layer = masked(
+            Arc::clone(&src),
+            half_mask(w, h, 400),
+            Modifiers::feathered(1.5).unwrap(),
+        );
+        let place = |layer: &mut Layer, t: Vec2, s: f32, deg: f32| {
+            let t = Transform::new(t, Vec2::new(s, s), false, false)
+                .and_then(|t| t.with_rotation(deg))
+                .unwrap();
+            layer.set_transform(t);
+        };
+        place(&mut layer, Vec2::new(40.3, 30.7), 0.05, 0.0);
+        let g = grid(Mode::HiresBitmap, 1);
+        assert_eq!(colour_levels(&layer, g), (4, 4));
+        assert_eq!(mask_placement(&layer, g).place.level(), (2, 2));
+        let mut c = Compositor::new(g);
+        c.update(std::slice::from_ref(&layer), &[]);
+        let built = c.mip_builds();
+        assert!(built > 0);
+        let resampled = c.resamples();
+        // Nudges, scales within the level, and rotations (a turned layer's footprint
+        // spans more source pixels, still within the level).
+        for (t, s, deg) in [
+            (Vec2::new(40.55, 30.7), 0.05, 0.0),
+            (Vec2::new(41.0, 31.2), 0.06, 0.0),
+            (Vec2::new(41.0, 31.2), 0.045, 0.0),
+            (Vec2::new(41.0, 31.2), 0.05, 10.0),
+            (Vec2::new(41.0, 31.2), 0.05, 30.0),
+            (Vec2::new(39.0, 30.0), 0.05, 0.0),
+        ] {
+            place(&mut layer, t, s, deg);
+            c.update(std::slice::from_ref(&layer), &[]);
+        }
+        assert_eq!(c.resamples(), resampled + 6, "every drag step resampled");
+        assert_eq!(c.mip_builds(), built, "and built no mip level");
+        // Another compositor shares the source's colour levels; only the mask's (kept
+        // per layer) are new to it.
+        let mut other = Compositor::new(g);
+        other.update(std::slice::from_ref(&layer), &[]);
+        assert!(other.mip_builds() < built);
+        // A shrink past the next level builds it, once.
+        place(&mut layer, Vec2::new(40.0, 30.0), 0.02, 0.0);
+        c.update(std::slice::from_ref(&layer), &[]);
+        let more = c.mip_builds();
+        assert!(more > built);
+        for s in [0.05, 0.02, 0.05] {
+            place(&mut layer, Vec2::new(40.0, 30.0), s, 0.0);
+            c.update(std::slice::from_ref(&layer), &[]);
+        }
+        assert_eq!(c.mip_builds(), more);
+        // Exact samples the original, whatever the shrink.
+        layer.set_downscale(Downscale::Exact);
+        c.update(std::slice::from_ref(&layer), &[]);
+        assert_eq!(c.mip_builds(), more);
+    }
+
+    /// #235: a zone plate (rings up to the source's Nyquist frequency at its corners)
+    /// shrunk 6.4×: beyond its centre the correct picture is flat grey. Exact (png2c64's
+    /// four taps) fills it with aliasing rings; Auto (the 4× level, the rest by Mitchell)
+    /// leaves it nearly flat. The same holds rotated.
+    #[test]
+    fn a_zone_plate_shrunk_past_4x_is_grey_beyond_its_centre() {
+        let (w, h) = (2048u32, 1280u32);
+        let (cx, cy) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
+        let rmax = cx.hypot(cy);
+        let k = std::f64::consts::PI / (2.0 * rmax);
+        let px: Vec<[f32; 4]> = (0..w * h)
+            .map(|i| {
+                let (x, y) = (f64::from(i % w) + 0.5 - cx, f64::from(i / w) + 0.5 - cy);
+                let v = (0.5 + 0.5 * (k * (x * x + y * y)).cos()) as f32;
+                [v, v, v, 1.0]
+            })
+            .collect();
+        let src = Arc::new(SourceImage::from_linear(w, h, px).unwrap());
+        for deg in [0.0f32, 2.0] {
+            let spread = |d: Downscale| {
+                let mut l = layer_of_src(Arc::clone(&src), (320.0 / w as f32, 200.0 / h as f32));
+                l.set_adjustments(Adjustments::default());
+                l.set_transform(l.transform().with_rotation(deg).unwrap());
+                l.set_downscale(d);
+                let g = grid(Mode::HiresBitmap, 1);
+                let mut c = Compositor::new(g);
+                c.update(&[l], &[]);
+                // Target pixels more than half the way out, away from the edges.
+                let colour = c.frame().colour();
+                let vals: Vec<f64> = (0..320 * 200)
+                    .filter(|i| {
+                        let (x, y) = (f64::from(i % 320) - 159.5, f64::from(i / 320) - 99.5);
+                        let r = (x * 6.4).hypot(y * 6.4);
+                        r > 0.5 * rmax && x.abs() < 150.0 && y.abs() < 90.0
+                    })
+                    .map(|i| f64::from(colour[i as usize][1]))
+                    .collect();
+                let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+                let var = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64;
+                (mean, var.sqrt())
+            };
+            // Measured: Exact's standard deviation 0.262 around 0.498, Auto's 0.027
+            // around 0.500, at both angles.
+            let (exact, auto) = (spread(Downscale::Exact), spread(Downscale::Auto));
+            assert!(exact.1 > 0.2, "{deg}°: exact aliases: {exact:?}");
+            assert!(
+                auto.1 < 0.05 && (auto.0 - 0.5).abs() < 0.01,
+                "{deg}°: auto is flat grey: {auto:?} {exact:?}"
+            );
         }
     }
 

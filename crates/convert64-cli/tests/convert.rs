@@ -460,3 +460,54 @@ fn rotate_and_anchor_from_the_command_line() {
         assert_eq!(r.status.code(), Some(2), "{bad:?}");
     }
 }
+
+/// #235: `--downscale exact` keeps png2c64's sampling on a large source, which Auto
+/// (the default) samples from a mip level; the saved project records it; up to a 4×
+/// shrink the two give the same file.
+#[test]
+fn downscale_from_the_command_line() {
+    let dir = temp("downscale");
+    // Fine stripes, 5 source pixels per hi-res pixel: past Auto's 4× threshold.
+    let big = dir.join("big.png");
+    image::RgbaImage::from_fn(1600, 1000, |x, y| {
+        let v = if (x / 2 + y / 3) % 2 == 0 { 40 } else { 220 };
+        image::Rgba([v, (x % 256) as u8, (y % 256) as u8, 255])
+    })
+    .save(&big)
+    .unwrap();
+    let small = source(&dir);
+    let run = |png: &Path, name: &str, extra: &[&str]| {
+        let out = dir.join(name);
+        let mut args = vec!["convert", png.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        args.extend(["-o", out.to_str().unwrap()]);
+        let r = convert(&args);
+        assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+        std::fs::read(out).unwrap()
+    };
+    let project = dir.join("exact.convert64");
+    let p = project.to_str().unwrap();
+    let auto = run(&big, "auto.kla", &[]);
+    let exact = run(
+        &big,
+        "exact.kla",
+        &["--downscale", "exact", "--save-project", p],
+    );
+    assert_ne!(auto, exact);
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&project).unwrap()).unwrap();
+    assert_eq!(v["layers"][0]["downscale"], "exact");
+    assert_eq!(
+        run(&small, "small-auto.kla", &["--downscale", "auto"]),
+        run(&small, "small-exact.kla", &["--downscale", "exact"])
+    );
+    let r = convert(&[
+        "convert",
+        small.to_str().unwrap(),
+        "--downscale",
+        "area",
+        "-o",
+        dir.join("bad.kla").to_str().unwrap(),
+    ]);
+    assert_eq!(r.status.code(), Some(2));
+}

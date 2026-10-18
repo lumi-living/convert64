@@ -153,3 +153,10 @@ rotated path has no prefilter (png2c64 does not widen its kernel when downscalin
 A rotated layer's sample position is clamped to the source like png2c64's, and a
 multiple of 90° on whole pixels copies the pixels. The default grid is the target's
 (1×); a mask is resampled at 4× and box-reduced. The rest of ADR-011 stands.
+
+## Amended 2026-10-13 (#235)
+
+Past a 4× shrink a layer under `Downscale::Auto` samples a box-reduced mip level of its
+source again, per layer axis, on both paths: [ADR-012's #235 amendment](ADR-012-mitchell-resampling-every-layer.md).
+The level is chosen from the shrink (`⌈log2(shrink / 2)⌉`), not §4's `round(log2(footprint))`,
+and the levels are kept with the source rather than with the layer.

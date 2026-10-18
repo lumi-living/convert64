@@ -361,6 +361,12 @@ impl Document {
         self.session.palette()
     }
 
+    /// The composite on the target grid (the solver's input), up to date: the method
+    /// picker crops its Picture thumbnails from it.
+    pub fn target_frame(&mut self) -> &convert64_core::TargetFrame {
+        self.session.target_frame()
+    }
+
     /// Everything a solve reads, for the scheduler.
     pub fn snapshot(&self, previous: Option<Arc<Solution>>) -> Snapshot {
         let p = self.session.project();
@@ -376,8 +382,30 @@ impl Document {
     }
 
     /// The composite on the super grid as RGBA8, for the Source view.
+    ///
+    /// This is the first composite after a source is loaded, so it is where a large
+    /// source's mip levels are built (#235): their time is logged (the browser console
+    /// in wasm), so it can be measured where it matters.
     pub fn source_rgba(&mut self) -> (u32, u32, Vec<u8>) {
-        self.session.canvas_rgba()
+        use crate::scheduler::clock;
+        self.session.set_clock(Some(clock::now_ms));
+        let before = self.session.mip_stats();
+        let out = self.session.canvas_rgba();
+        let after = self.session.mip_stats();
+        if after.0 > before.0 {
+            clock::log(&format!(
+                "convert64: built {} mip level(s) in {:.1} ms (#235)",
+                after.0 - before.0,
+                after.1 - before.1
+            ));
+        }
+        out
+    }
+
+    /// The composite the solve reads (1× by default) as RGBA8, for the Source view while
+    /// a slider is dragged (#264).
+    pub fn solve_canvas_rgba(&mut self) -> (u32, u32, Vec<u8>) {
+        self.session.solve_canvas_rgba()
     }
 }
 

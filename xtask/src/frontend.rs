@@ -18,13 +18,19 @@
 //! Lanczos-3 / bilinear, Catmull-Rom for the rotated path), rendered once from `main` at
 //! `3278845` with this file's `edited` scene and kept in `front-end-old/`; that code no
 //! longer exists to re-run.
+//!
+//! Last, the large sources of #235 (`aliasing`): a 4096 × 2560 zone plate and the title
+//! upscaled to 4096 px with grain, each solved **exact** (png2c64's sampling), **auto**
+//! (the mip level) and from the source **area-averaged** to the target first, with the
+//! grain leakage of each. The command fails if Auto leaks more than 5 %.
 
+use crate::aliasing::{self, LEAKAGE_GATE};
 use crate::font;
 use crate::repo_root;
 use crate::sheet::save;
 use convert64_core::geom::Vec2;
 use convert64_core::layer::{
-    Adjustments, DitherKind, Gamma, Layer, Recipe, SourceImage, Transform,
+    Adjustments, DitherKind, Downscale, Gamma, Layer, Recipe, SourceImage, Transform,
 };
 use convert64_core::mask::{Mask, MaskRaster, Modifiers};
 use convert64_core::mode::Mode;
@@ -55,15 +61,31 @@ pub(crate) const FIXTURES: [(&str, Mode, DitherKind, f32); 6] = [
 /// The fixtures of the edited rows (#227).
 const EDITED: [usize; 2] = [0, 5];
 
+/// The large-source rows (#235): the zone plate and the grainy title.
+const ALIAS_ROWS: usize = 2;
+
 /// One fixture, fitted to the screen, at its baseline's recipe and png2c64's gamma.
 fn fixture_layer(name: &str, kind: DitherKind, strength: f32) -> Result<Layer, String> {
     let path = repo_root().join("fixtures").join(name).join("source.png");
     let img = image::open(&path)
         .map_err(|e| format!("{}: {e}", path.display()))?
         .to_rgba8();
+    layer_from_rgba(name, &img, kind, strength, Downscale::Auto)
+}
+
+/// A picture as a layer fitted to the screen, at a recipe and png2c64's gamma, sampled
+/// as `downscale` says when shrunk a long way (#235).
+pub(crate) fn layer_from_rgba(
+    name: &str,
+    img: &image::RgbaImage,
+    kind: DitherKind,
+    strength: f32,
+    downscale: Downscale,
+) -> Result<Layer, String> {
     let (w, h) = img.dimensions();
     let src = Arc::new(SourceImage::from_srgba8(w, h, img.as_raw()).map_err(|e| e.to_string())?);
     let mut layer = Layer::new(name, src);
+    layer.set_downscale(downscale);
     layer.set_transform(
         Transform::new(
             Vec2::ZERO,
@@ -153,7 +175,7 @@ pub(crate) fn render_with(
 
 /// `layers` composited on `mode`'s default grid and solved: the prepared frame and the
 /// solve, both at 320 × 200.
-fn render_layers(
+pub(crate) fn render_layers(
     layers: &[Layer],
     mode: Mode,
     png2c64: bool,
@@ -185,7 +207,7 @@ fn identical(a: &RgbImage, b: &RgbImage) -> f64 {
 }
 
 pub(crate) fn run() -> Result<(), String> {
-    let rows = (FIXTURES.len() + EDITED.len()) as u32;
+    let rows = (FIXTURES.len() + EDITED.len() + ALIAS_ROWS) as u32;
     let w = 5 * TILE_W + 6 * GAP + 2 * GAP;
     let h = rows * (LABEL + TILE_H + NOTE + GAP) + GAP;
     let mut sheet = RgbImage::from_pixel(w, h, Rgb(BACKGROUND));
@@ -268,7 +290,71 @@ pub(crate) fn run() -> Result<(), String> {
         table.push_str(&format!("| {name} | {same:.3} % |\n"));
         println!("{name:<9} edited: new solve {same:8.3} % as old");
     }
+    // #235: the large sources, exact | auto | area-averaged reference.
+    println!("large sources (#235): generating the 4096 px fixtures in target/aliasing/");
+    let (zone, title, grain) = aliasing::fixtures()?;
+    let zone3 = aliasing::three_ways("zoneplate-4096", &zone)?;
+    let clean3 = aliasing::three_ways("title-4096", &title)?;
+    let grain3 = aliasing::three_ways("title-grain-4096", &grain)?;
+    let leak = aliasing::leakage((&title, &clean3), (&grain, &grain3))?;
+    let auto_vs_ref = |three: &[(RgbImage, RgbImage); 3]| identical(&three[1].1, &three[2].1);
+    let row0 = FIXTURES.len() + EDITED.len();
+    for (k, (title, three, notes)) in [
+        (
+            "zoneplate-4096 (checker 0.7): exact | auto | area-averaged; beyond the centre the right answer is flat grey",
+            &zone3,
+            [String::new(), String::new(), String::new()],
+        ),
+        (
+            "title-grain-4096 (grain 14/255, checker 0.7): exact | auto | area-averaged, % of pixels the grain changes",
+            &grain3,
+            [leak[0], leak[1], leak[2]].map(|l| format!(": {l:.1}%")),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let y = GAP + (row0 + k) as u32 * (LABEL + TILE_H + NOTE + GAP);
+        font::draw(&mut sheet, GAP + 2, y + 3, title, 2, TEXT);
+        let tiles: [(&RgbImage, String); 5] = [
+            (&three[0].1, format!("exact{}", notes[0])),
+            (&three[1].1, format!("auto{}", notes[1])),
+            (&three[2].1, format!("area-averaged{}", notes[2])),
+            (&three[0].0, "exact prepared".to_owned()),
+            (&three[1].0, "auto prepared".to_owned()),
+        ];
+        for (c, (tile, note)) in tiles.iter().enumerate() {
+            let x = GAP + c as u32 * (TILE_W + GAP) + if c >= 3 { GAP } else { 0 };
+            image::imageops::replace(&mut sheet, *tile, i64::from(x), i64::from(y + LABEL));
+            font::draw(&mut sheet, x + 2, y + LABEL + TILE_H + 4, note, 2, TEXT);
+        }
+    }
+    let [exact, auto, reference, srgb] = leak;
+    println!(
+        "title-grain-4096: grain leakage exact {exact:.1} %, auto {auto:.1} %, \
+         reference {reference:.1} % (sRGB-space box {srgb:.1} %)"
+    );
+    table.push_str(&format!(
+        "\n#235, large sources (4096 px, shrunk 12.8×; multicolor, checker 0.7, error clamp \
+         0.1, gamma 1.5, pepto). Grain leakage: the share of output pixels that change \
+         between `title-grain-4096` and the same upscale without grain (gate: Auto ≤ \
+         {LEAKAGE_GATE} %). The reference is the source box-averaged to 320 × 200 in \
+         linear light, then the same front end and solver; the evidence (#238) averaged \
+         the 8-bit sRGB values instead, which is given beside it. Auto vs reference: the \
+         share of the reference's solve that Auto's reproduces.\n\n\
+         | Source | exact (png2c64) | auto (mip level) | area-averaged reference | box on sRGB values |\n\
+         |---|---|---|---|---|\n\
+         | title-grain-4096, grain leakage | {exact:.1} % | {auto:.1} % | {reference:.1} % | {srgb:.1} % |\n\
+         | zoneplate-4096, auto vs reference | | {:.1} % same | | |\n\
+         | title-grain-4096, auto vs reference | | {:.1} % same | | |\n",
+        auto_vs_ref(&zone3),
+        auto_vs_ref(&grain3),
+    ));
     save(&sheet, &dir.join("sheet-front-end-ab.png"))?;
+    // The large-source rows on their own, for review (#235).
+    let y0 = GAP + row0 as u32 * (LABEL + TILE_H + NOTE + GAP);
+    let rows = image::imageops::crop_imm(&sheet, 0, y0, w, h - y0).to_image();
+    save(&rows, &dir.join("sheet-front-end-large.png"))?;
     std::fs::write(
         dir.join("front-end-ab.md"),
         format!(
@@ -281,5 +367,10 @@ pub(crate) fn run() -> Result<(), String> {
         ),
     )
     .map_err(|e| e.to_string())?;
+    if auto > LEAKAGE_GATE {
+        return Err(format!(
+            "#235's gate: grain leakage under Auto is {auto:.1} %, above {LEAKAGE_GATE} %"
+        ));
+    }
     Ok(())
 }

@@ -11,6 +11,7 @@ mod export_dialog;
 mod layers;
 mod mask;
 mod menu;
+pub mod method_picker;
 mod recipe;
 pub mod shortcuts;
 mod status;
@@ -28,6 +29,7 @@ use convert64_core::mode::Mode;
 pub use crate::view::ViewMode;
 pub use export_dialog::ExportDialog;
 pub use mask::{MaskState, MaskTool};
+pub use method_picker::{PickerState, RecipeTarget};
 
 /// The four steering tools (`docs/UX.md` §7), in toolbar order. Nudge (`V`, Move in
 /// Photoshop and Figma) is the default: a stray click with it selects a layer and
@@ -176,6 +178,10 @@ pub enum Action {
     PauseSolve,
     /// Resume a paused solve.
     ResumeSolve,
+    /// The method picker's live preview (UX §6a): solve the result with this method in
+    /// place of the recipe's (interactively, nothing in the history), or with `None`
+    /// show the committed result again.
+    PreviewMethod(Option<(RecipeTarget, convert64_core::layer::Method)>),
 }
 
 /// The smallest and largest dock width (`docs/UX.md` §3: 260–420 px). Not a Figma
@@ -272,6 +278,13 @@ pub struct Shell {
     /// `--dock-scroll <points>` (screenshots only): the dock's tab content held scrolled
     /// down this far, to show a group below the fold.
     pub dock_scroll: Option<f32>,
+    /// The dither method picker (UX §6a).
+    pub picker: PickerState,
+    /// The dock's left edge last frame, where the picker hangs from.
+    dock_left: Option<f32>,
+    /// The last cell the pointer was over on the picture: the picker's Picture
+    /// thumbnails are cropped there.
+    pub last_cell: Option<convert64_core::model::CellPos>,
 }
 
 impl Default for Shell {
@@ -319,6 +332,9 @@ impl Default for Shell {
             layers_rect: None,
             canvas_id: None,
             dock_scroll: None,
+            picker: PickerState::default(),
+            dock_left: None,
+            last_cell: None,
         }
     }
 }
@@ -475,8 +491,8 @@ impl Shell {
         }
     }
 
-    /// Shows the worst clash: Clashes overlay on, Result mode, centred on that cell (the
-    /// result header's clash button; UX §4.3).
+    /// Shows the worst colour-limited cell: that overlay on, Result mode, centred on the
+    /// cell (the result header's count is a button; UX §4.3).
     pub fn show_worst(&mut self, ws: &Workspace) {
         self.overlays.clashes = true;
         self.view = ViewMode::Result;
@@ -498,8 +514,10 @@ impl Shell {
                 .options_mut(|o| o.input_options.surrender_focus_on = presses);
         }
         self.handle_shortcuts(ui.ctx(), &mut actions);
+        self.picker.drawn = false;
         if let Some(ws) = ws.as_deref_mut() {
-            ws.prepare(ui.ctx());
+            ws.prepare(ui.ctx(), self.overlays.ghost);
+            ws.prepare_thumbs(ui.ctx(), self.picker.source, self.last_cell);
             if std::mem::take(&mut self.export_requested) {
                 self.open_export(ws);
             }
@@ -577,12 +595,13 @@ impl Shell {
                 .exact_size(layout::STATUS_HEIGHT)
                 .show(ui, |ui| status::show(self, ws.as_deref(), ui, &mut actions));
             if !self.dock_hidden {
-                egui::Panel::right("dock")
+                let dock = egui::Panel::right("dock")
                     .resizable(true)
                     .default_size(layout::DOCK_WIDTH)
                     .size_range(DOCK_WIDTH_RANGE)
                     .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(0))
                     .show(ui, |ui| dock::show(self, ws.as_deref(), ui, &mut actions));
+                self.dock_left = Some(dock.response.rect.left());
             }
         }
 
@@ -597,6 +616,21 @@ impl Shell {
                 working::show(self, ui, ws.as_deref(), &mut actions)
             });
         export_dialog::show(self, ws.as_deref(), ui.ctx(), &mut actions);
+        // The picker closes (reverting its preview) when its recipe is no longer shown.
+        if self.picker.open.is_some() && !self.picker.drawn {
+            self.picker.close(&mut actions);
+        }
+        if self.picker.open.is_none()
+            && let Some(ws) = ws.as_deref()
+            && let Some((_, (x, y))) = self
+                .hover
+                .and_then(|p| crate::view::target_at(ws.doc.grid(), p))
+        {
+            self.last_cell = Some(convert64_core::model::CellPos::new(x as u16, y as u16));
+        }
+        if let Some(ws) = ws.as_deref_mut() {
+            ws.method_thumbs.flush();
+        }
         if let Some(ws) = ws.as_deref() {
             self.announce_deletes(ui.ctx(), ws, &actions);
         }
@@ -668,8 +702,11 @@ impl Shell {
         // Single keys only while no text field is being edited (a `TextEdit`, or a
         // `DragValue` taking typed digits); a focused slider or button leaves them be
         // (#244). Arrows, though, belong to whichever widget has focus.
-        let typing = ctx.text_edit_focused();
-        let widget_focused = ctx.egui_wants_keyboard_input();
+        // The open method picker takes typing and the arrows (UX §6a), from its first
+        // frame on, before its search field has the focus.
+        let picker = self.picker.open.is_some();
+        let typing = ctx.text_edit_focused() || picker;
+        let widget_focused = ctx.egui_wants_keyboard_input() || picker;
         let delete_applies = self.delete_keys_apply(ctx);
         let mut hide_ui = None;
         ctx.input_mut(|i| {
@@ -912,6 +949,78 @@ fn release_focus(ctx: &egui::Context) {
     }
 }
 
+/// Where the drag `response` reports began: where the button went down. egui reports a
+/// drag on a widget that also senses clicks only once the pointer has moved past its
+/// drag threshold (6 pt), by which time the pointer is that far from the press, so a
+/// tool that reads its start point at `drag_started` must take it from here (#239, #263).
+pub(super) fn drag_origin(ui: &egui::Ui, response: &egui::Response) -> Option<egui::Pos2> {
+    ui.input(|i| i.pointer.press_origin())
+        .or_else(|| response.interact_pointer_pos())
+}
+
+/// How far `response`'s drag moved the pointer this frame, counting the movement inside
+/// the drag threshold on the frame the drag starts (#263): `drag_delta` alone loses it.
+pub(super) fn drag_step(response: &egui::Response) -> egui::Vec2 {
+    if response.drag_started() {
+        response
+            .total_drag_delta()
+            .unwrap_or_else(|| response.drag_delta())
+    } else {
+        response.drag_delta()
+    }
+}
+
+/// Headless drags with real pointer events, for the canvas tools' tests (#248, #263).
+#[cfg(test)]
+pub(super) mod drag_test {
+    use egui::{Pos2, Rect, Response, Ui, pos2};
+
+    /// The working view in the headless runs, in points.
+    pub const VIEW: Rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 600.0));
+
+    /// A path from `from` towards `to`: two small steps inside egui's 6 pt drag
+    /// threshold, one past it (where egui reports the drag), then the target.
+    pub fn path(from: Pos2, to: Pos2) -> Vec<Pos2> {
+        let dir = (to - from).normalized();
+        vec![from + dir * 2.0, from + dir * 4.0, from + dir * 12.0, to]
+    }
+
+    /// Presses the primary button at `from`, moves through `path` one frame per point
+    /// (as a real mouse does: the first steps stay inside egui's drag threshold) and
+    /// releases. Each frame allocates a click-and-drag area over [`VIEW`] and hands its
+    /// response to `f`.
+    pub fn drag(from: Pos2, path: &[Pos2], mut f: impl FnMut(&Ui, &Response)) {
+        let ctx = egui::Context::default();
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let last = *path.last().unwrap_or(&from);
+        let mut frames = vec![
+            vec![egui::Event::PointerMoved(from)],
+            vec![button(from, true)],
+        ];
+        frames.extend(path.iter().map(|p| vec![egui::Event::PointerMoved(*p)]));
+        frames.push(vec![button(last, false)]);
+        frames.push(vec![]);
+        for (n, events) in frames.into_iter().enumerate() {
+            let input = egui::RawInput {
+                screen_rect: Some(VIEW),
+                time: Some(n as f64 / 60.0),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                let response = ui.allocate_rect(VIEW, egui::Sense::click_and_drag());
+                f(ui, &response);
+            });
+            output.textures_delta.clear();
+        }
+    }
+}
+
 /// An icon at the toolbar and row size (`layout::ICON_SIZE`).
 pub(crate) fn icon(icon: Icon) -> egui::RichText {
     icon.rich_text().size(layout::ICON_SIZE)
@@ -1017,6 +1126,23 @@ mod tests {
             });
             output.textures_delta.clear();
         }
+    }
+
+    /// #260: while the method picker is open, arrows move in its grid and letters
+    /// search; neither nudges the layer nor picks a tool.
+    #[test]
+    fn the_open_picker_keeps_arrows_and_letters() {
+        let mut shell = Shell::default();
+        shell.picker.open(RecipeTarget::Layer(0));
+        let none = egui::Modifiers::NONE;
+        let (shell, actions) = frame(
+            shell,
+            vec![key(egui::Key::ArrowRight, none), key(egui::Key::P, none)],
+        );
+        assert!(actions.is_empty(), "{actions:?}");
+        assert_eq!(shell.tool, Tool::Nudge);
+        // Not drawn (no document): it closed.
+        assert!(shell.picker.open.is_none());
     }
 
     /// #240: `Tab` and `Shift Tab` are egui's focus traversal and hide nothing.

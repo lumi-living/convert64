@@ -5,8 +5,8 @@
 use super::{Shell, ViewMode, icon};
 use crate::icons;
 use crate::theme::Theme;
-use crate::view::{BORDER, Compare, cell_rect};
-use crate::workspace::Workspace;
+use crate::view::{BORDER, Compare, SCREEN, cell_rect};
+use crate::workspace::{SourcePicture, Workspace};
 use egui::{Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
 /// The ghost's opacity (UX §4.1: "at 30 %").
@@ -208,7 +208,7 @@ fn navigate(shell: &mut Shell, ui: &Ui, response: &egui::Response, view: Rect) {
     let panning = response.dragged_by(egui::PointerButton::Middle)
         || ((space || shell.hand) && response.dragged_by(egui::PointerButton::Primary));
     if panning {
-        shell.camera.pan(mode, response.drag_delta());
+        shell.camera.pan(mode, super::drag_step(response));
     }
 }
 
@@ -222,9 +222,7 @@ fn draw(shell: &Shell, ws: &Workspace, painter: &Painter, view: Rect, mode: View
     match mode {
         ViewMode::Source => {
             checker(painter, picture.intersect(view), theme);
-            if let Some(tex) = ws.source_texture() {
-                painter.image(tex.id(), picture, uv, Color32::WHITE);
-            }
+            source(ws, painter, picture);
         }
         ViewMode::Result => {
             if shell.overlays.border {
@@ -323,6 +321,67 @@ fn draw(shell: &Shell, ws: &Workspace, painter: &Painter, view: Rect, mode: View
     }
 }
 
+/// The Source view's picture in `picture` (#264): the 4× composite; during a slider drag
+/// the solve's 1× composite; during a transform drag the cached 4× textures, the moved
+/// layer's through the drag's affine map (an egui mesh), the others where they are.
+fn source(ws: &Workspace, painter: &Painter, picture: Rect) {
+    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+    match ws.source_picture() {
+        None => {}
+        Some(SourcePicture::Flat(tex)) => {
+            painter.image(tex.id(), picture, uv, Color32::WHITE);
+        }
+        Some(SourcePicture::Moving(m)) => {
+            // The canvas ends at the screen's edge; the moved layer must not draw past it.
+            let painter = painter.with_clip_rect(painter.clip_rect().intersect(picture));
+            let scale = picture.width() / SCREEN.x;
+            let quad = m.quad.map(|p| picture.min + p.to_vec2() * scale);
+            if let Some(tex) = m.backdrop {
+                painter.image(tex.id(), picture, uv, Color32::WHITE);
+            }
+            // The layers below and above stay put. When the moved layer's texture lacks what
+            // lay past the screen, they are drawn only where it has its pixels, and the
+            // backdrop shows elsewhere.
+            let fixed = |tex: &egui::TextureHandle| {
+                if m.clipped {
+                    let uv = m.quad.map(|p| pos2(p.x / SCREEN.x, p.y / SCREEN.y));
+                    painter.add(quad_mesh(tex.id(), quad, uv));
+                } else {
+                    painter.image(tex.id(), picture, uv, Color32::WHITE);
+                }
+            };
+            if let Some(tex) = m.below {
+                fixed(tex);
+            }
+            let corners = [
+                pos2(0.0, 0.0),
+                pos2(1.0, 0.0),
+                pos2(1.0, 1.0),
+                pos2(0.0, 1.0),
+            ];
+            painter.add(quad_mesh(m.layer.id(), quad, corners));
+            if let Some(tex) = m.above {
+                fixed(tex);
+            }
+        }
+    }
+}
+
+/// A textured parallelogram: `pos` and `uv` are its corners in order.
+fn quad_mesh(texture: egui::TextureId, pos: [Pos2; 4], uv: [Pos2; 4]) -> egui::Shape {
+    let mut mesh = egui::Mesh::with_texture(texture);
+    for (pos, uv) in pos.into_iter().zip(uv) {
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos,
+            uv,
+            color: Color32::WHITE,
+        });
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    egui::Shape::mesh(mesh)
+}
+
 /// The transparency checkerboard under the source, in fixed-size squares.
 fn checker(painter: &Painter, area: Rect, theme: &Theme) {
     if !area.is_positive() {
@@ -413,6 +472,32 @@ fn empty(ui: &mut Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #263: a pan with the Hand moves the picture by the whole drag, counting the
+    /// movement inside egui's drag threshold.
+    #[test]
+    fn a_hand_drag_pans_by_the_whole_distance() {
+        use super::super::drag_test::{VIEW, drag, path};
+        let mut shell = Shell {
+            hand: true,
+            ..Shell::default()
+        };
+        let before = shell.camera.centre;
+        let from = VIEW.center();
+        drag(
+            from,
+            &path(from, from + vec2(40.0, 20.0)),
+            |ui, response| {
+                navigate(&mut shell, ui, response, VIEW);
+            },
+        );
+        // 40 × 20 points at the default 2× zoom is 20 × 10 screen units.
+        let moved = before - shell.camera.centre;
+        assert!(
+            (moved.x - 20.0).abs() < 1e-3 && (moved.y - 10.0).abs() < 1e-3,
+            "{moved:?}"
+        );
+    }
 
     /// The first frame after an open fits the Source view with a margin around the
     /// picture (#246).

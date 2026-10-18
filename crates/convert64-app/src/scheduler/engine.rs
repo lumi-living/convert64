@@ -4,12 +4,14 @@
 //! A job runs [`Stage::Composite`], then, for a full solve with the preview on and a
 //! previous solution, [`Stage::Preview`] (the interactive fast path, delivered as
 //! provisional), then [`Stage::Solve`]. Each stage is one call into the core, so the
-//! output of every solve is exactly `Solver::solve` on the compositor's frame.
+//! output of every solve is exactly `Solver::solve` on the compositor's frame. The web
+//! worker driver (#265) runs the composite stage here and the solve stages in the worker
+//! ([`super::remote`]), through the same [`solve`].
 
 use super::{Snapshot, SolveResult, Timing, clock};
 use convert64_core::solve::dither::layer_origins;
 use convert64_core::solve::{Solution, SolveMode, SolveOptions, Solver, Steering};
-use convert64_core::{CellPos, CellSet, Compositor};
+use convert64_core::{CellPos, CellSet, Compositor, Palette, TargetFrame};
 use std::collections::VecDeque;
 use std::sync::{Arc, Weak};
 
@@ -43,11 +45,43 @@ pub(crate) enum Work {
     Full = 2,
 }
 
+/// The solver for `palette` in `slot`: made, or switched to `palette` (new metric
+/// tables) when it changed.
+pub(crate) fn solver_for<'a>(slot: &'a mut Option<Solver>, palette: &Palette) -> &'a Solver {
+    match slot {
+        Some(s) => s.set_palette(palette),
+        None => *slot = Some(Solver::new(palette)),
+    }
+    slot.as_ref().expect("set above")
+}
+
+/// One solve, as every driver runs it: `Solver::solve` on `frame` in `mode` with
+/// `options`' other settings. Returns the solution and how long it took, ms.
+pub(crate) fn solve(
+    solver: &Solver,
+    frame: &TargetFrame,
+    steering: &Steering,
+    previous: Option<&Solution>,
+    options: &SolveOptions,
+    mode: SolveMode,
+) -> (Solution, f64) {
+    let start = clock::now_ms();
+    let opts = SolveOptions {
+        mode,
+        ..options.clone()
+    };
+    let solution = solver.solve(frame, steering, previous, &opts);
+    (solution, clock::now_ms() - start)
+}
+
 /// The state kept between submissions: the compositor's caches, the solver's metric
 /// tables, and enough history to know which cells changed since a solution was made.
 #[derive(Debug, Default)]
 pub(crate) struct Engine {
     compositor: Option<Compositor>,
+    /// The last composited palette.
+    palette: Option<Palette>,
+    /// The solver of the in-thread drivers (made on the first solve).
     solver: Option<Solver>,
     /// The last composited options with `mode` and `layer_origins` cleared.
     options: Option<SolveOptions>,
@@ -93,7 +127,16 @@ impl Engine {
         self.epoch
     }
 
-    fn produced(&mut self, solution: &Arc<Solution>, epoch: u64) {
+    /// The composite the last composite stage made.
+    pub(crate) fn frame(&self) -> &TargetFrame {
+        self.compositor
+            .as_ref()
+            .expect("the composite stage runs first")
+            .frame()
+    }
+
+    /// Notes that this engine made `solution` from composite `epoch`.
+    pub(crate) fn produced(&mut self, solution: &Arc<Solution>, epoch: u64) {
         self.produced.retain(|(w, _)| w.strong_count() > 0);
         if self.produced.len() == PRODUCED_LEN {
             self.produced.pop_front();
@@ -210,11 +253,7 @@ impl Job {
             }
             Stage::Solve => {
                 self.stage = Stage::Done;
-                let mode = match self.mode {
-                    SolveMode::Interactive { .. } => SolveMode::Interactive { dirty: self.dirty },
-                    SolveMode::Full => SolveMode::Full,
-                };
-                Some(self.solve(engine, mode, false))
+                Some(self.solve(engine, self.solve_mode(), false))
             }
             Stage::Done => None,
         }
@@ -235,20 +274,15 @@ impl Job {
                 everything = true;
             }
             None => {
-                engine.compositor = Some(Compositor::new(snap.grid));
+                let mut c = Compositor::new(snap.grid);
+                c.set_clock(Some(clock::now_ms));
+                engine.compositor = Some(c);
                 everything = true;
             }
         }
-        match &mut engine.solver {
-            Some(s) if *s.palette() == snap.palette => {}
-            Some(s) => {
-                s.set_palette(&snap.palette);
-                everything = true;
-            }
-            None => {
-                engine.solver = Some(Solver::new(&snap.palette));
-                everything = true;
-            }
+        if engine.palette.as_ref() != Some(&snap.palette) {
+            engine.palette = Some(snap.palette.clone());
+            everything = true;
         }
         let settings = settings_of(&snap.options);
         if engine.options.as_ref() != Some(&settings) {
@@ -263,7 +297,17 @@ impl Job {
             engine.steering = Some(snap.steering.clone());
         }
         let compositor = engine.compositor.as_mut().expect("set above");
+        let (builds, ms) = (compositor.mip_builds(), compositor.mip_build_ms());
         changed = changed.union(compositor.update(&snap.layers, &snap.regions));
+        // A source's mip levels are usually built by the Source view's composite first
+        // (`Document::source_rgba`) and shared; any built here are logged the same way.
+        if compositor.mip_builds() > builds {
+            clock::log(&format!(
+                "convert64: built {} mip level(s) in {:.1} ms (#235, solve)",
+                compositor.mip_builds() - builds,
+                compositor.mip_build_ms() - ms
+            ));
+        }
         if everything {
             changed = CellSet::all();
         }
@@ -277,20 +321,30 @@ impl Job {
     }
 
     fn solve(&self, engine: &mut Engine, mode: SolveMode, provisional: bool) -> SolveResult {
-        let start = clock::now_ms();
-        let opts = SolveOptions {
-            mode,
-            ..self.options.clone()
-        };
-        let (Some(compositor), Some(solver)) = (&engine.compositor, &engine.solver) else {
+        let Some(compositor) = &engine.compositor else {
             unreachable!("the composite stage runs first");
         };
-        let solution = Arc::new(solver.solve(
+        let solver = solver_for(&mut engine.solver, &self.snapshot.palette);
+        let (solution, solve_ms) = solve(
+            solver,
             compositor.frame(),
             &self.snapshot.steering,
             self.snapshot.previous.as_deref(),
-            &opts,
-        ));
+            &self.options,
+            mode,
+        );
+        self.result(engine, Arc::new(solution), mode, provisional, solve_ms)
+    }
+
+    /// The result of a solve of this job's composite, noted in `engine` as made by it.
+    pub(crate) fn result(
+        &self,
+        engine: &mut Engine,
+        solution: Arc<Solution>,
+        mode: SolveMode,
+        provisional: bool,
+        solve_ms: f64,
+    ) -> SolveResult {
         engine.produced(&solution, self.epoch);
         SolveResult {
             ticket: self.ticket,
@@ -299,8 +353,43 @@ impl Job {
             provisional,
             timing: Timing {
                 composite_ms: self.composite_ms,
-                solve_ms: clock::now_ms() - start,
+                solve_ms,
             },
         }
+    }
+
+    /// After the composite stage: the dirty cells of the fast-path preview, if this job
+    /// runs one.
+    pub(crate) fn preview(&self) -> Option<CellSet> {
+        (self.stage == Stage::Preview).then_some(self.dirty)
+    }
+
+    /// After the composite stage: the mode of the submitted solve, with the fast path's
+    /// dirty cells.
+    pub(crate) fn solve_mode(&self) -> SolveMode {
+        match self.mode {
+            SolveMode::Interactive { .. } => SolveMode::Interactive { dirty: self.dirty },
+            SolveMode::Full => SolveMode::Full,
+        }
+    }
+
+    /// The mode submitted.
+    pub(crate) const fn submitted_mode(&self) -> SolveMode {
+        self.mode
+    }
+
+    /// The snapshot submitted.
+    pub(crate) const fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
+    }
+
+    /// After the composite stage: the options solved with (`layer_origins` filled in).
+    pub(crate) const fn options(&self) -> &SolveOptions {
+        &self.options
+    }
+
+    /// Ends the job: the solve stages ran elsewhere.
+    pub(crate) fn finish(&mut self) {
+        self.stage = Stage::Done;
     }
 }
