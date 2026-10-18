@@ -215,12 +215,12 @@ impl Fixture {
     }
 }
 
-fn palette() -> [p2c::Rgb; 16] {
+pub(crate) fn palette() -> [p2c::Rgb; 16] {
     p2a::colour::palette_linear(&p2a::colour::PEPTO_HEX)
 }
 
 /// A screen drawn at 320 × 200 through Pepto.
-fn draw(screen: &quantize::Screen) -> RgbImage {
+pub(crate) fn draw(screen: &quantize::Screen) -> RgbImage {
     let (w, _) = screen.mode.screen();
     let idx = screen.indices();
     let step = 320 / w;

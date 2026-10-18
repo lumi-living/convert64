@@ -14,6 +14,9 @@
 //! same on every platform; macOS's `cbrtf` is correctly rounded too, and the reference
 //! renders do not depend on the last bit of `powf` (`docs/reference/png2c64-reference.md`).
 
+/// png2amiga's dither methods on this pipeline, for the #275 sheets only.
+#[doc(hidden)]
+pub mod amiga;
 pub mod colour;
 pub mod dither;
 pub mod preprocess;
