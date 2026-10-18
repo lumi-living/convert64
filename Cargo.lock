@@ -746,6 +746,7 @@ dependencies = [
  "egui_dnd",
  "egui_material_icons",
  "rfd",
+ "serde",
  "serde_json",
 ]
 
