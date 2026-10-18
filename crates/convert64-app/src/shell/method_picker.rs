@@ -326,7 +326,7 @@ pub(super) fn field(
             .galley(pos2(text_x, y), galley, visuals.text_color());
         let response = response.on_hover_text(format!(
             "{}\nCLI: --dither {}\nClick or Enter: all methods · ↑↓: step",
-            info.description,
+            info.tooltip(),
             info.id()
         ));
         if response.clicked()
@@ -680,7 +680,7 @@ fn card(
             hidden.push(job);
         }
     }
-    response.on_hover_text(format!("{}\nCLI: --dither {}", info.description, info.id()))
+    response.on_hover_text(format!("{}\nCLI: --dither {}", info.tooltip(), info.id()))
 }
 
 #[cfg(test)]

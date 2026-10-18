@@ -67,10 +67,13 @@ pub enum DitherKind {
     #[serde(alias = "line8")]
     LineH8,
     /// Ordered, vertical lines with period 2 (ArcPaint64 "Vertical").
+    #[serde(alias = "vline2")]
     LineV2,
     /// Ordered, vertical lines with period 4 (ArcPaint64 "Vertical 4").
+    #[serde(alias = "vline4")]
     LineV4,
     /// Ordered, vertical lines with period 8 (ArcPaint64 "Vertical 8").
+    #[serde(alias = "vline8")]
     LineV8,
     /// Ordered, png2c64's lines with a checker offset (ArcPaint64 "Horizontal +
     /// Checker").
@@ -132,6 +135,7 @@ pub enum DitherKind {
     Ostromoukhov,
     /// Error diffusion, Zhou–Fang: Ostromoukhov plus threshold modulation by the
     /// blue-noise tile, which removes the remaining worms.
+    #[serde(alias = "zhoufang")]
     ZhouFang,
     /// Error diffusion along a Hilbert curve with a 16-sample history (Riemersma): no
     /// directional artefacts.
@@ -155,6 +159,75 @@ pub enum DitherKind {
     /// nearest, same-luma pairs preferred, alternated by scanline (multicolor, so a
     /// PAL display blends them) or as a checker (hi-res).
     Pair,
+    /// Ordered, png2amiga's 3 × 3 dispersed dot (a magic-square permutation).
+    #[serde(alias = "bayer3x3")]
+    Bayer3,
+    /// Ordered, png2amiga's 5 × 5 dispersed dot.
+    #[serde(alias = "bayer5x5")]
+    Bayer5,
+    /// Ordered, png2amiga's 6 × 6 dispersed dot.
+    #[serde(alias = "bayer6x6")]
+    Bayer6,
+    /// Ordered, png2amiga's 7 × 7 dispersed dot.
+    #[serde(alias = "bayer7x7")]
+    Bayer7,
+    /// Ordered, png2amiga's 4 × 2 vertical-bias matrix (for tall pixels).
+    V4x2,
+    /// Ordered, Bayer ordering 4 wide × 2 tall.
+    Bayer4x2,
+    /// Ordered, Bayer ordering 2 wide × 4 tall.
+    Bayer2x4,
+    /// Ordered, png2amiga's column-biased 2 × 2 (vertical lines with a row shift).
+    #[serde(alias = "vline-checker")]
+    LineVChecker,
+    /// Ordered, a 16 × 16 self-nested Bayer recursion (Obra Dinn's).
+    Fractal16,
+    /// Ordered, Aseprite's hand-tuned "old" 4 × 4, checker-biased.
+    AsepriteOld,
+    /// Ordered, libcaca's hand-tuned 3 × 3 dispersed dot.
+    Libcaca3,
+    /// Ordered, libcaca's hand-tuned 6 × 6 dispersed dot.
+    Libcaca6,
+    /// Ordered, the Pegasus/REXPaint 8 × 8 mosaic (centre-biased).
+    Pegasus,
+    /// Noise, png2amiga's 64 × 64 void-and-cluster blue noise (Ulichney).
+    VoidCluster,
+    /// Noise, png2amiga's 64 × 64 cluster blue noise (wider clusters).
+    ClusterNoise,
+    /// Noise, Bayer 8 with a hashed per-tile offset (Cranley–Patterson).
+    CranleyBayer,
+    /// Noise, interleaved gradient noise remapped to a triangular distribution.
+    IgnTri,
+    /// Noise, R2 remapped to a triangular distribution (Wronski).
+    R2Tri,
+    /// Effect, a sum of five cosine waves (Sloan's quasicrystal).
+    Quasicrystal,
+    /// Effect, Truchet tiles of quarter-arc gradients, one rotation per 8 × 8 tile.
+    Truchet,
+    /// Error diffusion, png2amiga's Floyd–Steinberg with the residual carried in OKLab.
+    FloydSteinbergOklab,
+    /// png2amiga's Gilbert-curve diffusion; on its C64 path a plain nearest pick (it has no kernel there).
+    Gilbert,
+    /// png2amiga's direct binary search; on its C64 path a plain nearest pick (it has no kernel there).
+    Dbs,
+    /// Error diffusion, Floyd–Steinberg with a Laplacian-modulated threshold (keeps edges).
+    StructureFs,
+    /// Error diffusion, Floyd–Steinberg with a local-contrast-modulated threshold.
+    ContrastFs,
+    /// Palette-aware, png2amiga's Yliluoma: a 64-entry greedy mixing plan on Bayer 8.
+    Yliluoma,
+    /// Palette-aware, png2amiga's optimal checker: the nearest colour and its best partner on a 2 × 2 checker.
+    OptChecker,
+    /// Palette-aware, the optimal pair alternated by row.
+    OptLine,
+    /// Palette-aware, a 4-colour plan on the line-checker 2 × 2.
+    OptLineChecker,
+    /// Palette-aware, the optimal pair alternated by column.
+    OptVline,
+    /// Palette-aware, a 4-colour plan on the column-checker 2 × 2.
+    OptVlineChecker,
+    /// Palette-aware, Yliluoma's tri-tone: a 4-entry plan on Bayer 2 (one colour 50 %, two 25 %).
+    TriTone,
 }
 
 /// The UI's grouping of [`DitherKind`]s (UX §6, group 4).
@@ -188,7 +261,7 @@ impl DitherFamily {
 impl DitherKind {
     /// Every kind: E5's nine first (their order is part of the attribute map's debug
     /// colours), then the rest by family.
-    pub const ALL: [Self; 58] = [
+    pub const ALL: [Self; 90] = [
         Self::None,
         Self::Bayer2,
         Self::Bayer4,
@@ -247,6 +320,38 @@ impl DitherKind {
         Self::Knoll,
         Self::Luma,
         Self::Pair,
+        Self::Bayer3,
+        Self::Bayer5,
+        Self::Bayer6,
+        Self::Bayer7,
+        Self::V4x2,
+        Self::Bayer4x2,
+        Self::Bayer2x4,
+        Self::LineVChecker,
+        Self::Fractal16,
+        Self::AsepriteOld,
+        Self::Libcaca3,
+        Self::Libcaca6,
+        Self::Pegasus,
+        Self::VoidCluster,
+        Self::ClusterNoise,
+        Self::CranleyBayer,
+        Self::IgnTri,
+        Self::R2Tri,
+        Self::Quasicrystal,
+        Self::Truchet,
+        Self::FloydSteinbergOklab,
+        Self::Gilbert,
+        Self::Dbs,
+        Self::StructureFs,
+        Self::ContrastFs,
+        Self::Yliluoma,
+        Self::OptChecker,
+        Self::OptLine,
+        Self::OptLineChecker,
+        Self::OptVline,
+        Self::OptVlineChecker,
+        Self::TriTone,
     ];
 
     /// The id recipes and the command line spell this kind with (its serialised name).
@@ -310,6 +415,102 @@ impl DitherKind {
             Self::Knoll => "knoll",
             Self::Luma => "luma",
             Self::Pair => "pair",
+            Self::Bayer3 => "bayer3",
+            Self::Bayer5 => "bayer5",
+            Self::Bayer6 => "bayer6",
+            Self::Bayer7 => "bayer7",
+            Self::V4x2 => "v4x2",
+            Self::Bayer4x2 => "bayer4x2",
+            Self::Bayer2x4 => "bayer2x4",
+            Self::LineVChecker => "line-v-checker",
+            Self::Fractal16 => "fractal16",
+            Self::AsepriteOld => "aseprite-old",
+            Self::Libcaca3 => "libcaca3",
+            Self::Libcaca6 => "libcaca6",
+            Self::Pegasus => "pegasus",
+            Self::VoidCluster => "void-cluster",
+            Self::ClusterNoise => "cluster-noise",
+            Self::CranleyBayer => "cranley-bayer",
+            Self::IgnTri => "ign-tri",
+            Self::R2Tri => "r2-tri",
+            Self::Quasicrystal => "quasicrystal",
+            Self::Truchet => "truchet",
+            Self::FloydSteinbergOklab => "floyd-steinberg-oklab",
+            Self::Gilbert => "gilbert",
+            Self::Dbs => "dbs",
+            Self::StructureFs => "structure-fs",
+            Self::ContrastFs => "contrast-fs",
+            Self::Yliluoma => "yliluoma",
+            Self::OptChecker => "opt-checker",
+            Self::OptLine => "opt-line",
+            Self::OptLineChecker => "opt-line-checker",
+            Self::OptVline => "opt-vline",
+            Self::OptVlineChecker => "opt-vline-checker",
+            Self::TriTone => "tri-tone",
+        }
+    }
+
+    /// Whether this is one of the 32 methods only png2amiga has (#261): the png2amiga
+    /// solver's. On the reference (png2c64's port) they go to the native solver, which runs
+    /// [`Self::native`]'s stand-in, until each is judged on our pipeline (ADR-014 §6).
+    pub const fn is_png2amiga_only(self) -> bool {
+        matches!(
+            self,
+            Self::Bayer3
+                | Self::Bayer5
+                | Self::Bayer6
+                | Self::Bayer7
+                | Self::V4x2
+                | Self::Bayer4x2
+                | Self::Bayer2x4
+                | Self::LineVChecker
+                | Self::Fractal16
+                | Self::AsepriteOld
+                | Self::Libcaca3
+                | Self::Libcaca6
+                | Self::Pegasus
+                | Self::VoidCluster
+                | Self::ClusterNoise
+                | Self::CranleyBayer
+                | Self::IgnTri
+                | Self::R2Tri
+                | Self::Quasicrystal
+                | Self::Truchet
+                | Self::FloydSteinbergOklab
+                | Self::Gilbert
+                | Self::Dbs
+                | Self::StructureFs
+                | Self::ContrastFs
+                | Self::Yliluoma
+                | Self::OptChecker
+                | Self::OptLine
+                | Self::OptLineChecker
+                | Self::OptVline
+                | Self::OptVlineChecker
+                | Self::TriTone
+        )
+    }
+
+    /// The kind the native solver runs for this one (#261). The kinds only png2amiga has
+    /// are the reference's; on the native solver its threshold patterns are used as they
+    /// are (`solve::ordered::threshold`), and the others stand in for the nearest native
+    /// method: the Floyd–Steinberg variants for Floyd–Steinberg, `gilbert` and `dbs` for
+    /// no dither (as png2amiga's C64 path runs them), `yliluoma` for `yliluoma2`, the
+    /// optimal pairs and plans for `pair`, `tri-tone` for `knoll`.
+    pub const fn native(self) -> Self {
+        match self {
+            Self::FloydSteinbergOklab | Self::StructureFs | Self::ContrastFs => {
+                Self::FloydSteinberg
+            }
+            Self::Gilbert | Self::Dbs => Self::None,
+            Self::Yliluoma => Self::Yliluoma2,
+            Self::OptChecker
+            | Self::OptLine
+            | Self::OptLineChecker
+            | Self::OptVline
+            | Self::OptVlineChecker => Self::Pair,
+            Self::TriTone => Self::Knoll,
+            k => k,
         }
     }
 
@@ -333,15 +534,39 @@ impl DitherKind {
             | Self::ShiauFan2
             | Self::Ostromoukhov
             | Self::ZhouFang
-            | Self::Riemersma => DitherFamily::Diffusion,
-            Self::BlueNoise | Self::Ign | Self::R2 | Self::WhiteNoise => DitherFamily::Noise,
-            Self::Crosshatch | Self::Radial | Self::ValueNoise => DitherFamily::Effects,
+            | Self::Riemersma
+            | Self::FloydSteinbergOklab
+            | Self::Gilbert
+            | Self::Dbs
+            | Self::StructureFs
+            | Self::ContrastFs => DitherFamily::Diffusion,
+            Self::BlueNoise
+            | Self::Ign
+            | Self::R2
+            | Self::WhiteNoise
+            | Self::VoidCluster
+            | Self::ClusterNoise
+            | Self::CranleyBayer
+            | Self::IgnTri
+            | Self::R2Tri => DitherFamily::Noise,
+            Self::Crosshatch
+            | Self::Radial
+            | Self::ValueNoise
+            | Self::Quasicrystal
+            | Self::Truchet => DitherFamily::Effects,
             Self::Yliluoma1
             | Self::Yliluoma2
             | Self::Yliluoma3
             | Self::Knoll
             | Self::Luma
-            | Self::Pair => DitherFamily::PaletteAware,
+            | Self::Pair
+            | Self::Yliluoma
+            | Self::OptChecker
+            | Self::OptLine
+            | Self::OptLineChecker
+            | Self::OptVline
+            | Self::OptVlineChecker
+            | Self::TriTone => DitherFamily::PaletteAware,
             Self::Bayer2
             | Self::Bayer4
             | Self::Bayer8
@@ -368,7 +593,20 @@ impl DitherKind {
             | Self::Spiral5
             | Self::Hex5
             | Self::Hex8
-            | Self::Custom => DitherFamily::Ordered,
+            | Self::Custom
+            | Self::Bayer3
+            | Self::Bayer5
+            | Self::Bayer6
+            | Self::Bayer7
+            | Self::V4x2
+            | Self::Bayer4x2
+            | Self::Bayer2x4
+            | Self::LineVChecker
+            | Self::Fractal16
+            | Self::AsepriteOld
+            | Self::Libcaca3
+            | Self::Libcaca6
+            | Self::Pegasus => DitherFamily::Ordered,
         }
     }
 }

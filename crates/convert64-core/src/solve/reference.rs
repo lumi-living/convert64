@@ -1,5 +1,6 @@
-//! The reference path of [`super::Solver`] (#181): png2c64's pipeline
+//! The reference path of [`super::Solver`] (#181, ADR-010, ADR-014): png2c64's pipeline
 //! ([`super::png2c64_ref`]) on the compositor's frame, the default for the bitmap modes.
+//! It is also the fallback of the png2amiga solver for frames that one cannot solve.
 //!
 //! The frame's colours go through png2c64's preprocessing at its defaults with gamma 1
 //! (the layers' adjustments already applied any gamma): every pixel is converted to
@@ -162,7 +163,7 @@ pub(crate) fn solve(
     let (w, h) = mode.screen();
     let mut image = Image::new(w, h, frame.colour().to_vec());
     // png2c64's front end (#190) has run its preprocessing already.
-    if !frame.png2c64_prepared() {
+    if !frame.prepared() {
         preprocess::apply(
             &mut image,
             &preprocess::Settings {
@@ -246,13 +247,19 @@ pub(crate) fn solve(
     };
     let pal = colour::palette_of(palette);
     let screen = convert_px(&image, &pal, mode, &px, true, &hooks);
-    assemble(frame, &image, &pal, &screen)
+    assemble(frame, &image, &pal, &screen, SolverKind::Reference)
 }
 
 /// The solution of a reference screen: the encoded picture, each cell's own colours, the
 /// clash report and the error, measured as png2c64 measures (squared OKLab distance,
 /// weighted by coverage).
-fn assemble(frame: &TargetFrame, image: &Image, pal: &[[f32; 3]; 16], screen: &Screen) -> Solution {
+pub(super) fn assemble(
+    frame: &TargetFrame,
+    image: &Image,
+    pal: &[[f32; 3]; 16],
+    screen: &Screen,
+    solver: SolverKind,
+) -> Solution {
     let target = frame.grid().target();
     let background = (screen.mode == RefMode::Multicolor).then(|| colour_index(screen.bg));
     let sets: Vec<ColourSet> = screen
@@ -283,7 +290,7 @@ fn assemble(frame: &TargetFrame, image: &Image, pal: &[[f32; 3]; 16], screen: &S
         error,
         refined: 0,
         report,
-        solver: SolverKind::Reference,
+        solver,
         fallback: None,
     }
 }
@@ -369,7 +376,7 @@ fn report(
 
 /// Each cell's search constraints: steering's (pins, allow, deny) with the allowed
 /// colours of every covered pixel's recipe; empty when nothing constrains any cell.
-fn rules(frame: &TargetFrame, steering: &Steering, mode: RefMode) -> Vec<CellRule> {
+pub(super) fn rules(frame: &TargetFrame, steering: &Steering, mode: RefMode) -> Vec<CellRule> {
     let attrs = frame.attributes();
     let (w, _) = mode.screen();
     let (cw, ch) = mode.cell();
@@ -405,7 +412,7 @@ fn rules(frame: &TargetFrame, steering: &Steering, mode: RefMode) -> Vec<CellRul
 /// Cell `i` of a previous solution as the port's [`Cell`]: its colours by slot
 /// (multicolor: the background, then its own colours ascending, padded with the
 /// background) and each pixel's slot.
-fn previous_cell(prev: &Solution, out: &[ColourIndex], mode: RefMode, i: usize) -> Cell {
+pub(super) fn previous_cell(prev: &Solution, out: &[ColourIndex], mode: RefMode, i: usize) -> Cell {
     let (w, _) = mode.screen();
     let (cw, ch) = mode.cell();
     let cols = mode.cells().0;

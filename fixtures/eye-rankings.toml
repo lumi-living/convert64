@@ -1,0 +1,222 @@
+# Eye-ranked pairs from Jaakko's reviews of PR #273's sheets (2026-10-18).
+#
+# One entry per pair he judged: `winner` looked better than `loser` by eye. These are
+# the reference any quality metric must agree with before it is used for a gate or in
+# the UI (≥ 90 % of pairs; TAD §6). `cargo xtask metric-check` scores each candidate
+# metric against them.
+#
+# Variant names (what each sheet tile was; every tile is Pepto and multicolor, except
+# lineart's, which are hi-res like its png2c64 baseline):
+# - baselines sheet (`sheet-reference-baselines.png`):
+#   `png2c64` = the fixture's png2c64 baseline (checker 0.7, error clamp 0.1, gamma 1.5);
+#   `png2amiga` = png2amiga's baseline as #273 rendered it, with the flags that sheet used.
+# - match-range sheet (`sheet-match-range.png`), all png2amiga at the same flags as its
+#   baseline tile: `off`, `box` (png2c64's OKLab box stretch), `hull` (png2amiga's
+#   per-(L, hue) hull); `png2c64-baseline` = the fixture's png2c64 baseline, which he
+#   compared against all three.
+# - refine sheet (`sheet-refine.png`): png2amiga with refine `off` and `on`.
+# - large-sources sheet (`sheet-large-sources.png`), zone plate only:
+#   `old-mitchell-mip` (#257), `png2amiga-exact`, `mip-accelerated`.
+#
+# `confidence = "low"` marks pairs he called hard to judge (terrain is a stress case, #274).
+# Pairs he called equal ("Off = hull" on lineart) or mixed (Refine on photo), and the
+# grainy-title row ("all three very similar"), are not ranked and are left out.
+
+# --- baselines -------------------------------------------------------------------------
+
+[[pair]]
+sheet = "baselines"
+fixture = "portrait"
+winner = "png2c64"
+loser = "png2amiga"
+note = "Slightly. png2amiga has individual black pixels around the edges; png2c64's highlights have more shades."
+
+[[pair]]
+sheet = "baselines"
+fixture = "title"
+winner = "png2c64"
+loser = "png2amiga"
+note = "Clearly. More detail in the snow, trees and soldiers; a better gradient in the sky."
+
+[[pair]]
+sheet = "baselines"
+fixture = "photo"
+winner = "png2c64"
+loser = "png2amiga"
+note = "Clearly. More detail and shades in the forest, hay, snow and horizon."
+
+[[pair]]
+sheet = "baselines"
+fixture = "lineart"
+winner = "png2amiga"
+loser = "png2c64"
+note = "The lines stay more even, although grey instead of black and with some green bleed."
+
+[[pair]]
+sheet = "baselines"
+fixture = "gradient"
+winner = "png2c64"
+loser = "png2amiga"
+note = "Cleaner solids, better transitions within the gradients, sharper horizontal transitions."
+
+[[pair]]
+sheet = "baselines"
+fixture = "terrain"
+winner = "png2c64"
+loser = "png2amiga"
+confidence = "low"
+note = "Hard to judge: the source has more detail than the cells can hold. png2c64 still wins."
+
+# --- match range -----------------------------------------------------------------------
+
+[[pair]]
+sheet = "match-range"
+fixture = "portrait"
+winner = "off"
+loser = "box"
+note = "Box: too much blue bleeds into the shadows and the skin highlights blow out."
+
+[[pair]]
+sheet = "match-range"
+fixture = "portrait"
+winner = "off"
+loser = "hull"
+note = "Hull: greyish highlights and some blue in the shadows."
+
+[[pair]]
+sheet = "match-range"
+fixture = "portrait"
+winner = "png2c64-baseline"
+loser = "off"
+note = "The png2c64 baseline still beats all three."
+
+[[pair]]
+sheet = "match-range"
+fixture = "portrait"
+winner = "png2c64-baseline"
+loser = "box"
+
+[[pair]]
+sheet = "match-range"
+fixture = "portrait"
+winner = "png2c64-baseline"
+loser = "hull"
+
+[[pair]]
+sheet = "match-range"
+fixture = "terrain"
+winner = "off"
+loser = "box"
+confidence = "low"
+note = "Off best; the source has too much detail for the cells."
+
+[[pair]]
+sheet = "match-range"
+fixture = "terrain"
+winner = "off"
+loser = "hull"
+confidence = "low"
+
+[[pair]]
+sheet = "match-range"
+fixture = "title"
+winner = "box"
+loser = "off"
+note = "Off loses detail in the snow, forest and soldiers; box has good detail in the forest and soldiers (jagged sky, too even a cyan in the snow)."
+
+[[pair]]
+sheet = "match-range"
+fixture = "title"
+winner = "box"
+loser = "hull"
+note = "Hull: everything far too purple."
+
+[[pair]]
+sheet = "match-range"
+fixture = "title"
+winner = "png2c64-baseline"
+loser = "box"
+note = "Box is the best on this sheet but below the png2c64 baseline."
+
+[[pair]]
+sheet = "match-range"
+fixture = "gradient"
+winner = "png2c64-baseline"
+loser = "off"
+note = "None is good; the png2c64 baseline wins against all of them."
+
+[[pair]]
+sheet = "match-range"
+fixture = "gradient"
+winner = "png2c64-baseline"
+loser = "box"
+
+[[pair]]
+sheet = "match-range"
+fixture = "gradient"
+winner = "png2c64-baseline"
+loser = "hull"
+
+[[pair]]
+sheet = "match-range"
+fixture = "photo"
+winner = "png2c64-baseline"
+loser = "off"
+note = "Every variant loses too much detail in the snow, forest, hay and horizon."
+
+[[pair]]
+sheet = "match-range"
+fixture = "photo"
+winner = "png2c64-baseline"
+loser = "box"
+
+[[pair]]
+sheet = "match-range"
+fixture = "photo"
+winner = "png2c64-baseline"
+loser = "hull"
+
+# --- refine ----------------------------------------------------------------------------
+
+[[pair]]
+sheet = "refine"
+fixture = "portrait"
+winner = "off"
+loser = "on"
+note = "Refine much worse."
+
+[[pair]]
+sheet = "refine"
+fixture = "title"
+winner = "off"
+loser = "on"
+note = "Refine much worse: individual cells show, colours no longer transition smoothly."
+
+[[pair]]
+sheet = "refine"
+fixture = "lineart"
+winner = "off"
+loser = "on"
+note = "Refine worse: more colours bleed in."
+
+[[pair]]
+sheet = "refine"
+fixture = "gradient"
+winner = "off"
+loser = "on"
+note = "Refine worse."
+
+# --- large sources ---------------------------------------------------------------------
+
+[[pair]]
+sheet = "large-sources"
+fixture = "zoneplate-4096"
+winner = "old-mitchell-mip"
+loser = "png2amiga-exact"
+note = "Old Mitchell mip is closest to the source; the others lose too much detail around the centre."
+
+[[pair]]
+sheet = "large-sources"
+fixture = "zoneplate-4096"
+winner = "old-mitchell-mip"
+loser = "mip-accelerated"

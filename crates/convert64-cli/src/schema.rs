@@ -200,6 +200,11 @@ fn downscale_schema() -> Value {
             "description": "How a layer shrunk a long way is sampled (#235): auto samples a cached, box-reduced mip level past a 4× shrink (no aliasing on large sources); exact always the original with png2c64's four Mitchell taps, as png2c64 scales" })
 }
 
+fn resample_schema() -> Value {
+    json!({ "type": "string", "enum": ["mitchell", "lanczos"], "default": "mitchell",
+            "description": "The kernel a layer's colour is resampled with (ADR-014 §3): mitchell (png2c64's four-tap bicubic, the default) or lanczos (png2amiga's Lanczos-3 widened by the shrink: more even thin lines; the png2amiga solver always uses it)" })
+}
+
 fn source_schema() -> Value {
     json!({
         "description": "The pixels: a PNG path relative to the file the command is in (or the working directory), {\"path\": …}, {\"png_base64\": …} or {\"layer\": n} (an existing layer's pixels, shared)",
@@ -284,6 +289,8 @@ fn adjustments_properties() -> Value {
                         "description": "Control points [x, y], 0–1" });
     json!({
         "gamma": { "type": "number", "minimum": 0.1, "maximum": 8, "default": 1 },
+        "black_point": { "type": "number", "minimum": 0, "maximum": 0.5, "default": 0,
+                         "description": "png2c64's --black-point after the sharpen: OKLab lightness below this becomes black, the rest stretched; 0 is off (the line-art recipe uses 0.5)" },
         "sharpen": object_schema(json!({
             "amount": { "type": "number", "minimum": -1, "maximum": 3, "default": 0,
                         "description": "png2c64's --sharpen: positive sharpens lightness, negative blends toward a blur; |amount| < 0.01 is off" },
@@ -312,15 +319,25 @@ fn adjustments_properties() -> Value {
             "master": curve.clone(), "red": curve.clone(), "green": curve.clone(), "blue": curve
         }), &[]),
         "match_range": {
-            "description": "OKLab range matching (a project file's form), or null to turn it off",
+            "description": "Range matching (a project file's form), applied last, or null to turn it off: png2c64's box (each OKLab axis stretched onto a target extent; the default) or png2amiga's hull (experimental: each pixel's chroma scaled toward the palette's reachable hull, lightness and hue kept)",
             "oneOf": [
                 { "type": "null" },
                 object_schema(json!({
-                    "percentile": { "type": "number" },
+                    "method": { "type": "string", "enum": ["hull"] },
+                    "palette": { "type": "array", "minItems": 16, "maxItems": 16,
+                                 "items": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+                                 "description": "The palette matched onto, 16 \"#rrggbb\" in VIC-II index order (normally the project's)" },
+                    "amount": { "type": "number", "minimum": 0, "maximum": 1, "default": 1,
+                                "description": "How much of the matching: 1 is png2amiga's, 0 keeps the source's chroma" }
+                }), &["method", "palette"]),
+                object_schema(json!({
+                    "method": { "type": "string", "enum": ["box"] },
+                    "percentile": { "type": "number", "minimum": 0, "maximum": 0.499, "default": 0.01,
+                                    "description": "Tail fraction ignored at each end" },
                     "l": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
                     "a": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
                     "b": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }
-                }), &["percentile", "l", "a", "b"])
+                }), &["l", "a", "b"])
             ]
         }
     })
@@ -351,7 +368,7 @@ fn divergences_schema() -> Value {
         &[],
     );
     schema["description"] = json!(
-        "The reference solver's named divergences from png2c64 (docs/reference/png2c64-reference.md), as a whole: those not named are off"
+        "The png2c64 solver's named divergences (docs/reference/png2c64-reference.md), as a whole: those not named are off; asking for one solves with png2c64's port"
     );
     schema
 }
@@ -486,6 +503,10 @@ pub fn command_schema(name: &str) -> Option<Value> {
             json!({ "layer": layer(), "downscale": downscale_schema() }),
             &["layer", "downscale"],
         ),
+        "layer_set_resample" => object_schema(
+            json!({ "layer": layer(), "resample": resample_schema() }),
+            &["layer", "resample"],
+        ),
         "layer_set_transform" => object_schema(
             json!({ "layer": layer(), "transform": transform_schema(),
                     "snap": transform_snap_schema("Snap this way instead of by the project's setting") }),
@@ -531,7 +552,7 @@ pub fn command_schema(name: &str) -> Option<Value> {
         "background_pin" => object_schema(
             json!({
                 "background": {
-                    "description": "{\"fixed\": n} pins colour n (multicolor); \"auto\" searches all 16",
+                    "description": "{\"fixed\": n} pins colour n (multicolor); \"auto\" leaves it to the solver (the reference and native search all 16; the png2amiga solver follows solve_set background_rule)",
                     "oneOf": [
                         { "type": "string", "enum": ["auto"] },
                         object_schema(json!({ "fixed": { "type": "integer", "minimum": 0, "maximum": 15 } }), &["fixed"])
@@ -619,7 +640,10 @@ pub fn command_schema(name: &str) -> Option<Value> {
         ),
         "solve_set" => object_schema(
             json!({
-                "solver": enum_schema(&["reference", "native"], "png2c64's pipeline (reference) or Convert64's own (native)"),
+                "solver": enum_schema(&["reference", "png2amiga", "native"], "png2c64's pipeline (reference, the default; png2c64 is accepted as another name), png2amiga's C64 path with its own front end (png2amiga, a comparison solver, ADR-014) or Convert64's own (native)"),
+                "refine": { "type": "boolean", "default": false,
+                            "description": "Experimental, png2amiga solver only (the others ignore it): png2amiga's cell refine after the solve (its --cell-refine), kept only if its SSIMULACRA2 improves" },
+                "background_rule": enum_schema(&["black", "search"], "Experimental, png2amiga solver only: how it chooses an unpinned multicolor background (background_pin auto): black (png2amiga's colour 0, its default) or search (png2c64's search of all 16, the lowest total cell error). The reference and native solvers always search; hi-res has no background"),
                 "divergences": divergences_schema(),
                 "hysteresis": { "type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 1,
                                 "description": "Refinement hysteresis ratio; null turns it off" },
@@ -672,6 +696,7 @@ pub fn example(name: &str) -> Option<Value> {
         "layer_set_opacity" => json!({ "layer": 0, "opacity": 0.5 }),
         "layer_set_blend" => json!({ "layer": 1, "blend": "multiply" }),
         "layer_set_downscale" => json!({ "layer": 0, "downscale": "exact" }),
+        "layer_set_resample" => json!({ "layer": 0, "resample": "lanczos" }),
         "layer_set_transform" => json!({ "layer": 0, "transform": {
             "translate": { "x": 8, "y": 4 }, "scale": { "x": 2.5, "y": 2.5 }, "rotate": -12.5,
             "anchor": { "x": 0, "y": 1 }, "flip_h": true } }),
@@ -687,8 +712,9 @@ pub fn example(name: &str) -> Option<Value> {
         "mode_set" => json!({ "mode": "hires-bitmap" }),
         "palette_set" => json!({ "palette": "colodore" }),
         "background_pin" => json!({ "background": { "fixed": 0 } }),
-        "solve_set" => json!({ "solver": "native", "divergences": { "chroma_guard": true },
-            "hysteresis": 0.97 }),
+        "solve_set" => {
+            json!({ "solver": "png2amiga", "refine": true, "background_rule": "search", "hysteresis": 0.97 })
+        }
         "snap_set" => json!({ "snap": "c64-pixel" }),
         "mask_source_remove" => json!({ "layer": 1, "index": 0 }),
         "mask_source_set_combine" => json!({ "layer": 1, "index": 0, "combine": "min" }),

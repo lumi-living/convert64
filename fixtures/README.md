@@ -43,3 +43,26 @@ The settings and the png2c64 version and commit used are recorded in each fixtur
 **The parity bar (#181, #190).** `convert64 convert source.png` with a baseline's settings (below in each fixture README) reproduces `baseline.png` on ≥ 99 % of its pixels: all six are 100 % except `title` at 99.997 %. That's because a plain picture takes png2c64's own front end and the reference solver (`docs/TAD.md` §2, §6). CI checks it in the `png2c64 parity` step, together with png2c64's `--sharpen 0.5` and `--sharpen -0.5` renders of the portrait (`fixtures/portrait/baseline_sharpen_*.png`, #228) at ≥ 99.9 %. `cargo xtask front-end-sheet` shows what the supersampled composite would give instead.
 
 **Checked in VICE.** `cargo xtask vice-check` runs each baseline in VICE `x64sc`, through the display PRG `convert64-formats` builds from it, and compares the screenshot, `vice.png`, with the baseline. All six agree on 100 % of pixels; each fixture README records the VICE version, command and result. See `docs/TAD.md` §6.
+
+## png2amiga baselines (the png2amiga solver's references)
+
+[png2amiga/](png2amiga/) holds [png2amiga](https://github.com/tinic/png2amiga)'s C64 renders of each fixture's `source.png` (#261), the references of the png2amiga port's parity tests. Since [ADR-014](../docs/adr/ADR-014-png2c64-stays-reference.md) they are not gated as the fixtures' baselines (png2c64's above are); they test the port, not quality. Per fixture, `png2amiga/<name>/`:
+
+| File | What it is |
+|---|---|
+| `baseline.kla` / `baseline.art` | png2amiga's `.koa` / `.hir` file (Koala / Art Studio layout) |
+| `baseline.png` | that file drawn at 320 × 200 through Pepto |
+| `baseline_match_range.png` | with `--match-range` (png2amiga's hull) |
+| `baseline_refine.png` | with `--cell-refine` |
+| `portrait/baseline_sharpen_±0.5.png` | with `--sharpen 0.5` / `--sharpen -0.5` |
+| `vice.png` | VICE `x64sc` screenshot of the baseline from when it was gated (#273), 100 % |
+
+**Flags.** Convert64's defaults, spelled out (png2amiga's own differ): multicolor `--mode c64-multicolor --c64-palette pepto --c64-metric mse --dither checker --dither-strength 0.7 --error-clamp 0.1 --gamma 1.5`, hi-res (lineart) `--mode c64-hires --c64-palette pepto --c64-metric mse --dither none --gamma 1.5`. Each `png2amiga/<name>/README.md` records the exact command, the tool version and png2amiga's own SSIMULACRA2 of each render.
+
+**The pinned build.** png2amiga commit `4a8777653536ac07074a650ee86860347c8755fb` (v1.111.2), Homebrew GCC 15.3.0 on macOS (arm64), `-ffp-contract=off` appended after png2amiga's own `-ffp-contract=fast` and the maths shim `docs/reference/png2amiga-reference/crmath.c` ([png2amiga-reference.md](../docs/reference/png2amiga-reference.md)). Regenerate the renders (and the method previews in `docs/reference/dither-previews/png2amiga-*/`) on a developer machine with `cargo xtask png2amiga build` then `cargo xtask png2amiga renders`. CI never builds png2amiga: its tests read these committed files.
+
+**The parity tests.** `crates/convert64-core/tests/png2amiga_parity.rs` (224 cases, all 100 %) and `crates/convert64-cli/tests/png2amiga_convert.rs` (`convert64 convert --solver png2amiga`, 20 cases, all 100 %), in CI's `png2amiga parity` step.
+
+## Eye-ranked pairs
+
+[eye-rankings.toml](eye-rankings.toml) holds the pairs of pictures Jaakko ranked by eye on #273's review sheets; `cargo xtask metric-check` scores candidate quality metrics against them (`docs/TAD.md` §6). No metric is a gate unless it agrees with the eye on ≥ 90 % of them (ADR-014 §7). Edit it only to add pairs a human judged.

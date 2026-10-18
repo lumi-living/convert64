@@ -1,5 +1,9 @@
-//! The compositor (`docs/TAD.md` §2, ADR-002, ADR-012): every layer resampled with
-//! png2c64's Mitchell bicubic onto the super grid, 1× the target by default.
+//! The compositor (`docs/TAD.md` §2, ADR-002, ADR-012, ADR-014): every layer resampled
+//! with png2c64's Mitchell bicubic onto the super grid, 1× the target by default (a
+//! layer's colour can opt into png2amiga's widened Lanczos-3, [`Resample::Lanczos`]),
+//! then through png2c64's front end. Under the png2amiga solver the compositor runs
+//! png2amiga's front end instead ([`Pipeline::Png2amiga`]): its Lanczos-3 for every
+//! layer's colour and its preprocessing maths.
 //!
 //! Every visible layer is resampled onto the [`SuperGrid`] (`n ×` the target grid, the
 //! 2:1 multicolor aspect included) and blended bottom to top into an f32 linear
@@ -49,7 +53,9 @@ pub use attr::{AttrSource, AttributeMap, TargetAttr, debug_colour};
 pub use frame::TargetFrame;
 
 use crate::geom::{CellSet, PxRect, SuperGrid, Vec2};
-use crate::layer::{Adjustments, Blend, Downscale, Layer, Recipe, SourceImage, Transform};
+use crate::layer::{
+    Adjustments, Blend, Downscale, Layer, Recipe, Resample, SourceImage, Transform,
+};
 use crate::mask::{Mask, Modifiers, SnapToCells};
 use crate::region::Region;
 use crate::scratch;
@@ -57,8 +63,35 @@ use affine::AffineMap;
 use attr::AttrPlanes;
 use blend::RgbaRow;
 use mip::{MipCache, MipLevel};
-use resample::{AxisMap, Planes, resample_into, resample_planes};
+use resample::{AxisMap, Kernel, Planes, colour_pair, resample_into, resample_planes};
 use std::sync::Arc;
+
+/// Whose front end the compositor runs (ADR-014): how every layer's colour is resampled
+/// and preprocessed before the solver sees it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Pipeline {
+    /// png2c64's (ADR-012, the default; the reference and native solvers): each layer's
+    /// own [`Resample`] kernel, Mitchell unless it opts into Lanczos, then png2c64's
+    /// gamma, sharpen, black point and OKLab round trip.
+    #[default]
+    Png2c64,
+    /// png2amiga's (the png2amiga solver's, ADR-014 §2): its widened Lanczos-3 for every
+    /// layer's colour whatever the layer's [`Resample`], then png2amiga's preprocessing
+    /// with its own colour maths, so a plain picture is png2amiga's prepared image bit
+    /// for bit.
+    Png2amiga,
+}
+
+impl Pipeline {
+    /// The kernel `layer`'s colour is resampled with under this pipeline.
+    fn colour_kernel(self, layer: &Layer) -> Kernel {
+        if self == Self::Png2amiga || layer.resample() == Resample::Lanczos {
+            Kernel::LANCZOS
+        } else {
+            Kernel::Mitchell
+        }
+    }
+}
 
 /// The composite on the super grid: premultiplied linear RGBA, row-major.
 #[derive(Clone, Debug, PartialEq)]
@@ -181,29 +214,35 @@ struct RasterKey {
     adjustments: Adjustments,
     transform: Transform,
     downscale: Downscale,
+    resample: Resample,
     mask_generation: Option<u64>,
     grid: SuperGrid,
+    pipeline: Pipeline,
 }
 
 impl RasterKey {
-    fn of(layer: &Layer, grid: SuperGrid) -> Self {
+    fn of(layer: &Layer, grid: SuperGrid, pipeline: Pipeline) -> Self {
         Self {
             source: Arc::clone(layer.source()),
             adjustments: layer.adjustments().clone(),
             transform: layer.transform(),
             downscale: layer.downscale(),
+            resample: layer.resample(),
             mask_generation: layer.mask().map(crate::mask::Mask::generation),
             grid,
+            pipeline,
         }
     }
 
-    fn matches(&self, layer: &Layer, grid: SuperGrid) -> bool {
+    fn matches(&self, layer: &Layer, grid: SuperGrid, pipeline: Pipeline) -> bool {
         Arc::ptr_eq(&self.source, layer.source())
             && self.adjustments == *layer.adjustments()
             && self.transform == layer.transform()
             && self.downscale == layer.downscale()
+            && self.resample == layer.resample()
             && self.mask_generation == layer.mask().map(crate::mask::Mask::generation)
             && self.grid == grid
+            && self.pipeline == pipeline
     }
 }
 
@@ -328,19 +367,20 @@ impl LayerCache {
     fn refresh(
         &mut self,
         layer: &Layer,
-        grid: SuperGrid,
+        (grid, pipeline): (SuperGrid, Pipeline),
         full_res: bool,
         clock: Option<Clock>,
     ) -> Refreshed {
         let mut stats = Refreshed::default();
         let fresh = match &self.raster {
-            Some((key, _)) => !key.matches(layer, grid),
+            Some((key, _)) => !key.matches(layer, grid, pipeline),
             None => true,
         };
         if fresh {
-            let (raster, values) = self.build_raster(layer, grid, full_res, clock, &mut stats);
+            let (raster, values) =
+                self.build_raster(layer, (grid, pipeline), full_res, clock, &mut stats);
             let raster = Arc::new(raster);
-            let key = RasterKey::of(layer, grid);
+            let key = RasterKey::of(layer, grid, pipeline);
             if let Some((_, old)) = self.raster.replace((key, Arc::clone(&raster))) {
                 self.retired.0 = Some(old);
             }
@@ -489,14 +529,15 @@ impl LayerCache {
     fn build_raster(
         &mut self,
         layer: &Layer,
-        grid: SuperGrid,
+        (grid, pipeline): (SuperGrid, Pipeline),
         full_res: bool,
         clock: Option<Clock>,
         stats: &mut Refreshed,
     ) -> (LayerRaster, Option<Vec<f32>>) {
         let src = layer.source();
         let (sw, sh) = src.size();
-        let (place, rect) = placement(layer, grid, colour_levels(layer, grid));
+        let kernel = pipeline.colour_kernel(layer);
+        let (place, rect) = placement(layer, grid, colour_levels(layer, grid), kernel);
         if rect.is_empty() {
             let raster = LayerRaster {
                 rect: PxRect::EMPTY,
@@ -566,6 +607,7 @@ impl LayerCache {
                             colour.0,
                             colour.1,
                             map,
+                            kernel.is_lanczos(),
                             &mut rgba,
                             &mut extent,
                         );
@@ -589,7 +631,7 @@ impl LayerCache {
                 Some(values)
             },
         );
-        adjust_planes(&mut rgba, rect.width() as usize, adj, grid.n());
+        adjust_planes(&mut rgba, rect.width() as usize, adj, grid.n(), pipeline);
         let raster = LayerRaster {
             rect,
             rgba,
@@ -602,22 +644,26 @@ impl LayerCache {
 /// A layer's front end on its resampled, premultiplied planes (`width` wide): png2c64's
 /// preprocessing, then the layer's own adjustments, in png2c64's order (#190, ADR-012).
 ///
-/// 1. png2c64's preprocessing with the layer's gamma and sharpen and its other settings
-///    neutral: the gamma (an exact `powf`), the sharpen (#228; png2c64's 3 × 3 at the
-///    target grid, its taps `n` super pixels apart on an `n ×` grid, or a Gaussian, the
-///    blur weighted by alpha so a transparent surround pulls in no halo), then the OKLab
-///    round trip and clamp png2c64 puts every pixel through.
+/// 1. png2c64's preprocessing with the layer's gamma, sharpen and black point and its
+///    other settings neutral: the gamma (an exact `powf`), the sharpen (#228; png2c64's
+///    3 × 3 at the target grid, its taps `n` super pixels apart on an `n ×` grid, or a
+///    Gaussian, the blur weighted by alpha so a transparent surround pulls in no halo),
+///    the black point (levels on OKLab L, ADR-014 §4), then the OKLab round trip and
+///    clamp png2c64 puts every pixel through.
 /// 2. The rest of the layer's adjustments (levels, brightness and contrast, hue,
 ///    saturation and lightness, curves), which png2c64 does not have.
-/// 3. Range matching, png2c64's `match_range_to` over the layer's covered pixels.
+/// 3. Range matching over the layer's covered pixels: png2c64's `match_range_to` (a
+///    box), or png2amiga's hull ([`crate::layer::RangeMatch::apply_rgb`]).
 ///
 /// A layer fitted to the screen therefore leaves this step as png2c64's prepared image
 /// (`png2c64_ref::prepare`), and every frame counts as prepared: the reference solver
-/// does not repeat the round trip. Fully transparent pixels stay transparent, so the
-/// planes' extents still hold; the sharpen stays inside the layer's rectangle, so the
-/// cells an adjustment can change are the rectangle's.
-fn adjust_planes(planes: &mut Planes, width: usize, adj: &Adjustments, n: u8) {
-    use crate::solve::png2c64_ref::{Image, preprocess};
+/// does not repeat the round trip. Under [`Pipeline::Png2amiga`] step 1 is png2amiga's
+/// preprocessing, with its colour maths, so a fitted layer leaves it as png2amiga's
+/// prepared image (`png2amiga_ref::prepare`). Fully transparent pixels stay transparent,
+/// so the planes' extents still hold; the sharpen stays inside the layer's rectangle, so
+/// the cells an adjustment can change are the rectangle's.
+fn adjust_planes(planes: &mut Planes, width: usize, adj: &Adjustments, n: u8, pipeline: Pipeline) {
+    use crate::solve::{png2amiga_ref as p2a, png2c64_ref as p2c};
     let len = planes.a.len();
     if len == 0 {
         return;
@@ -631,22 +677,52 @@ fn adjust_planes(planes: &mut Planes, width: usize, adj: &Adjustments, n: u8) {
         }
     };
     let height = len / width;
-    let mut im = Image::new(width, height, (0..len).map(straight).collect());
-    // png2c64's order: gamma, sharpen, then the round trip (`preprocess::apply` with
-    // gamma 1 skips the power and, with no sharpen, does the rest).
-    preprocess::apply_gamma(&mut im, adj.gamma.get());
-    adj.sharpen
-        .apply_rgb(&mut im.px, &planes.a, (width, height), u32::from(n));
-    preprocess::apply(
-        &mut im,
-        &preprocess::Settings {
-            gamma: 1.0,
-            ..preprocess::Settings::default()
-        },
-    );
+    let mut px: Vec<[f32; 3]> = (0..len).map(straight).collect();
+    // png2c64's order: gamma, sharpen, then the levels (the black point) and the round
+    // trip (`preprocess::apply` with gamma 1 skips the power and, with no sharpen, does
+    // the rest). png2amiga's is the same, with its maths.
+    match pipeline {
+        Pipeline::Png2c64 => {
+            let mut im = p2c::Image::new(width, height, px);
+            p2c::preprocess::apply_gamma(&mut im, adj.gamma.get());
+            adj.sharpen
+                .apply_rgb(&mut im.px, &planes.a, (width, height), u32::from(n));
+            p2c::preprocess::apply(
+                &mut im,
+                &p2c::preprocess::Settings {
+                    gamma: 1.0,
+                    black_point: adj.black_point.get(),
+                    ..p2c::preprocess::Settings::default()
+                },
+            );
+            px = im.px;
+        }
+        Pipeline::Png2amiga => {
+            let mut im = p2a::Image::new(width, height, px);
+            p2a::preprocess::apply_gamma(&mut im, adj.gamma.get());
+            adj.sharpen.apply_rgb_in(
+                &mut im.px,
+                &planes.a,
+                (width, height),
+                u32::from(n),
+                pipeline,
+            );
+            p2a::preprocess::apply(
+                &mut im,
+                &p2a::preprocess::Settings {
+                    gamma: 1.0,
+                    black_point: adj.black_point.get(),
+                    ..p2a::preprocess::Settings::default()
+                },
+            );
+            px = im.px;
+        }
+    }
+    let mut im = p2c::Image::new(width, height, px);
     let rest = Adjustments {
         gamma: crate::layer::Gamma::IDENTITY,
         sharpen: crate::layer::Sharpen::default(),
+        black_point: crate::layer::BlackPoint::OFF,
         match_range: None,
         ..adj.clone()
     }
@@ -661,13 +737,9 @@ fn adjust_planes(planes: &mut Planes, width: usize, adj: &Adjustments, n: u8) {
     if let Some(m) = &adj.match_range {
         // Over the covered pixels only: a transparent surround has no colour to match.
         let covered: Vec<usize> = (0..len).filter(|&i| planes.a[i] > 0.0).collect();
-        let mut cov = Image::new(
-            covered.len(),
-            usize::from(!covered.is_empty()),
-            covered.iter().map(|&i| im.px[i]).collect(),
-        );
-        preprocess::match_range_to(&mut cov, m.percentile(), m.targets());
-        for (&i, p) in covered.iter().zip(&cov.px) {
+        let mut cov: Vec<[f32; 3]> = covered.iter().map(|&i| im.px[i]).collect();
+        m.apply_rgb(&mut cov);
+        for (&i, p) in covered.iter().zip(&cov) {
             im.px[i] = *p;
         }
     }
@@ -684,10 +756,17 @@ fn adjust_planes(planes: &mut Planes, width: usize, adj: &Adjustments, n: u8) {
 /// The one layer a plain project consists of, if it is plain (#190): a bitmap mode, no
 /// regions, one visible layer that is fully opaque 8-bit sRGB, filling the screen
 /// exactly (no offset, no flip, no rotation: #198), at full opacity, Normal blend, with no mask and no
-/// adjustment but gamma, png2c64's sharpen (its kernel, no threshold: #228) and range
-/// matching, and sampling the source itself (no mip level, #235). Such a project gets
-/// png2c64's front end.
-fn plain_layer<'a>(layers: &'a [Layer], regions: &[Region], grid: SuperGrid) -> Option<&'a Layer> {
+/// adjustment but gamma, png2c64's sharpen (its kernel, no threshold: #228), the black
+/// point and range matching, and sampling the source itself (no mip level, #235). Such a
+/// project gets the pipeline's front end: png2c64's for a layer resampled with Mitchell
+/// (a Lanczos layer goes through the composite, which is the same picture at 1×), or
+/// png2amiga's under [`Pipeline::Png2amiga`].
+fn plain_layer<'a>(
+    layers: &'a [Layer],
+    regions: &[Region],
+    grid: SuperGrid,
+    pipeline: Pipeline,
+) -> Option<&'a Layer> {
     use crate::mode::Mode;
     if !matches!(grid.target(), Mode::MulticolorBitmap | Mode::HiresBitmap) || !regions.is_empty() {
         return None;
@@ -704,10 +783,12 @@ fn plain_layer<'a>(layers: &'a [Layer], regions: &[Region], grid: SuperGrid) -> 
     let tone_only = Adjustments {
         gamma: crate::layer::Gamma::IDENTITY,
         sharpen: crate::layer::Sharpen::default(),
+        black_point: crate::layer::BlackPoint::OFF,
         match_range: None,
         ..adj.clone()
     };
     (src.srgb8().is_some()
+        && (pipeline == Pipeline::Png2amiga || layer.resample() == Resample::Mitchell)
         && layer.opacity() == 1.0
         && layer.blend() == Blend::Normal
         && layer.mask().is_none()
@@ -723,45 +804,73 @@ fn plain_layer<'a>(layers: &'a [Layer], regions: &[Region], grid: SuperGrid) -> 
         .then_some(layer)
 }
 
-/// png2c64's front end for a plain layer: its 8-bit source scaled straight to the
-/// target with its Mitchell bicubic, then its preprocessing with the layer's gamma and
-/// sharpen, then range matching onto the layer's targets (`solve::png2c64_ref::prepare`).
-fn png2c64_front_end(layer: &Layer, grid: SuperGrid) -> Vec<[f32; 3]> {
-    use crate::solve::png2c64_ref::{prepare, preprocess, quantize::Mode as RefMode};
+/// The front end for a plain layer: png2c64's (its 8-bit source scaled straight to the
+/// target with its Mitchell bicubic, then its preprocessing with the layer's gamma,
+/// sharpen and black point, `solve::png2c64_ref::prepare`) or, under
+/// [`Pipeline::Png2amiga`], png2amiga's (its widened Lanczos-3 and preprocessing,
+/// `solve::png2amiga_ref::prepare`); then the layer's range matching.
+fn plain_front_end(layer: &Layer, grid: SuperGrid, pipeline: Pipeline) -> Vec<[f32; 3]> {
+    use crate::solve::{png2amiga_ref as p2a, png2c64_ref as p2c};
     let src = layer.source();
     let (w, h) = src.size();
-    let mode = if grid.target() == crate::mode::Mode::HiresBitmap {
-        RefMode::Hires
-    } else {
-        RefMode::Multicolor
-    };
+    let hires = grid.target() == crate::mode::Mode::HiresBitmap;
     let adj = layer.adjustments();
-    let mut im = prepare(
-        src.srgb8().expect("a plain layer has its bytes"),
-        (w as usize, h as usize),
-        mode,
-        &preprocess::Settings {
-            gamma: adj.gamma.get(),
-            sharpen: adj.sharpen.amount(),
-            ..preprocess::Settings::default()
-        },
-        None,
-    );
+    let bytes = src.srgb8().expect("a plain layer has its bytes");
+    let size = (w as usize, h as usize);
+    let mut px = match pipeline {
+        Pipeline::Png2c64 => {
+            use p2c::quantize::Mode as RefMode;
+            let mode = if hires {
+                RefMode::Hires
+            } else {
+                RefMode::Multicolor
+            };
+            let settings = p2c::preprocess::Settings {
+                gamma: adj.gamma.get(),
+                sharpen: adj.sharpen.amount(),
+                black_point: adj.black_point.get(),
+                ..p2c::preprocess::Settings::default()
+            };
+            p2c::prepare(bytes, size, mode, &settings, None).px
+        }
+        Pipeline::Png2amiga => {
+            use p2a::Mode as RefMode;
+            let mode = if hires {
+                RefMode::Hires
+            } else {
+                RefMode::Multicolor
+            };
+            let settings = p2a::preprocess::Settings {
+                gamma: adj.gamma.get(),
+                sharpen: adj.sharpen.amount(),
+                black_point: adj.black_point.get(),
+                ..p2a::preprocess::Settings::default()
+            };
+            p2a::prepare(bytes, size, mode, &settings, None).px
+        }
+    };
     if let Some(m) = &adj.match_range {
-        preprocess::match_range_to(&mut im, m.percentile(), m.targets());
+        m.apply_rgb(&mut px);
     }
-    im.px
+    px
 }
 
 /// Where `layer` lands on `grid` and the super rectangle it touches: the separable axis
 /// maps when it is axis-aligned (`rotate == 0`, unchanged by #198), else the inverse
 /// affine map, whose rectangle is the rotated quad's bounding box on the grid. Either
 /// samples the source's mip `level` along each layer axis ((0, 0): the source itself,
-/// #235); the rectangle and the coverage do not depend on it.
-fn placement(layer: &Layer, grid: SuperGrid, level: (u32, u32)) -> (Placement, PxRect) {
+/// #235); the rectangle and the coverage do not depend on it. The axis maps resample
+/// with `kernel` (masks: always [`Kernel::Mitchell`]); a rotated layer's colour kernel is
+/// chosen when it is resampled (`affine::resample_planes_affine`).
+fn placement(
+    layer: &Layer,
+    grid: SuperGrid,
+    level: (u32, u32),
+    kernel: Kernel,
+) -> (Placement, PxRect) {
     let t = layer.transform();
     if t.is_axis_aligned() {
-        let (mx, my, rect) = axis_maps(layer, grid, level);
+        let (mx, my, rect) = axis_maps(layer, grid, level, kernel);
         (Placement::Axis(mx, my), rect)
     } else {
         let map = AffineMap::new(&t, layer.source().size(), grid, level);
@@ -770,30 +879,48 @@ fn placement(layer: &Layer, grid: SuperGrid, level: (u32, u32)) -> (Placement, P
     }
 }
 
-/// A layer's per-axis resampling maps onto `grid` and the super rectangle it touches.
-fn axis_maps(layer: &Layer, grid: SuperGrid, level: (u32, u32)) -> (AxisMap, AxisMap, PxRect) {
+/// A layer's per-axis resampling maps onto `grid` with `kernel` and the super rectangle
+/// it touches. With Lanczos, an axis at 1:1 is copied only when the other axis is too
+/// ([`colour_pair`]), as png2amiga copies a source already the target's size.
+fn axis_maps(
+    layer: &Layer,
+    grid: SuperGrid,
+    level: (u32, u32),
+    kernel: Kernel,
+) -> (AxisMap, AxisMap, PxRect) {
     let (sw, sh) = layer.source().size();
     let t = layer.transform();
     let step = grid.super_px_in_canvas();
     let (gw, gh) = grid.size();
-    let mx = AxisMap::new(
-        sw,
-        t.translate().x,
-        t.scale().x,
-        t.flip_h(),
-        step.x,
-        gw,
-        level.0,
-    );
-    let my = AxisMap::new(
-        sh,
-        t.translate().y,
-        t.scale().y,
-        t.flip_v(),
-        step.y,
-        gh,
-        level.1,
-    );
+    let x = |k| {
+        AxisMap::new(
+            sw,
+            t.translate().x,
+            t.scale().x,
+            t.flip_h(),
+            step.x,
+            gw,
+            level.0,
+            k,
+        )
+    };
+    let y = |k| {
+        AxisMap::new(
+            sh,
+            t.translate().y,
+            t.scale().y,
+            t.flip_v(),
+            step.y,
+            gh,
+            level.1,
+            k,
+        )
+    };
+    let (mx, my) = if kernel.is_lanczos() {
+        colour_pair(x, y)
+    } else {
+        (x(kernel), y(kernel))
+    };
     let rect = PxRect::new(mx.out0, my.out0, mx.out0 + mx.len(), my.out0 + my.len());
     (mx, my, rect)
 }
@@ -848,7 +975,7 @@ fn mask_placement(layer: &Layer, grid: SuperGrid) -> MaskPlace {
     // Mitchell's sixteen taps per fine pixel cost a rotated layer 60–130 ms more than
     // bilinear's four, and after the box reduction the edge is still within 0.014 of
     // an 8× composite (0.006 with Mitchell).
-    let (place, rect) = placement(layer, mgrid, level);
+    let (place, rect) = placement(layer, mgrid, level, Kernel::Mitchell);
     MaskPlace {
         place,
         fine: k.map(|k| (rect, k)),
@@ -1056,15 +1183,16 @@ pub struct Compositor {
     mip_ms: f64,
     /// The clock that times them ([`Self::set_clock`]).
     clock: Option<Clock>,
-    /// png2c64's prepared image of the last plain layer (#190), with what it was made
-    /// from.
+    /// The prepared image of the last plain layer (#190), with what it was made from.
     front: Option<FrontEnd>,
     /// Whether a plain layer takes png2c64's front end ([`Self::set_png2c64_front_end`]).
     front_end: bool,
+    /// Whose front end every layer goes through ([`Self::set_pipeline`]).
+    pipeline: Pipeline,
 }
 
-/// png2c64's front end for one plain layer: its source and adjustments, and the
-/// prepared colour on the target grid.
+/// The front end for one plain layer: its source and adjustments, and the prepared
+/// colour on the target grid (the compositor's pipeline's: a pipeline change drops it).
 #[derive(Debug)]
 struct FrontEnd {
     source: Arc<SourceImage>,
@@ -1099,7 +1227,25 @@ impl Compositor {
             clock: None,
             front: None,
             front_end: true,
+            pipeline: Pipeline::Png2c64,
         }
+    }
+
+    /// Whose front end every layer goes through: png2c64's (the default) or, for the
+    /// png2amiga solver, png2amiga's (ADR-014 §2). The next update recomposites everything
+    /// when this changes.
+    pub fn set_pipeline(&mut self, pipeline: Pipeline) {
+        if pipeline != self.pipeline {
+            self.pipeline = pipeline;
+            self.front = None;
+            self.last = None;
+            self.below = None;
+        }
+    }
+
+    /// Whose front end every layer goes through ([`Self::set_pipeline`]).
+    pub const fn pipeline(&self) -> Pipeline {
+        self.pipeline
     }
 
     /// Times the mip levels this compositor builds with `clock` (milliseconds from any
@@ -1153,6 +1299,7 @@ impl Compositor {
                 clock: self.clock,
                 full_res_feather: self.full_res_feather,
                 front_end: self.front_end,
+                pipeline: self.pipeline,
                 ..Self::new(grid)
             };
         }
@@ -1228,7 +1375,8 @@ impl Compositor {
     /// Only the layers from the lowest changed one up are re-blended: the ones below come
     /// from a cached fold of them, kept while they stay unchanged.
     pub fn update(&mut self, layers: &[Layer], regions: &[Region]) -> CellSet {
-        let plain = plain_layer(layers, regions, self.grid).filter(|_| self.front_end);
+        let plain =
+            plain_layer(layers, regions, self.grid, self.pipeline).filter(|_| self.front_end);
         if plain.is_none() && self.front.take().is_some() {
             // The frame held png2c64's image: composite everything afresh.
             self.last = None;
@@ -1271,7 +1419,7 @@ impl Compositor {
         let fresh =
             !matches!(&self.front, Some(f) if Arc::ptr_eq(&f.source, src) && f.adjustments == *adj);
         if fresh {
-            let colour = png2c64_front_end(layer, self.grid);
+            let colour = plain_front_end(layer, self.grid, self.pipeline);
             let (w, _) = self.grid.target_size();
             let (cw, ch) = self.grid.cell_size();
             for (i, c) in colour.iter().enumerate() {
@@ -1432,7 +1580,11 @@ impl Compositor {
     fn prepare(&mut self, layers: &[Layer]) -> Vec<Option<Blendable>> {
         assert!(layers.len() < 0x8000, "at most 32767 layers");
         self.caches.resize_with(layers.len(), LayerCache::default);
-        let (grid, full_res, clock) = (self.grid, self.full_res_feather, self.clock);
+        let (grid, full_res, clock) = (
+            (self.grid, self.pipeline),
+            self.full_res_feather,
+            self.clock,
+        );
         let shown = |l: &Layer| l.visible() && l.opacity() > 0.0;
         let mut work: Vec<(&Layer, &mut LayerCache, Refreshed)> = layers
             .iter()
@@ -2010,7 +2162,7 @@ mod tests {
                 let mut c = Compositor::new(SuperGrid::with_default_factor(mode).unwrap());
                 c.set_png2c64_front_end(false);
                 c.update(std::slice::from_ref(&layer), &[]);
-                assert!(c.frame().png2c64_prepared());
+                assert!(c.frame().prepared());
                 let src = layer.source();
                 let mut want = prepare(
                     src.srgb8().unwrap(),
@@ -2054,7 +2206,7 @@ mod tests {
                 1000,
                 "{mode}: the first update dirties everything"
             );
-            assert!(c.frame().png2c64_prepared());
+            assert!(c.frame().prepared());
             let src = layer.source();
             let want = prepare(
                 src.srgb8().unwrap(),
@@ -2083,7 +2235,7 @@ mod tests {
             assert_eq!(c.frame(), fresh.frame(), "{mode}: as a cold composite");
 
             let dirty = c.update(std::slice::from_ref(&layer), &[]);
-            assert!(c.frame().png2c64_prepared());
+            assert!(c.frame().prepared());
             assert!(!dirty.is_empty());
             assert_eq!(c.frame().colour(), &want.px[..]);
             assert!(
@@ -2238,7 +2390,7 @@ mod tests {
             for (name, edit) in edits {
                 let (_, before) = full(g, &layers, &[]);
                 let footprint = |l: &[Layer]| {
-                    let (_, rect) = placement(&l[1], g, colour_levels(&l[1], g));
+                    let (_, rect) = placement(&l[1], g, colour_levels(&l[1], g), Kernel::Mitchell);
                     CellSet::from_super_rect(g, rect)
                 };
                 let mut allowed = footprint(&layers);
@@ -3508,8 +3660,8 @@ mod tests {
         let g = SuperGrid::with_default_factor(Mode::MulticolorBitmap).unwrap();
         let auto = fitted(1600, 1000, Downscale::Auto);
         let exact = fitted(1600, 1000, Downscale::Exact);
-        assert!(plain_layer(std::slice::from_ref(&auto), &[], g).is_none());
-        assert!(plain_layer(std::slice::from_ref(&exact), &[], g).is_some());
+        assert!(plain_layer(std::slice::from_ref(&auto), &[], g, Pipeline::Png2c64).is_none());
+        assert!(plain_layer(std::slice::from_ref(&exact), &[], g, Pipeline::Png2c64).is_some());
         assert_eq!(colour_levels(&auto, g), (2, 2));
         // The Source view's 4× grid is four times finer: the same source is no shrink
         // past 4× there.

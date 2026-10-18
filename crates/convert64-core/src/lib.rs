@@ -16,6 +16,7 @@ pub mod model;
 pub mod palette;
 pub mod par;
 pub mod preview;
+pub mod quality;
 pub mod region;
 pub mod rule;
 mod scratch;
@@ -27,7 +28,7 @@ pub use command::{Command, Editor, Project};
 pub use composite::{AttributeMap, Canvas, Compositor, TargetFrame};
 pub use document::SolveSettings;
 pub use geom::{CellSet, PxRect, SuperGrid, Vec2};
-pub use layer::{Blend, Downscale, Layer, Recipe, SourceImage, Transform};
+pub use layer::{Blend, Downscale, Layer, Recipe, Resample, SourceImage, Transform};
 pub use mask::{Mask, MaskRaster};
 pub use mode::{Mode, ModeSpec};
 pub use model::{

@@ -1,0 +1,87 @@
+# png2amiga's SSIMULACRA2 scores of the pairs in tests/ssimulacra2.rs.
+#
+# png2amiga commit 4a8777653536ac07074a650ee86860347c8755fb (v1.111.2), src/ssimulacra2.cpp
+# with its scalar backend, built with `-O2 -ffp-contract=off` by Homebrew GCC 16.2.0 on
+# macOS arm64 (GCC 15.3.0 and Apple clang 21 give the same bits). `bits` is the f32
+# score png2amiga returns; `score` is the same value in decimal, for reading.
+# How to regenerate: README.md in this directory.
+
+[[pair]]
+name = "gradient-baseline-vs-native"
+score = -48.1087379
+bits = "c2406f59"
+
+[[pair]]
+name = "gradient-crop-37x29"
+score = 79.6537323
+bits = "429f4eb6"
+
+[[pair]]
+name = "lineart-baseline-vs-native"
+score = 13.491046
+bits = "4157db53"
+
+[[pair]]
+name = "lineart-prepared-vs-baseline"
+score = -6.90963125
+bits = "c0dd1bb3"
+
+[[pair]]
+name = "photo-baseline-vs-native"
+score = -57.1222725
+bits = "c2647d35"
+
+[[pair]]
+name = "photo-blur3x3"
+score = -3.26684904
+bits = "c051140e"
+
+[[pair]]
+name = "photo-identical"
+score = 100.0
+bits = "42c80000"
+
+[[pair]]
+name = "photo-prepared-vs-baseline"
+score = -28.2305889
+bits = "c1e1d83f"
+
+[[pair]]
+name = "portrait-baseline-vs-fs-unclamped"
+score = -59.3910179
+bits = "c26d9067"
+
+[[pair]]
+name = "portrait-baseline-vs-native"
+score = -56.979847
+bits = "c263eb5d"
+
+[[pair]]
+name = "portrait-noise24"
+score = 1.84384525
+bits = "3fec031f"
+
+[[pair]]
+name = "portrait-prepared-vs-baseline"
+score = -63.556263
+bits = "c27e399d"
+
+[[pair]]
+name = "portrait-wide-baseline-vs-native"
+score = -57.0097961
+bits = "c2640a08"
+
+[[pair]]
+name = "terrain-baseline-vs-native"
+score = -17.2309628
+bits = "c189d903"
+
+[[pair]]
+name = "title-baseline-vs-expected"
+score = 98.0920563
+bits = "42c42f22"
+
+[[pair]]
+name = "title-baseline-vs-native"
+score = -30.8251553
+bits = "c1f699eb"

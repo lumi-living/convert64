@@ -68,7 +68,13 @@ fn solve_timings() {
     ] {
         for (kind, solver_kind) in [DitherKind::FloydSteinberg, DitherKind::Bayer4]
             .into_iter()
-            .flat_map(|k| [(k, SolverKind::Reference), (k, SolverKind::Native)])
+            .flat_map(|k| {
+                [
+                    (k, SolverKind::Reference),
+                    (k, SolverKind::Png2amiga),
+                    (k, SolverKind::Native),
+                ]
+            })
         {
             let opts = SolveOptions {
                 solver: solver_kind,

@@ -23,7 +23,7 @@ Every command exits with one of these:
 | `ok` | `exit_code == 0` |
 | `exit_code` | As above |
 | `error` | The error message, or `null` |
-| `timing_ms` | `total`, plus each phase the command ran: `load`, `apply`, `solve`, `write`, `validate`, `convert` (batch) |
+| `timing_ms` | `total`, plus each phase the command ran: `load`, `apply`, `solve`, `ssimulacra2` (scoring the solve), `write`, `validate`, `convert` (batch) |
 | `files_written` | Every file written, in order, as given on the command line |
 | `notes` | What loading the input changed, said once; `[]` when nothing did. Today the one note is an older project's migration ([project-file.md](project-file.md#versions)): `"Updated project from v2: now uses 1× resampling"`. Without `--json` each note is a `note: …` line on stderr. In `batch` and `export` each file's report has its own `notes` |
 
@@ -51,7 +51,8 @@ For a PNG, a `.kla` or `.art` output also picks the mode when `--mode` is not gi
 
 | Option | Overrides | Values |
 |---|---|---|
-| `--solver` | `solve.solver` | `reference` (default: png2c64's pipeline, #181), `native` |
+| `--solver` | `solve.solver` | `reference` (default: png2c64's pipeline, ported in #181, [ADR-010](../adr/ADR-010-png2c64-reference-solver.md), [ADR-014](../adr/ADR-014-png2c64-stays-reference.md); `png2c64` is another name for it), `png2amiga` (png2amiga's C64 path, ported in #261, with its own front end: its widened Lanczos-3 for every layer and its preprocessing maths; a comparison solver, [png2amiga-reference.md](png2amiga-reference.md)), `native` (Convert64's own). A frame the reference cannot solve goes to native; one the png2amiga solver cannot solve goes to the reference, else native. The report's `solver_fallback` says why |
+| `--cell-refine` | `solve.refine` | Experimental, needs `--solver png2amiga` (exit 2 otherwise): png2amiga's cell refine after the solve (its `--cell-refine`), kept only if its SSIMULACRA2 improves. Off by default |
 | `--diverge` | `solve.divergences` | The reference solver's named divergences from png2c64, all off by default: `chroma-guard`, `max-luma-diff=N` (0–8), `pair-bias=X` (−1–1), `cell-clamp`, `mix-levels=N` (1–16), `bridging`; repeatable or comma-separated ([png2c64-reference.md](png2c64-reference.md#divergences)) |
 | `--mode` | `target` | `koala` (also `mc`, `multicolor`), `hires` (also `hi-res`, `art`) |
 | `--palette` | `palette` | `pepto` / `pepto-pal`, `pepto-ntsc`, `colodore`, or a `.vpl` path |
@@ -68,14 +69,20 @@ For a PNG, a `.kla` or `.art` output also picks the mode when `--mode` is not gi
 | `--mix-levels` | `recipe.mix_levels` | 0–16; native solver |
 | `--smooth` | `recipe.smooth` | native solver |
 | `--gamma` | each layer's `adjustments.gamma` | 0.1–8 |
-| `--match-range` | `adjustments.match_range` | |
+| `--match-range` | each layer's `adjustments.match_range` | png2c64's `--match-range`: the picture's OKLab range (1st–99th percentiles) stretched onto the project's palette's extent shrunk by 5 % |
+| `--match-range-method` | `adjustments.match_range` | With `--match-range`: `box` (the default, png2c64's) or `hull` (png2amiga's, experimental: each pixel's chroma scaled toward what the palette can reach at its lightness and hue, lightness and hue kept; what png2amiga's `--match-range` does, so use it with `--solver png2amiga` to compare). Without `--match-range` it is an error (exit 2) |
+| `--match-range-amount` | `adjustments.match_range.amount` | With `--match-range-method hull`: 0–100 % of the matching (default 100, png2amiga's; 0 keeps the source's chroma). Otherwise an error (exit 2) |
 | `--sharpen` | each layer's `adjustments.sharpen.amount` (#228) | −1–3, png2c64's `--sharpen`: positive sharpens lightness at the C64 grid, negative blends toward a blur; 0 is off |
 | `--sharpen-radius` | `adjustments.sharpen.radius` | `png2c64` (its 3×3 box, the default) or a Gaussian σ in C64 pixels, 0.3–3 |
 | `--sharpen-threshold` | `adjustments.sharpen.threshold` | 0–0.1 in OKLab L; pixels nearer the blur than this are not sharpened (png2c64 has none: 0) |
-| `--downscale` | each layer's `downscale` (#235) | `auto` (default): past a 4× shrink on the 320 grid, sample a cached, box-reduced mip level of the source with the same Mitchell taps, so large sources do not alias; `exact`: always the original, as png2c64 does. Up to 4× (sources up to 1280 px wide fitted) the two are identical |
+| `--downscale` | each layer's `downscale` (#235) | `auto` (default): past a 4× shrink on the 320 grid, sample a cached, box-reduced mip level of the source with the same kernel, so large sources do not alias; `exact`: always the original, as png2c64 does. Up to 4× (sources up to 1280 px wide fitted) the two are identical |
+| `--resample` | each layer's `resample` ([ADR-014](../adr/ADR-014-png2c64-stays-reference.md) §3) | `mitchell` (default, png2c64's four-tap bicubic) or `lanczos` (png2amiga's Lanczos-3 widened by the shrink: thin lines come out more even, and greyer). Masks are always Mitchell; the png2amiga solver always uses `lanczos` |
+| `--black-point` | each layer's `adjustments.black_point` | 0–0.5, png2c64's `--black-point`: OKLab lightness below it becomes black and the rest is stretched, after the gamma and the sharpen. Default 0, off |
+| `--allowed` | each layer's `recipe.allowed` | Colour indices 0–15, comma-separated: the cells use only these (the line-art recipe uses the greys `0,11,12,15,1`) |
 | `--rotate` | each layer's `transform.rotate`, through `layer_rotate` after the project's own commands (#198) | Degrees, clockwise on screen, about the layer's anchor; the project's `snap` applies |
 | `--anchor` | each layer's `transform.anchor`, through `layer_rotate` (the picture stays in place) | `X,Y`, 0–1 across the layer's box: `0,0` top-left, `0.5,0.5` the centre (default). Alone, it moves the pivot and keeps the angle |
-| `--bg` | `solve.background` | `auto` or 0–15 |
+| `--bg` | `solve.background` | `auto` (the solver chooses: the reference and native search all 16) or 0–15 |
+| `--bg-rule` | `solve.background_rule` | Experimental, needs `--solver png2amiga` (exit 2 otherwise): how it chooses an unpinned multicolor background, `black` (png2amiga's colour 0, its default) or `search` (png2c64's search of all 16, the lowest total cell error; #273). Hi-res has no background |
 | `--hysteresis` | `solve.hysteresis` | (0, 1]; native solver |
 | `--supersample` | `supersample` | 1–8 |
 
@@ -88,7 +95,25 @@ Other options:
 | `--save-project PATH` | Also save the project, overrides applied, as `.convert64` (sources linked relative to it) |
 | `--embed` / `--link` | With `--save-project`: embed every source PNG, or link every one |
 
-JSON fields: `input`, `mode`, `palette` (its name), `outputs` (`path`, `format`), `background`, `clashes`, `max_clashes`, `legal`, `violations`, `solve_error`, `solver` (`reference` or `native`), `solver_fallback` (why the native solver ran, when the reference was asked for), `summary` (`clashes`, `total_error`, `dropped_cost`, `worst`, `luma_crossings`) and `worst`.
+JSON fields: `input`, `mode`, `palette` (its name), `outputs` (`path`, `format`), `ssimulacra2` (below), `background`, `clashes`, `max_clashes`, `legal`, `violations`, `solve_error`, `solver` (the solver that made the result: `reference`, `png2amiga` or `native`), `solver_fallback` (why another solver stood in for the one asked for), `refine` (whether `solve.refine` was on), `summary` (`clashes`, `total_error`, `dropped_cost`, `worst`, `luma_crossings`) and `worst`.
+
+`ssimulacra2` is the result's SSIMULACRA2 score, **information only**: it is not a quality verdict, not a gate and not in the app ([ADR-014](../adr/ADR-014-png2c64-stays-reference.md) §7; on the 28 pairs Jaakko ranked by eye it agrees with him on 43 %). It scores the solved picture against the frame it was solved from, the way png2amiga scores its C64 output:
+
+- **Reference:** the prepared source, that is the composite on the target grid after the front end's preprocessing, in linear light. Pixels less than half covered count as black, as png2amiga's transparency mask makes them.
+- **Distorted:** the picture rendered through the palette at the mode's logical raster: 160 × 200 for multicolor (one value per wide pixel), 320 × 200 for hi-res.
+
+Scores run to 100: 90 is visually lossless, 70 high, 50 fair, 30 low, and a dithered C64 picture of a photograph is often below 0. Compare scores of the same source, not across sources. The port matches png2amiga's to the bit (`crates/convert64-core/tests/data/ssimulacra2/`). Scoring takes about 2 ms for 320 × 200 (release build). The human summary line (`--report`) does not show it.
+
+### The line-art recipe
+
+An opt-in for black-and-white line art ([ADR-014](../adr/ADR-014-png2c64-stays-reference.md) §4): hi-res `none` at gamma 1.5, Lanczos resampling, black point 0.5 and the cells limited to Pepto's greys, solved by the reference:
+
+```sh
+convert64 convert lineart.png --mode hires --dither none --gamma 1.5 \
+    --resample lanczos --black-point 0.5 --allowed 0,11,12,15,1 -o lineart.art
+```
+
+The same as a batch manifest is [`examples/recipes/lineart.toml`](../../examples/recipes/lineart.toml) (`convert64 batch art/ --manifest examples/recipes/lineart.toml`). It does not suit coloured art: the black point turns dark colours black and the colour limit turns everything grey ([sheet-lineart.png](dither-previews/convert64-sheets/sheet-lineart.png)).
 
 A `Makefile` rule:
 
@@ -112,7 +137,7 @@ Checks a file against [vic-ii-constraints.md](vic-ii-constraints.md) §6 and pri
 | Raw set (its `.json` manifest) | The manifest read, every block file beside it checked for size (rule 6) and the picture validated |
 | Project (`.convert64`, or a version-1 recipe `.json`) | Loaded, solved, and the solved picture validated; `clashes` is reported |
 
-The format comes from `--format`, else the extension (a `.json` whose `format` is `convert64-raw-bitmap` is a raw set, any other a recipe), else the size of a picture file. JSON fields: `file`, `format`, `mode`, `legal`, `violations` (`rule`, `location`, `message`), and `clashes` for a project.
+The format comes from `--format`, else the extension (a `.json` whose `format` is `convert64-raw-bitmap` is a raw set, any other a recipe), else the size of a picture file. JSON fields: `file`, `format`, `mode`, `legal`, `violations` (`rule`, `location`, `message`), and `clashes` and `ssimulacra2` (as in `convert`) for a project.
 
 ## `batch`
 
@@ -140,7 +165,7 @@ max-clashes = 20
 skip = true
 ```
 
-Every table takes `convert`'s options in kebab-case (`solver`, `diverge` (a list), `mode`, `palette`, `dither`, `strength`, `metric`, `cell-metric`, `no-cell-clamp`, `max-luma-diff`, `ordered-semantics`, `no-chroma-guard`, `error-clamp`, `adaptive`, `mix-levels`, `smooth`, `gamma`, `match-range`, `sharpen`, `sharpen-radius`, `sharpen-threshold`, `downscale`, `bg`, `hysteresis`, `supersample`), plus `outputs` (`kla`, `art`, `prg`, `png`, `raw`), `max-clashes`, `zoom` (PNG previews) and `skip`. Unknown keys are errors. A file's table wins over `[defaults]`; options on the command line win over both.
+Every table takes `convert`'s options in kebab-case (`solver`, `cell-refine`, `diverge` (a list), `mode`, `palette`, `dither`, `strength`, `metric`, `cell-metric`, `no-cell-clamp`, `max-luma-diff`, `ordered-semantics`, `no-chroma-guard`, `error-clamp`, `adaptive`, `mix-levels`, `smooth`, `gamma`, `match-range`, `match-range-amount`, `match-range-method`, `sharpen`, `sharpen-radius`, `sharpen-threshold`, `downscale`, `resample`, `black-point`, `allowed`, `bg`, `bg-rule`, `hysteresis`, `supersample`), plus `outputs` (`kla`, `art`, `prg`, `png`, `raw`), `max-clashes`, `zoom` (PNG previews) and `skip`. Unknown keys are errors. A file's table wins over `[defaults]`; options on the command line win over both.
 
 Files convert independently: one failure does not stop the others. The exit code is the worst file's (3, then 2, then 1). JSON fields: `dir`, `manifest`, `out`, `converted`, `failed`, `skipped` (`input`, `reason`) and `files`, one `convert` report per file with its `input`.
 
@@ -160,7 +185,7 @@ One command exports a whole directory to every assembler: `convert64 export art 
 convert64 apply <project.convert64> [--commands steps.json] [--command '<json>']… [-o out.convert64 | --in-place] [--embed | --link]
 ```
 
-Runs commands from the core's registry on a project, exactly as the app runs them (ADR-005), and saves it. Every registry command is available here: masks (`mask_*`, including `mask_source_remove` and `mask_source_set_combine` on a mask's sources list, and `layer_via_mask`), cell steering (`cell_*`), regions (`region_add`, `region_remove`, `region_rename`, `region_reorder`, `region_set_recipe`, and `region_stroke`, `region_fill`, `region_gradient`, `region_clear` on a region's 320 × 200 canvas mask; a region is named by index or name, as a layer is), layers (`layer_add`, `layer_remove`, `layer_reorder`, `layer_set_visible`, `layer_set_opacity`, `layer_set_blend`, `layer_set_downscale`, `layer_set_transform`, `layer_rotate`, `layer_nudge`, `layer_rename`, `layer_duplicate`), `adjustments_set`, `recipe_set`, and the document's settings (`mode_set`, `palette_set`, `background_pin`, `solve_set`, `snap_set`). `layer_set_transform` and `layer_rotate` round the transform they write to the project's `snap` (ADR-011), or to their own `snap` argument when given; `layer_nudge` moves by exactly what it is given. The `*_set` commands change the fields they name and keep the rest (`null` clears an optional one, such as `solve_set`'s `hysteresis`). This is the CLI's half of GUI/CLI parity: `crates/convert64-cli/tests/parity.rs` fails if a registry command cannot run through it or through the MCP server, or gives a different project than the core in-process.
+Runs commands from the core's registry on a project, exactly as the app runs them (ADR-005), and saves it. Every registry command is available here: masks (`mask_*`, including `mask_source_remove` and `mask_source_set_combine` on a mask's sources list, and `layer_via_mask`), cell steering (`cell_*`), regions (`region_add`, `region_remove`, `region_rename`, `region_reorder`, `region_set_recipe`, and `region_stroke`, `region_fill`, `region_gradient`, `region_clear` on a region's 320 × 200 canvas mask; a region is named by index or name, as a layer is), layers (`layer_add`, `layer_remove`, `layer_reorder`, `layer_set_visible`, `layer_set_opacity`, `layer_set_blend`, `layer_set_downscale`, `layer_set_resample`, `layer_set_transform`, `layer_rotate`, `layer_nudge`, `layer_rename`, `layer_duplicate`), `adjustments_set`, `recipe_set`, and the document's settings (`mode_set`, `palette_set`, `background_pin`, `solve_set`, `snap_set`). `layer_set_transform` and `layer_rotate` round the transform they write to the project's `snap` (ADR-011), or to their own `snap` argument when given; `layer_nudge` moves by exactly what it is given. The `*_set` commands change the fields they name and keep the rest (`null` clears an optional one, such as `solve_set`'s `hysteresis`). This is the CLI's half of GUI/CLI parity: `crates/convert64-cli/tests/parity.rs` fails if a registry command cannot run through it or through the MCP server, or gives a different project than the core in-process.
 
 Commands are `{"command": "<name>", …arguments}` objects. `--commands FILE` holds an array of them (paths inside, such as `mask_load`'s, are relative to the file); each `--command` adds one (paths relative to the working directory); the file's run first. Without `-o` or `--in-place` nothing is written and the commands are only checked. A failing command names itself and its index, and nothing is written (exit 2).
 

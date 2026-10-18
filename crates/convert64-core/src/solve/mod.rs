@@ -11,8 +11,10 @@ pub mod input;
 pub mod metric;
 pub mod mix;
 pub mod ordered;
+pub mod png2amiga_ref;
 pub mod png2c64_ref;
 pub mod reference;
+pub mod reference_png2amiga;
 pub mod report;
 pub mod solver;
 pub mod steering;
@@ -22,5 +24,7 @@ pub use input::{Input, InputOptions};
 pub use metric::{Metric, MetricTables, Space};
 pub use png2c64_ref::Divergences;
 pub use report::{CellReport, ClashReport, Summary};
-pub use solver::{Background, Solution, SolveMode, SolveOptions, Solver, SolverKind};
+pub use solver::{
+    Background, BackgroundRule, Solution, SolveMode, SolveOptions, Solver, SolverKind,
+};
 pub use steering::{Pin, Steering};

@@ -19,16 +19,27 @@
 //!   with png2c64's kernel, 1.0 with a Gaussian of σ 0.8).
 //! - `png2c64-previews --png2c64 <path>`: regenerate png2c64's own renders and contact
 //!   sheets in `docs/reference/dither-previews/`, the parity test's reference.
+//! - `reference-sheet` (#261): the sheets of the move to png2amiga's reference, every
+//!   tile with its SSIMULACRA2.
+//! - `png2amiga build [--variant reference|strict|default|clang]` and `png2amiga renders
+//!   [--bin <path>]` (#261, ADR-013): clone and build the pinned png2amiga (strict IEEE,
+//!   the maths shim), and render the fixture baselines and every method's previews the
+//!   parity tests compare with.
 //! - `tokens [--check]`: generate the app theme (`crates/convert64-app/src/theme/generated.rs`)
 //!   from the Figma variables in `design/tokens.json`; `--check` fails if it is stale.
 
 mod aliasing;
 mod baselines;
 mod bluenoise;
+mod cause_sheet;
 mod font;
 mod frontend;
 mod goldens;
+mod lineart_sheet;
+mod metric_check;
+mod png2amiga;
 mod previews;
+mod reference_sheet;
 mod sharpen;
 mod sheet;
 mod tokens;
@@ -161,6 +172,29 @@ enum Command {
         #[arg(long, conflicts_with = "input")]
         reason: Option<String>,
     },
+    /// The sheets of the move to png2amiga's reference (#261): the baselines old and new,
+    /// range matching off / png2c64's / png2amiga's, Refine off / on, and the 4096 px
+    /// sources under the old scaler, png2amiga's exact one and the mip-accelerated one,
+    /// each tile with its SSIMULACRA2, in `docs/reference/dither-previews/convert64-sheets/`.
+    ReferenceSheet,
+    /// The cause sheet (#273): each fixture under png2amiga's port with one of its
+    /// differences from png2c64 swapped at a time, every tile's flags and its share of
+    /// pixels identical to the png2c64 baseline (`sheet-cause.png`, `sheet-cause.md`).
+    CauseSheet,
+    /// The line-art recipe (ADR-014 §4) on the reference path, next to png2c64's
+    /// baseline, png2amiga as shipped and the cause sheet's tile 13, on lineart and on a
+    /// synthetic logo (`sheet-lineart.png`, `sheet-lineart.md`).
+    LineartSheet,
+    /// Scores candidate quality metrics against Jaakko's eye-ranked pairs
+    /// (`fixtures/eye-rankings.toml`): each pair re-rendered as the reviewed sheet showed
+    /// it, both scored against the same reference; prints each metric's agreement.
+    MetricCheck,
+    /// png2amiga's reference build (the png2amiga solver's parity references): build it,
+    /// or render its baselines (`fixtures/png2amiga/`) and previews.
+    Png2amiga {
+        #[command(subcommand)]
+        action: Png2amigaAction,
+    },
     /// Generate the app theme from the Figma variables.
     ///
     /// Reads `design/tokens.json` and writes `crates/convert64-app/src/theme/generated.rs`
@@ -171,6 +205,31 @@ enum Command {
         /// Write nothing; fail if the committed file differs from the generated one.
         #[arg(long)]
         check: bool,
+    },
+}
+
+/// `png2amiga`'s actions.
+#[derive(Subcommand)]
+enum Png2amigaAction {
+    /// Clone the pinned commit into `target/xtask/png2amiga-src` (once) and build it into
+    /// `target/xtask/png2amiga-build/<variant>`.
+    Build {
+        /// Which build: the strict reference with the maths shim, or a comparison build.
+        #[arg(long, value_enum, default_value = "reference")]
+        variant: png2amiga::Variant,
+        /// The GCC driver (Homebrew `g++-15` or `g++-16`); ignored by `clang`.
+        #[arg(long, default_value = "g++-15")]
+        compiler: String,
+    },
+    /// Render every fixture baseline (with `--match-range`, and `--sharpen ±0.5` on the
+    /// portrait) and every method's previews with a png2amiga binary.
+    Renders {
+        /// The binary (default: the `reference` build).
+        #[arg(long)]
+        bin: Option<PathBuf>,
+        /// Only the fixture baselines.
+        #[arg(long)]
+        skip_previews: bool,
     },
 }
 
@@ -241,6 +300,16 @@ fn main() -> ExitCode {
         } => match set_pr {
             Some(n) => goldens::set_pr(&repo_root(), n),
             None => goldens::run(accept, reason.as_deref(), pr),
+        },
+        Command::ReferenceSheet => reference_sheet::run(),
+        Command::CauseSheet => cause_sheet::run(),
+        Command::LineartSheet => lineart_sheet::run(),
+        Command::MetricCheck => metric_check::run(),
+        Command::Png2amiga { action } => match action {
+            Png2amigaAction::Build { variant, compiler } => png2amiga::build(variant, &compiler),
+            Png2amigaAction::Renders { bin, skip_previews } => {
+                png2amiga::renders(bin, skip_previews)
+            }
         },
         Command::Tokens { check } => tokens::run(&repo_root(), check),
     };

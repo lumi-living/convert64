@@ -3,11 +3,11 @@
 use crate::report::{Fail, NOT_LEGAL, Run};
 use clap::ValueEnum;
 use convert64_core::layer::{
-    CellMetric, DitherKind, Downscale, Gamma, Metric, OrderedSemantics, Radius, RangeMatch,
-    Sharpen, suggest_range_match,
+    BlackPoint, CellMetric, DitherKind, Downscale, Gamma, Metric, OrderedSemantics, Radius,
+    RangeMatch, RangeMethod, Resample, Sharpen, suggest_range_match,
 };
 use convert64_core::mode::Mode;
-use convert64_core::solve::{Background, Solution};
+use convert64_core::solve::{Background, BackgroundRule, Solution};
 use convert64_formats::BitmapFormat;
 use convert64_project::paths::{absolute, relative};
 use convert64_project::{Embed, FsStore, JsonCommand, LayerRef, PaletteSpec, ProjectFile, Session};
@@ -153,8 +153,15 @@ fn apply_divergence(div: &mut convert64_core::solve::Divergences, entry: &str) -
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum SolverArg {
-    /// png2c64's pipeline, ported (#181).
+    /// png2c64's pipeline, ported (#181, ADR-010, ADR-014), the default.
+    #[value(alias = "png2c64")]
+    #[serde(alias = "png2c64")]
     Reference,
+    /// png2amiga's C64 path, ported (#261): a comparison solver with png2amiga's own front
+    /// end (ADR-014 §2).
+    #[value(name = "png2amiga")]
+    #[serde(rename = "png2amiga")]
+    Png2amiga,
     /// Convert64's own solver.
     Native,
 }
@@ -163,7 +170,48 @@ impl From<SolverArg> for convert64_core::solve::SolverKind {
     fn from(s: SolverArg) -> Self {
         match s {
             SolverArg::Reference => Self::Reference,
+            SolverArg::Png2amiga => Self::Png2amiga,
             SolverArg::Native => Self::Native,
+        }
+    }
+}
+
+/// `--bg-rule`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum BgRuleArg {
+    /// png2amiga's: the background is always colour 0 (the png2amiga solver's default).
+    Black,
+    /// png2c64's: all 16 backgrounds tried, the lowest total cell error kept.
+    Search,
+}
+
+impl From<BgRuleArg> for BackgroundRule {
+    fn from(r: BgRuleArg) -> Self {
+        match r {
+            BgRuleArg::Black => Self::Black,
+            BgRuleArg::Search => Self::Search,
+        }
+    }
+}
+
+/// `--match-range-method`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum RangeMethodArg {
+    /// png2c64's: each OKLab axis stretched onto the palette's bounding box (the
+    /// default).
+    Box,
+    /// png2amiga's (experimental): each pixel's chroma scaled toward the palette's
+    /// reachable hull, lightness and hue kept.
+    Hull,
+}
+
+impl From<RangeMethodArg> for RangeMethod {
+    fn from(m: RangeMethodArg) -> Self {
+        match m {
+            RangeMethodArg::Hull => Self::Hull,
+            RangeMethodArg::Box => Self::Box,
         }
     }
 }
@@ -173,11 +221,18 @@ impl From<SolverArg> for convert64_core::solve::SolverKind {
 #[derive(clap::Args, Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub(crate) struct Overrides {
-    /// Solver: reference (png2c64's pipeline, the default) or native (Convert64's own).
-    /// The native solver is what the recipe knobs `--max-luma-diff`, `--no-cell-clamp`,
+    /// Solver: reference (png2c64's pipeline, the default; also called png2c64),
+    /// png2amiga (png2amiga's C64 path with its own front end, for comparison, ADR-014) or
+    /// native (Convert64's own). The native solver is what the recipe knobs `--max-luma-diff`, `--no-cell-clamp`,
     /// `--mix-levels`, `--smooth`, `--ordered-semantics` and `--no-chroma-guard` act on.
     #[arg(long, value_enum)]
     pub(crate) solver: Option<SolverArg>,
+    /// Experimental, with --solver png2amiga only: after the solve, run png2amiga's cell
+    /// refine (its --cell-refine) and keep the result only if its SSIMULACRA2 improves.
+    /// Off by default.
+    #[arg(long)]
+    #[serde(default)]
+    pub(crate) cell_refine: bool,
     /// A named divergence of the reference solver from png2c64, all off by default
     /// (#181): chroma-guard, max-luma-diff=N (0–8), pair-bias=X, cell-clamp,
     /// mix-levels=N (1–16), bridging. Repeatable or comma-separated.
@@ -207,10 +262,15 @@ pub(crate) struct Overrides {
     /// Dither strength, 0–1. Default 1.
     #[arg(long)]
     pub(crate) strength: Option<f32>,
-    /// Background: auto (search all 16) or a colour index 0–15 (multicolor only).
-    /// Default auto.
+    /// Background: auto (the solver chooses: the reference and native search all 16) or
+    /// a colour index 0–15 (multicolor only). Default auto.
     #[arg(long)]
     pub(crate) bg: Option<String>,
+    /// Experimental, with --solver png2amiga only: how it chooses an unpinned multicolor
+    /// background, black (png2amiga's colour 0, its default) or search (png2c64's search
+    /// of all 16). The reference and native solvers always search.
+    #[arg(long, value_enum)]
+    pub(crate) bg_rule: Option<BgRuleArg>,
     /// Supersample factor, 1–8. Default 4.
     #[arg(long)]
     pub(crate) supersample: Option<u8>,
@@ -255,10 +315,20 @@ pub(crate) struct Overrides {
     /// before anything else (> 1 darkens; png2c64's default is 1.5). Default 1.
     #[arg(long)]
     pub(crate) gamma: Option<f32>,
-    /// Map the picture's OKLab range onto the palette's (png2c64 --match-range).
+    /// Map the picture's OKLab range onto the palette's (png2c64 --match-range). See
+    /// --match-range-method for png2amiga's hull.
     #[arg(long)]
     #[serde(default)]
     pub(crate) match_range: bool,
+    /// With --match-range-method hull: how much of the matching to apply, 0–100 % (100,
+    /// the default, is png2amiga's; 0 keeps the source's chroma).
+    #[arg(long, value_name = "PERCENT")]
+    pub(crate) match_range_amount: Option<f32>,
+    /// With --match-range: box (png2c64's, the default: each OKLab axis stretched onto
+    /// the palette's extent) or hull (png2amiga's, experimental; what its --match-range
+    /// does, so use it with --solver png2amiga to compare).
+    #[arg(long, value_enum, value_name = "box|hull")]
+    pub(crate) match_range_method: Option<RangeMethodArg>,
     /// Sharpen every layer's lightness at the C64 grid, −1–3 (png2c64 --sharpen):
     /// positive adds that much of the detail an unsharp mask finds, negative blends that
     /// far (at most 1) toward a blur. Default 0, off.
@@ -278,6 +348,20 @@ pub(crate) struct Overrides {
     /// as png2c64 does. Up to 4× (sources up to 1280 px fitted) the two are identical.
     #[arg(long, value_name = "auto|exact")]
     pub(crate) downscale: Option<Downscale>,
+    /// The kernel every layer's colour is resampled with (ADR-014 §3): mitchell
+    /// (png2c64's, the default) or lanczos (png2amiga's Lanczos-3 widened by the shrink:
+    /// more even thin lines). The png2amiga solver always uses lanczos.
+    #[arg(long, value_name = "mitchell|lanczos")]
+    pub(crate) resample: Option<Resample>,
+    /// png2c64's --black-point: every layer's OKLab lightness below this fraction becomes
+    /// black and the rest is stretched, 0–0.5 (the line-art recipe uses 0.5). Default 0,
+    /// off.
+    #[arg(long, value_name = "L")]
+    pub(crate) black_point: Option<f32>,
+    /// Limit every layer's cells to these colours: indices 0–15, comma-separated (the
+    /// recipe's allowed colours; the line-art recipe uses the greys 0,11,12,15,1).
+    #[arg(long, value_name = "N,N,…")]
+    pub(crate) allowed: Option<String>,
     /// Turn every layer to this many degrees, clockwise on screen, about its anchor
     /// (`layer_rotate`, ADR-011). The project's snap applies.
     #[arg(long, value_name = "DEG", allow_hyphen_values = true)]
@@ -301,6 +385,7 @@ impl Overrides {
     pub(crate) fn or(self, base: &Self) -> Self {
         Self {
             solver: self.solver.or(base.solver),
+            cell_refine: self.cell_refine || base.cell_refine,
             diverge: if self.diverge.is_empty() {
                 base.diverge.clone()
             } else {
@@ -313,6 +398,7 @@ impl Overrides {
             dither: self.dither.or_else(|| base.dither.clone()),
             strength: self.strength.or(base.strength),
             bg: self.bg.or_else(|| base.bg.clone()),
+            bg_rule: self.bg_rule.or(base.bg_rule),
             supersample: self.supersample.or(base.supersample),
             no_cell_clamp: self.no_cell_clamp || base.no_cell_clamp,
             max_luma_diff: self.max_luma_diff.or(base.max_luma_diff),
@@ -327,13 +413,59 @@ impl Overrides {
             smooth: self.smooth || base.smooth,
             gamma: self.gamma.or(base.gamma),
             match_range: self.match_range || base.match_range,
+            match_range_amount: self.match_range_amount.or(base.match_range_amount),
+            match_range_method: self.match_range_method.or(base.match_range_method),
             sharpen: self.sharpen.or(base.sharpen),
             sharpen_radius: self.sharpen_radius.or(base.sharpen_radius),
             sharpen_threshold: self.sharpen_threshold.or(base.sharpen_threshold),
             downscale: self.downscale.or(base.downscale),
+            resample: self.resample.or(base.resample),
+            black_point: self.black_point.or(base.black_point),
+            allowed: self.allowed.clone().or_else(|| base.allowed.clone()),
             rotate: self.rotate.or(base.rotate),
             anchor: self.anchor.or_else(|| base.anchor.clone()),
         }
+    }
+
+    /// The range matching `--match-range` asks for onto the project's palette:
+    /// png2amiga's hull at `--match-range-amount` (100 % by default) or, with
+    /// `--match-range-method box`, png2c64's box. `None` without `--match-range`; the
+    /// amount and method alone are errors, as is an amount with the box.
+    fn range_match(&self, file: &ProjectFile, base: &Path) -> Result<Option<RangeMatch>, Fail> {
+        if !self.match_range {
+            if self.match_range_amount.is_some() || self.match_range_method.is_some() {
+                return Err(Fail::input(
+                    "--match-range-amount and --match-range-method need --match-range",
+                ));
+            }
+            return Ok(None);
+        }
+        let method = self.match_range_method.map_or(RangeMethod::Box, Into::into);
+        let palette = file.palette.resolve(base, &FsStore).map_err(Fail::input)?;
+        let m = match method {
+            RangeMethod::Hull => {
+                let pct = self.match_range_amount.unwrap_or(100.0);
+                if !(0.0..=100.0).contains(&pct) {
+                    return Err(Fail::input(format!(
+                        "--match-range-amount must be 0–100, got {pct}"
+                    )));
+                }
+                RangeMatch::hull(&palette, pct / 100.0)
+            }
+            RangeMethod::Box => {
+                if self.match_range_amount.is_some() {
+                    return Err(Fail::input(
+                        "--match-range-amount applies to the hull method, not box",
+                    ));
+                }
+                RangeMatch::for_palette(
+                    &palette,
+                    RangeMatch::DEFAULT_PERCENTILE,
+                    RangeMatch::DEFAULT_MARGIN,
+                )
+            }
+        };
+        m.map(Some).map_err(Fail::input)
     }
 
     /// `--rotate` and `--anchor` as a `layer_rotate` per layer, run after the project's
@@ -426,6 +558,17 @@ impl Overrides {
         if self.smooth {
             patch.push(("smooth", json!(true)));
         }
+        if let Some(a) = &self.allowed {
+            let set: Vec<u8> = a
+                .split(',')
+                .map(|n| n.trim().parse::<u8>().ok().filter(|v| *v < 16))
+                .collect::<Option<_>>()
+                .filter(|v: &Vec<u8>| !v.is_empty())
+                .ok_or_else(|| {
+                    Fail::input(format!("--allowed must be colour indices 0–15, got {a:?}"))
+                })?;
+            patch.push(("allowed", json!(set)));
+        }
         Ok(patch)
     }
 
@@ -457,8 +600,22 @@ impl Overrides {
                 ),
             };
         }
+        if let Some(r) = self.bg_rule {
+            file.solve.background_rule = r.into();
+        }
         if let Some(s) = self.solver {
             file.solve.solver = s.into();
+        }
+        if self.cell_refine {
+            file.solve.refine = true;
+        }
+        // Refine and the background rule are the png2amiga solver's (ADR-014 §5).
+        let p2a = file.solve.solver == convert64_core::solve::SolverKind::Png2amiga;
+        if self.cell_refine && !p2a {
+            return Err(Fail::input("--cell-refine needs --solver png2amiga"));
+        }
+        if self.bg_rule.is_some() && !p2a {
+            return Err(Fail::input("--bg-rule needs --solver png2amiga"));
         }
         for d in &self.diverge {
             apply_divergence(&mut file.solve.divergences, d)?;
@@ -476,19 +633,12 @@ impl Overrides {
             .map(Gamma::new)
             .transpose()
             .map_err(Fail::input)?;
-        let match_range = if self.match_range {
-            let palette = file.palette.resolve(base, &FsStore).map_err(Fail::input)?;
-            Some(
-                RangeMatch::for_palette(
-                    &palette,
-                    RangeMatch::DEFAULT_PERCENTILE,
-                    RangeMatch::DEFAULT_MARGIN,
-                )
-                .map_err(Fail::input)?,
-            )
-        } else {
-            None
-        };
+        let match_range = self.range_match(file, base)?;
+        let black_point = self
+            .black_point
+            .map(BlackPoint::new)
+            .transpose()
+            .map_err(Fail::input)?;
         let sharpen = self.sharpen.is_some()
             || self.sharpen_radius.is_some()
             || self.sharpen_threshold.is_some();
@@ -523,6 +673,12 @@ impl Overrides {
             }
             if let Some(d) = self.downscale {
                 layer.downscale = d;
+            }
+            if let Some(r) = self.resample {
+                layer.resample = r;
+            }
+            if let Some(b) = black_point {
+                layer.adjustments.black_point = b;
             }
         }
         let rotations = self.rotations(file.layers.len())?;
@@ -637,6 +793,8 @@ pub(crate) fn run(run: &mut Run, job: &ConvertJob<'_>) -> Result<u8, Fail> {
     let mode = session.target();
     run.set("mode", mode);
     run.set("palette", session.palette().name());
+    run.set("refine", session.project().solve.refine);
+    run.set("background_rule", session.project().solve.background_rule);
     if let Some(m) = forced
         && m != mode
     {
@@ -677,6 +835,7 @@ pub(crate) fn run(run: &mut Run, job: &ConvertJob<'_>) -> Result<u8, Fail> {
     let started = std::time::Instant::now();
     let sol = run.time("solve", || session.solve(true).clone());
     let ms = started.elapsed().as_secs_f64() * 1000.0;
+    let s2 = run.time("ssimulacra2", || session.ssimulacra2());
     let file = bitmap.write(&sol.image).map_err(Fail::input)?;
     let mut written = Vec::new();
     for (path, f) in &outputs {
@@ -717,13 +876,15 @@ pub(crate) fn run(run: &mut Run, job: &ConvertJob<'_>) -> Result<u8, Fail> {
         ));
     }
     run.set("outputs", written);
-    finish_solve(run, &sol, job.report, job.max_clashes)
+    finish_solve(run, &sol, s2, job.report, job.max_clashes)
 }
 
-/// Reports a solve: clashes, legality and the clash report; returns the exit code.
+/// Reports a solve: its SSIMULACRA2 score `s2` (`Session::ssimulacra2`), clashes,
+/// legality and the clash report; returns the exit code.
 pub(crate) fn finish_solve(
     run: &mut Run,
     sol: &Solution,
+    s2: Option<f64>,
     worst: bool,
     max_clashes: Option<usize>,
 ) -> Result<u8, Fail> {
@@ -734,6 +895,7 @@ pub(crate) fn finish_solve(
         .flatten()
         .map(|v| v.to_string())
         .collect();
+    run.set("ssimulacra2", s2);
     run.set("background", sol.background);
     run.set("clashes", summary.clashes);
     run.set("max_clashes", max_clashes);
@@ -774,7 +936,8 @@ pub(crate) fn finish_solve(
     Ok(0)
 }
 
-/// The clash summary as the status bar would show it.
+/// The clash summary as the status bar would show it. SSIMULACRA2 is in `--json` only,
+/// as information (ADR-014 §7).
 pub(crate) fn summary_line(sol: &Solution) -> String {
     let s = sol.report.summary();
     format!(

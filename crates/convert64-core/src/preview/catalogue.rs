@@ -37,15 +37,34 @@ impl MethodInfo {
         self.kind.family()
     }
 
-    /// Whether png2c64 has this method (the reference solver solves it; the search
-    /// finds it by `png2c64`).
+    /// Whether png2c64 has this method (the search finds it by `png2c64`).
     pub const fn in_png2c64(&self) -> bool {
         crate::solve::reference::ref_method(self.kind).is_some()
     }
 
+    /// Whether png2amiga's C64 path has this method: the png2amiga solver solves it
+    /// (#261; the search finds it by `png2amiga`).
+    pub const fn in_png2amiga(&self) -> bool {
+        crate::solve::reference_png2amiga::ref_method(self.kind).is_some()
+    }
+
+    /// The card's tooltip: the description, and for one of png2amiga's own methods
+    /// (ADR-014 §6) what it does on the default solver.
+    pub fn tooltip(&self) -> String {
+        if self.kind.is_png2amiga_only() {
+            format!(
+                "{}\npng2amiga's method (experimental): exact with the png2amiga solver; \
+                 the Reference solver runs a native stand-in",
+                self.description
+            )
+        } else {
+            self.description.to_owned()
+        }
+    }
+
     /// Whether every word of `query` (case-insensitive) is part of the name, the id, an
     /// alias or the family name, or is `png2c64` for one of png2c64's methods. An empty
-    /// query matches everything.
+    /// query matches everything; `png2amiga` likewise for png2amiga's methods.
     pub fn matches(&self, query: &str) -> bool {
         let mut hay = format!(
             "{} {} {}",
@@ -59,6 +78,9 @@ impl MethodInfo {
         }
         if self.in_png2c64() {
             hay.push_str(" png2c64");
+        }
+        if self.in_png2amiga() {
+            hay.push_str(" png2amiga");
         }
         // Names spell `×` and `–`; let the search type `x` and `-`.
         let hay = hay.replace('×', "x").replace('–', "-");
@@ -121,7 +143,7 @@ use DitherKind as K;
 
 /// Every method in picker order: families in [`FAMILIES`] order, each family's methods
 /// together.
-pub static CATALOGUE: [MethodInfo; 58] = [
+pub static CATALOGUE: [MethodInfo; 90] = [
     m(
         K::None,
         "None",
@@ -286,6 +308,84 @@ pub static CATALOGUE: [MethodInfo; 58] = [
         "png2c64's 8×8 hexagonal tiling.",
     ),
     m(
+        K::Bayer3,
+        "Bayer 3×3",
+        &["bayer3x3", "png2amiga"],
+        "png2amiga's dispersed-dot 3×3: ten levels on a non-power-of-two grid.",
+    ),
+    m(
+        K::Bayer5,
+        "Bayer 5×5",
+        &["bayer5x5", "png2amiga"],
+        "png2amiga's dispersed-dot 5×5.",
+    ),
+    m(
+        K::Bayer6,
+        "Bayer 6×6",
+        &["bayer6x6", "png2amiga"],
+        "png2amiga's dispersed-dot 6×6.",
+    ),
+    m(
+        K::Bayer7,
+        "Bayer 7×7",
+        &["bayer7x7", "png2amiga"],
+        "png2amiga's dispersed-dot 7×7.",
+    ),
+    m(
+        K::V4x2,
+        "V 4×2",
+        &["v4x2", "tall pixels"],
+        "A 4×2 vertical-bias matrix, for tall pixels.",
+    ),
+    m(
+        K::Bayer4x2,
+        "Bayer 4×2",
+        &["bayer4x2"],
+        "Bayer ordering 4 wide, 2 tall.",
+    ),
+    m(
+        K::Bayer2x4,
+        "Bayer 2×4",
+        &["bayer2x4"],
+        "Bayer ordering 2 wide, 4 tall.",
+    ),
+    m(
+        K::LineVChecker,
+        "Vertical line checker",
+        &["vline-checker", "columns"],
+        "Column-biased 2×2: vertical lines with a row shift.",
+    ),
+    m(
+        K::Fractal16,
+        "Fractal 16×16",
+        &["obra dinn", "self-nested"],
+        "Self-nested Bayer recursion: reads at several zoom levels (Obra Dinn).",
+    ),
+    m(
+        K::AsepriteOld,
+        "Aseprite old 4×4",
+        &["aseprite"],
+        "Aseprite's hand-tuned 4×4, checker-biased.",
+    ),
+    m(
+        K::Libcaca3,
+        "libcaca 3×3",
+        &["libcaca"],
+        "libcaca's hand-tuned 3×3 dispersed dot.",
+    ),
+    m(
+        K::Libcaca6,
+        "libcaca 6×6",
+        &["libcaca"],
+        "libcaca's hand-tuned 6×6 dispersed dot.",
+    ),
+    m(
+        K::Pegasus,
+        "Pegasus 8×8",
+        &["rexpaint", "mosaic"],
+        "The Pegasus/REXPaint 8×8 mosaic, centre-biased.",
+    ),
+    m(
         K::Custom,
         "Custom matrix",
         &["user", "matrix"],
@@ -315,6 +415,36 @@ pub static CATALOGUE: [MethodInfo; 58] = [
         "White noise",
         &["random", "noise"],
         "Seeded random thresholds: grainy, for when it must look random.",
+    ),
+    m(
+        K::VoidCluster,
+        "Void and cluster",
+        &["void-cluster", "blue noise", "ulichney"],
+        "png2amiga's 64×64 void-and-cluster blue noise: per-rank optimal.",
+    ),
+    m(
+        K::ClusterNoise,
+        "Cluster noise",
+        &["cluster-noise", "film grain"],
+        "Blue noise with wider clusters: a coarser, film-grain texture.",
+    ),
+    m(
+        K::CranleyBayer,
+        "Cranley–Patterson Bayer",
+        &["cranley-bayer", "random offset"],
+        "Bayer 8×8 with a hashed offset per tile: a patchwork of phases.",
+    ),
+    m(
+        K::IgnTri,
+        "IGN triangular",
+        &["ign-tri", "triangle"],
+        "Interleaved gradient noise remapped to a triangle: less banding at the ends.",
+    ),
+    m(
+        K::R2Tri,
+        "R2 triangular",
+        &["r2-tri", "triangle"],
+        "R2 remapped to a triangle (Wronski): even darks and lights.",
     ),
     // Error diffusion.
     m(
@@ -414,6 +544,36 @@ pub static CATALOGUE: [MethodInfo; 58] = [
         &["hilbert"],
         "Error carried along a Hilbert curve: no directional artefacts.",
     ),
+    m(
+        K::FloydSteinbergOklab,
+        "Floyd–Steinberg (OKLab)",
+        &["floyd-steinberg-oklab", "fs oklab"],
+        "Floyd–Steinberg with the residual carried in OKLab: often better on photos, worse on logos.",
+    ),
+    m(
+        K::StructureFs,
+        "Structure-aware FS",
+        &["structure-fs", "edges"],
+        "Floyd–Steinberg with a Laplacian bias on lightness: keeps edges.",
+    ),
+    m(
+        K::ContrastFs,
+        "Contrast-aware FS",
+        &["contrast-fs", "mould"],
+        "Floyd–Steinberg with a local-contrast bias on lightness.",
+    ),
+    m(
+        K::Gilbert,
+        "Gilbert curve",
+        &["gilbert", "png2amiga"],
+        "png2amiga's Gilbert-curve diffusion; on its C64 path a plain nearest pick.",
+    ),
+    m(
+        K::Dbs,
+        "Direct binary search",
+        &["dbs", "png2amiga"],
+        "png2amiga's direct binary search; on its C64 path a plain nearest pick.",
+    ),
     // Palette-aware.
     m(
         K::Yliluoma1,
@@ -451,7 +611,61 @@ pub static CATALOGUE: [MethodInfo; 58] = [
         &["pair", "pal blend", "weave"],
         "Weaves two near-luma colours into a third, as a PAL screen blends them.",
     ),
+    m(
+        K::Yliluoma,
+        "Yliluoma (png2amiga)",
+        &["yliluoma", "mixing plan"],
+        "png2amiga's Yliluoma: a 64-entry mixing plan on Bayer 8.",
+    ),
+    m(
+        K::OptChecker,
+        "Optimal checker",
+        &["opt-checker", "pair"],
+        "The nearest colour and its best partner, as a 2×2 checker.",
+    ),
+    m(
+        K::OptLine,
+        "Optimal line",
+        &["opt-line", "scanline"],
+        "The optimal pair alternated by row: CRT-scanline friendly.",
+    ),
+    m(
+        K::OptLineChecker,
+        "Optimal line checker",
+        &["opt-line-checker"],
+        "A 4-colour plan on the line-checker 2×2.",
+    ),
+    m(
+        K::OptVline,
+        "Optimal vertical line",
+        &["opt-vline", "columns"],
+        "The optimal pair alternated by column.",
+    ),
+    m(
+        K::OptVlineChecker,
+        "Optimal vertical line checker",
+        &["opt-vline-checker"],
+        "A 4-colour plan on the column-checker 2×2.",
+    ),
+    m(
+        K::TriTone,
+        "Tri-tone",
+        &["tri-tone", "yliluoma"],
+        "Yliluoma's tri-tone: one colour at 50 %, two at 25 %, on Bayer 2×2.",
+    ),
     // Effects.
+    m(
+        K::Quasicrystal,
+        "Quasicrystal",
+        &["cosines", "shimmer"],
+        "A sum of five cosine waves: an aperiodic shimmer.",
+    ),
+    m(
+        K::Truchet,
+        "Truchet",
+        &["tiles", "woven"],
+        "Quarter-arc Truchet tiles: a woven texture.",
+    ),
     m(
         K::Crosshatch,
         "Crosshatch",
@@ -534,7 +748,31 @@ mod tests {
         assert!(search("no such method").is_empty());
         // The family name finds the family.
         let palette_aware = search("palette-aware");
-        assert_eq!(palette_aware.len(), 6);
+        assert_eq!(palette_aware.len(), 13);
+        assert!(search("png2amiga").contains(&DitherKind::OptChecker));
+        assert!(!search("png2amiga").contains(&DitherKind::Ostromoukhov));
+    }
+
+    /// ADR-014 §6: png2amiga's 32 own methods say on their card that they are the
+    /// png2amiga solver's; every other card is its description.
+    #[test]
+    fn png2amiga_s_own_methods_say_so() {
+        let own: Vec<_> = CATALOGUE
+            .iter()
+            .filter(|m| m.kind.is_png2amiga_only())
+            .collect();
+        assert_eq!(own.len(), 32);
+        for m in &CATALOGUE {
+            assert_eq!(
+                m.tooltip().contains("png2amiga solver"),
+                m.kind.is_png2amiga_only(),
+                "{:?}",
+                m.kind
+            );
+            if m.kind.is_png2amiga_only() {
+                assert!(m.in_png2amiga() && !m.in_png2c64(), "{:?}", m.kind);
+            }
+        }
     }
 
     #[test]

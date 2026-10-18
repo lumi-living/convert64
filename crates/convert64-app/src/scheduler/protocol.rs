@@ -4,7 +4,8 @@
 //!
 //! Every message starts with [`MAGIC`], the [`VERSION`], its [`Kind`] and the
 //! submission's ticket. A [`Kind::Solve`] request then carries a small JSON header (the
-//! grid and the core's serde types: recipes, pins, solver, divergences, background)
+//! grid and the core's serde types: recipes, pins, solver, divergences, background and
+//! background rule)
 //! and a binary body: the composite's colour, coverage and attribute map, locks,
 //! allow/deny lists, the palette, the other options, the modes and the previous
 //! solution. A [`Kind::Result`] carries one solution. Floats travel as their bits, and
@@ -45,7 +46,7 @@ macro_rules! from_json {
 pub const MAGIC: [u8; 4] = *b"C64W";
 /// The protocol version; both ends are the same build, so this only catches a stale
 /// cached worker script.
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 
 /// What a message is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,12 +175,14 @@ pub fn encode_solve(
         divergences,
         mode: _,
         background,
+        background_rule,
         luma_pair_bias,
         refinements,
         finalists,
         hysteresis,
         layer_origins,
         input,
+        refine,
     } = options;
     let head = json!({
         "grid": to_json!(frame.grid()),
@@ -189,13 +192,14 @@ pub fn encode_solve(
         "solver": to_json!(solver),
         "divergences": to_json!(divergences),
         "background": to_json!(background),
+        "background_rule": to_json!(background_rule),
     });
     let head = serde_json::to_vec(&head).expect("JSON values always serialise");
 
     let mut w = Writer::message(Kind::Solve, ticket);
     w.bytes(&head);
     // The frame.
-    w.bool(frame.png2c64_prepared());
+    w.bool(frame.prepared());
     let px = frame.colour().len();
     w.u32(len32(px));
     w.0.reserve(px * 22);
@@ -236,6 +240,7 @@ pub fn encode_solve(
     }
     // The options not in the header.
     w.f32(*luma_pair_bias);
+    w.bool(*refine);
     w.u8(*refinements);
     w.u8(*finalists);
     w.opt_f32(*hysteresis);
@@ -284,6 +289,7 @@ pub fn decode_solve(msg: &[u8]) -> Res<SolveRequest> {
     let solver: SolverKind = from_json!(head, "solver")?;
     let divergences = from_json!(head, "divergences")?;
     let background = from_json!(head, "background")?;
+    let background_rule = from_json!(head, "background_rule")?;
 
     let prepared = r.bool()?;
     let px = r.u32()? as usize;
@@ -337,6 +343,7 @@ pub fn decode_solve(msg: &[u8]) -> Res<SolveRequest> {
     let palette = Palette::from_rgb(name, rgb);
 
     let luma_pair_bias = r.f32()?;
+    let refine = r.bool()?;
     let refinements = r.u8()?;
     let finalists = r.u8()?;
     let hysteresis = r.opt_f32()?;
@@ -352,12 +359,14 @@ pub fn decode_solve(msg: &[u8]) -> Res<SolveRequest> {
         divergences,
         mode: SolveMode::Full,
         background,
+        background_rule,
         luma_pair_bias,
         refinements,
         finalists,
         hysteresis,
         layer_origins,
         input,
+        refine,
     };
 
     let preview = if r.bool()? { Some(r.cells()?) } else { None };
@@ -607,6 +616,7 @@ impl Writer {
         self.u8(match solver {
             SolverKind::Reference => 0,
             SolverKind::Native => 1,
+            SolverKind::Png2amiga => 2,
         });
         match fallback {
             Some(f) => {
@@ -820,6 +830,7 @@ impl<'a> Reader<'a> {
         let solver = match self.u8()? {
             0 => SolverKind::Reference,
             1 => SolverKind::Native,
+            2 => SolverKind::Png2amiga,
             s => return err(format!("unknown solver {s}")),
         };
         let fallback = if self.bool()? {

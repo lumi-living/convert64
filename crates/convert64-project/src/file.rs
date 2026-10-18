@@ -35,7 +35,7 @@ use crate::error::{ProjectError, invalid};
 use crate::recipe::RecipeFile;
 use crate::store::Store;
 use convert64_core::colour::ColourSet;
-use convert64_core::layer::{Adjustments, Blend, Downscale, Recipe, Snap, Transform};
+use convert64_core::layer::{Adjustments, Blend, Downscale, Recipe, Resample, Snap, Transform};
 use convert64_core::mask::{MaskRaster, Modifiers, SourceEntry};
 use convert64_core::mode::Mode;
 use convert64_core::model::CellPos;
@@ -265,6 +265,10 @@ pub struct LayerEntry {
     /// `auto`, so files without it load and save unchanged.
     #[serde(default, skip_serializing_if = "Downscale::is_auto")]
     pub downscale: Downscale,
+    /// The kernel the layer's colour is resampled with (ADR-014 §3): `mitchell` (the
+    /// default) or `lanczos`; written only when not `mitchell`.
+    #[serde(default, skip_serializing_if = "Resample::is_mitchell")]
+    pub resample: Resample,
     /// Dither recipe.
     #[serde(default)]
     pub recipe: Recipe,
@@ -498,6 +502,7 @@ impl ProjectFile {
                 opacity: 1.0,
                 blend: Blend::default(),
                 downscale: Downscale::Auto,
+                resample: Resample::Mitchell,
                 recipe: Recipe::default(),
                 adjustments: Adjustments::default(),
                 mask: None,
@@ -530,6 +535,7 @@ impl ProjectFile {
                     opacity: l.opacity,
                     blend: l.blend,
                     downscale: Downscale::Auto,
+                    resample: Resample::Mitchell,
                     recipe: l.recipe,
                     adjustments: l.adjustments,
                     mask: None,
@@ -897,5 +903,107 @@ mod tests {
         assert_eq!(ProjectFile::parse(&text).unwrap(), q);
         let bad = old.replace(r#""a.png"}"#, r#""a.png","downscale":"area"}"#);
         assert!(ProjectFile::parse(&bad).is_err());
+    }
+
+    /// ADR-014 §3: a layer's `resample` is written only when `lanczos`, and a black
+    /// point only when on; both round-trip, and the old `png2c64` solver name loads as
+    /// the reference.
+    #[test]
+    fn resample_and_black_point_are_written_only_when_set() {
+        use convert64_core::layer::BlackPoint;
+        use convert64_core::solve::SolverKind;
+        let old = r#"{"schema_version":3,"target":"hires-bitmap","layers":[
+            {"name":"a","source":"a.png"}]}"#;
+        let p = ProjectFile::parse(old).unwrap();
+        assert_eq!(p.layers[0].resample, Resample::Mitchell);
+        let text = p.to_json();
+        assert!(
+            !text.contains("resample") && !text.contains("black_point"),
+            "{text}"
+        );
+        let mut q = p.clone();
+        q.layers[0].resample = Resample::Lanczos;
+        q.layers[0].adjustments.black_point = BlackPoint::new(0.5).unwrap();
+        let text = q.to_json();
+        assert!(text.contains(r#""resample": "lanczos""#), "{text}");
+        assert!(text.contains(r#""black_point": 0.5"#), "{text}");
+        assert_eq!(ProjectFile::parse(&text).unwrap(), q);
+        let bad = old.replace(r#""a.png"}"#, r#""a.png","resample":"bicubic"}"#);
+        assert!(ProjectFile::parse(&bad).is_err());
+        let named = old.replace(r#""layers""#, r#""solve":{"solver":"png2c64"},"layers""#);
+        assert_eq!(
+            ProjectFile::parse(&named).unwrap().solve.solver,
+            SolverKind::Reference
+        );
+    }
+
+    /// #273: `solve.background_rule` is written only when not `black` (the default), and
+    /// round-trips.
+    #[test]
+    fn the_background_rule_is_written_only_when_search() {
+        use convert64_core::solve::BackgroundRule;
+        let old = r#"{"schema_version":3,"target":"multicolor-bitmap","layers":[]}"#;
+        let p = ProjectFile::parse(old).unwrap();
+        assert_eq!(p.solve.background_rule, BackgroundRule::Black);
+        let text = p.to_json();
+        assert!(!text.contains("background_rule"), "{text}");
+        let mut q = p.clone();
+        q.migrated_from = None;
+        q.solve.background_rule = BackgroundRule::Search;
+        let text = q.to_json();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["solve"]["background_rule"], "search", "{text}");
+        assert_eq!(ProjectFile::parse(&text).unwrap(), q);
+    }
+
+    /// #261: `solve.refine` is written only when on; a hull `match_range` is written
+    /// with its palette, and its `amount` only when not 1; an older box loads as a box;
+    /// all of them round-trip.
+    #[test]
+    fn refine_and_hull_range_matching_round_trip() {
+        use convert64_core::layer::{RangeMatch, RangeMethod};
+        use convert64_core::solve::SolverKind;
+        let old = r#"{"schema_version":3,"target":"multicolor-bitmap","layers":[
+            {"name":"a","source":"a.png","adjustments":{"match_range":
+             {"percentile":0.01,"l":[0.1,0.9],"a":[-0.2,0.2],"b":[-0.25,0.25]}}}]}"#;
+        let p = ProjectFile::parse(old).unwrap();
+        assert!(!p.solve.refine);
+        let m = p.layers[0].adjustments.match_range.expect("a box");
+        assert_eq!(m.method(), RangeMethod::Box);
+        let text = p.to_json();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(v["solve"].get("refine").is_none(), "{text}");
+        let m = &v["layers"][0]["adjustments"]["match_range"];
+        assert!(m.get("method").is_none() && m["l"].is_array(), "{text}");
+        assert_eq!(ProjectFile::parse(&text).unwrap(), p);
+
+        let mut q = p.clone();
+        q.migrated_from = None;
+        q.solve.refine = true;
+        q.solve.solver = SolverKind::Png2amiga;
+        let pal = convert64_core::Palette::pepto_pal();
+        q.layers[0].adjustments.match_range = Some(RangeMatch::hull(&pal, 0.4).unwrap());
+        let text = q.to_json();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["solve"]["refine"], true, "{text}");
+        assert_eq!(v["solve"]["solver"], "png2amiga", "{text}");
+        let m = &v["layers"][0]["adjustments"]["match_range"];
+        assert_eq!(m["method"], "hull", "{text}");
+        assert_eq!(m["palette"].as_array().unwrap().len(), 16, "{text}");
+        assert_eq!(m["palette"][0], "#000000", "{text}");
+        assert!((m["amount"].as_f64().unwrap() - 0.4).abs() < 1e-6, "{text}");
+        assert!(m.get("l").is_none(), "{text}");
+        let back = ProjectFile::parse(&text).unwrap();
+        assert_eq!(back, q);
+        let m = back.layers[0].adjustments.match_range.unwrap();
+        assert_eq!((m.method(), m.amount()), (RangeMethod::Hull, 0.4));
+
+        // At amount 1 (png2amiga's), no `amount` is written.
+        q.layers[0].adjustments.match_range = Some(RangeMatch::hull(&pal, 1.0).unwrap());
+        let text = q.to_json();
+        assert!(!text.contains("amount"), "{text}");
+        assert_eq!(ProjectFile::parse(&text).unwrap(), q);
+        let bad = text.replace(r##""#000000","##, "");
+        assert!(ProjectFile::parse(&bad).is_err(), "15 colours");
     }
 }

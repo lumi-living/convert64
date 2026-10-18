@@ -256,3 +256,108 @@ fn validate_reads_display_prgs_and_projects() {
         Some(1)
     );
 }
+
+/// #261, ADR-014: a manifest takes `solver` (`png2amiga`, and `png2c64` for the
+/// reference), `cell-refine`, `match-range-amount`, `match-range-method`, `resample`,
+/// `black-point` and `allowed`, as convert's options; a bad amount fails that file.
+#[test]
+fn manifest_takes_the_png2amiga_options() {
+    let dir = temp("batch-261");
+    let art = dir.join("art");
+    std::fs::create_dir_all(&art).unwrap();
+    picture(&art.join("a.png"), 0);
+    picture(&art.join("b.png"), 1);
+    picture(&art.join("c.png"), 2);
+    std::fs::write(
+        art.join("batch.toml"),
+        r#"
+[defaults]
+match-range = true
+outputs = ["kla"]
+
+[files."a.png"]
+solver = "png2amiga"
+cell-refine = true
+match-range-method = "hull"
+match-range-amount = 40
+
+[files."b.png"]
+solver = "png2c64"
+match-range-method = "box"
+resample = "lanczos"
+black-point = 0.5
+allowed = "0,11,12,15,1"
+
+[files."c.png"]
+match-range-method = "hull"
+match-range-amount = 400
+"#,
+    )
+    .unwrap();
+    let r = convert64(&dir, &["batch", "art", "--json"]);
+    let v = report(&r);
+    assert_eq!(r.status.code(), Some(2), "{v:#}");
+    let file = |name: &str| {
+        v["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["input"] == name)
+            .unwrap_or_else(|| panic!("{name}: {v:#}"))
+            .clone()
+    };
+    let a = file("a.png");
+    assert_eq!(
+        (a["ok"].clone(), a["refine"].clone()),
+        (true.into(), true.into()),
+        "{a:#}"
+    );
+    let b = file("b.png");
+    assert_eq!(b["solver"], "reference", "{b:#}");
+    assert_eq!(b["ok"], true, "{b:#}");
+    assert_eq!(file("a.png")["solver"], "png2amiga", "{a:#}");
+    assert_eq!(b["refine"], false, "{b:#}");
+    assert_eq!(file("c.png")["exit_code"], 2);
+}
+
+/// ADR-014 §4: the line-art recipe file (`examples/recipes/lineart.toml`) works as a
+/// manifest: hi-res Art Studio files, solved by the reference, using only the greys.
+#[test]
+fn the_line_art_recipe_file_is_a_manifest() {
+    let dir = temp("batch-lineart");
+    let art = dir.join("art");
+    std::fs::create_dir_all(&art).unwrap();
+    picture(&art.join("a.png"), 0);
+    let manifest =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/recipes/lineart.toml");
+    let r = convert64(
+        &dir,
+        &[
+            "batch",
+            "art",
+            "--manifest",
+            manifest.to_str().unwrap(),
+            "--out",
+            "build",
+            "--json",
+        ],
+    );
+    let v = report(&r);
+    assert_eq!(r.status.code(), Some(0), "{v:#}");
+    let a = &v["files"][0];
+    assert_eq!(a["mode"], "hires-bitmap", "{a:#}");
+    assert_eq!(a["solver"], "reference", "{a:#}");
+    let bytes = std::fs::read(dir.join("build/a.art")).unwrap();
+    let file = convert64_formats::BitmapFormat::ArtStudio
+        .read(&bytes)
+        .unwrap();
+    let greys = [0u8, 11, 12, 15, 1];
+    let used: Vec<u8> = file
+        .image
+        .to_indexed()
+        .pixels()
+        .iter()
+        .map(|c| c.get())
+        .collect();
+    assert!(used.iter().all(|c| greys.contains(c)));
+}

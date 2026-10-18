@@ -370,6 +370,42 @@ fn best_triple_for(table: &[[f32; 16]], bg: usize) -> ([u8; 3], f32) {
     (pick, best)
 }
 
+/// png2c64's multicolor background choice (`quantize_multicolor_bruteforce`'s outer loop,
+/// as [`quantize_px`] runs it without extras) over given distance tables, for another
+/// encoder to use: per background, each cell's least error over the 455 triples of the
+/// other colours (a constrained cell: [`constrained`]'s), summed over the cells in cell
+/// order; the lowest total wins, ties to the lower index. A cell without a table
+/// (`None`: fixed) does not count. Returns the winner and the 16 totals.
+pub(crate) fn search_background(
+    tables: &[Option<Vec<[f32; 16]>>],
+    rules: &[CellRule],
+) -> (u8, [f32; 16]) {
+    let cells: Vec<usize> = (0..tables.len()).collect();
+    let per_cell: Vec<Option<[f32; 16]>> = crate::par::map(&cells, |&i| {
+        let t = tables[i].as_ref()?;
+        let rule = rules.get(i).copied().unwrap_or(CellRule::FREE);
+        Some(if rule == CellRule::FREE {
+            best_triples(&errors4(t)).map(|(_, e)| e)
+        } else {
+            std::array::from_fn(|bg| constrained(t, Some(bg as u8), 3, rule).1)
+        })
+    });
+    let mut totals = [0.0f32; 16];
+    for c in per_cell.iter().flatten() {
+        for (t, e) in totals.iter_mut().zip(c) {
+            *t += e;
+        }
+    }
+    let (mut best_bg, mut best_total) = (0u8, f32::MAX);
+    for (bg, &total) in totals.iter().enumerate() {
+        if total < best_total {
+            best_total = total;
+            best_bg = bg as u8;
+        }
+    }
+    (best_bg, totals)
+}
+
 /// `global_fs_indices`: a serpentine Floyd–Steinberg dither of the whole picture
 /// against the full palette in OKLab, error clamped to ±0.12 per channel on read and on
 /// write. Returns each pixel's palette index.

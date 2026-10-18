@@ -19,10 +19,11 @@
 use crate::colour::ColourIndex;
 use crate::document::SolveSettings;
 use crate::geom::{PxRect, Vec2};
+use crate::layer::BlackPoint;
 use crate::layer::{
     Adjustments, Blend, BrightnessContrast, CellMetric, Curves, Downscale, FitMode, Gamma, Hsl,
     Layer, Levels, Method, Metric, OrderedSemantics, PatternPhase, RangeMatch, Recipe, RecipeError,
-    Sharpen, Snap, Transform,
+    Resample, Sharpen, Snap, Transform,
 };
 use crate::mask::paint::{self, PaintMode};
 use crate::mask::{
@@ -35,7 +36,7 @@ use crate::palette::Palette;
 use crate::region::Region;
 use crate::solve::png2c64_ref::Divergences;
 use crate::solve::steering::{Pin, Steering, colour_set};
-use crate::solve::{Background, SolverKind};
+use crate::solve::{Background, BackgroundRule, SolverKind};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 
@@ -395,6 +396,17 @@ pub struct LayerSetDownscale {
     pub downscale: Downscale,
 }
 
+/// Sets the kernel a layer's colour is resampled with (`layer_set_resample`, ADR-014
+/// §3): `mitchell` (png2c64's, the default) or `lanczos` (png2amiga's widened Lanczos-3,
+/// which makes thin lines more even).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayerSetResample {
+    /// Layer index.
+    pub layer: usize,
+    /// `mitchell` or `lanczos`.
+    pub resample: Resample,
+}
+
 /// Places a layer on the canvas (`layer_set_transform`): the whole transform, snapped
 /// by the project's [`Snap`] (ADR-011), or by `snap` when given (the app's Cmd-drag,
 /// which inverts the setting for one drag).
@@ -475,6 +487,9 @@ pub struct AdjustmentsChange {
     /// Unsharp mask on lightness (#228).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sharpen: Option<Sharpen>,
+    /// png2c64's black point on OKLab lightness, 0–0.5 (ADR-014 §4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub black_point: Option<BlackPoint>,
     /// Levels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub levels: Option<Levels>,
@@ -502,6 +517,7 @@ impl AdjustmentsChange {
         Adjustments {
             gamma: self.gamma.unwrap_or(a.gamma),
             sharpen: self.sharpen.unwrap_or(a.sharpen),
+            black_point: self.black_point.unwrap_or(a.black_point),
             levels: self.levels.unwrap_or(a.levels),
             brightness_contrast: self.brightness_contrast.unwrap_or(a.brightness_contrast),
             hsl: self.hsl.unwrap_or(a.hsl),
@@ -639,18 +655,31 @@ pub struct PaletteSet {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BackgroundPin {
-    /// `{"fixed": n}` pins colour `n`; `"auto"` searches all 16.
+    /// `{"fixed": n}` pins colour `n`; `"auto"` leaves it to the solver (the reference
+    /// and native search all 16; the png2amiga solver follows `solve_set`'s
+    /// `background_rule`).
     pub background: Background,
 }
 
 /// Sets some of the project-wide solve settings (`solve_set`); those not named are
-/// kept. The background has its own command, [`BackgroundPin`].
+/// kept. Pinning the background has its own command, [`BackgroundPin`]; how the
+/// png2amiga solver chooses an unpinned one is `background_rule` here.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SolveSet {
-    /// `reference` or `native`.
+    /// `reference` (png2c64's port; `png2c64` is another name for it), `png2amiga` or
+    /// `native`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solver: Option<SolverKind>,
+    /// png2amiga's Refine step after a png2amiga solve (#261; experimental, the
+    /// png2amiga solver only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refine: Option<bool>,
+    /// How the png2amiga solver chooses an unpinned multicolor background: `black`
+    /// (png2amiga's colour 0, the default) or `search` (png2c64's search of all 16). The
+    /// other solvers always search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_rule: Option<BackgroundRule>,
     /// The reference solver's divergences from png2c64, as a whole: those not named are
     /// off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -678,8 +707,10 @@ impl SolveSet {
     pub fn apply(&self, s: &SolveSettings) -> SolveSettings {
         SolveSettings {
             solver: self.solver.unwrap_or(s.solver),
+            refine: self.refine.unwrap_or(s.refine),
             divergences: self.divergences.unwrap_or(s.divergences),
             background: s.background,
+            background_rule: self.background_rule.unwrap_or(s.background_rule),
             hysteresis: self.hysteresis.unwrap_or(s.hysteresis),
             luma_pair_bias: self.luma_pair_bias.unwrap_or(s.luma_pair_bias),
             refinements: self.refinements.unwrap_or(s.refinements),
@@ -855,6 +886,8 @@ pub enum Command {
     LayerSetBlend(LayerSetBlend),
     /// `layer_set_downscale`.
     LayerSetDownscale(LayerSetDownscale),
+    /// `layer_set_resample`.
+    LayerSetResample(LayerSetResample),
     /// `layer_set_transform`.
     LayerSetTransform(LayerSetTransform),
     /// `layer_rotate`.
@@ -1001,6 +1034,11 @@ pub const REGISTRY: &[CommandInfo] = &[
                   box-reduced mip level past a 4x shrink) or exact (the original, as png2c64).",
     },
     CommandInfo {
+        name: "layer_set_resample",
+        summary: "Set the kernel a layer's colour is resampled with: mitchell (png2c64's, the \
+                  default) or lanczos (png2amiga's widened Lanczos-3: more even thin lines).",
+    },
+    CommandInfo {
         name: "layer_set_transform",
         summary: "Place a layer: translate, scale and flips, in canvas pixels.",
     },
@@ -1040,12 +1078,13 @@ pub const REGISTRY: &[CommandInfo] = &[
     },
     CommandInfo {
         name: "background_pin",
-        summary: "Pin the multicolor background colour ({\"fixed\": n}) or search all 16 (\"auto\").",
+        summary: "Pin the multicolor background colour ({\"fixed\": n}) or leave it to the solver (\"auto\").",
     },
     CommandInfo {
         name: "solve_set",
-        summary: "Set some of the solve settings: solver, png2c64 divergences, hysteresis, \
-                  luma pair bias, refinements, finalists; the others are kept.",
+        summary: "Set some of the solve settings: solver, refine, background rule (black or \
+                  search), png2c64 divergences, hysteresis, luma pair bias, refinements, \
+                  finalists; the others are kept.",
     },
     CommandInfo {
         name: "snap_set",
@@ -1183,6 +1222,7 @@ enum Prop {
     Opacity(f32),
     Blend(Blend),
     Downscale(Downscale),
+    Resample(Resample),
     Transform(Transform),
     Name(String),
     Adjustments(Box<Adjustments>),
@@ -1249,6 +1289,7 @@ impl Command {
             Self::LayerSetOpacity(_) => "layer_set_opacity",
             Self::LayerSetBlend(_) => "layer_set_blend",
             Self::LayerSetDownscale(_) => "layer_set_downscale",
+            Self::LayerSetResample(_) => "layer_set_resample",
             Self::LayerSetTransform(_) => "layer_set_transform",
             Self::LayerRotate(_) => "layer_rotate",
             Self::LayerNudge(_) => "layer_nudge",
@@ -1357,6 +1398,7 @@ impl Command {
             | Self::LayerSetVisible(_)
             | Self::LayerSetBlend(_)
             | Self::LayerSetDownscale(_)
+            | Self::LayerSetResample(_)
             | Self::LayerSetTransform(_)
             | Self::LayerDuplicate(_)
             | Self::AdjustmentsSet(_)
@@ -1527,6 +1569,7 @@ impl Command {
             Self::LayerSetOpacity(c) => set_prop(p, c.layer, Prop::Opacity(c.opacity)),
             Self::LayerSetBlend(c) => set_prop(p, c.layer, Prop::Blend(c.blend)),
             Self::LayerSetDownscale(c) => set_prop(p, c.layer, Prop::Downscale(c.downscale)),
+            Self::LayerSetResample(c) => set_prop(p, c.layer, Prop::Resample(c.resample)),
             Self::LayerSetTransform(c) => {
                 let t = snapped(p, c.layer, c.transform, c.snap)?;
                 set_prop(p, c.layer, Prop::Transform(t))
@@ -1805,6 +1848,11 @@ fn swap_prop(l: &mut Layer, value: Prop) -> Result<Prop, CommandError> {
             let old = l.downscale();
             l.set_downscale(v);
             Prop::Downscale(old)
+        }
+        Prop::Resample(v) => {
+            let old = l.resample();
+            l.set_resample(v);
+            Prop::Resample(old)
         }
         Prop::Transform(v) => {
             let old = l.transform();
@@ -2430,7 +2478,7 @@ mod tests {
         ] {
             assert!(names.contains(&c.name()));
         }
-        assert_eq!(names.len(), 44);
+        assert_eq!(names.len(), 45);
     }
 
     /// #198: transform commands snap by the project's setting unless told otherwise;
@@ -2578,6 +2626,10 @@ mod tests {
             Command::LayerSetDownscale(LayerSetDownscale {
                 layer: 1,
                 downscale: Downscale::Exact,
+            }),
+            Command::LayerSetResample(LayerSetResample {
+                layer: 1,
+                resample: Resample::Lanczos,
             }),
             Command::LayerSetTransform(LayerSetTransform {
                 layer: 0,
@@ -2953,6 +3005,17 @@ mod tests {
         assert_eq!(s.background, Background::Fixed(ColourIndex::BLUE));
         assert_eq!(s.finalists, 5);
         assert_eq!(s.refinements, SolveSettings::default().refinements);
+        assert_eq!(s.background_rule, BackgroundRule::Black);
+        // #273: the background rule is a solve setting; the pin stays its own.
+        e.execute(Command::SolveSet(SolveSet {
+            background_rule: Some(BackgroundRule::Search),
+            ..SolveSet::default()
+        }))
+        .unwrap();
+        let s = &e.project().solve;
+        assert_eq!(s.background_rule, BackgroundRule::Search);
+        assert_eq!(s.background, Background::Fixed(ColourIndex::BLUE));
+        assert_eq!(s.finalists, 5);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! The Recipe tab (UX §6): the selected layer's adjustments, dither recipe and colour
-//! fitting, then **Advanced**: ADR-010's divergences from png2c64 and the solver's own
-//! settings, collapsed and off by default. Every change is a registry command
+//! fitting, then **Advanced**: the solver (the png2c64 reference, png2amiga's for
+//! comparison or the native one, ADR-014), ADR-010's divergences from png2c64 and the
+//! solver's own settings, collapsed and off by default. Every change is a registry command
 //! (`adjustments_set`, `recipe_set`, `solve_set`); a drag is one undo step.
 //!
 //! Conventions (UX §6): label, then slider with its value field, on one row; a dot
@@ -15,10 +16,11 @@ use convert64_core::ColourIndex;
 use convert64_core::SolveSettings;
 use convert64_core::command::{AdjustmentsChange, RecipeChange, SolveSet};
 use convert64_core::layer::{
-    Adjustments, BrightnessContrast, Curve, Curves, DitherFamily, FitMode, Gamma, Hsl, Layer,
-    Levels, Method, Metric, Orientation, PatternPhase, Radius, RangeMatch, Recipe, Sharpen,
+    Adjustments, BlackPoint, BrightnessContrast, Curve, Curves, DitherFamily, FitMode, Gamma, Hsl,
+    Layer, Levels, Method, Metric, Orientation, PatternPhase, Radius, RangeMatch, RangeMethod,
+    Recipe, Sharpen,
 };
-use convert64_core::solve::{Divergences, SolverKind};
+use convert64_core::solve::{BackgroundRule, Divergences, SolverKind};
 use convert64_project::{JsonCommand, LayerRef};
 use egui::{Response, RichText, Ui};
 
@@ -391,6 +393,30 @@ fn adjustments(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, u
                 );
             },
         );
+        commit(
+            f,
+            "black point",
+            slider_tip(
+                ui,
+                "Black point",
+                Some(BLACK_POINT_TIP),
+                a.black_point.get() * 100.0,
+                0.0,
+                0.0..=50.0,
+                " %",
+                0,
+            ),
+            |f, g, v| {
+                let x = BlackPoint::new((v / 100.0).clamp(0.0, 0.5)).unwrap_or(a.black_point);
+                f.adjust(
+                    g,
+                    AdjustmentsChange {
+                        black_point: Some(x),
+                        ..Default::default()
+                    },
+                );
+            },
+        );
         ui.label(RichText::new("Levels").small().weak());
         commit(
             f,
@@ -450,6 +476,7 @@ fn adjustments(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, u
                 .checkbox(&mut v, "Match the palette's range")
                 .on_hover_text(RANGE_TIP);
             if r.changed() || (lab.double_clicked() && on) {
+                // png2c64's box, the default.
                 let m = (v && !lab.double_clicked()).then(|| {
                     RangeMatch::for_palette(
                         ws.doc.palette(),
@@ -466,6 +493,77 @@ fn adjustments(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, u
                 );
             }
         });
+        if let Some(m) = a.match_range {
+            ui.horizontal(|ui| {
+                let lab = label_tip(
+                    ui,
+                    "Method",
+                    m.method() != RangeMethod::Box,
+                    Some(RANGE_METHOD_TIP),
+                );
+                let mut want = m.method();
+                for (k, n, tip) in RANGE_METHODS {
+                    if ui
+                        .selectable_label(want == k, n)
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        want = k;
+                    }
+                }
+                if lab.double_clicked() {
+                    want = RangeMethod::Box;
+                }
+                if want != m.method() {
+                    let pal = ws.doc.palette();
+                    let x = match want {
+                        RangeMethod::Box => RangeMatch::for_palette(
+                            pal,
+                            RangeMatch::DEFAULT_PERCENTILE,
+                            RangeMatch::DEFAULT_MARGIN,
+                        ),
+                        RangeMethod::Hull => RangeMatch::hull(pal, 1.0),
+                    };
+                    if let Ok(x) = x {
+                        f.adjust(
+                            None,
+                            AdjustmentsChange {
+                                match_range: Some(Some(x)),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
+            });
+        }
+        match a.match_range {
+            Some(m) if m.method() == RangeMethod::Hull => commit(
+                f,
+                "range amount",
+                slider_tip(
+                    ui,
+                    "Amount",
+                    Some(RANGE_AMOUNT_TIP),
+                    m.amount() * 100.0,
+                    100.0,
+                    0.0..=100.0,
+                    " %",
+                    0,
+                ),
+                |f, g, v| {
+                    if let Ok(x) = m.with_amount((v / 100.0).clamp(0.0, 1.0)) {
+                        f.adjust(
+                            g,
+                            AdjustmentsChange {
+                                match_range: Some(Some(x)),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                },
+            ),
+            _ => {}
+        }
         reset_button(ui, changed)
     });
     if reset {
@@ -474,6 +572,7 @@ fn adjustments(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, u
             AdjustmentsChange {
                 gamma: Some(d.gamma),
                 sharpen: None,
+                black_point: Some(d.black_point),
                 levels: Some(d.levels),
                 brightness_contrast: Some(d.brightness_contrast),
                 hsl: Some(d.hsl),
@@ -487,6 +586,34 @@ fn adjustments(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, u
 /// The Range row's tooltip.
 const RANGE_TIP: &str = "png2c64's --match-range: the picture's OKLab range stretched to the \
                          palette's, after the curves";
+
+/// The Range Method row's tooltip.
+const RANGE_METHOD_TIP: &str = "How the range is matched: png2c64's box (the default) or \
+                                png2amiga's hull (experimental)";
+
+/// The range matching methods, as the Range row offers them.
+const RANGE_METHODS: [(RangeMethod, &str, &str); 2] = [
+    (
+        RangeMethod::Box,
+        "Box",
+        "png2c64's: each OKLab axis stretched onto the palette's extent (the default)",
+    ),
+    (
+        RangeMethod::Hull,
+        "Hull (experimental)",
+        "png2amiga's: each colour's chroma scaled toward what the palette can reach, \
+         lightness and hue kept",
+    ),
+];
+
+/// The Black point slider's tooltip.
+const BLACK_POINT_TIP: &str = "png2c64's --black-point: lightness below this becomes black and \
+                               the rest is stretched; after the gamma and the sharpen. 50 % \
+                               darkens thin lines in the line-art recipe (ADR-014)";
+
+/// The Range Amount slider's tooltip.
+const RANGE_AMOUNT_TIP: &str = "How much of the range matching: 100 % is png2amiga's, 0 % \
+                                keeps the picture's own colourfulness";
 
 /// Whether the Adjustments group's values (everything but Sharpen, which has its own
 /// group) are at their defaults.
@@ -993,8 +1120,8 @@ fn rebuilt(
 }
 
 /// The Transform group (UX §6 item 1, ADR-011): X, Y, W %, H % (chained by default),
-/// rotation, the anchor, Snap, flips, Downscale (#235: Auto or png2c64 exact) and
-/// presets, in C64 (canvas) pixels, sub-pixel.
+/// rotation, the anchor, Snap, flips, Downscale (#235: Auto or Exact), Resample
+/// (ADR-014 §3: Mitchell or Lanczos) and presets, in C64 (canvas) pixels, sub-pixel.
 fn transform_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, ui: &mut Ui) {
     use convert64_core::Vec2;
     let t = layer.transform();
@@ -1003,7 +1130,8 @@ fn transform_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Laye
     let changed = t.rotate() != 0.0
         || t.flip_h()
         || t.flip_v()
-        || layer.downscale() != convert64_core::Downscale::Auto;
+        || layer.downscale() != convert64_core::Downscale::Auto
+        || layer.resample() != convert64_core::Resample::Mitchell;
     let set = |f: &mut Form, g: Option<&str>, transform: convert64_core::Transform| {
         let layer = LayerRef::Index(f.layer);
         f.emit(
@@ -1217,9 +1345,9 @@ fn transform_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Laye
                 ),
                 (
                     Downscale::Exact,
-                    "png2c64 exact",
-                    "Always sample the original with png2c64's four taps, as png2c64 \
-                     does: large shrinks alias.",
+                    "Exact",
+                    "Always sample the original, as png2c64 does: with Mitchell's four \
+                     taps large shrinks alias.",
                 ),
             ] {
                 if ui
@@ -1233,6 +1361,39 @@ fn transform_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Laye
                         JsonCommand::LayerSetDownscale {
                             layer: LayerRef::Index(f.layer),
                             downscale: d,
+                        },
+                    );
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            use convert64_core::Resample;
+            let now = layer.resample();
+            label(ui, "Resample", now != Resample::Mitchell);
+            for (r, name, tip) in [
+                (
+                    Resample::Mitchell,
+                    "Mitchell",
+                    "png2c64's four-tap bicubic, the default (ADR-012).",
+                ),
+                (
+                    Resample::Lanczos,
+                    "Lanczos",
+                    "png2amiga's Lanczos-3, widened by the shrink: thin lines come out \
+                     more even, and greyer; for line art (ADR-014).",
+                ),
+            ] {
+                if ui
+                    .selectable_label(now == r, name)
+                    .on_hover_text(tip)
+                    .clicked()
+                    && now != r
+                {
+                    f.emit(
+                        None,
+                        JsonCommand::LayerSetResample {
+                            layer: LayerRef::Index(f.layer),
+                            resample: r,
                         },
                     );
                 }
@@ -1741,28 +1902,99 @@ fn swatches(f: &mut Form, r: &Recipe, ws: &Workspace, ui: &mut Ui) {
     });
 }
 
+/// The solver picker's choices: the solver, its label and its tooltip (#261).
+const SOLVERS: [(SolverKind, &str, &str); 3] = [
+    (
+        SolverKind::Reference,
+        "Reference",
+        "png2c64's pipeline, ported (ADR-010, ADR-014), the default",
+    ),
+    (
+        SolverKind::Png2amiga,
+        "png2amiga (comparison)",
+        "png2amiga's C64 path with its own front end (Lanczos for every layer), kept to \
+         compare against (ADR-014); not the default",
+    ),
+    (SolverKind::Native, "Native", "Convert64's own solver"),
+];
+
+/// The background rule's tooltip.
+const BG_RULE_TIP: &str = "Experimental: how the png2amiga solver picks an unpinned multicolor \
+                           background (hi-res has none; Reference and Native always search)";
+
+/// The background rules, as the Advanced group offers them.
+const BG_RULES: [(BackgroundRule, &str, &str); 2] = [
+    (
+        BackgroundRule::Black,
+        "Black",
+        "png2amiga's: always colour 0 (the default)",
+    ),
+    (
+        BackgroundRule::Search,
+        "Search",
+        "png2c64's: all 16 tried, the lowest total cell error kept",
+    ),
+];
+
 fn advanced(f: &mut Form, layer: &Layer, s: &SolveSettings, ui: &mut Ui) {
     let d = SolveSettings::default();
     let changed = *s != d;
     let reset = group(ui, "Advanced", changed, false, |ui| {
-        ui.label(RichText::new("Divergences from png2c64 (ADR-010): all off by default, so the result matches png2c64's.").small().weak());
         ui.horizontal(|ui| {
             label(ui, "Solver", s.solver != d.solver);
-            for (k, n) in [
-                (SolverKind::Reference, "Reference"),
-                (SolverKind::Native, "Native"),
-            ] {
-                if ui.selectable_label(s.solver == k, n).clicked() && s.solver != k {
+            ui.horizontal_wrapped(|ui| {
+                for (k, n, tip) in SOLVERS {
+                    if ui
+                        .selectable_label(s.solver == k, n)
+                        .on_hover_text(tip)
+                        .clicked()
+                        && s.solver != k
+                    {
+                        f.solve(
+                            None,
+                            SolveSet {
+                                solver: Some(k),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
+            });
+        });
+        // Refine is not offered here (ADR-014 §5: experimental, not in the app's full
+        // solve); the background rule only with the png2amiga solver, the one it acts on.
+        let p2a = s.solver == SolverKind::Png2amiga;
+        if p2a {
+            ui.horizontal(|ui| {
+                let lab = label_tip(
+                    ui,
+                    "png2amiga bg",
+                    s.background_rule != d.background_rule,
+                    Some(BG_RULE_TIP),
+                );
+                let mut v = s.background_rule;
+                ui.horizontal_wrapped(|ui| {
+                    for (k, n, tip) in BG_RULES {
+                        if ui.selectable_label(v == k, n).on_hover_text(tip).clicked() {
+                            v = k;
+                        }
+                    }
+                });
+                if lab.double_clicked() {
+                    v = d.background_rule;
+                }
+                if v != s.background_rule {
                     f.solve(
                         None,
                         SolveSet {
-                            solver: Some(k),
+                            background_rule: Some(v),
                             ..Default::default()
                         },
                     );
                 }
-            }
-        });
+            });
+        }
+        ui.label(RichText::new("Divergences from png2c64 (ADR-010): all off by default, so the result matches png2c64's.").small().weak());
         let div = s.divergences;
         let set_div = |f: &mut Form, g: Option<&str>, x: Divergences| {
             f.solve(
@@ -1949,6 +2181,8 @@ fn advanced(f: &mut Form, layer: &Layer, s: &SolveSettings, ui: &mut Ui) {
             None,
             SolveSet {
                 solver: Some(d.solver),
+                refine: Some(d.refine),
+                background_rule: Some(d.background_rule),
                 divergences: Some(d.divergences),
                 hysteresis: Some(d.hysteresis),
                 luma_pair_bias: Some(d.luma_pair_bias),
@@ -2124,6 +2358,68 @@ mod tests {
             (r.center().y - radius.center().y).abs() < 4.0 && r.left() > gaussian.right()
         });
         assert_eq!(after.count(), 0, "{texts:?}");
+    }
+
+    /// A [`workspace`] whose layer has range matching `m`.
+    fn with_range(m: RangeMatch) -> Workspace {
+        let mut ws = workspace(Sharpen::default());
+        ws.doc
+            .run(JsonCommand::AdjustmentsSet {
+                layer: LayerRef::Index(0),
+                adjustments: AdjustmentsChange {
+                    match_range: Some(Some(m)),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        ws
+    }
+
+    /// #261: with png2amiga's hull on, an Amount row (0–100 %) follows Range, still in
+    /// Adjustments, showing the hull's amount; drawing it sends nothing.
+    #[test]
+    fn hull_range_matching_shows_its_amount() {
+        let hull = RangeMatch::hull(&convert64_core::Palette::pepto_pal(), 0.4).unwrap();
+        let (texts, actions) = draw(with_range(hull));
+        assert!(actions.is_empty(), "{actions:?}");
+        let range = find(&texts, "Range");
+        let sharpen = find(&texts, "Sharpen");
+        let amount = texts
+            .iter()
+            .find(|(t, r)| t == "Amount" && r.top() > range.bottom() && r.bottom() < sharpen.top())
+            .unwrap_or_else(|| panic!("no Amount between Range and Sharpen: {texts:?}"))
+            .1;
+        let on_row = |text: &str| {
+            texts
+                .iter()
+                .any(|(t, r)| t == text && (r.center().y - amount.center().y).abs() < 4.0)
+        };
+        assert!(
+            on_row("40") && on_row(" %"),
+            "no 40 % on the Amount row: {texts:?}"
+        );
+    }
+
+    /// A box (png2c64's, the default) has no amount, and a Method row offers the hull.
+    #[test]
+    fn box_range_matching_has_no_amount() {
+        let pal = convert64_core::Palette::pepto_pal();
+        let boxed = RangeMatch::for_palette(&pal, 0.01, 0.05).unwrap();
+        let (texts, actions) = draw(with_range(boxed));
+        assert!(actions.is_empty(), "{actions:?}");
+        let range = find(&texts, "Range");
+        let sharpen = find(&texts, "Sharpen");
+        assert!(
+            !texts.iter().any(|(t, r)| t == "Amount"
+                && r.top() > range.bottom()
+                && r.bottom() < sharpen.top()),
+            "{texts:?}"
+        );
+        assert!(texts.iter().any(|(t, _)| t == "Method"), "{texts:?}");
+        assert!(
+            texts.iter().any(|(t, _)| t == "Hull (experimental)"),
+            "{texts:?}"
+        );
     }
 
     /// Adjustments' dot and Reset ignore Sharpen, which has its own.

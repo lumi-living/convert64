@@ -10,7 +10,7 @@ use convert64_core::command::{
     ModifierChange, RecipeChange, Selection, SnapSet, SolveSet,
 };
 use convert64_core::geom::Vec2;
-use convert64_core::layer::{Adjustments, Blend, Downscale, Recipe, Snap, Transform};
+use convert64_core::layer::{Adjustments, Blend, Downscale, Recipe, Resample, Snap, Transform};
 use convert64_core::mask::{Combine, Gradient, Key, PaintMode};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -216,6 +216,14 @@ pub enum JsonCommand {
         /// `auto` (a cached mip level past a 4× shrink) or `exact` (png2c64's).
         downscale: Downscale,
     },
+    /// Set the kernel a layer's colour is resampled with (ADR-014 §3).
+    LayerSetResample {
+        /// Layer.
+        layer: LayerRef,
+        /// `mitchell` (png2c64's, the default) or `lanczos` (png2amiga's widened
+        /// Lanczos-3).
+        resample: Resample,
+    },
     /// Place a layer, snapped by the project's setting or `snap`.
     LayerSetTransform {
         /// Layer.
@@ -397,7 +405,7 @@ pub enum JsonCommand {
 mod tests {
     use super::*;
     use convert64_core::ColourIndex;
-    use convert64_core::layer::{DitherKind, Gamma, Levels, Sharpen};
+    use convert64_core::layer::{DitherKind, Gamma, Levels, RangeMatch, Sharpen};
     use convert64_core::mask::{
         GradientKind, KeyChannel, MaskSource, Modifiers, SnapToCells, SourceEntry,
     };
@@ -533,6 +541,10 @@ mod tests {
                 layer: l.clone(),
                 downscale: Downscale::Exact,
             },
+            JsonCommand::LayerSetResample {
+                layer: l.clone(),
+                resample: Resample::Lanczos,
+            },
             JsonCommand::LayerSetTransform {
                 layer: l.clone(),
                 transform: Transform::new(Vec2::new(1.5, 2.0), Vec2::new(2.0, 2.0), true, false)
@@ -574,6 +586,26 @@ mod tests {
                     ..AdjustmentsChange::default()
                 },
             },
+            // #261: png2amiga's hull at an amount, and png2c64's box.
+            JsonCommand::AdjustmentsSet {
+                layer: LayerRef::Index(0),
+                adjustments: AdjustmentsChange {
+                    match_range: Some(Some(
+                        RangeMatch::hull(&convert64_core::Palette::pepto_pal(), 0.4).unwrap(),
+                    )),
+                    ..AdjustmentsChange::default()
+                },
+            },
+            JsonCommand::AdjustmentsSet {
+                layer: LayerRef::Index(0),
+                adjustments: AdjustmentsChange {
+                    match_range: Some(Some(
+                        RangeMatch::for_palette(&convert64_core::Palette::pepto_pal(), 0.01, 0.05)
+                            .unwrap(),
+                    )),
+                    ..AdjustmentsChange::default()
+                },
+            },
             JsonCommand::RecipeSet {
                 layer: l,
                 recipe: RecipeChange {
@@ -594,6 +626,12 @@ mod tests {
             JsonCommand::SolveSet(SolveSet {
                 solver: Some(SolverKind::Native),
                 hysteresis: Some(None),
+                ..SolveSet::default()
+            }),
+            // #261: the png2amiga solver and its Refine.
+            JsonCommand::SolveSet(SolveSet {
+                solver: Some(SolverKind::Png2amiga),
+                refine: Some(true),
                 ..SolveSet::default()
             }),
             JsonCommand::SnapSet(SnapSet {

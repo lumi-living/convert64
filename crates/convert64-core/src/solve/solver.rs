@@ -22,27 +22,74 @@ use crate::model::{BitmapImage, IndexedBitmap};
 use crate::palette::Palette;
 use serde::{Deserialize, Serialize};
 
-/// How the background is chosen (multicolor only).
+/// Whether the multicolor background is pinned (multicolor only).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Background {
-    /// Try all 16.
+    /// Not pinned: the solver chooses. The reference (png2c64's port) and the native
+    /// solver search all 16; the png2amiga solver follows
+    /// [`SolveOptions::background_rule`] (by default [`BackgroundRule::Black`],
+    /// png2amiga's colour 0).
     #[default]
     Auto,
-    /// Use this one.
+    /// Use this one, on every solver.
     Fixed(ColourIndex),
 }
 
-/// Which solver solves a bitmap frame (#181).
+/// How the png2amiga solver chooses an unpinned multicolor background
+/// ([`Background::Auto`]; #273, experimental, ADR-014 §5). Hi-res has no background, and
+/// the reference (png2c64's port) and the native solver always search all 16, so this
+/// acts only on the png2amiga solver in multicolor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BackgroundRule {
+    /// png2amiga's: always colour 0 (`c64.cpp:459`, `res.bg_color = 0`). The default,
+    /// and what png2amiga's parity tests run with.
+    #[default]
+    Black,
+    /// png2c64's outer loop over all 16 backgrounds, ported onto png2amiga's encoder
+    /// ([`super::png2amiga_ref::c64::search_background`]): per background, every free
+    /// cell's least `mse` error over the 455 triples of the other 15 colours (each
+    /// pixel's squared OKLab distance to the nearest of the four, summed over the cell),
+    /// summed over the cells; the lowest total wins, ties to the lower index.
+    Search,
+}
+
+impl BackgroundRule {
+    /// Whether this is the default (a project file writes it only when not).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Which solver solves a bitmap frame (#181, ADR-010, ADR-014).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SolverKind {
-    /// png2c64's pipeline, ported (`png2c64_ref`; the default). Frames it cannot solve
-    /// yet fall back to the native solver ([`Solution::fallback`] says why).
+    /// The reference: png2c64's pipeline, ported (`png2c64_ref`; ADR-010, kept by
+    /// ADR-014; the default). Frames it cannot solve fall back to the native solver
+    /// ([`Solution::fallback`] says why). `png2c64` is accepted as another name for it.
     #[default]
+    #[serde(alias = "png2c64")]
     Reference,
+    /// png2amiga's C64 path, ported (`png2amiga_ref`, #261): a comparison solver
+    /// (ADR-014 §2), with png2amiga's own front end ([`Self::pipeline`]). A frame it
+    /// cannot solve goes to the reference if that can solve it, else to the native
+    /// solver.
+    Png2amiga,
     /// Convert64's own solver (E5, #157): background search, dither and refinement.
     Native,
+}
+
+impl SolverKind {
+    /// Whose front end the compositor runs for this solver (ADR-014): png2amiga's for
+    /// the png2amiga solver, png2c64's for the others.
+    pub const fn pipeline(self) -> crate::composite::Pipeline {
+        match self {
+            Self::Png2amiga => crate::composite::Pipeline::Png2amiga,
+            Self::Reference | Self::Native => crate::composite::Pipeline::Png2c64,
+        }
+    }
 }
 
 /// How much work a solve does (UX §7).
@@ -66,12 +113,21 @@ pub enum SolveMode {
 pub struct SolveOptions {
     /// Which solver (the reference by default).
     pub solver: SolverKind,
-    /// The reference solver's named extras, all off by default (#181 step 7).
+    /// The reference solver's named extras, all off by default (#181 step 7). The
+    /// png2amiga solver has none: a frame asking for one goes to the reference.
     pub divergences: super::png2c64_ref::Divergences,
+    /// png2amiga's `--cell-refine` after a png2amiga solve (#261; experimental, ADR-014
+    /// §5): keeps the result only if its full-image SSIMULACRA2 improves. Off by
+    /// default; the png2amiga solver only (the others ignore it), and only on a full
+    /// solve with no locked cells.
+    pub refine: bool,
     /// Full search or the interactive fast path.
     pub mode: SolveMode,
     /// Background choice.
     pub background: Background,
+    /// How the png2amiga solver chooses an unpinned multicolor background (Black by
+    /// default); the other solvers always search.
+    pub background_rule: BackgroundRule,
     /// Same-luma pair bias per pair in a cell's set (positive penalises, negative
     /// rewards; see [`super::metric::luma_pair_bias`]).
     pub luma_pair_bias: f32,
@@ -95,8 +151,10 @@ impl Default for SolveOptions {
         Self {
             solver: SolverKind::Reference,
             divergences: super::png2c64_ref::Divergences::default(),
+            refine: false,
             mode: SolveMode::Full,
             background: Background::Auto,
+            background_rule: BackgroundRule::Black,
             luma_pair_bias: 0.0,
             refinements: 2,
             finalists: 3,
@@ -186,11 +244,25 @@ impl Solver {
         previous: Option<&Solution>,
         opts: &SolveOptions,
     ) -> Solution {
+        let reference = |why: Option<String>| match super::reference::unsupported(frame, opts) {
+            None => Ok(Solution {
+                fallback: why.clone(),
+                ..super::reference::solve(frame, self.palette(), steering, previous, opts)
+            }),
+            Some(own) => Err(match why {
+                Some(w) => format!("{w}; reference (png2c64): {own}"),
+                None => own,
+            }),
+        };
         let fallback = match opts.solver {
             SolverKind::Native => None,
-            SolverKind::Reference => match super::reference::unsupported(frame, opts) {
+            SolverKind::Reference => match reference(None) {
+                Ok(sol) => return sol,
+                Err(why) => Some(why),
+            },
+            SolverKind::Png2amiga => match super::reference_png2amiga::unsupported(frame, opts) {
                 None => {
-                    return super::reference::solve(
+                    return super::reference_png2amiga::solve(
                         frame,
                         self.palette(),
                         steering,
@@ -198,7 +270,10 @@ impl Solver {
                         opts,
                     );
                 }
-                why => why,
+                Some(why) => match reference(Some(format!("png2amiga: {why}"))) {
+                    Ok(sol) => return sol,
+                    Err(why) => Some(why),
+                },
             },
         };
         // The fast path needs tables only for the cells it re-solves.
@@ -528,7 +603,7 @@ mod tests {
                 assert_eq!(sol.solver, SolverKind::Reference, "{mode} {kind:?}");
                 assert_eq!(sol.fallback, None);
                 let (w, h) = rm.screen();
-                assert!(f.png2c64_prepared());
+                assert!(f.prepared());
                 let im = Image::new(w, h, f.colour().to_vec());
                 let settings = Settings {
                     method: super::super::reference::ref_method(kind).unwrap(),
@@ -589,6 +664,98 @@ mod tests {
             s.solve(&f, &Steering::new(), None, &biased).solver,
             SolverKind::Native
         );
+    }
+
+    /// ADR-014 §2: `--solver png2amiga` is png2amiga's port run on the frame's colours,
+    /// bit for bit, in both modes and for ordered, diffusion, palette-aware and `none`
+    /// recipes; the frame has been through a front end already, so the solver takes its
+    /// colours as they are.
+    #[test]
+    fn the_png2amiga_solver_is_png2amiga_s_port_on_the_frame() {
+        use super::super::png2amiga_ref::c64::Metric as RefMetric;
+        use super::super::png2amiga_ref::{Image, Mode as RefMode, Settings, colour, convert};
+        let s = Solver::new(&Palette::pepto_pal());
+        let recipe = Recipe::default();
+        let opts = SolveOptions {
+            solver: SolverKind::Png2amiga,
+            ..SolveOptions::default()
+        };
+        for (mode, rm) in [
+            (Mode::MulticolorBitmap, RefMode::Multicolor),
+            (Mode::HiresBitmap, RefMode::Hires),
+        ] {
+            for kind in [
+                DitherKind::None,
+                DitherKind::Bayer4,
+                DitherKind::FloydSteinberg,
+                DitherKind::Yliluoma1,
+                DitherKind::OptChecker,
+            ] {
+                let f = frame(mode, kind);
+                let sol = s.solve(&f, &Steering::new(), None, &opts);
+                assert_eq!(sol.solver, SolverKind::Png2amiga, "{mode} {kind:?}");
+                assert_eq!(sol.fallback, None);
+                let (w, h) = rm.screen();
+                assert!(f.prepared());
+                let im = Image::new(w, h, f.colour().to_vec());
+                let strength = f.attributes().pixels()[0].strength;
+                let settings = Settings {
+                    method: super::super::reference_png2amiga::ref_method(kind).unwrap(),
+                    strength,
+                    error_clamp: recipe.error_clamp(),
+                    serpentine: true,
+                    metric: RefMetric::Mse,
+                };
+                let port = convert(
+                    &im,
+                    &colour::palette_of(&Palette::pepto_pal()),
+                    rm,
+                    &settings,
+                );
+                let ours: Vec<u8> = indices(&sol).iter().map(|c| c.get()).collect();
+                assert_eq!(ours, port.indices(), "{mode} {kind:?}");
+                assert_eq!(validate(&sol.image.to_indexed()), Ok(()));
+            }
+        }
+    }
+
+    /// ADR-014: a frame the png2amiga solver cannot solve goes to the reference
+    /// (png2c64's port), then to native; the reference falls back to native only, and
+    /// `png2c64` names the reference.
+    #[test]
+    fn the_png2amiga_solver_falls_back_to_the_reference_then_native() {
+        let s = Solver::new(&Palette::pepto_pal());
+        let p2a = SolveOptions {
+            solver: SolverKind::Png2amiga,
+            ..SolveOptions::default()
+        };
+        // png2c64 has Ostromoukhov, png2amiga has not.
+        let f = frame(Mode::MulticolorBitmap, DitherKind::Ostromoukhov);
+        let sol = s.solve(&f, &Steering::new(), None, &p2a);
+        assert_eq!(sol.solver, SolverKind::Reference);
+        assert!(
+            sol.fallback
+                .as_deref()
+                .is_some_and(|w| w.contains("png2amiga"))
+        );
+        // png2amiga has the optimal checker, png2c64 has not: the reference goes native.
+        let f = frame(Mode::MulticolorBitmap, DitherKind::OptChecker);
+        let sol = s.solve(&f, &Steering::new(), None, &SolveOptions::default());
+        assert_eq!(sol.solver, SolverKind::Native);
+        let sol = s.solve(&f, &Steering::new(), None, &p2a);
+        assert_eq!(sol.solver, SolverKind::Png2amiga);
+        // Neither has three-row Sierra: native, both reasons given.
+        let f = frame(Mode::MulticolorBitmap, DitherKind::Sierra);
+        let sol = s.solve(&f, &Steering::new(), None, &p2a);
+        assert_eq!(sol.solver, SolverKind::Native);
+        assert!(
+            sol.fallback
+                .as_deref()
+                .is_some_and(|w| w.contains("png2amiga") && w.contains("png2c64"))
+        );
+        use serde::de::{IntoDeserializer, value::Error};
+        let named = SolverKind::deserialize("png2c64".into_deserializer()).map_err(|e: Error| e);
+        assert_eq!(named, Ok(SolverKind::Reference));
     }
 
     /// The reference path's output as palette indices.

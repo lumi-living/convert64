@@ -8,9 +8,17 @@
 //!   path's kernel: 4 × 4 taps on the premultiplied source around the inverse-mapped
 //!   position, weights normalised to sum to 1; samples clamp to the layer's edge pixels.
 //!   Like png2c64's scaler and the separable path, it is not widened when the layer is
-//!   scaled down, so a turned layer is as crisp as an upright one. Shrunk by more than
-//!   4× along a layer axis, under `Downscale::Auto` it samples the source's mip level on
-//!   that axis instead (#235, `mip`), the rule the separable path follows.
+//!   scaled down, so a turned layer is as crisp as an upright one. A layer's colour can
+//!   opt into png2amiga's Lanczos-3 instead (`Resample::Lanczos`, ADR-014 §3; always
+//!   under the png2amiga solver), applied separably along the source's axes: along each
+//!   layer axis the taps within `⌈3 · s⌉` of the position, `s` the shrink of one super
+//!   pixel's footprint along that axis (at least 1), cut at the source's edges, weighted
+//!   by `lanczos3(distance / s)` and normalised; each row's sum is clamped to `0..=1` and
+//!   so is the result, as png2amiga clamps each pass. Its weights come from a table of
+//!   the kernel ([`lanczos_at`]), not two sines per tap. Masks are always Mitchell's.
+//!   Shrunk by more than 4× along a layer axis, under `Downscale::Auto` either samples
+//!   the source's mip level on that axis instead (#235, `mip`), the rule the separable
+//!   path follows (Lanczos widened by the shrink left on the level).
 //! - **Coverage.** The layer's edge is antialiased by the fraction of each super pixel
 //!   inside the rotated quad, computed **exactly**: the super pixel's footprint is a
 //!   parallelogram in layer space, clipped against the box `[0, w] × [0, h]`
@@ -25,6 +33,76 @@ use super::resample::{CHUNK_ROWS, Planes, Px, sized};
 use crate::geom::{PxRect, SuperGrid};
 use crate::layer::Transform;
 use crate::scratch;
+use crate::solve::png2amiga_ref::scale::{lanczos3, support};
+
+/// Points per unit of distance in the rotated path's table of Lanczos-3.
+const LUT_STEPS: usize = 1024;
+
+/// png2amiga's `lanczos3` at `i / LUT_STEPS` for `i` in `0..=3 · LUT_STEPS + 1`.
+#[expect(clippy::cast_precision_loss, reason = "indices below 2^13")]
+fn lanczos_table() -> &'static [f32] {
+    static TABLE: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        (0..=3 * LUT_STEPS + 1)
+            .map(|i| lanczos3(i as f32 / LUT_STEPS as f32))
+            .collect()
+    })
+}
+
+/// Lanczos-3 at distance `d`, read from `table` ([`lanczos_table`]) with linear
+/// interpolation: within 1e-6 of `lanczos3`, at a fraction of the cost of its two sines.
+#[inline(always)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "a distance below 3, scaled to the table's index"
+)]
+fn lanczos_at(table: &[f32], d: f32) -> f32 {
+    let x = d.abs() * LUT_STEPS as f32;
+    if x >= (3 * LUT_STEPS) as f32 {
+        return 0.0;
+    }
+    let i = x as usize;
+    let t = x - i as f32;
+    table[i] + (table[i + 1] - table[i]) * t
+}
+
+/// The Lanczos taps along one layer axis for a sample at `pos` (level pixels, already
+/// within the axis): the first source index and the normalised weights in `w`, cut at
+/// the axis' `len` pixels, `reach` taps each side, distances scaled by `inv_fs`.
+#[inline(always)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "indices are clamped to the source before casting"
+)]
+fn lanczos_taps(
+    table: &[f32],
+    pos: f32,
+    len: u32,
+    (inv_fs, reach): (f32, i64),
+    w: &mut Vec<f32>,
+) -> usize {
+    let centre = pos.floor() as i64;
+    let lo = (centre - reach + 1).max(0);
+    let hi = (centre + reach).min(i64::from(len) - 1);
+    w.clear();
+    let mut sum = 0.0f32;
+    for s in lo..=hi {
+        let v = lanczos_at(table, (pos - s as f32) * inv_fs);
+        w.push(v);
+        sum += v;
+    }
+    if sum > 0.0 {
+        let inv = 1.0 / sum;
+        for v in w.iter_mut() {
+            *v *= inv;
+        }
+    }
+    lo as usize
+}
 
 /// Mitchell weights for the four taps around a sample `t` (0–1) past the second,
 /// normalised to sum to 1.
@@ -65,6 +143,9 @@ pub(crate) struct AffineMap {
     inv_mip: (f64, f64),
     /// Half the footprint's extent along u and v around its centre.
     half: (f64, f64),
+    /// The colour's Lanczos along u and v (ADR-014 §3): `1 / filter_scale` and the reach in
+    /// taps each side, widened by the footprint's shrink on the level.
+    lanczos: [(f32, i64); 2],
     /// The super pixels the layer's quad can touch: its bounding box on the grid.
     pub rect: PxRect,
     /// Every super pixel's centre lands on a source pixel's centre at 1:1 (a turn by a
@@ -117,6 +198,12 @@ impl AffineMap {
             && [u[0], u[1], v[0], v[1]].into_iter().all(unit)
             && centred(u[2])
             && centred(v[2]);
+        let inv_mip = (1.0 / f64::from(1u32 << lu), 1.0 / f64::from(1u32 << lv));
+        // png2amiga's widening for the shrink left on the level along each axis.
+        let lanczos = [span.0 * inv_mip.0, span.1 * inv_mip.1].map(|shrink| {
+            let (fs, reach) = support(shrink as f32);
+            (1.0 / fs, reach)
+        });
         Self {
             lattice,
             quarter,
@@ -124,8 +211,9 @@ impl AffineMap {
             v,
             size,
             level: (lu, lv),
-            inv_mip: (1.0 / f64::from(1u32 << lu), 1.0 / f64::from(1u32 << lv)),
+            inv_mip,
             half: (span.0 * 0.5, span.1 * 0.5),
+            lanczos,
             rect: if rect.is_empty() { PxRect::EMPTY } else { rect },
         }
     }
@@ -236,8 +324,9 @@ impl AffineMap {
     }
 
     /// The Mitchell sample of `src` (mip level [`Self::level`], `mw × mh`) at layer
-    /// `(u, v)` (level-0 coordinates), edges clamped. The 4 × 4 taps are summed row by
-    /// row, `0 + w0·v0 + … + w3·v3`, the same way whether or not they needed clamping.
+    /// `(u, v)` (level-0 coordinates), edges clamped: a mask's (ADR-012). The 4 × 4
+    /// taps are summed row by row, `0 + w0·v0 + … + w3·v3`, the same way whether or not
+    /// they needed clamping.
     #[inline(always)]
     #[expect(
         clippy::cast_possible_truncation,
@@ -277,6 +366,49 @@ impl AffineMap {
         T::taps4x4(&taps, wx, wy)
     }
 
+    /// The colour's Lanczos sample of `src` (mip level [`Self::level`], `mw × mh`) at
+    /// layer `(u, v)` (level-0 coordinates), separable along the source's axes: each row
+    /// of taps summed across in tap order from 0 and clamped to `0..=1`, the rows summed
+    /// down the same way and clamped (as png2amiga's scaler). `wx` and `wy` are scratch for the
+    /// weights. A lattice map copies, as [`Self::sample`] does.
+    #[inline(always)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "coordinates are clamped to the source before indexing"
+    )]
+    fn sample_lanczos(
+        &self,
+        src: &[[f32; 4]],
+        (mw, mh): (u32, u32),
+        (u, v): (f64, f64),
+        (wx, wy): (&mut Vec<f32>, &mut Vec<f32>),
+    ) -> [f32; 4] {
+        // An edge output's centre can lie past the layer: it samples at the edge, as on
+        // the separable path.
+        let x = (u * self.inv_mip.0 - 0.5).clamp(-0.5, f64::from(mw) - 0.5);
+        let y = (v * self.inv_mip.1 - 0.5).clamp(-0.5, f64::from(mh) - 0.5);
+        if self.lattice {
+            let cx = (x.floor() as i64).clamp(0, i64::from(mw) - 1) as usize;
+            let cy = (y.floor() as i64).clamp(0, i64::from(mh) - 1) as usize;
+            return src[cy * mw as usize + cx];
+        }
+        let table = lanczos_table();
+        let x0 = lanczos_taps(table, x as f32, mw, self.lanczos[0], wx);
+        let y0 = lanczos_taps(table, y as f32, mh, self.lanczos[1], wy);
+        let w = mw as usize;
+        let mut acc = [0.0f32; 4];
+        for (k, &wyk) in wy.iter().enumerate() {
+            let row = &src[(y0 + k) * w + x0..][..wx.len()];
+            let mut r = [0.0f32; 4];
+            for (p, &wxj) in row.iter().zip(wx.iter()) {
+                r.madd(wxj, *p);
+            }
+            acc.madd(wyk, r.clamped01());
+        }
+        acc.clamped01()
+    }
+
     /// [`Self::sample`] with a bilinear kernel: what a mask's 4× grid samples on the
     /// rotated path (ADR-012), where Mitchell's sixteen taps per fine pixel cost more
     /// than the box reduction after them can tell apart.
@@ -306,14 +438,17 @@ fn area(p: &[(f64, f64)]) -> f64 {
 }
 
 /// Resamples premultiplied colour (the mip level `map` samples, `mw × mh`) onto
-/// `map.rect` into planes, scaled by coverage, alpha clamped to `0..=1` and colour
-/// left with Mitchell's rings (png2c64 keeps them; the front end's round trip clamps):
-/// the rotated counterpart of `resample::resample_planes`,
-/// with the same per-row `extent`.
+/// `map.rect` into planes, scaled by coverage, alpha clamped to `0..=1`: the rotated
+/// counterpart of `resample::resample_planes`, with the same per-row `extent`. With
+/// `lanczos` false (the default, ADR-012) colour is Mitchell's ([`AffineMap::sample`]),
+/// its rings left in (png2c64 keeps them; the front end's round trip clamps); with
+/// `lanczos` (a layer's opt-in, or the png2amiga solver's front end, ADR-014 §3) it is
+/// the widened Lanczos-3 ([`AffineMap::sample_lanczos`]), every channel clamped.
 pub(crate) fn resample_planes_affine(
     src: &[[f32; 4]],
     (mw, mh): (u32, u32),
     map: &AffineMap,
+    lanczos: bool,
     out: &mut Planes,
     extent: &mut Vec<(u32, u32)>,
 ) {
@@ -334,6 +469,7 @@ pub(crate) fn resample_planes_affine(
         .enumerate()
         .collect();
     crate::par::for_each(&mut chunks, |(c, (((r, g), (b, a)), extent))| {
+        let (mut wx, mut wy) = (Vec::new(), Vec::new());
         scratch::with(ow, |cov: &mut [f32]| {
             scratch::with(ow, |px: &mut [[f32; 4]]| {
                 for (i, e) in extent.iter_mut().enumerate() {
@@ -355,7 +491,11 @@ pub(crate) fn resample_planes_affine(
                         _ => 0..0,
                     };
                     map.row(j, span.clone(), |k, u, v| {
-                        px[k] = map.sample(src, mw, mh, u, v);
+                        px[k] = if lanczos {
+                            map.sample_lanczos(src, (mw, mh), (u, v), (&mut wx, &mut wy))
+                        } else {
+                            map.sample(src, mw, mh, u, v)
+                        };
                     });
                     for k in 0..ow {
                         let (p, s) = if span.contains(&k) {
@@ -471,6 +611,20 @@ mod tests {
             let lin: f32 = w.iter().enumerate().map(|(k, w)| w * k as f32).sum();
             assert!((lin - (1.0 + t)).abs() < 1e-5, "{t}: {lin}");
         }
+    }
+
+    /// The rotated path's table of Lanczos-3 is within 1e-6 of png2amiga's kernel.
+    #[test]
+    fn the_lanczos_table_matches_the_kernel() {
+        let table = lanczos_table();
+        let mut worst = 0.0f32;
+        for i in 0..=40_000 {
+            let d = i as f32 * 3.2e-4 - 6.4;
+            worst = worst.max((lanczos_at(table, d) - lanczos3(d)).abs());
+        }
+        assert!(worst < 1e-6, "{worst}");
+        assert_eq!(lanczos_at(table, 0.0), 1.0);
+        assert_eq!(lanczos_at(table, 3.0), 0.0);
     }
 
     fn rotated(deg: f32, scale: f32) -> Transform {

@@ -341,7 +341,17 @@ pub fn threshold(kind: DitherKind, orientation: Orientation, x: i64, y: i64) -> 
         return Some(m.at(px, py));
     }
     let (px, py) = oriented(orientation, x, y, 8);
-    analytical(kind, px, py)
+    analytical(kind, px, py).or_else(|| {
+        // The patterns only png2amiga has (#261): its thresholds, `−0.5..0.5`, shifted
+        // into `0..1`.
+        let m = super::reference_png2amiga::ref_method(kind)?;
+        m.thresholds().then(|| {
+            let wrap = |v: i64| v.rem_euclid(1 << 20) as usize;
+            // Truchet reaches past 1; the native solver keeps to the unit interval.
+            (super::png2amiga_ref::dither::ordered_threshold(m, wrap(px), wrap(py)) + 0.5)
+                .clamp(0.0, 1.0)
+        })
+    })
 }
 
 /// The threshold of a user matrix at pattern position `(x, y)`.

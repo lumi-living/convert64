@@ -4378,6 +4378,7 @@ dependencies = [
  "convert64-formats",
  "image",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

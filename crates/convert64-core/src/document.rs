@@ -8,7 +8,7 @@ use crate::palette::Palette;
 use crate::region::Region;
 use crate::solve::png2c64_ref::Divergences;
 use crate::solve::steering::Steering;
-use crate::solve::{Background, SolveMode, SolveOptions, SolverKind};
+use crate::solve::{Background, BackgroundRule, SolveMode, SolveOptions, SolverKind};
 use serde::{Deserialize, Serialize};
 
 /// The document: everything a `.convert64` project file holds except where its sources
@@ -51,15 +51,27 @@ impl Default for Project {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SolveSettings {
-    /// The solver: `reference` (png2c64's pipeline, the default) or `native`.
+    /// The solver: `reference` (png2c64's pipeline, the default; `png2c64` is read as
+    /// another name), `png2amiga` (png2amiga's C64 path, a comparison solver, ADR-014) or
+    /// `native`.
     #[serde(default)]
     pub solver: SolverKind,
+    /// png2amiga's `--cell-refine` after a png2amiga solve (#261; experimental, the
+    /// png2amiga solver only), kept only if SSIMULACRA2 improves; off by default, written
+    /// only when on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub refine: bool,
     /// The reference solver's named divergences from png2c64, all off by default.
     #[serde(default, skip_serializing_if = "Divergences::none")]
     pub divergences: Divergences,
-    /// Background: `auto` (default) or `{"fixed": n}`.
+    /// Background: `auto` (default: search all 16) or `{"fixed": n}`.
     #[serde(default)]
     pub background: Background,
+    /// How the png2amiga solver chooses an unpinned multicolor background: `black`
+    /// (default, png2amiga's colour 0) or `search` (png2c64's search of all 16); written
+    /// only when not the default. The other solvers always search.
+    #[serde(default, skip_serializing_if = "BackgroundRule::is_default")]
+    pub background_rule: BackgroundRule,
     /// Refinement hysteresis ratio, e.g. 0.97; absent = off.
     #[serde(default)]
     pub hysteresis: Option<f32>,
@@ -86,8 +98,10 @@ impl Default for SolveSettings {
     fn default() -> Self {
         Self {
             solver: SolverKind::default(),
+            refine: false,
             divergences: Divergences::default(),
             background: Background::default(),
+            background_rule: BackgroundRule::default(),
             hysteresis: None,
             luma_pair_bias: 0.0,
             refinements: default_refinements(),
@@ -124,9 +138,11 @@ impl SolveSettings {
     pub fn options(&self, mode: SolveMode, layer_origins: Vec<(i64, i64)>) -> SolveOptions {
         SolveOptions {
             solver: self.solver,
+            refine: self.refine,
             divergences: self.divergences,
             mode,
             background: self.background,
+            background_rule: self.background_rule,
             hysteresis: self.hysteresis,
             luma_pair_bias: self.luma_pair_bias,
             refinements: self.refinements,
