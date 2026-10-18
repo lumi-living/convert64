@@ -63,11 +63,11 @@ const FIXTURES: [(&str, bool); 6] = [
 ];
 
 /// Pepto's greys, ascending in lightness: black, dark grey, grey, light grey, white.
-const GREYS: [u8; 5] = [0, 11, 12, 15, 1];
+pub(crate) const GREYS: [u8; 5] = [0, 11, 12, 15, 1];
 
 /// Which scaler a front end uses.
 #[derive(Clone, Copy, PartialEq)]
-enum Scaler {
+pub(crate) enum Scaler {
     /// png2amiga's widened Lanczos-3.
     Lanczos,
     /// png2c64's 4-tap Mitchell.
@@ -84,16 +84,20 @@ impl Scaler {
 }
 
 /// One fixture's inputs.
-struct Fixture {
+pub(crate) struct Fixture {
     rgb: Vec<[u8; 3]>,
     size: (usize, usize),
     mode: p2a::Mode,
 }
 
 impl Fixture {
-    fn load(name: &str, hires: bool) -> Result<Self, String> {
-        let img: RgbaImage = source(name)?;
-        Ok(Self {
+    pub(crate) fn load(name: &str, hires: bool) -> Result<Self, String> {
+        Ok(Self::from_image(&source(name)?, hires))
+    }
+
+    /// A picture's inputs (the line-art sheet's synthetic logo).
+    pub(crate) fn from_image(img: &RgbaImage, hires: bool) -> Self {
+        Self {
             rgb: img.pixels().map(|p| [p.0[0], p.0[1], p.0[2]]).collect(),
             size: (img.width() as usize, img.height() as usize),
             mode: if hires {
@@ -101,7 +105,7 @@ impl Fixture {
             } else {
                 p2a::Mode::Multicolor
             },
-        })
+        }
     }
 
     fn hires(&self) -> bool {
@@ -109,7 +113,7 @@ impl Fixture {
     }
 
     /// The source scaled to the logical raster with `scaler` (none if already that size).
-    fn scaled(&self, scaler: Scaler) -> p2c::Image {
+    pub(crate) fn scaled(&self, scaler: Scaler) -> p2c::Image {
         let src = p2c::Image::from_srgb8(self.size.0, self.size.1, &self.rgb);
         let (tw, th) = self.mode.screen();
         if self.size == (tw, th) {
@@ -125,7 +129,7 @@ impl Fixture {
 
     /// png2amiga's front end (`prepare`) with `scaler`, at gamma 1.5 and png2amiga's
     /// `--black-point` (0: off).
-    fn p2a_front(&self, scaler: Scaler, black_point: f32) -> p2c::Image {
+    pub(crate) fn p2a_front(&self, scaler: Scaler, black_point: f32) -> p2c::Image {
         let mut im = self.scaled(scaler);
         p2a::preprocess::apply(
             &mut im,
@@ -139,7 +143,7 @@ impl Fixture {
     }
 
     /// png2c64's front end (`prepare`) with `scaler`, at its default gamma 1.5.
-    fn p2c_front(&self, scaler: Scaler) -> p2c::Image {
+    pub(crate) fn p2c_front(&self, scaler: Scaler) -> p2c::Image {
         let mut im = self.scaled(scaler);
         p2c::preprocess::apply(&mut im, &p2c::preprocess::Settings::default());
         im
@@ -165,7 +169,12 @@ impl Fixture {
 
     /// png2amiga's encoder on `im` at the baseline flags (multicolor: checker at
     /// `strength`, error clamp 0.1; hi-res: `none`), cell metric `mse`.
-    fn p2a_encode(&self, im: &p2c::Image, strength: f32, hooks: &c64::Hooks) -> quantize::Screen {
+    pub(crate) fn p2a_encode(
+        &self,
+        im: &p2c::Image,
+        strength: f32,
+        hooks: &c64::Hooks,
+    ) -> quantize::Screen {
         let (w, h) = self.mode.screen();
         let px = vec![
             p2a::dither::PxSettings {
@@ -215,12 +224,12 @@ impl Fixture {
     }
 }
 
-fn palette() -> [p2c::Rgb; 16] {
+pub(crate) fn palette() -> [p2c::Rgb; 16] {
     p2a::colour::palette_linear(&p2a::colour::PEPTO_HEX)
 }
 
 /// A screen drawn at 320 × 200 through Pepto.
-fn draw(screen: &quantize::Screen) -> RgbImage {
+pub(crate) fn draw(screen: &quantize::Screen) -> RgbImage {
     let (w, _) = screen.mode.screen();
     let idx = screen.indices();
     let step = 320 / w;

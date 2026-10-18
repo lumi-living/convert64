@@ -321,7 +321,8 @@ match-range-amount = 400
 }
 
 /// ADR-014 §4: the line-art recipe file (`examples/recipes/lineart.toml`) works as a
-/// manifest: hi-res Art Studio files, solved by the reference, using only the greys.
+/// manifest: hi-res Art Studio files, solved by the png2amiga solver (#276), using only
+/// the greys.
 #[test]
 fn the_line_art_recipe_file_is_a_manifest() {
     let dir = temp("batch-lineart");
@@ -346,7 +347,8 @@ fn the_line_art_recipe_file_is_a_manifest() {
     assert_eq!(r.status.code(), Some(0), "{v:#}");
     let a = &v["files"][0];
     assert_eq!(a["mode"], "hires-bitmap", "{a:#}");
-    assert_eq!(a["solver"], "reference", "{a:#}");
+    assert_eq!(a["solver"], "png2amiga", "{a:#}");
+    assert_eq!(a["solver_fallback"], Value::Null, "{a:#}");
     let bytes = std::fs::read(dir.join("build/a.art")).unwrap();
     let file = convert64_formats::BitmapFormat::ArtStudio
         .read(&bytes)
