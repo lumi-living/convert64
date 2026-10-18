@@ -291,3 +291,65 @@ fn regions_made_by_commands_round_trip() {
     }
     assert_eq!(s.project().regions, base.regions);
 }
+
+/// The app's autosave (#241): every layer's own source is handed out once, linked by the
+/// path the caller picks; shared pixels stay shared; a `.vpl` palette becomes its
+/// colours. Reloaded from the handed-out bytes alone, it is the same project.
+#[test]
+fn a_recovery_file_links_each_source_once_and_reloads() {
+    let store = store();
+    let vpl: String = (0..16)
+        .map(|i| format!("{:x} {:x} {:x}\n", i * 16, 255 - i * 16, i * 7))
+        .collect();
+    store.insert("proj/c64.vpl", vpl);
+    let mut session = open(&store, "proj/recipe.json");
+    session
+        .run_at(
+            convert64_project::JsonCommand::PaletteSet {
+                palette: convert64_project::PaletteSpec::Vpl("c64.vpl".into()),
+            },
+            Path::new("proj"),
+        )
+        .unwrap();
+    let mut handed = Vec::new();
+    let file = session
+        .to_recovery_file(&mut |src| {
+            let bytes = src
+                .bytes
+                .map(|b| b.to_vec())
+                .unwrap_or_else(|| convert64_project::codec::encode_source(src.image));
+            let path = format!("blobs/{}", handed.len());
+            handed.push((path.clone(), bytes, src.linked.map(Path::to_owned)));
+            Ok(path.into())
+        })
+        .unwrap();
+    // The photo is linked from its file; layer_via_mask's copy shares its pixels.
+    assert_eq!(handed.len(), 1, "one own source");
+    assert!(
+        handed[0]
+            .2
+            .as_deref()
+            .is_some_and(|p| p.ends_with("photo.png"))
+    );
+    assert!(matches!(file.layers[1].source, SourceSpec::Shared(_)));
+    assert!(matches!(
+        file.palette,
+        convert64_project::PaletteSpec::Custom(ref c) if c.len() == 16
+    ));
+
+    let fresh = Arc::new(MemoryStore::new());
+    for (path, bytes, _) in handed {
+        fresh.insert(path, bytes);
+    }
+    let back = Session::load(file, Path::new(""), Box::new(Arc::clone(&fresh))).unwrap();
+    // Masks round to 1/65535 on their first save, so compare saved forms.
+    let saved = |s: &Session| s.to_project_file(Path::new(""), Embed::All).unwrap();
+    let (a, b) = (saved(&back), saved(&session));
+    assert_eq!(a.layers, b.layers);
+    assert_eq!(a.steering, b.steering);
+    assert_eq!(a.regions, b.regions);
+    assert_eq!(
+        back.project().palette.rgb_table(),
+        session.project().palette.rgb_table()
+    );
+}
