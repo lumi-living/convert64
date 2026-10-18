@@ -182,7 +182,7 @@ pub(crate) fn render_layers(
 ) -> Result<(RgbImage, RgbImage), String> {
     let grid = SuperGrid::with_default_factor(mode).map_err(|e| e.to_string())?;
     let mut c = Compositor::new(grid);
-    c.set_reference_front_end(png2c64);
+    c.set_png2c64_front_end(png2c64);
     c.update(layers, &[]);
     let frame = c.frame();
     let palette = Palette::pepto_pal();

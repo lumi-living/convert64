@@ -297,6 +297,9 @@ impl Job {
             engine.steering = Some(snap.steering.clone());
         }
         let compositor = engine.compositor.as_mut().expect("set above");
+        // The png2amiga solver brings png2amiga's front end (ADR-014 §2); a change of
+        // solver changes the options above, so everything is re-solved.
+        compositor.set_pipeline(snap.options.solver.pipeline());
         let (builds, ms) = (compositor.mip_builds(), compositor.mip_build_ms());
         changed = changed.union(compositor.update(&snap.layers, &snap.regions));
         // A source's mip levels are usually built by the Source view's composite first

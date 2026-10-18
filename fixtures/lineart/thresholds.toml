@@ -6,10 +6,9 @@
 # visible changes fail. Raise it only with a reason in the PR.
 mse_vs_golden_max = 0.0002
 
-# The source both are scored against (#142): `source.png` through the reference's front
-# end (png2amiga's since #261: its widened Lanczos-3 to the target grid, then `--gamma
-# 1.5`, our `Gamma::PNG2C64` adjustment, then its preprocessing). The `png2c64_*` keys
-# keep their names; since #261 they score the png2amiga baseline. Our solve is made from the same
+# The source both converters are scored against (#142): `source.png` through png2c64's
+# own front end (#190: its bicubic to the target grid, then `--gamma 1.5`, our
+# `Gamma::PNG2C64` adjustment, then its preprocessing). Our solve is made from the same
 # prepared picture, so the two are compared on the picture each actually solved.
 #
 # png2c64_blur_mse_vs_source: the png2c64 baseline's OKLab MSE against that source after
@@ -17,10 +16,10 @@ mse_vs_golden_max = 0.0002
 # what the eye sees of a dither pattern. Reported, and checked to still hold, but no
 # longer a bar (#156): a banded render with the right regional average scores well here
 # while looking worse. The gate is a human review of the side-by-side sheet (TAD §6).
-png2c64_blur_mse_vs_source = 0.000342
+png2c64_blur_mse_vs_source = 0.000552
 
 # png2c64_mse_vs_source: the same per pixel, without the blur. Reported, and checked to
 # still hold, but no longer a bar (#142): against a colour the palette cannot reach,
 # per-pixel MSE is lowest for a flat wrong colour, so it rewards the washed-out flat
 # areas the blurred bar is there to catch.
-png2c64_mse_vs_source = 0.004575
+png2c64_mse_vs_source = 0.008864

@@ -616,7 +616,7 @@ impl Writer {
         self.u8(match solver {
             SolverKind::Reference => 0,
             SolverKind::Native => 1,
-            SolverKind::Png2c64 => 2,
+            SolverKind::Png2amiga => 2,
         });
         match fallback {
             Some(f) => {
@@ -830,7 +830,7 @@ impl<'a> Reader<'a> {
         let solver = match self.u8()? {
             0 => SolverKind::Reference,
             1 => SolverKind::Native,
-            2 => SolverKind::Png2c64,
+            2 => SolverKind::Png2amiga,
             s => return err(format!("unknown solver {s}")),
         };
         let fallback = if self.bool()? {

@@ -69,7 +69,7 @@ fn tools() -> Value {
     }));
     list.push(json!({
         "name": "solve",
-        "description": "Solve the picture into legal C64 cells. full: background search and refinement; otherwise the interactive fast path re-solves only changed cells. Returns background, error, clashes, worst, ssimulacra2 (the SSIMULACRA2 score of the result against the composite it was solved from, up to 100; higher is better), solver (the one that made it: reference, png2c64 or native; set with solve_set) and, when another solver stood in for the one asked for, solver_fallback (why).",
+        "description": "Solve the picture into legal C64 cells. full: background search and refinement; otherwise the interactive fast path re-solves only changed cells. Returns background, error, clashes, worst, ssimulacra2 (information only, not a quality verdict: the SSIMULACRA2 score of the result against the composite it was solved from, up to 100), solver (the one that made it: reference, png2amiga or native; set with solve_set) and, when another solver stood in for the one asked for, solver_fallback (why).",
         "inputSchema": object_schema(json!({ "full": { "type": "boolean", "default": true } }), &[]),
     }));
     list.push(json!({
@@ -392,10 +392,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// #261: `solve_set` takes the `png2c64` solver and `refine` (and since #273 the
-    /// `background_rule`); `adjustments_set`
-    /// takes png2amiga's hull range matching with an amount; `solve` says which solver
-    /// made the result; the saved project holds them all.
+    /// #261, ADR-014: `solve_set` takes the `png2amiga` solver, its `refine` and its
+    /// `background_rule` (and `png2c64` as the reference's other name);
+    /// `adjustments_set` takes png2amiga's hull range matching with an amount and a black
+    /// point; `layer_set_resample` takes Lanczos; `solve` says which solver made the
+    /// result; the saved project holds them all.
     #[test]
     fn png2amiga_options_through_the_tools() {
         let dir = std::env::temp_dir().join(format!("convert64-mcp-261-{}", std::process::id()));
@@ -425,23 +426,27 @@ mod tests {
             json!({ "layer": 0, "adjustments": { "match_range": hull } }),
         )
         .unwrap();
+        s.call(
+            "adjustments_set",
+            json!({ "layer": 0, "adjustments": { "black_point": 0.25 } }),
+        )
+        .unwrap();
+        s.call(
+            "layer_set_resample",
+            json!({ "layer": 0, "resample": "lanczos" }),
+        )
+        .unwrap();
         s.call("solve_set", json!({ "solver": "png2c64" })).unwrap();
         let v: Value = serde_json::from_str(&s.call("solve", json!({})).unwrap()).unwrap();
-        assert_eq!(v["solver"], "png2c64", "{v}");
+        assert_eq!(v["solver"], "reference", "{v}");
         s.call(
             "solve_set",
-            json!({ "solver": "reference", "refine": true, "background_rule": "search" }),
+            json!({ "solver": "png2amiga", "refine": true, "background_rule": "search" }),
         )
         .unwrap();
         let v: Value = serde_json::from_str(&s.call("solve", json!({})).unwrap()).unwrap();
-        assert!(
-            v["solver"] == "reference" || v["solver_fallback"].is_string(),
-            "{v}"
-        );
-        assert!(
-            s.call("solve_set", json!({ "solver": "png2amiga" }))
-                .is_err()
-        );
+        assert_eq!(v["solver"], "png2amiga", "{v}");
+        assert!(s.call("solve_set", json!({ "solver": "png2c65" })).is_err());
         let saved = dir.join("saved.convert64");
         s.call(
             "project_save",
@@ -449,7 +454,9 @@ mod tests {
         )
         .unwrap();
         let p: Value = serde_json::from_str(&std::fs::read_to_string(&saved).unwrap()).unwrap();
-        assert_eq!(p["solve"]["solver"], "reference", "{p}");
+        assert_eq!(p["solve"]["solver"], "png2amiga", "{p}");
+        assert_eq!(p["layers"][0]["resample"], "lanczos", "{p}");
+        assert_eq!(p["layers"][0]["adjustments"]["black_point"], 0.25, "{p}");
         assert_eq!(p["solve"]["refine"], true, "{p}");
         assert_eq!(p["solve"]["background_rule"], "search", "{p}");
         let m = &p["layers"][0]["adjustments"]["match_range"];

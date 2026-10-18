@@ -1,4 +1,5 @@
-//! The standing parity bar since ADR-013 (#261): the reference solver
+//! The png2amiga port's parity test (#261; kept by ADR-014 as a test of the port, not of
+//! quality): the png2amiga solver
 //! (`solve::png2amiga_ref`) against png2amiga's own renders, pixel for pixel.
 //!
 //! - Every method png2amiga's C64 path accepts, on the dither-preview test card in
@@ -6,14 +7,15 @@
 //!   (png2amiga's own C64 defaults: gamma 1, error clamp 0.35, the blur metric), against
 //!   `docs/reference/dither-previews/png2amiga-card/`, `png2amiga-card-hires/` and
 //!   `png2amiga-portrait/`.
-//! - Every fixture with its baseline's settings (`fixtures/<name>/README.md`), with
+//! - Every fixture with its png2amiga baseline's settings (`fixtures/png2amiga/<name>/`), with
 //!   `--match-range` and with `--cell-refine` (the Refine step) too, and the portrait
 //!   with `--sharpen 0.5` and `--sharpen -0.5`.
 //!
 //! Each must be at least 99 % identical. The report lists every case's percentage and,
 //! for a case below 100 %, the first differing cell with both colour sets. The renders
-//! come from png2amiga's reference build (`docs/reference/png2amiga-reference.md`);
-//! regenerate them with `cargo xtask png2amiga renders`.
+//! come from png2amiga's reference build (`docs/reference/png2amiga-reference.md`) and
+//! are committed: this test reads them and never builds png2amiga, so CI needs no C++
+//! toolchain. Regenerate them with `cargo xtask png2amiga renders`.
 
 use convert64_core::solve::png2amiga_ref::c64::Metric;
 use convert64_core::solve::png2amiga_ref::colour::{PEPTO_HEX, palette_linear};
@@ -223,7 +225,7 @@ fn cases() -> Vec<Case> {
                 front,
                 settings: baseline_settings(mode),
                 refine: suffix == " --cell-refine",
-                reference: format!("fixtures/{name}/{render}"),
+                reference: format!("fixtures/png2amiga/{name}/{render}"),
             });
         }
     }

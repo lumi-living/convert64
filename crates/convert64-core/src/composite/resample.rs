@@ -4,21 +4,25 @@
 //! 1-D passes driven by per-axis weight tables ([`AxisMap`]); a rotated one goes through
 //! `affine` instead (#198).
 //!
-//! **Colour** is resampled with png2amiga's Lanczos-3 widened by the shrink (ADR-013,
-//! #261; `solve::png2amiga_ref::scale`), exactly as its `scale::resample` does: per
-//! output pixel the source taps within `⌈3 · max(1, ratio)⌉` of the sample position, cut
-//! at the source's edges (not clamped), weighted by `lanczos3(distance / max(1, ratio))`
-//! and normalised before the sum, the horizontal pass first, each pass clamped to
-//! `0..=1`. **Masks** keep png2c64's Mitchell bicubic (ADR-012): four taps around the
-//! position, clamped to the source, the sum divided by the weights' sum, as png2c64's
-//! `scale::bicubic` does; they are coverage, and Lanczos would ring on a hard edge.
+//! Both use png2c64's Mitchell bicubic by default (ADR-012, #227): per output pixel, four
+//! source taps around the sample position, weighted by the Mitchell–Netravali kernel at
+//! their distance and divided by the weights' sum, exactly as png2c64's `scale::bicubic`
+//! does (taps clamped to the source, unwidened when scaling down). Masks always do.
+//!
+//! A layer's **colour** can opt into png2amiga's Lanczos-3 widened by the shrink
+//! (`Resample::Lanczos`, ADR-014 §3; the png2amiga solver's front end always uses it;
+//! `solve::png2amiga_ref::scale`), exactly as its `scale::resample` does: per output
+//! pixel the source taps within `⌈3 · max(1, ratio)⌉` of the sample position, cut at the
+//! source's edges (not clamped), weighted by `lanczos3(distance / max(1, ratio))` and
+//! normalised before the sum, the horizontal pass first, each pass clamped to `0..=1`.
 //!
 //! Sub-pixel placement is the kernel's phase. A layer that spans a whole number of output
-//! pixels from 0 (one fitted to the screen) samples at png2amiga's positions,
-//! `(x + ½) · src / dst − ½`, so it is resampled bit for bit as png2amiga scales. An
-//! axis at 1:1 with no sub-pixel offset is copied when the other axis is too, as
-//! png2amiga copies a source that is already the target's size; one 1:1 axis beside a
-//! scaled one is filtered, as png2amiga filters it. Sample positions clamp to the
+//! pixels from 0 (one fitted to the screen) samples at png2c64's (and png2amiga's)
+//! positions, `(x + ½) · src / dst − ½`, so it is resampled bit for bit as png2c64
+//! scales (or png2amiga, with Lanczos). An axis at 1:1 with no sub-pixel offset is
+//! copied, as png2c64 copies a source that is already the target's size; with Lanczos
+//! only when the other axis is too, as png2amiga copies only a picture of the target's
+//! size and filters both axes of any other. Sample positions clamp to the
 //! layer's edge pixels; the layer's own edge is instead expressed as **coverage**, the
 //! exact fraction of each super pixel's footprint inside the layer's box, so a sub-pixel
 //! nudge moves its edge coverage linearly.
@@ -108,22 +112,28 @@ impl Px for [f32; 4] {
 /// The kernel an [`AxisMap`] resamples with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kernel {
-    /// png2amiga's Lanczos-3 widened by the shrink, each pass clamped to `0..=1` (colour,
-    /// ADR-013). With `copy`, an axis at 1:1 on whole pixels is copied; the caller asks
-    /// for that only when the other axis is copied too (png2amiga copies a picture that
-    /// is already the target's size and filters both axes of any other).
+    /// png2amiga's Lanczos-3 widened by the shrink, each pass clamped to `0..=1` (a
+    /// layer's opt-in colour kernel, ADR-014 §3). With `copy`, an axis at 1:1 on whole
+    /// pixels is copied; the caller asks for that only when the other axis is copied too
+    /// (png2amiga copies a picture that is already the target's size and filters both
+    /// axes of any other).
     Lanczos {
         /// Copy an axis at 1:1 on whole pixels.
         copy: bool,
     },
-    /// png2c64's Mitchell bicubic (masks, ADR-012); an axis at 1:1 on whole pixels is
-    /// copied.
+    /// png2c64's Mitchell bicubic (colour by default and every mask, ADR-012); an axis at
+    /// 1:1 on whole pixels is copied.
     Mitchell,
 }
 
 impl Kernel {
-    /// The colour kernel, copying an axis at 1:1.
-    pub const COLOUR: Self = Self::Lanczos { copy: true };
+    /// Lanczos, copying an axis at 1:1.
+    pub const LANCZOS: Self = Self::Lanczos { copy: true };
+
+    /// Whether this is a Lanczos kernel.
+    pub const fn is_lanczos(self) -> bool {
+        matches!(self, Self::Lanczos { .. })
+    }
 }
 
 /// One axis of a layer's placement on the super grid: which super pixels it touches,
@@ -344,7 +354,7 @@ pub(crate) fn colour_pair(
     y: impl Fn(Kernel) -> AxisMap,
 ) -> (AxisMap, AxisMap) {
     let filtered = Kernel::Lanczos { copy: false };
-    let (mx, my) = (x(Kernel::COLOUR), y(Kernel::COLOUR));
+    let (mx, my) = (x(Kernel::LANCZOS), y(Kernel::LANCZOS));
     match (mx.copy, my.copy) {
         (true, false) => (x(filtered), my),
         (false, true) => (mx, y(filtered)),
@@ -832,7 +842,7 @@ mod tests {
     }
 
     /// Both kernels: colour's Lanczos and the masks' Mitchell.
-    const KERNELS: [Kernel; 2] = [Kernel::COLOUR, Kernel::Mitchell];
+    const KERNELS: [Kernel; 2] = [Kernel::LANCZOS, Kernel::Mitchell];
 
     #[test]
     fn identity_at_1x_is_one_tap_per_pixel() {
@@ -861,10 +871,49 @@ mod tests {
         )
     }
 
-    /// ADR-013 (#261): a layer fitted to the target is resampled bit for bit as
-    /// png2amiga's `scale::resample` scales (widened Lanczos-3, edges cut, each pass
-    /// clamped), in both modes' geometry, shrunk (up to 12.8×), enlarged, and with one
-    /// axis at 1:1 beside a scaled one (png2amiga filters it too).
+    /// ADR-012: a layer fitted to the target is resampled bit for bit as png2c64's
+    /// `scale::bicubic` scales, in both modes' geometry, upscaled and downscaled.
+    #[test]
+    fn a_fitted_layer_is_png2c64_s_bicubic_bit_for_bit() {
+        use crate::solve::png2c64_ref::{Image, scale};
+        for (w, h, tw, step) in [
+            (200usize, 125usize, 160u32, 2.0f32),
+            (1024, 637, 320, 1.0),
+            (97, 61, 160, 2.0),
+        ] {
+            let px: Vec<[f32; 3]> = (0..w * h)
+                .map(|i| {
+                    let (x, y) = ((i % w) as f32, (i / w) as f32);
+                    [
+                        (x * 0.013).fract(),
+                        (y * 0.027).fract(),
+                        ((x + y) * 0.051).fract(),
+                    ]
+                })
+                .collect();
+            let want = scale::bicubic(
+                &Image::new(w, h, px.clone()),
+                tw as usize,
+                200,
+                scale::Kernel::MitchellNetravali,
+            );
+            let src: Vec<[f32; 4]> = px.iter().map(|p| [p[0], p[1], p[2], 1.0]).collect();
+            let m = Kernel::Mitchell;
+            let mx = AxisMap::new(w as u32, 0.0, 320.0 / w as f32, false, step, tw, 0, m);
+            let my = AxisMap::new(h as u32, 0.0, 200.0 / h as f32, false, 1.0, 200, 0, m);
+            let (mut got, mut extent) = (Planes::default(), Vec::new());
+            resample_planes(&src, w as u32, &mx, &my, &mut got, &mut extent, true);
+            for (i, p) in want.px.iter().enumerate() {
+                assert_eq!([got.r[i], got.g[i], got.b[i]], *p, "{w}×{h} → {tw}: {i}");
+                assert_eq!(got.a[i], 1.0);
+            }
+        }
+    }
+
+    /// ADR-014 §3 (#261): with the Lanczos opt-in, a layer fitted to the target is
+    /// resampled bit for bit as png2amiga's `scale::resample` scales (widened Lanczos-3,
+    /// edges cut, each pass clamped), in both modes' geometry, shrunk (up to 12.8×),
+    /// enlarged, and with one axis at 1:1 beside a scaled one (png2amiga filters it too).
     #[test]
     fn a_fitted_layer_is_png2amiga_s_resample_bit_for_bit() {
         use crate::solve::png2amiga_ref::{Image, scale};
@@ -940,12 +989,12 @@ mod tests {
     fn lanczos_widens_with_the_shrink_left_on_the_level() {
         let taps = |m: &AxisMap, k| m.taps(k).count();
         let fit = 320.0 / 4096.0;
-        let m = AxisMap::new(4096, 0.0, fit, false, 1.0, 320, 0, Kernel::COLOUR);
+        let m = AxisMap::new(4096, 0.0, fit, false, 1.0, 320, 0, Kernel::LANCZOS);
         assert_eq!(taps(&m, 160), 78);
         // The 512 px level: a shrink of 1.6 left, ⌈4.8⌉ = 5 a side.
-        let m = AxisMap::new(4096, 0.0, fit, false, 1.0, 320, 3, Kernel::COLOUR);
+        let m = AxisMap::new(4096, 0.0, fit, false, 1.0, 320, 3, Kernel::LANCZOS);
         assert_eq!(taps(&m, 160), 10);
-        let m = AxisMap::new(50, 0.3, 3.0, false, 1.0, 320, 0, Kernel::COLOUR);
+        let m = AxisMap::new(50, 0.3, 3.0, false, 1.0, 320, 0, Kernel::LANCZOS);
         assert_eq!(taps(&m, 60), 6);
     }
 

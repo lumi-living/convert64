@@ -93,13 +93,20 @@ fn draw(sol: &Solution, palette: &Palette) -> RgbImage {
     })
 }
 
-/// `layers` composited on `mode`'s default grid and solved with `opts`.
+/// `layers` composited on `mode`'s default grid and solved with `opts` on the png2amiga
+/// solver with its own front end: the pipeline these #261 review sheets showed, which
+/// was the reference before ADR-014.
 fn solve(layers: &[Layer], mode: Mode, opts: &SolveOptions) -> Result<Solution, String> {
     let grid = SuperGrid::with_default_factor(mode).map_err(|e| e.to_string())?;
     let mut c = Compositor::new(grid);
+    c.set_pipeline(convert64_core::composite::Pipeline::Png2amiga);
     c.update(layers, &[]);
     let palette = Palette::pepto_pal();
-    Ok(Solver::new(&palette).solve(c.frame(), &Steering::new(), None, opts))
+    let opts = SolveOptions {
+        solver: convert64_core::solve::SolverKind::Png2amiga,
+        ..opts.clone()
+    };
+    Ok(Solver::new(&palette).solve(c.frame(), &Steering::new(), None, &opts))
 }
 
 pub(crate) fn source(name: &str) -> Result<RgbaImage, String> {
@@ -224,14 +231,16 @@ pub(crate) fn review_tile(
         .into_iter()
         .find(|f| f.0 == fixture)
         .ok_or_else(unknown)?;
-    let archived = || png(&root.join(format!("fixtures/archive/png2c64/{fixture}/baseline.png")));
+    let archived = || png(&root.join(format!("fixtures/{fixture}/baseline.png")));
     let palette = Palette::pepto_pal();
     let base = || -> Result<Layer, String> {
         layer_from_rgba(fixture, &source(fixture)?, kind, strength, Downscale::Auto)
     };
     let img = match (sheet, variant) {
         ("baselines", "png2c64") | ("match-range", "png2c64-baseline") => archived()?,
-        ("baselines", "png2amiga") => png(&root.join(format!("fixtures/{fixture}/baseline.png")))?,
+        ("baselines", "png2amiga") => {
+            png(&root.join(format!("fixtures/png2amiga/{fixture}/baseline.png")))?
+        }
         ("match-range", "off" | "box" | "hull") => {
             let m = match variant {
                 "off" => None,
@@ -310,8 +319,8 @@ pub(crate) fn run() -> Result<(), String> {
     md.push_str("| Fixture | png2c64 baseline S2 | png2amiga baseline S2 |\n|---|---|---|\n");
     for (name, mode, _, _) in FIXTURES {
         let reference = prepared(&source(name)?, mode);
-        let old = png(&root.join(format!("fixtures/archive/png2c64/{name}/baseline.png")))?;
-        let new = png(&root.join(format!("fixtures/{name}/baseline.png")))?;
+        let old = png(&root.join(format!("fixtures/{name}/baseline.png")))?;
+        let new = png(&root.join(format!("fixtures/png2amiga/{name}/baseline.png")))?;
         let (so, sn) = (
             s2(&reference, &render_to_linear(&old, mode), mode),
             s2(&reference, &render_to_linear(&new, mode), mode),

@@ -9,6 +9,7 @@
 //! adjustments return the input bit for bit.
 
 use super::SourceImage;
+use crate::composite::Pipeline;
 use crate::palette::{LinearRgb, Oklab, Oklch, Palette, linear_to_srgb8, srgb8_to_linear};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -118,18 +119,60 @@ impl From<Gamma> for f32 {
     }
 }
 
+/// png2c64's `--black-point` (and png2amiga's): levels on OKLab lightness, applied after
+/// the gamma and the sharpen, in png2c64's order. Lightness below this fraction becomes
+/// black and the rest is stretched to fill `0..=1`; chroma is kept. `0..=0.5`; 0 (the
+/// default) is off. The line-art recipe uses 0.5 (ADR-014 §4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "f32", into = "f32")]
+pub struct BlackPoint(f32);
+
+impl BlackPoint {
+    /// Off.
+    pub const OFF: Self = Self(0.0);
+
+    /// A black point in `0..=0.5`.
+    pub fn new(value: f32) -> Result<Self, AdjustError> {
+        check("black point", value, 0.0, 0.5).map(Self)
+    }
+
+    /// The fraction of lightness clipped to black.
+    pub const fn get(self) -> f32 {
+        self.0
+    }
+
+    /// Whether it is off (a project file omits it; serde passes a reference).
+    pub fn is_off(&self) -> bool {
+        self.0 <= 0.0
+    }
+}
+
+impl TryFrom<f32> for BlackPoint {
+    type Error = AdjustError;
+    fn try_from(v: f32) -> Result<Self, AdjustError> {
+        Self::new(v)
+    }
+}
+
+impl From<BlackPoint> for f32 {
+    fn from(b: BlackPoint) -> Self {
+        b.0
+    }
+}
+
 /// How range matching maps the source onto the palette.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RangeMethod {
-    /// png2amiga's (ADR-013, #261): per (lightness, hue), each pixel's chroma scaled
-    /// by the palette's reachable chroma over the source's 95th percentile, clipped at
-    /// the palette's; hue and lightness kept (`png2amiga_ref::preprocess`).
+    /// png2c64's, the default: each OKLab axis stretched from the source's percentile
+    /// range to the palette's bounding box, shrunk by a margin.
     #[default]
-    Hull,
-    /// png2c64's: each OKLab axis stretched from the source's percentile range to the
-    /// palette's bounding box, shrunk by a margin.
     Box,
+    /// png2amiga's (#261; experimental, off by default, ADR-014 §5): per (lightness,
+    /// hue), each pixel's chroma scaled by the palette's reachable chroma over the
+    /// source's 95th percentile, clipped at the palette's; hue and lightness kept
+    /// (`png2amiga_ref::preprocess`). A front-end step, so it works on every solver.
+    Hull,
 }
 
 #[derive(Deserialize)]
@@ -153,16 +196,15 @@ struct RangeMatchData {
 
 /// Range matching (png2c64's and png2amiga's `--match-range`), applied last.
 ///
-/// - [`RangeMethod::Hull`] (since #261, the reference's): png2amiga's per-(L, hue)
-///   chroma stretch onto the palette's reachable hull, with an **amount** (0–1) that
-///   blends the source's chroma (0) with the matched (1, png2amiga's). The palette is
-///   stored (its sRGB bytes) so a project file is self-contained.
-/// - [`RangeMethod::Box`] (png2c64's, the only one before #261): the image's OKLab
-///   extent, between the `percentile` and `1 − percentile` quantiles, mapped onto a
-///   target extent: L stretched linearly, a and b scaled around zero so greys stay grey.
-///   Projects saved before #261 hold this one and keep it.
+/// - [`RangeMethod::Box`] (png2c64's, the default): the image's OKLab extent, between
+///   the `percentile` and `1 − percentile` quantiles, mapped onto a target extent: L
+///   stretched linearly, a and b scaled around zero so greys stay grey.
+/// - [`RangeMethod::Hull`] (png2amiga's, #261, experimental): its per-(L, hue) chroma
+///   stretch onto the palette's reachable hull, with an **amount** (0–1) that blends the
+///   source's chroma (0) with the matched (1, png2amiga's). The palette is stored (its
+///   sRGB bytes) so a project file is self-contained.
 ///
-/// On disk a box is `{ percentile, l, a, b }` as before #261; a hull is
+/// On disk a box is `{ percentile, l, a, b }` as always; a hull is
 /// `{ method = "hull", palette = [16 × "#rrggbb"], amount }`, `amount` written only when
 /// not 1.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -510,10 +552,9 @@ fn scale_around_zero(v: f32, src: [f32; 2], dst: [f32; 2]) -> f32 {
 /// [`suggest_range_match`] measures them) has a narrow range.
 const NARROW_RANGE: f32 = 0.6;
 
-/// An "Auto levels" suggestion for `source` (#142): range matching onto `palette`
-/// (png2amiga's hull at amount 1 since #261) when the source's OKLab L range (1st–99th
-/// percentile) covers less than 60 % of the palette's box extent with png2c64's
-/// defaults. Only a suggestion: nothing applies it unless asked.
+/// An "Auto levels" suggestion for `source` (#142): range matching onto `palette` with
+/// png2c64's defaults when the source's OKLab L range (1st–99th percentile) covers less
+/// than 60 % of the palette's. Only a suggestion: nothing applies it unless asked.
 pub fn suggest_range_match(source: &SourceImage, palette: &Palette) -> Option<RangeMatch> {
     let ls: Vec<f32> = source
         .pixels()
@@ -539,8 +580,7 @@ pub fn suggest_range_match(source: &SourceImage, palette: &Palette) -> Option<Ra
     )
     .expect("png2c64's defaults are valid");
     let [lo, hi] = source_range(ls, RangeMatch::DEFAULT_PERCENTILE);
-    (hi - lo < NARROW_RANGE * (m.l[1] - m.l[0]))
-        .then(|| RangeMatch::hull(palette, 1.0).expect("amount 1 is valid"))
+    (hi - lo < NARROW_RANGE * (m.l[1] - m.l[0])).then_some(m)
 }
 
 #[derive(Deserialize)]
@@ -937,19 +977,31 @@ impl Sharpen {
 
     /// Sharpens `px` (straight linear RGB, `w × h`, row-major, with its `alpha`) in place
     /// on a grid `scale ×` the target grid. Pixels of alpha 0 are neither used nor
-    /// changed. Each pixel the kernel changes goes through the reference's OKLab round
-    /// trip and clamp, with png2amiga's OKLab conversions (ADR-013); with every alpha 1
-    /// and `scale` 1, png2c64's radius (the 3 × 3 kernel png2amiga keeps) is png2amiga's
-    /// `apply_sharpen` bit for bit.
-    pub fn apply_rgb(
+    /// changed. Each pixel the kernel changes goes through png2c64's OKLab round trip and
+    /// clamp, as in png2c64; with every alpha 1 and `scale` 1, png2c64's radius is
+    /// png2c64's `apply_sharpen` bit for bit.
+    pub fn apply_rgb(&self, px: &mut [[f32; 3]], alpha: &[f32], size: (usize, usize), scale: u32) {
+        self.apply_rgb_in(px, alpha, size, scale, Pipeline::Png2c64);
+    }
+
+    /// [`Self::apply_rgb`] with `pipeline`'s OKLab conversions: png2c64's, or under the
+    /// png2amiga solver png2amiga's (the same 3 × 3 kernel; with every alpha 1 and
+    /// `scale` 1 it is png2amiga's `apply_sharpen` bit for bit).
+    pub fn apply_rgb_in(
         &self,
         px: &mut [[f32; 3]],
         alpha: &[f32],
         (w, h): (usize, usize),
         scale: u32,
+        pipeline: Pipeline,
     ) {
-        use crate::solve::png2amiga_ref::colour::{clamped, linear_to_oklab, oklab_to_linear};
         use crate::solve::png2c64_ref::preprocess::unsharp_box;
+        use crate::solve::{png2amiga_ref::colour as p2a, png2c64_ref::colour as p2c};
+        type F = fn([f32; 3]) -> [f32; 3];
+        let (linear_to_oklab, oklab_to_linear, clamped): (F, F, F) = match pipeline {
+            Pipeline::Png2c64 => (p2c::linear_to_oklab, p2c::oklab_to_linear, p2c::clamped),
+            Pipeline::Png2amiga => (p2a::linear_to_oklab, p2a::oklab_to_linear, p2a::clamped),
+        };
         if self.is_off() || px.is_empty() {
             return;
         }
@@ -1247,6 +1299,10 @@ pub struct Adjustments {
     /// Unsharp mask on lightness, after gamma (#228); off by default.
     #[serde(default, skip_serializing_if = "Sharpen::is_default")]
     pub sharpen: Sharpen,
+    /// png2c64's black point on OKLab lightness, after the sharpen (ADR-014 §4); off by
+    /// default, written only when on.
+    #[serde(default, skip_serializing_if = "BlackPoint::is_off")]
+    pub black_point: BlackPoint,
     /// Input levels.
     #[serde(default)]
     pub levels: Levels,
@@ -1319,6 +1375,8 @@ pub struct AdjustPlan {
     /// Gamma alone, when a sharpen runs between it and the rest of `tone`.
     gamma: Option<Lut>,
     sharpen: Option<Sharpen>,
+    /// png2c64's black point (OKLab L), after the sharpen.
+    black_point: Option<BlackPoint>,
     /// Gamma (unless in `gamma`), levels, then brightness/contrast, the same for every
     /// channel.
     tone: Option<Lut>,
@@ -1337,11 +1395,14 @@ impl Adjustments {
     pub fn plan(&self) -> AdjustPlan {
         let (levels, bc) = (self.levels, self.brightness_contrast);
         let sharpen = (!self.sharpen.is_off()).then_some(self.sharpen);
-        // With a sharpen between them, gamma gets its own table; otherwise one table
-        // runs gamma, levels and brightness/contrast together, as before #228.
-        let (gamma, pre) = match sharpen {
-            Some(_) => (Gamma::IDENTITY, self.gamma),
-            None => (self.gamma, Gamma::IDENTITY),
+        let black_point = (!self.black_point.is_off()).then_some(self.black_point);
+        // With a sharpen or a black point between them, gamma gets its own table;
+        // otherwise one table runs gamma, levels and brightness/contrast together, as
+        // before #228.
+        let (gamma, pre) = if sharpen.is_some() || black_point.is_some() {
+            (Gamma::IDENTITY, self.gamma)
+        } else {
+            (self.gamma, Gamma::IDENTITY)
         };
         let gamma_lut = (pre != Gamma::IDENTITY).then(|| {
             Lut::build(ToneFn::Tone(
@@ -1363,6 +1424,7 @@ impl Adjustments {
         AdjustPlan {
             gamma: gamma_lut,
             sharpen,
+            black_point,
             tone,
             hsl,
             curves,
@@ -1385,6 +1447,7 @@ impl AdjustPlan {
     pub fn is_identity(&self) -> bool {
         self.gamma.is_none()
             && self.sharpen.is_none()
+            && self.black_point.is_none()
             && self.tone.is_none()
             && self.hsl.is_none()
             && self.curves.is_none()
@@ -1409,6 +1472,14 @@ impl AdjustPlan {
 
     /// The passes after the sharpen.
     fn apply_post(&self, px: &mut [f32; 4]) {
+        if let Some(bp) = self.black_point {
+            let [r, g, b] = crate::solve::png2c64_ref::preprocess::levels_px(
+                [px[0], px[1], px[2]],
+                bp.get(),
+                0.0,
+            );
+            px[..3].copy_from_slice(&[r, g, b]);
+        }
         if let Some(t) = &self.tone {
             for v in &mut px[..3] {
                 *v = t.eval(*v);
@@ -1432,7 +1503,8 @@ impl AdjustPlan {
             if !self.is_identity() {
                 crate::par::for_each(px, |p| {
                     if p[3] > 0.0 {
-                        self.apply_post(p);
+                        // `pre` holds the gamma only with a black point after it.
+                        self.apply(p);
                     }
                 });
             }
@@ -1714,7 +1786,7 @@ mod tests {
         };
         assert!(suggest_range_match(&ramp(0, 255), &p).is_none());
         let narrow = suggest_range_match(&ramp(70, 140), &p).expect("narrow source");
-        assert_eq!(narrow.method(), RangeMethod::Hull);
+        assert_eq!(narrow.method(), RangeMethod::Box);
     }
 
     #[test]
@@ -1772,11 +1844,11 @@ mod tests {
     }
 
     fn lab(p: [f32; 4]) -> [f32; 3] {
-        crate::solve::png2amiga_ref::colour::linear_to_oklab([p[0], p[1], p[2]])
+        crate::solve::png2c64_ref::colour::linear_to_oklab([p[0], p[1], p[2]])
     }
 
     fn from_lab(l: [f32; 3], a: f32) -> [f32; 4] {
-        let [r, g, b] = crate::solve::png2amiga_ref::colour::oklab_to_linear(l);
+        let [r, g, b] = crate::solve::png2c64_ref::colour::oklab_to_linear(l);
         [r, g, b, a]
     }
 
@@ -1817,12 +1889,32 @@ mod tests {
         );
     }
 
-    /// #228: the png2c64 kernel at the target grid is png2amiga's `apply_sharpen` (the
-    /// same kernel, png2amiga's OKLab conversions; ADR-013), bit for bit, both ways
-    /// (sharpen and soften), after the same gamma.
+    /// #228: the png2c64 kernel at the target grid is png2c64's `apply_sharpen`, bit for
+    /// bit, both ways (sharpen and soften), after the same gamma; with png2amiga's maths
+    /// (its solver's pipeline) it is png2amiga's.
     #[test]
-    fn png2c64_kernel_equals_png2amiga_s_apply_sharpen() {
+    fn png2c64_kernel_with_png2amiga_maths_is_png2amiga_s_apply_sharpen() {
         use crate::solve::png2amiga_ref::{Image, preprocess};
+        let (w, h) = (31, 19);
+        let src = noise(w, h, 0x2545_f491);
+        for amount in [0.5, 1.7, -0.5] {
+            let s = Sharpen::png2c64(amount).unwrap();
+            let mut ours: Vec<[f32; 3]> = src.iter().map(|p| [p[0], p[1], p[2]]).collect();
+            let alpha = vec![1.0; w * h];
+            s.apply_rgb_in(&mut ours, &alpha, (w, h), 1, Pipeline::Png2amiga);
+            let mut im = Image::new(w, h, src.iter().map(|p| [p[0], p[1], p[2]]).collect());
+            preprocess::apply_sharpen(&mut im, amount);
+            for (i, (a, b)) in ours.iter().zip(&im.px).enumerate() {
+                assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits), "{amount} {i}");
+            }
+        }
+    }
+
+    /// #228: the png2c64 kernel at the target grid is png2c64's `apply_sharpen`, bit for
+    /// bit, both ways (sharpen and soften), after the same gamma.
+    #[test]
+    fn png2c64_kernel_equals_png2c64_s_apply_sharpen() {
+        use crate::solve::png2c64_ref::{Image, preprocess};
         let (w, h) = (31, 19);
         let src = noise(w, h, 0x2545_f491);
         for amount in [0.5, 1.7, 3.0, -0.5, -1.0] {

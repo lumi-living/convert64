@@ -71,7 +71,7 @@ fn solve_timings() {
             .flat_map(|k| {
                 [
                     (k, SolverKind::Reference),
-                    (k, SolverKind::Png2c64),
+                    (k, SolverKind::Png2amiga),
                     (k, SolverKind::Native),
                 ]
             })

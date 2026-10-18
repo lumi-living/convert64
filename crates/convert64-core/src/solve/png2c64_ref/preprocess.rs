@@ -155,16 +155,24 @@ fn apply_levels(image: &mut Image, black_point: f32, white_point: f32) {
     if black_point <= 0.0 && white_point <= 0.0 {
         return;
     }
+    for p in &mut image.px {
+        *p = levels_px(*p, black_point, white_point);
+    }
+}
+
+/// `apply_levels` on one pixel: OKLab L from `black_point` up to `1 − white_point`
+/// stretched onto `0..=1`, then back to linear and clamped. For the layers' black point
+/// (ADR-014 §4), which calls it whatever the points are; `apply_levels` skips the
+/// picture when both are 0, as png2c64 does.
+pub(crate) fn levels_px(p: [f32; 3], black_point: f32, white_point: f32) -> [f32; 3] {
     let lo = black_point;
     let mut hi = 1.0 - white_point;
     if hi <= lo {
         hi = lo + 0.01;
     }
-    for p in &mut image.px {
-        let mut lab = linear_to_oklab(*p);
-        lab[0] = ((lab[0] - lo) / (hi - lo)).clamp(0.0, 1.0);
-        *p = clamped(oklab_to_linear(lab));
-    }
+    let mut lab = linear_to_oklab(p);
+    lab[0] = ((lab[0] - lo) / (hi - lo)).clamp(0.0, 1.0);
+    clamped(oklab_to_linear(lab))
 }
 
 /// `preprocess::apply`: gamma, sharpen, levels, then brightness, contrast, saturation and

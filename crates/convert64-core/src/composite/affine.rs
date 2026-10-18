@@ -4,18 +4,21 @@
 //! rotated one cannot, so each super pixel is inverse-mapped to layer space and sampled
 //! there:
 //!
-//! - **Kernel.** Colour: png2amiga's Lanczos-3 (ADR-013, #261), the separable path's
-//!   kernel, applied separably along the source's axes around the inverse-mapped
-//!   position: along each layer axis the taps within `⌈3 · s⌉` of it, `s` the shrink of
-//!   one super pixel's footprint along that axis (at least 1), cut at the source's edges,
-//!   weighted by `lanczos3(distance / s)` and normalised; each row's sum is clamped to
-//!   `0..=1` and so is the result, as png2amiga clamps each pass. The weights come from a
-//!   table of the kernel ([`lanczos_at`]), not two sines per tap. Masks: png2c64's
-//!   Mitchell bicubic (B = C = ⅓, ADR-012), 4 × 4 taps, weights normalised to sum to 1,
-//!   unwidened. Samples clamp to the layer's edge pixels. Shrunk by more than 4× along a
-//!   layer axis, under `Downscale::Auto` either samples the source's mip level on that
-//!   axis instead (#235, `mip`), the rule the separable path follows, Lanczos widened by
-//!   the shrink left on the level.
+//! - **Kernel.** png2c64's Mitchell bicubic (B = C = ⅓, ADR-012, #227), the separable
+//!   path's kernel: 4 × 4 taps on the premultiplied source around the inverse-mapped
+//!   position, weights normalised to sum to 1; samples clamp to the layer's edge pixels.
+//!   Like png2c64's scaler and the separable path, it is not widened when the layer is
+//!   scaled down, so a turned layer is as crisp as an upright one. A layer's colour can
+//!   opt into png2amiga's Lanczos-3 instead (`Resample::Lanczos`, ADR-014 §3; always
+//!   under the png2amiga solver), applied separably along the source's axes: along each
+//!   layer axis the taps within `⌈3 · s⌉` of the position, `s` the shrink of one super
+//!   pixel's footprint along that axis (at least 1), cut at the source's edges, weighted
+//!   by `lanczos3(distance / s)` and normalised; each row's sum is clamped to `0..=1` and
+//!   so is the result, as png2amiga clamps each pass. Its weights come from a table of
+//!   the kernel ([`lanczos_at`]), not two sines per tap. Masks are always Mitchell's.
+//!   Shrunk by more than 4× along a layer axis, under `Downscale::Auto` either samples
+//!   the source's mip level on that axis instead (#235, `mip`), the rule the separable
+//!   path follows (Lanczos widened by the shrink left on the level).
 //! - **Coverage.** The layer's edge is antialiased by the fraction of each super pixel
 //!   inside the rotated quad, computed **exactly**: the super pixel's footprint is a
 //!   parallelogram in layer space, clipped against the box `[0, w] × [0, h]`
@@ -435,13 +438,17 @@ fn area(p: &[(f64, f64)]) -> f64 {
 }
 
 /// Resamples premultiplied colour (the mip level `map` samples, `mw × mh`) onto
-/// `map.rect` into planes with the widened Lanczos-3 ([`AffineMap::sample_lanczos`]),
-/// scaled by coverage, every channel clamped to `0..=1`: the rotated counterpart of
-/// `resample::resample_planes`, with the same per-row `extent`.
+/// `map.rect` into planes, scaled by coverage, alpha clamped to `0..=1`: the rotated
+/// counterpart of `resample::resample_planes`, with the same per-row `extent`. With
+/// `lanczos` false (the default, ADR-012) colour is Mitchell's ([`AffineMap::sample`]),
+/// its rings left in (png2c64 keeps them; the front end's round trip clamps); with
+/// `lanczos` (a layer's opt-in, or the png2amiga solver's front end, ADR-014 §3) it is
+/// the widened Lanczos-3 ([`AffineMap::sample_lanczos`]), every channel clamped.
 pub(crate) fn resample_planes_affine(
     src: &[[f32; 4]],
     (mw, mh): (u32, u32),
     map: &AffineMap,
+    lanczos: bool,
     out: &mut Planes,
     extent: &mut Vec<(u32, u32)>,
 ) {
@@ -484,7 +491,11 @@ pub(crate) fn resample_planes_affine(
                         _ => 0..0,
                     };
                     map.row(j, span.clone(), |k, u, v| {
-                        px[k] = map.sample_lanczos(src, (mw, mh), (u, v), (&mut wx, &mut wy));
+                        px[k] = if lanczos {
+                            map.sample_lanczos(src, (mw, mh), (u, v), (&mut wx, &mut wy))
+                        } else {
+                            map.sample(src, mw, mh, u, v)
+                        };
                     });
                     for k in 0..ow {
                         let (p, s) = if span.contains(&k) {

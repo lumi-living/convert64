@@ -3,7 +3,7 @@
 
 use crate::scheduler::Snapshot;
 use convert64_core::mode::Mode;
-use convert64_core::solve::{Solution, SolveMode};
+use convert64_core::solve::{Solution, SolveMode, SolveOptions};
 use convert64_core::{Palette, SuperGrid};
 use convert64_project::{Embed, JsonCommand, MemoryStore, ProjectError, ProjectFile, Session};
 use std::path::{Path, PathBuf};
@@ -376,7 +376,12 @@ impl Document {
             steering: p.steering.clone(),
             grid: self.grid(),
             palette: p.palette.clone(),
-            options: p.solve.options(SolveMode::Full, Vec::new()),
+            options: SolveOptions {
+                // Refine is not in the app's full solve (ADR-014 §5): it is experimental,
+                // png2amiga-only and costs about 0.6 s; the CLI and MCP run it.
+                refine: false,
+                ..p.solve.options(SolveMode::Full, Vec::new())
+            },
             previous,
         }
     }

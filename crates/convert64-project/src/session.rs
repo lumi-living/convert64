@@ -18,7 +18,7 @@ use crate::paths;
 use crate::store::Store;
 use convert64_core::command::{
     AdjustmentsSet, Command, Dirty, LayerAdd, LayerDuplicate, LayerNudge, LayerRemove, LayerRename,
-    LayerReorder, LayerRotate, LayerSetBlend, LayerSetDownscale, LayerSetOpacity,
+    LayerReorder, LayerRotate, LayerSetBlend, LayerSetDownscale, LayerSetOpacity, LayerSetResample,
     LayerSetTransform, LayerSetVisible, LayerViaMask, MaskClear, MaskFill, MaskFromAlpha,
     MaskGradient, MaskKey, MaskLoad, MaskSetModifier, MaskSourceRemove, MaskSourceSetCombine,
     MaskStroke, PaletteSet, RecipeSet, RegionAdd, RegionClear, RegionFill, RegionGradient,
@@ -131,6 +131,7 @@ impl Session {
                 .map_err(|e| invalid(format!("{what}: {e}")))?;
             layer.set_blend(entry.blend);
             layer.set_downscale(entry.downscale);
+            layer.set_resample(entry.resample);
             layer.set_visible(entry.visible);
             layer.set_recipe(entry.recipe);
             layer.set_adjustments(entry.adjustments);
@@ -245,6 +246,7 @@ impl Session {
                 opacity: l.opacity(),
                 blend: l.blend(),
                 downscale: l.downscale(),
+                resample: l.resample(),
                 recipe: *l.recipe(),
                 adjustments: l.adjustments().clone(),
                 mask: l.mask().map(|m| MaskSpec {
@@ -527,6 +529,12 @@ impl Session {
                     downscale,
                 })
             }
+            JsonCommand::LayerSetResample { layer, resample } => {
+                Command::LayerSetResample(LayerSetResample {
+                    layer: self.resolve(&layer)?,
+                    resample,
+                })
+            }
             JsonCommand::LayerSetTransform {
                 layer,
                 transform,
@@ -701,6 +709,8 @@ impl Session {
             self.last = None;
             self.dirty = convert64_core::CellSet::all();
         }
+        // The png2amiga solver brings png2amiga's front end (ADR-014 §2).
+        self.compositor.set_pipeline(p.solve.solver.pipeline());
         let changed = self.compositor.update(&p.layers, &p.regions);
         self.dirty = self.dirty.union(changed);
     }
@@ -872,9 +882,10 @@ impl Session {
             let p = self.editor.project();
             let grid = self.preview_grid();
             let clock = self.clock;
-            let fresh = || preview_compositor(grid, clock);
+            let pipeline = p.solve.solver.pipeline();
+            let fresh = || preview_compositor(grid, clock, pipeline);
             let preview = self.preview.get_or_insert_with(fresh);
-            if preview.grid() != grid {
+            if preview.grid() != grid || preview.pipeline() != pipeline {
                 *preview = fresh();
             }
             preview.update(&p.layers, &p.regions);
@@ -897,7 +908,7 @@ impl Session {
     /// each other; the app does that on the GPU while a layer is moved (#264). A fresh
     /// compositor each time: nothing is cached between calls.
     pub fn layers_canvas_rgba(&self, range: std::ops::Range<usize>) -> (u32, u32, Vec<u8>) {
-        let mut c = preview_compositor(self.preview_grid(), self.clock);
+        let mut c = preview_compositor(self.preview_grid(), self.clock, self.pipeline());
         let layers = self.editor.project().layers.get(range).unwrap_or_default();
         canvas_rgba8(c.composite(layers))
     }
@@ -910,12 +921,17 @@ impl Session {
         layer: usize,
         transform: convert64_core::Transform,
     ) -> (u32, u32, Vec<u8>) {
-        let mut c = preview_compositor(self.preview_grid(), self.clock);
+        let mut c = preview_compositor(self.preview_grid(), self.clock, self.pipeline());
         let mut moved = self.editor.project().layers.get(layer).cloned();
         if let Some(l) = &mut moved {
             l.set_transform(transform);
         }
         canvas_rgba8(c.composite(moved.as_slice()))
+    }
+
+    /// Whose front end the project's solver composites with (ADR-014 §2).
+    fn pipeline(&self) -> convert64_core::composite::Pipeline {
+        self.editor.project().solve.solver.pipeline()
     }
 
     /// The grid the Source view is drawn at: [`Self::PREVIEW_N`] or the project's factor,
@@ -944,14 +960,16 @@ impl Session {
     }
 }
 
-/// A compositor for the Source view on `grid`. Only its canvas is drawn, so png2c64's
-/// front end (a frame) is skipped.
+/// A compositor for the Source view on `grid`, with `pipeline`'s front end. Only its
+/// canvas is drawn, so the plain layer's front end (a frame) is skipped.
 fn preview_compositor(
     grid: SuperGrid,
     clock: Option<convert64_core::composite::Clock>,
+    pipeline: convert64_core::composite::Pipeline,
 ) -> Compositor {
     let mut c = Compositor::new(grid);
-    c.set_reference_front_end(false);
+    c.set_png2c64_front_end(false);
+    c.set_pipeline(pipeline);
     c.set_clock(clock);
     c
 }

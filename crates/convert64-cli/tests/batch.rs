@@ -257,8 +257,9 @@ fn validate_reads_display_prgs_and_projects() {
     );
 }
 
-/// #261: a manifest takes `solver = "png2c64"`, `cell-refine`, `match-range-amount` and
-/// `match-range-method`, as convert's options; a bad amount fails that file.
+/// #261, ADR-014: a manifest takes `solver` (`png2amiga`, and `png2c64` for the
+/// reference), `cell-refine`, `match-range-amount`, `match-range-method`, `resample`,
+/// `black-point` and `allowed`, as convert's options; a bad amount fails that file.
 #[test]
 fn manifest_takes_the_png2amiga_options() {
     let dir = temp("batch-261");
@@ -275,14 +276,20 @@ match-range = true
 outputs = ["kla"]
 
 [files."a.png"]
+solver = "png2amiga"
 cell-refine = true
+match-range-method = "hull"
 match-range-amount = 40
 
 [files."b.png"]
 solver = "png2c64"
 match-range-method = "box"
+resample = "lanczos"
+black-point = 0.5
+allowed = "0,11,12,15,1"
 
 [files."c.png"]
+match-range-method = "hull"
 match-range-amount = 400
 "#,
     )
@@ -306,7 +313,9 @@ match-range-amount = 400
         "{a:#}"
     );
     let b = file("b.png");
-    assert_eq!(b["solver"], "png2c64", "{b:#}");
+    assert_eq!(b["solver"], "reference", "{b:#}");
+    assert_eq!(b["ok"], true, "{b:#}");
+    assert_eq!(file("a.png")["solver"], "png2amiga", "{a:#}");
     assert_eq!(b["refine"], false, "{b:#}");
     assert_eq!(file("c.png")["exit_code"], 2);
 }

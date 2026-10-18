@@ -14,7 +14,7 @@ pub mod ordered;
 pub mod png2amiga_ref;
 pub mod png2c64_ref;
 pub mod reference;
-pub mod reference_png2c64;
+pub mod reference_png2amiga;
 pub mod report;
 pub mod solver;
 pub mod steering;

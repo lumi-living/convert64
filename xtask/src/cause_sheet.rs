@@ -8,9 +8,9 @@
 //! cell metric `mse`; lineart: hi-res, `none`, gamma 1.5), unless the tile says
 //! otherwise:
 //!
-//! 1. the png2c64 baseline (`fixtures/archive/png2c64/<name>/baseline.png`);
+//! 1. the png2c64 baseline (`fixtures/<name>/baseline.png`);
 //! 2. png2amiga's baseline as #273's `sheet-reference-baselines.png` showed it
-//!    (`fixtures/<name>/baseline.png`, png2amiga's own render);
+//!    (`fixtures/png2amiga/<name>/baseline.png`, png2amiga's own render);
 //! 3. png2amiga's port at those flags (equals tile 2);
 //! 4. tile 3 with Background: Search (png2c64's 16-way search);
 //! 5. tile 4 with png2c64's 4-tap Mitchell instead of png2amiga's widened Lanczos-3;
@@ -301,7 +301,7 @@ fn row(name: &str, hires: bool) -> Result<(Vec<Tile>, Check), String> {
         n: 1,
         name: "png2c64 baseline",
         flags: vec![
-            "png2c64's own render (fixtures/archive/png2c64)".into(),
+            "png2c64's own render (fixtures/<name>)".into(),
             method_flags(hires, "0.7"),
             format!(
                 "{}, {}",
@@ -314,7 +314,7 @@ fn row(name: &str, hires: bool) -> Result<(Vec<Tile>, Check), String> {
             ),
             P2C_REST.into(),
         ],
-        img: png(&root.join(format!("fixtures/archive/png2c64/{name}/baseline.png")))?,
+        img: png(&root.join(format!("fixtures/{name}/baseline.png")))?,
         screen: None,
     });
     tiles.push(Tile {
@@ -326,7 +326,7 @@ fn row(name: &str, hires: bool) -> Result<(Vec<Tile>, Check), String> {
             format!("{}, {}", bg(false), Scaler::Lanczos.name()),
             P2A_REST.into(),
         ],
-        img: png(&root.join(format!("fixtures/{name}/baseline.png")))?,
+        img: png(&root.join(format!("fixtures/png2amiga/{name}/baseline.png")))?,
         screen: None,
     });
 

@@ -1,15 +1,11 @@
 //! The mip chain a large shrink samples (#235, ADR-012 amendment).
 //!
-//! png2amiga's Lanczos-3 (ADR-013) is widened by the shrink, so on the original it reads
-//! `2 · ⌈3 · shrink⌉` source pixels per output pixel along each axis: exact, but a drag
-//! of a large source pays for every one of them. Under
+//! png2c64's Mitchell bicubic reads four source pixels per output pixel along each axis,
+//! however far it shrinks, so a source shrunk by much more than that aliases. Under
 //! [`Downscale::Auto`](crate::layer::Downscale) a layer shrunk by more than
-//! [`AUTO_THRESHOLD`] along an axis samples, with the same kernel widened by what is left
-//! of the shrink, a box-reduced snapshot of its source instead: **level**
-//! `L = ⌈log2(shrink / 2)⌉` on that axis, the source halved `L` times, so what is left
-//! for the kernel is a shrink of at most 2. (Before ADR-013 the kernel was png2c64's
-//! four-tap Mitchell, which aliased past 4× without the levels, #235.) Masks keep
-//! Mitchell (ADR-012) and the same rule on their own grid.
+//! [`AUTO_THRESHOLD`] along an axis samples, with the same kernel, a box-reduced snapshot
+//! of its source instead: **level** `L = ⌈log2(shrink / 2)⌉` on that axis, the source
+//! halved `L` times, so what is left for the kernel is a shrink of at most 2.
 //!
 //! Levels are kept per layer axis (a rip-map, as ADR-011's #198 amendment §4): `(lx, ly)`
 //! is the source halved `lx` times across and `ly` times down. Each is built once, when a
@@ -35,9 +31,9 @@ use super::resample::Px;
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// The shrink (source pixels per output pixel, per axis) above which
-/// [`Downscale::Auto`](crate::layer::Downscale) samples a mip level. Up to it every
-/// source, among them every one up to 1280 px wide fitted to the 320 grid, is sampled as
-/// png2amiga samples it (ADR-013); past it the original's taps grow with the shrink.
+/// [`Downscale::Auto`](crate::layer::Downscale) samples a mip level. Up to it, png2c64's
+/// four taps see every source pixel the output pixel covers, and every source up to
+/// 1280 px wide fitted to the 320 grid is sampled as png2c64 samples it.
 pub(crate) const AUTO_THRESHOLD: f64 = 4.0;
 
 /// The level an axis shrunk by `shrink` samples, for a source axis of `len` pixels: 0 up

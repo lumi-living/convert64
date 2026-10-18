@@ -344,7 +344,7 @@ pub fn threshold(kind: DitherKind, orientation: Orientation, x: i64, y: i64) -> 
     analytical(kind, px, py).or_else(|| {
         // The patterns only png2amiga has (#261): its thresholds, `−0.5..0.5`, shifted
         // into `0..1`.
-        let m = super::reference::ref_method(kind)?;
+        let m = super::reference_png2amiga::ref_method(kind)?;
         m.thresholds().then(|| {
             let wrap = |v: i64| v.rem_euclid(1 << 20) as usize;
             // Truchet reaches past 1; the native solver keeps to the unit interval.

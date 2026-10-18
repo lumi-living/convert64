@@ -29,8 +29,7 @@
 //!
 //! The same four cases again with every layer **rotated** (#198, ADR-011: layer `i` by
 //! `3 + 7·i` degrees about its centre), which takes the non-separable path (inverse-mapped
-//! sampling with exact edge coverage: the colour with png2amiga's widened Lanczos-3,
-//! ADR-013, the masks with Mitchell, ADR-012). The budgets above were set for the
+//! Mitchell sampling with exact edge coverage, ADR-012). The budgets above were set for the
 //! axis-aligned path and are printed against these rows too, for comparison; the nudge
 //! row is a rotation drag (`update` after turning layer 4 by a further 0.25°).
 //!
@@ -38,7 +37,7 @@
 //! printed, not asserted, because shared runners are noisy.
 
 use convert64_core::geom::Vec2;
-use convert64_core::layer::{Blend, Downscale, Layer, SourceImage, Transform};
+use convert64_core::layer::{Blend, Layer, SourceImage, Transform};
 use convert64_core::mask::{
     Combine, Gradient, GradientKind, Mask, MaskRaster, MaskSource, Modifiers, SourceEntry,
 };
@@ -194,9 +193,7 @@ fn now_ms() -> f64 {
 /// #235: a 4096 × 2560 16-bit source fitted to the screen (shrunk 12.8×) under
 /// `Downscale::Auto`: the mip levels its first composite builds (the 512 px level, 3 × 3
 /// box reductions), timed by the compositor's clock; the whole cold composite; and a
-/// 0.25 px nudge after it (a drag frame), which builds nothing. Then the same under
-/// `Downscale::Exact`, png2amiga's Lanczos-3 widened by the whole 12.8× shrink on the
-/// original (78 taps per axis, ADR-013, #261), which builds no level.
+/// 0.25 px nudge after it, which builds nothing.
 ///
 /// ```sh
 /// cargo test --release -p convert64-core --test bench mip -- --ignored --nocapture
@@ -214,18 +211,12 @@ fn mip_build_4096() {
         })
         .collect();
     let threads = if PARALLEL { "parallel" } else { "sequential" };
-    for (mode, downscale) in [
-        (Mode::MulticolorBitmap, Downscale::Auto),
-        (Mode::HiresBitmap, Downscale::Auto),
-        (Mode::MulticolorBitmap, Downscale::Exact),
-        (Mode::HiresBitmap, Downscale::Exact),
-    ] {
+    for mode in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
         let grid = SuperGrid::new(mode, 1).unwrap();
         let (mut build, mut cold, mut nudge, mut levels) = (vec![], vec![], vec![], 0);
         for _ in 0..5 {
             let src = Arc::new(SourceImage::from_linear(w, h, px.clone()).unwrap());
             let mut layer = Layer::new("4k", src);
-            layer.set_downscale(downscale);
             let t = Transform::new(
                 Vec2::ZERO,
                 Vec2::new(320.0 / 4096.0, 200.0 / 2560.0),
@@ -251,16 +242,13 @@ fn mip_build_4096() {
         }
         let (b, c, n) = (stat(build), stat(cold), stat(nudge));
         println!(
-            "bench: mip build 4096x2560 16-bit, {mode}, {downscale:?}, {threads}: {levels} reductions \
-             {:.1} ms (min {:.1}, max {:.1}); cold composite with it {:.1} ms; nudge after {:.2} ms \
-             (min {:.2}, max {:.2})",
+            "bench: mip build 4096x2560 16-bit, {mode}, {threads}: {levels} reductions {:.1} ms \
+             (min {:.1}, max {:.1}); cold composite with it {:.1} ms; nudge after {:.2} ms",
             ms(b.median),
             ms(b.min),
             ms(b.max),
             ms(c.median),
-            ms(n.median),
-            ms(n.min),
-            ms(n.max)
+            ms(n.median)
         );
     }
 }

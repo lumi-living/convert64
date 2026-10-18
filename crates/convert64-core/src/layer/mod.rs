@@ -8,8 +8,8 @@ pub mod recipe;
 pub mod snap;
 
 pub use adjust::{
-    AdjustCache, AdjustError, AdjustPlan, Adjustments, BrightnessContrast, Curve, Curves, Gamma,
-    Hsl, Levels, Radius, RangeMatch, RangeMethod, Sharpen, suggest_range_match,
+    AdjustCache, AdjustError, AdjustPlan, Adjustments, BlackPoint, BrightnessContrast, Curve,
+    Curves, Gamma, Hsl, Levels, Radius, RangeMatch, RangeMethod, Sharpen, suggest_range_match,
 };
 pub use recipe::{
     CellMetric, CustomMatrix, DitherFamily, DitherKind, FitMode, Method, Metric, OrderedSemantics,
@@ -274,6 +274,47 @@ impl std::str::FromStr for Downscale {
             "auto" => Ok(Self::Auto),
             "exact" => Ok(Self::Exact),
             _ => Err(format!("downscale must be auto or exact, got {s:?}")),
+        }
+    }
+}
+
+/// The kernel a layer's colour is resampled with onto the grid (ADR-014 §3). Masks are
+/// always resampled with Mitchell (ADR-012 §5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Resample {
+    /// png2c64's Mitchell bicubic, four taps per axis (ADR-012), the default.
+    #[default]
+    Mitchell,
+    /// png2amiga's Lanczos-3 widened by the shrink, each pass clamped (ADR-014 §3): thin
+    /// lines come out more even, and greyer. Opt-in. Under the png2amiga solver every
+    /// layer is resampled this way whatever it says (that solver's own front end).
+    Lanczos,
+}
+
+impl Resample {
+    /// Whether this is the default, [`Self::Mitchell`] (a project file omits it).
+    pub fn is_mitchell(&self) -> bool {
+        *self == Self::Mitchell
+    }
+
+    /// The name the project file and the command line use.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Mitchell => "mitchell",
+            Self::Lanczos => "lanczos",
+        }
+    }
+}
+
+impl std::str::FromStr for Resample {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "mitchell" => Ok(Self::Mitchell),
+            "lanczos" => Ok(Self::Lanczos),
+            _ => Err(format!("resample must be mitchell or lanczos, got {s:?}")),
         }
     }
 }
@@ -728,6 +769,7 @@ pub struct Layer {
     adjustments: Adjustments,
     recipe: Recipe,
     downscale: Downscale,
+    resample: Resample,
 }
 
 impl Layer {
@@ -745,6 +787,7 @@ impl Layer {
             adjustments: Adjustments::default(),
             recipe: Recipe::default(),
             downscale: Downscale::Auto,
+            resample: Resample::Mitchell,
         }
     }
 
@@ -863,6 +906,16 @@ impl Layer {
     /// Sets how the layer is sampled when shrunk a long way.
     pub fn set_downscale(&mut self, downscale: Downscale) {
         self.downscale = downscale;
+    }
+
+    /// The kernel the layer's colour is resampled with (ADR-014 §3).
+    pub const fn resample(&self) -> Resample {
+        self.resample
+    }
+
+    /// Sets the kernel the layer's colour is resampled with.
+    pub fn set_resample(&mut self, resample: Resample) {
+        self.resample = resample;
     }
 }
 

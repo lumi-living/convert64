@@ -39,13 +39,13 @@ impl MethodInfo {
 
     /// Whether png2c64 has this method (the search finds it by `png2c64`).
     pub const fn in_png2c64(&self) -> bool {
-        crate::solve::reference_png2c64::ref_method(self.kind).is_some()
+        crate::solve::reference::ref_method(self.kind).is_some()
     }
 
     /// Whether png2amiga's C64 path has this method: the reference solver solves it
     /// (#261; the search finds it by `png2amiga`).
     pub const fn in_png2amiga(&self) -> bool {
-        crate::solve::reference::ref_method(self.kind).is_some()
+        crate::solve::reference_png2amiga::ref_method(self.kind).is_some()
     }
 
     /// Whether every word of `query` (case-insensitive) is part of the name, the id, an
