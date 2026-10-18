@@ -147,8 +147,7 @@ impl App {
         if mode == SolveMode::Full {
             ws.solve_started = Some(ctx.input(|i| i.time));
         }
-        let previous = ws.solution.clone();
-        scheduler.submit(ws.doc.snapshot(previous), mode);
+        scheduler.submit(ws.snapshot(), mode);
     }
 
     /// The method picker's live preview (UX §6a): the result solved with `method` in

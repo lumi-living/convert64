@@ -909,9 +909,16 @@ impl Session {
     }
 
     /// The super grid the session composites on: the target mode and the supersample
-    /// factor.
+    /// factor. The project's target even before the next composite brings the
+    /// compositor to it: a snapshot taken straight after `mode_set` (or its undo) is
+    /// solved on the new grid (#279).
     pub fn grid(&self) -> convert64_core::SuperGrid {
-        self.compositor.grid()
+        let grid = self.compositor.grid();
+        let target = self.editor.project().target;
+        if grid.target() == target {
+            return grid;
+        }
+        SuperGrid::new(target, grid.n()).expect("mode_set checks the mode")
     }
 
     /// The supersample factor the Source view is drawn at, at least: with the solve on
