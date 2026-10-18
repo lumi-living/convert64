@@ -899,6 +899,25 @@ mod tests {
         assert!(ProjectFile::parse(&bad).is_err());
     }
 
+    /// #273: `solve.background_rule` is written only when not `black` (the default), and
+    /// round-trips.
+    #[test]
+    fn the_background_rule_is_written_only_when_search() {
+        use convert64_core::solve::BackgroundRule;
+        let old = r#"{"schema_version":3,"target":"multicolor-bitmap","layers":[]}"#;
+        let p = ProjectFile::parse(old).unwrap();
+        assert_eq!(p.solve.background_rule, BackgroundRule::Black);
+        let text = p.to_json();
+        assert!(!text.contains("background_rule"), "{text}");
+        let mut q = p.clone();
+        q.migrated_from = None;
+        q.solve.background_rule = BackgroundRule::Search;
+        let text = q.to_json();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["solve"]["background_rule"], "search", "{text}");
+        assert_eq!(ProjectFile::parse(&text).unwrap(), q);
+    }
+
     /// #261: `solve.refine` is written only when on; a hull `match_range` is written
     /// with its palette, and its `amount` only when not 1; an older box loads as a box;
     /// all of them round-trip.

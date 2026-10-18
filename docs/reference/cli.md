@@ -78,7 +78,8 @@ For a PNG, a `.kla` or `.art` output also picks the mode when `--mode` is not gi
 | `--downscale` | each layer's `downscale` (#235) | `auto` (default): past a 4× shrink on the 320 grid, sample a cached, box-reduced mip level of the source with the same Mitchell taps, so large sources do not alias; `exact`: always the original, as png2c64 does. Up to 4× (sources up to 1280 px wide fitted) the two are identical |
 | `--rotate` | each layer's `transform.rotate`, through `layer_rotate` after the project's own commands (#198) | Degrees, clockwise on screen, about the layer's anchor; the project's `snap` applies |
 | `--anchor` | each layer's `transform.anchor`, through `layer_rotate` (the picture stays in place) | `X,Y`, 0–1 across the layer's box: `0,0` top-left, `0.5,0.5` the centre (default). Alone, it moves the pivot and keeps the angle |
-| `--bg` | `solve.background` | `auto` or 0–15 |
+| `--bg` | `solve.background` | `auto` (the solver chooses; see `--bg-rule`) or 0–15 |
+| `--bg-rule` | `solve.background_rule` | How the reference chooses an unpinned multicolor background: `black` (png2amiga's colour 0, the default) or `search` (png2c64's search of all 16, the lowest total cell error; #273). The png2c64 and native solvers always search; hi-res has no background |
 | `--hysteresis` | `solve.hysteresis` | (0, 1]; native solver |
 | `--supersample` | `supersample` | 1–8 |
 
@@ -150,7 +151,7 @@ max-clashes = 20
 skip = true
 ```
 
-Every table takes `convert`'s options in kebab-case (`solver`, `cell-refine`, `diverge` (a list), `mode`, `palette`, `dither`, `strength`, `metric`, `cell-metric`, `no-cell-clamp`, `max-luma-diff`, `ordered-semantics`, `no-chroma-guard`, `error-clamp`, `adaptive`, `mix-levels`, `smooth`, `gamma`, `match-range`, `match-range-amount`, `match-range-method`, `sharpen`, `sharpen-radius`, `sharpen-threshold`, `downscale`, `bg`, `hysteresis`, `supersample`), plus `outputs` (`kla`, `art`, `prg`, `png`, `raw`), `max-clashes`, `zoom` (PNG previews) and `skip`. Unknown keys are errors. A file's table wins over `[defaults]`; options on the command line win over both.
+Every table takes `convert`'s options in kebab-case (`solver`, `cell-refine`, `diverge` (a list), `mode`, `palette`, `dither`, `strength`, `metric`, `cell-metric`, `no-cell-clamp`, `max-luma-diff`, `ordered-semantics`, `no-chroma-guard`, `error-clamp`, `adaptive`, `mix-levels`, `smooth`, `gamma`, `match-range`, `match-range-amount`, `match-range-method`, `sharpen`, `sharpen-radius`, `sharpen-threshold`, `downscale`, `bg`, `bg-rule`, `hysteresis`, `supersample`), plus `outputs` (`kla`, `art`, `prg`, `png`, `raw`), `max-clashes`, `zoom` (PNG previews) and `skip`. Unknown keys are errors. A file's table wins over `[defaults]`; options on the command line win over both.
 
 Files convert independently: one failure does not stop the others. The exit code is the worst file's (3, then 2, then 1). JSON fields: `dir`, `manifest`, `out`, `converted`, `failed`, `skipped` (`input`, `reason`) and `files`, one `convert` report per file with its `input`.
 

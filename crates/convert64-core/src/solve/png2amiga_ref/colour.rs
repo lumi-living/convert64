@@ -18,8 +18,23 @@
 
 use super::super::png2c64_ref::colour as p2c;
 use super::Rgb;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use p2c::{hex_to_linear, linear_to_srgb, srgb_to_linear, srgb8_to_linear};
+
+/// The cause sheet's swap (`cargo xtask cause-sheet`, #273), not a user option: while
+/// set, [`linear_to_oklab`], [`oklab_to_linear`], [`fma_dist_sq`] and [`dist2`] compute
+/// png2c64's maths (a correctly rounded cube root, no fused multiply-adds, png2c64's
+/// summation order) instead of png2amiga's, everywhere in this port. A process-wide flag
+/// because these free functions are called from every module of the port; only the
+/// xtask sets it, around one render at a time. Off by default: png2amiga's maths.
+#[doc(hidden)]
+pub static PNG2C64_MATHS: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+fn png2c64_maths() -> bool {
+    PNG2C64_MATHS.load(Ordering::Relaxed)
+}
 
 /// OKLab coordinates `[L, a, b]`, png2amiga's `color_space::OKLab`.
 pub type Lab = [f32; 3];
@@ -54,6 +69,9 @@ pub fn fma_dot3(c0: f32, x0: f32, c1: f32, x1: f32, c2: f32, x2: f32) -> f32 {
 /// `fma_dist_sq(dx, dy, dz)`: `fma(dx, dx, fma(dy, dy, dz·dz))`.
 #[inline]
 pub fn fma_dist_sq(dx: f32, dy: f32, dz: f32) -> f32 {
+    if png2c64_maths() {
+        return dx * dx + dy * dy + dz * dz;
+    }
     dx.mul_add(dx, dy.mul_add(dy, dz * dz))
 }
 
@@ -84,6 +102,9 @@ fn lms_cbrt_to_oklab(l: f32, m: f32, s: f32) -> Lab {
     reason = "png2amiga's literals, kept digit for digit; each rounds to the same f32"
 )]
 pub fn linear_to_oklab(c: Rgb) -> Lab {
+    if png2c64_maths() {
+        return p2c::linear_to_oklab(c);
+    }
     // `f32x4{..} * r + f32x4{..} * g + f32x4{..} * b`, lane by lane, unfused.
     let l = 0.412_221_470_8 * c[0] + 0.536_332_536_3 * c[1] + 0.051_445_992_9 * c[2];
     let m = 0.211_903_498_2 * c[0] + 0.680_699_545_1 * c[1] + 0.107_396_956_6 * c[2];
@@ -98,6 +119,9 @@ pub fn linear_to_oklab(c: Rgb) -> Lab {
     reason = "png2amiga's literals, kept digit for digit; each rounds to the same f32"
 )]
 pub fn oklab_to_linear(lab: Lab) -> Rgb {
+    if png2c64_maths() {
+        return p2c::oklab_to_linear(lab);
+    }
     let [ll, a, b] = lab;
     let l_ = 0.396_337_777_4_f32.mul_add(a, 0.215_803_757_3_f32.mul_add(b, ll));
     let m_ = (-0.105_561_345_8_f32).mul_add(a, (-0.063_854_172_8_f32).mul_add(b, ll));

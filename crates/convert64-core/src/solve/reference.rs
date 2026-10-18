@@ -12,7 +12,8 @@
 //!
 //! **Hooks**, each inactive by default so the output stays png2amiga's: pins,
 //! allow/deny and the recipes' allowed colours constrain a cell's colours
-//! ([`CellRule`]); a fixed background (png2amiga always uses colour 0); locked cells,
+//! ([`CellRule`]); a fixed background, or with [`BackgroundRule::Search`] png2c64's
+//! search of all 16 (png2amiga always uses colour 0, `BackgroundRule::Black`); locked cells,
 //! and on the interactive fast path every clean cell, are copied through with the
 //! previous background; per-pixel recipes from the attribute map.
 //!
@@ -23,7 +24,7 @@ use super::png2amiga_ref::c64::{self, Hooks, Metric as RefMetric};
 use super::png2amiga_ref::dither::{Method as RefMethod, PxSettings};
 use super::png2amiga_ref::{Cell, Image, Mode as RefMode, colour, preprocess, refine};
 use super::reference_png2c64::{assemble, previous_cell, rules};
-use super::solver::{Background, Solution, SolveMode, SolveOptions, SolverKind};
+use super::solver::{Background, BackgroundRule, Solution, SolveMode, SolveOptions, SolverKind};
 use super::steering::Steering;
 use crate::composite::{AttrSource, TargetFrame};
 use crate::layer::{CellMetric, DitherKind, FitMode, Metric, Orientation, PatternPhase, Recipe};
@@ -286,8 +287,10 @@ pub(crate) fn solve(
             (Some(b), _) | (None, Background::Fixed(b)) => Some(b.get()),
             (None, Background::Auto) => None,
         },
+        search_background: opts.background_rule == BackgroundRule::Search,
         rules: rules(frame, steering, mode),
         fixed,
+        sets: None,
     };
     let pal = colour::palette_of(palette);
     let metric = metric.unwrap_or_default();

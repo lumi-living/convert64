@@ -22,15 +22,42 @@ use crate::model::{BitmapImage, IndexedBitmap};
 use crate::palette::Palette;
 use serde::{Deserialize, Serialize};
 
-/// How the background is chosen (multicolor only).
+/// Whether the multicolor background is pinned (multicolor only).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Background {
-    /// Try all 16.
+    /// Not pinned: the solver chooses. The png2c64 port and the native solver search all
+    /// 16; the png2amiga reference follows [`SolveOptions::background_rule`] (by default
+    /// [`BackgroundRule::Black`], png2amiga's colour 0).
     #[default]
     Auto,
-    /// Use this one.
+    /// Use this one, on every solver.
     Fixed(ColourIndex),
+}
+
+/// How the png2amiga reference chooses an unpinned multicolor background
+/// ([`Background::Auto`]). Hi-res has no background, and the png2c64 port and the native
+/// solver always search, so this acts only on the reference path in multicolor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BackgroundRule {
+    /// png2amiga's: always colour 0 (`c64.cpp:459`, `res.bg_color = 0`). The default,
+    /// and what png2amiga's parity tests run with.
+    #[default]
+    Black,
+    /// png2c64's outer loop over all 16 backgrounds, ported onto png2amiga's encoder
+    /// ([`super::png2amiga_ref::c64::search_background`]): per background, every free
+    /// cell's least `mse` error over the 455 triples of the other 15 colours (each
+    /// pixel's squared OKLab distance to the nearest of the four, summed over the cell),
+    /// summed over the cells; the lowest total wins, ties to the lower index.
+    Search,
+}
+
+impl BackgroundRule {
+    /// Whether this is the default (a project file writes it only when not).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// Which solver solves a bitmap frame (#181, ADR-013).
@@ -81,6 +108,8 @@ pub struct SolveOptions {
     pub mode: SolveMode,
     /// Background choice.
     pub background: Background,
+    /// How the reference chooses an unpinned multicolor background (Black by default).
+    pub background_rule: BackgroundRule,
     /// Same-luma pair bias per pair in a cell's set (positive penalises, negative
     /// rewards; see [`super::metric::luma_pair_bias`]).
     pub luma_pair_bias: f32,
@@ -107,6 +136,7 @@ impl Default for SolveOptions {
             refine: false,
             mode: SolveMode::Full,
             background: Background::Auto,
+            background_rule: BackgroundRule::Black,
             luma_pair_bias: 0.0,
             refinements: 2,
             finalists: 3,

@@ -35,7 +35,7 @@ use crate::palette::Palette;
 use crate::region::Region;
 use crate::solve::png2c64_ref::Divergences;
 use crate::solve::steering::{Pin, Steering, colour_set};
-use crate::solve::{Background, SolverKind};
+use crate::solve::{Background, BackgroundRule, SolverKind};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 
@@ -639,12 +639,14 @@ pub struct PaletteSet {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BackgroundPin {
-    /// `{"fixed": n}` pins colour `n`; `"auto"` searches all 16.
+    /// `{"fixed": n}` pins colour `n`; `"auto"` leaves it to the solver (the reference
+    /// follows `solve_set`'s `background_rule`; the png2c64 port and native search all 16).
     pub background: Background,
 }
 
 /// Sets some of the project-wide solve settings (`solve_set`); those not named are
-/// kept. The background has its own command, [`BackgroundPin`].
+/// kept. Pinning the background has its own command, [`BackgroundPin`]; how the
+/// reference chooses an unpinned one is `background_rule` here.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SolveSet {
@@ -654,6 +656,10 @@ pub struct SolveSet {
     /// png2amiga's Refine step after the reference solve (#261).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refine: Option<bool>,
+    /// How the reference chooses an unpinned multicolor background: `black`
+    /// (png2amiga's colour 0, the default) or `search` (png2c64's search of all 16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_rule: Option<BackgroundRule>,
     /// The reference solver's divergences from png2c64, as a whole: those not named are
     /// off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -684,6 +690,7 @@ impl SolveSet {
             refine: self.refine.unwrap_or(s.refine),
             divergences: self.divergences.unwrap_or(s.divergences),
             background: s.background,
+            background_rule: self.background_rule.unwrap_or(s.background_rule),
             hysteresis: self.hysteresis.unwrap_or(s.hysteresis),
             luma_pair_bias: self.luma_pair_bias.unwrap_or(s.luma_pair_bias),
             refinements: self.refinements.unwrap_or(s.refinements),
@@ -1044,12 +1051,13 @@ pub const REGISTRY: &[CommandInfo] = &[
     },
     CommandInfo {
         name: "background_pin",
-        summary: "Pin the multicolor background colour ({\"fixed\": n}) or search all 16 (\"auto\").",
+        summary: "Pin the multicolor background colour ({\"fixed\": n}) or leave it to the solver (\"auto\").",
     },
     CommandInfo {
         name: "solve_set",
-        summary: "Set some of the solve settings: solver, png2c64 divergences, hysteresis, \
-                  luma pair bias, refinements, finalists; the others are kept.",
+        summary: "Set some of the solve settings: solver, refine, background rule (black or \
+                  search), png2c64 divergences, hysteresis, luma pair bias, refinements, \
+                  finalists; the others are kept.",
     },
     CommandInfo {
         name: "snap_set",
@@ -2957,6 +2965,17 @@ mod tests {
         assert_eq!(s.background, Background::Fixed(ColourIndex::BLUE));
         assert_eq!(s.finalists, 5);
         assert_eq!(s.refinements, SolveSettings::default().refinements);
+        assert_eq!(s.background_rule, BackgroundRule::Black);
+        // #273: the background rule is a solve setting; the pin stays its own.
+        e.execute(Command::SolveSet(SolveSet {
+            background_rule: Some(BackgroundRule::Search),
+            ..SolveSet::default()
+        }))
+        .unwrap();
+        let s = &e.project().solve;
+        assert_eq!(s.background_rule, BackgroundRule::Search);
+        assert_eq!(s.background, Background::Fixed(ColourIndex::BLUE));
+        assert_eq!(s.finalists, 5);
     }
 
     #[test]

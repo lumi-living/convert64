@@ -392,7 +392,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// #261: `solve_set` takes the `png2c64` solver and `refine`; `adjustments_set`
+    /// #261: `solve_set` takes the `png2c64` solver and `refine` (and since #273 the
+    /// `background_rule`); `adjustments_set`
     /// takes png2amiga's hull range matching with an amount; `solve` says which solver
     /// made the result; the saved project holds them all.
     #[test]
@@ -429,7 +430,7 @@ mod tests {
         assert_eq!(v["solver"], "png2c64", "{v}");
         s.call(
             "solve_set",
-            json!({ "solver": "reference", "refine": true }),
+            json!({ "solver": "reference", "refine": true, "background_rule": "search" }),
         )
         .unwrap();
         let v: Value = serde_json::from_str(&s.call("solve", json!({})).unwrap()).unwrap();
@@ -450,6 +451,7 @@ mod tests {
         let p: Value = serde_json::from_str(&std::fs::read_to_string(&saved).unwrap()).unwrap();
         assert_eq!(p["solve"]["solver"], "reference", "{p}");
         assert_eq!(p["solve"]["refine"], true, "{p}");
+        assert_eq!(p["solve"]["background_rule"], "search", "{p}");
         let m = &p["layers"][0]["adjustments"]["match_range"];
         assert_eq!(m["method"], "hull", "{m}");
         assert!((m["amount"].as_f64().unwrap() - 0.4).abs() < 1e-6, "{m}");

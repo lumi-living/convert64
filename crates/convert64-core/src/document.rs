@@ -8,7 +8,7 @@ use crate::palette::Palette;
 use crate::region::Region;
 use crate::solve::png2c64_ref::Divergences;
 use crate::solve::steering::Steering;
-use crate::solve::{Background, SolveMode, SolveOptions, SolverKind};
+use crate::solve::{Background, BackgroundRule, SolveMode, SolveOptions, SolverKind};
 use serde::{Deserialize, Serialize};
 
 /// The document: everything a `.convert64` project file holds except where its sources
@@ -62,9 +62,14 @@ pub struct SolveSettings {
     /// The png2c64 port's named divergences, all off by default.
     #[serde(default, skip_serializing_if = "Divergences::none")]
     pub divergences: Divergences,
-    /// Background: `auto` (default) or `{"fixed": n}`.
+    /// Background: `auto` (default: not pinned) or `{"fixed": n}`.
     #[serde(default)]
     pub background: Background,
+    /// How the reference chooses an unpinned multicolor background: `black` (default,
+    /// png2amiga's colour 0) or `search` (png2c64's search of all 16); written only when
+    /// not the default.
+    #[serde(default, skip_serializing_if = "BackgroundRule::is_default")]
+    pub background_rule: BackgroundRule,
     /// Refinement hysteresis ratio, e.g. 0.97; absent = off.
     #[serde(default)]
     pub hysteresis: Option<f32>,
@@ -94,6 +99,7 @@ impl Default for SolveSettings {
             refine: false,
             divergences: Divergences::default(),
             background: Background::default(),
+            background_rule: BackgroundRule::default(),
             hysteresis: None,
             luma_pair_bias: 0.0,
             refinements: default_refinements(),
@@ -134,6 +140,7 @@ impl SolveSettings {
             divergences: self.divergences,
             mode,
             background: self.background,
+            background_rule: self.background_rule,
             hysteresis: self.hysteresis,
             luma_pair_bias: self.luma_pair_bias,
             refinements: self.refinements,

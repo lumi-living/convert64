@@ -4,7 +4,8 @@
 //!
 //! Every message starts with [`MAGIC`], the [`VERSION`], its [`Kind`] and the
 //! submission's ticket. A [`Kind::Solve`] request then carries a small JSON header (the
-//! grid and the core's serde types: recipes, pins, solver, divergences, background)
+//! grid and the core's serde types: recipes, pins, solver, divergences, background and
+//! background rule)
 //! and a binary body: the composite's colour, coverage and attribute map, locks,
 //! allow/deny lists, the palette, the other options, the modes and the previous
 //! solution. A [`Kind::Result`] carries one solution. Floats travel as their bits, and
@@ -45,7 +46,7 @@ macro_rules! from_json {
 pub const MAGIC: [u8; 4] = *b"C64W";
 /// The protocol version; both ends are the same build, so this only catches a stale
 /// cached worker script.
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 
 /// What a message is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,6 +175,7 @@ pub fn encode_solve(
         divergences,
         mode: _,
         background,
+        background_rule,
         luma_pair_bias,
         refinements,
         finalists,
@@ -190,6 +192,7 @@ pub fn encode_solve(
         "solver": to_json!(solver),
         "divergences": to_json!(divergences),
         "background": to_json!(background),
+        "background_rule": to_json!(background_rule),
     });
     let head = serde_json::to_vec(&head).expect("JSON values always serialise");
 
@@ -286,6 +289,7 @@ pub fn decode_solve(msg: &[u8]) -> Res<SolveRequest> {
     let solver: SolverKind = from_json!(head, "solver")?;
     let divergences = from_json!(head, "divergences")?;
     let background = from_json!(head, "background")?;
+    let background_rule = from_json!(head, "background_rule")?;
 
     let prepared = r.bool()?;
     let px = r.u32()? as usize;
@@ -355,6 +359,7 @@ pub fn decode_solve(msg: &[u8]) -> Res<SolveRequest> {
         divergences,
         mode: SolveMode::Full,
         background,
+        background_rule,
         luma_pair_bias,
         refinements,
         finalists,

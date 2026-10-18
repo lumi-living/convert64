@@ -16,7 +16,8 @@
 //! - **Then every method dithers** within the cell's colours ([`super::dither::diffuse`]).
 //!
 //! **Hooks** (Convert64's, each inactive by default, so the result stays png2amiga's): a
-//! fixed background, per-cell constraints ([`CellRule`]: the colour histogram and the
+//! fixed background or png2c64's background search ([`search_background`]), per-cell
+//! constraints ([`CellRule`]: the colour histogram and the
 //! brute force keep to a cell's candidates and start from its required colours), and
 //! fixed cells copied through untouched (locks, the interactive fast path).
 
@@ -40,13 +41,23 @@ pub enum Metric {
 /// nothing.
 #[derive(Clone, Debug, Default)]
 pub struct Hooks {
-    /// The multicolor background; `None`: colour 0, as png2amiga.
+    /// The multicolor background; `None`: colour 0, as png2amiga, unless
+    /// `search_background`.
     pub background: Option<u8>,
+    /// With no `background`, search the multicolor background as png2c64 does
+    /// ([`search_background`]) instead of png2amiga's colour 0 (`BackgroundRule::Search`).
+    pub search_background: bool,
     /// Per cell, its constraints (empty: none).
     pub rules: Vec<CellRule>,
     /// Per cell, a result copied through untouched (empty: none). Its pixels are neither
     /// picked nor take or pass on error.
     pub fixed: Vec<Option<Cell>>,
+    /// The cause sheet's swap (`cargo xtask cause-sheet`, #273), not a user option: every
+    /// cell's colours by slot (multicolor `[bg, c1, c2, c3]` with `background` set to the
+    /// same `bg`; hi-res `[a, b]`), given instead of png2amiga's cell-colour stage; the
+    /// dither pass then runs within them as usual.
+    #[doc(hidden)]
+    pub sets: Option<Vec<Vec<u8>>>,
 }
 
 impl Hooks {
@@ -62,6 +73,32 @@ impl Hooks {
 /// The colours of a mask, ascending.
 fn bits(mask: u16) -> impl Iterator<Item = u8> {
     (0..16u8).filter(move |c| mask & (1 << c) != 0)
+}
+
+/// `BackgroundRule::Search`: png2c64's multicolor background search on png2amiga's
+/// picture (`lab`, in png2amiga's OKLab), with png2c64's own criterion. Per background
+/// `bg`, a free cell's error is the least, over the 455 triples `{i, j, k}` of the other
+/// 15 colours, of `Σ_pixels min_{c ∈ {bg, i, j, k}} |lab − pal[c]|²` (png2c64's `mse`
+/// brute force, unbiased: png2amiga's cell search has no ordered threshold bias, where
+/// png2c64 adds one for ordered methods); a constrained cell's is its best allowed set's;
+/// fixed cells do not count. The background with the lowest sum over the cells wins,
+/// ties to the lower index. The total is png2c64's `ScreenResult::total_error` before its
+/// global Floyd–Steinberg replacement: it scores the search's own sets, not the colours
+/// png2amiga's encoder then takes from its Floyd–Steinberg histogram. Returns the winner
+/// and the 16 totals.
+pub fn search_background(lab: &[Lab], pal: &[Lab; 16], hooks: &Hooks) -> (u8, [f32; 16]) {
+    let mode = Mode::Multicolor;
+    let n = mode.cells().0 * mode.cells().1;
+    let cells: Vec<usize> = (0..n).collect();
+    let tables: Vec<Option<Vec<[f32; 16]>>> = crate::par::map(&cells, |&c| {
+        hooks.fixed(c).is_none().then(|| {
+            cell_pixels(mode, c)
+                .map(|i| pal.map(|p| dist2(lab[i], p)))
+                .collect()
+        })
+    });
+    let rules: Vec<CellRule> = cells.iter().map(|&c| hooks.rule(c)).collect();
+    super::super::png2c64_ref::quantize::search_background(&tables, &rules)
 }
 
 /// `global_fs_indices`: a serpentine Floyd–Steinberg pass over the whole picture against
@@ -454,13 +491,23 @@ pub fn encode(
     let (cw, ch) = mode.cell();
     let cols = mode.cells().0;
     let n = mode.cells().0 * mode.cells().1;
-    let bg = hooks.background.unwrap_or(0);
-    let sets: Vec<Vec<u8>> = match mode {
-        Mode::Multicolor => multicolor_quads(&lab, &pal, px, metric, bg, hooks)
+    let bg = match hooks.background {
+        Some(b) => b,
+        None if mode == Mode::Multicolor && hooks.search_background => {
+            search_background(&lab, &pal, hooks).0
+        }
+        None => 0,
+    };
+    let sets: Vec<Vec<u8>> = match (&hooks.sets, mode) {
+        (Some(given), _) => {
+            assert_eq!(given.len(), n, "one set per cell");
+            given.clone()
+        }
+        (None, Mode::Multicolor) => multicolor_quads(&lab, &pal, px, metric, bg, hooks)
             .into_iter()
             .map(|q| q.to_vec())
             .collect(),
-        Mode::Hires => hires_pairs(&lab, &pal, px, metric, hooks)
+        (None, Mode::Hires) => hires_pairs(&lab, &pal, px, metric, hooks)
             .into_iter()
             .map(|p| p.to_vec())
             .collect(),
@@ -515,5 +562,80 @@ pub fn encode(
         bg: if mode == Mode::Multicolor { bg } else { 0 },
         total_error: cells.iter().fold(0.0, |s, c| s + c.error),
         cells,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::colour::{PEPTO_HEX, palette_linear};
+    use super::*;
+
+    /// Every cell holds yellow and three other colours that change from cell to cell, so
+    /// only a yellow background lets every cell be exact.
+    fn yellow_cells() -> Image {
+        let (w, h) = Mode::Multicolor.screen();
+        let pal = palette_linear(&PEPTO_HEX);
+        let others: Vec<u8> = (0..16).filter(|&c| c != 7).collect();
+        let px = (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                let cell = (y / 8) * 40 + x / 4;
+                let slot = (y % 8) / 2;
+                let c = if slot == 0 {
+                    7
+                } else {
+                    others[(cell * 3 + slot) % others.len()]
+                };
+                pal[usize::from(c)]
+            })
+            .collect();
+        Image::new(w, h, px)
+    }
+
+    /// #273: `search_background` finds the background png2c64's criterion prefers, the
+    /// encoder uses it only when asked, and Black (the default) stays colour 0.
+    #[test]
+    fn the_background_search_is_opt_in_and_finds_the_shared_colour() {
+        let image = yellow_cells();
+        let pal = palette_linear(&PEPTO_HEX);
+        let lab: Vec<Lab> = image.px.iter().map(|&p| linear_to_oklab(p)).collect();
+        let pal_lab = pal.map(linear_to_oklab);
+        let (bg, totals) = search_background(&lab, &pal_lab, &Hooks::default());
+        assert_eq!(bg, 7, "{totals:?}");
+        assert!(totals[7] < 1e-6 && totals[0] > 1.0, "{totals:?}");
+        let px = vec![
+            PxSettings {
+                method: Method::None,
+                strength: 1.0,
+                error_clamp: 0.35,
+                origin: (0, 0),
+            };
+            image.w * image.h
+        ];
+        let encode_with = |hooks: &Hooks| {
+            encode(
+                &image,
+                &pal,
+                Mode::Multicolor,
+                &px,
+                Metric::Mse,
+                true,
+                hooks,
+            )
+        };
+        assert_eq!(encode_with(&Hooks::default()).bg, 0);
+        let searched = encode_with(&Hooks {
+            search_background: true,
+            ..Hooks::default()
+        });
+        assert_eq!(searched.bg, 7);
+        assert!(searched.total_error < 1e-6, "{}", searched.total_error);
+        // A pinned background wins over the search.
+        let pinned = encode_with(&Hooks {
+            background: Some(1),
+            search_background: true,
+            ..Hooks::default()
+        });
+        assert_eq!(pinned.bg, 1);
     }
 }

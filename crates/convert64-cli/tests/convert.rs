@@ -565,6 +565,39 @@ fn cell_refine_from_the_command_line() {
     assert!(p["solve"].get("refine").is_none(), "{p}");
 }
 
+/// #273: `--bg-rule search` makes the reference search the multicolor background as
+/// png2c64 does (`solve.background_rule`, written only when not `black`); without it the
+/// background is png2amiga's colour 0.
+#[test]
+fn bg_rule_from_the_command_line() {
+    let dir = temp("bg-rule");
+    let png = source(&dir);
+    let project = dir.join("search.convert64");
+    let run = |extra: &[&str], project: &std::path::Path| {
+        let mut args = vec!["--json", "convert", png.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        let out = project.with_extension("kla");
+        args.extend_from_slice(&["--save-project", project.to_str().unwrap()]);
+        args.extend_from_slice(&["-o", out.to_str().unwrap()]);
+        let r = convert(&args);
+        assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+        let v: serde_json::Value = serde_json::from_slice(&r.stdout).unwrap();
+        let p: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(project).unwrap()).unwrap();
+        (v, p)
+    };
+    let (v, p) = run(&["--bg-rule", "search"], &project);
+    assert_eq!(v["background_rule"], "search", "{v}");
+    assert_eq!(v["legal"], true, "{v}");
+    assert_eq!(p["solve"]["background_rule"], "search", "{p}");
+    let (v, p) = run(&[], &dir.join("black.convert64"));
+    assert_eq!(v["background_rule"], "black", "{v}");
+    assert_eq!(v["background"], 0, "{v}");
+    assert!(p["solve"].get("background_rule").is_none(), "{p}");
+    let bad = convert(&["convert", png.to_str().unwrap(), "--bg-rule", "grey"]);
+    assert_eq!(bad.status.code(), Some(2));
+}
+
 /// #261: `--match-range` is png2amiga's hull onto the project's palette, at
 /// `--match-range-amount` (written as `amount` only when not 100 %);
 /// `--match-range-method box` is png2c64's. The amount and method need --match-range.

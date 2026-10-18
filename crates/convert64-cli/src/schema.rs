@@ -541,7 +541,7 @@ pub fn command_schema(name: &str) -> Option<Value> {
         "background_pin" => object_schema(
             json!({
                 "background": {
-                    "description": "{\"fixed\": n} pins colour n (multicolor); \"auto\" searches all 16",
+                    "description": "{\"fixed\": n} pins colour n (multicolor); \"auto\" leaves it to the solver (the reference follows solve_set background_rule; png2c64 and native search all 16)",
                     "oneOf": [
                         { "type": "string", "enum": ["auto"] },
                         object_schema(json!({ "fixed": { "type": "integer", "minimum": 0, "maximum": 15 } }), &["fixed"])
@@ -632,6 +632,7 @@ pub fn command_schema(name: &str) -> Option<Value> {
                 "solver": enum_schema(&["reference", "png2c64", "native"], "png2amiga's C64 path (reference, the default since ADR-013), png2c64's pipeline (png2c64, the old reference) or Convert64's own (native)"),
                 "refine": { "type": "boolean", "default": false,
                             "description": "png2amiga's cell refine after the reference solve (its --cell-refine): the result is kept only if its SSIMULACRA2 improves" },
+                "background_rule": enum_schema(&["black", "search"], "How the reference solver chooses an unpinned multicolor background (background_pin auto): black (png2amiga's colour 0, the default) or search (png2c64's search of all 16, the lowest total cell error). The png2c64 and native solvers always search; hi-res has no background"),
                 "divergences": divergences_schema(),
                 "hysteresis": { "type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 1,
                                 "description": "Refinement hysteresis ratio; null turns it off" },
@@ -699,7 +700,9 @@ pub fn example(name: &str) -> Option<Value> {
         "mode_set" => json!({ "mode": "hires-bitmap" }),
         "palette_set" => json!({ "palette": "colodore" }),
         "background_pin" => json!({ "background": { "fixed": 0 } }),
-        "solve_set" => json!({ "solver": "reference", "refine": true, "hysteresis": 0.97 }),
+        "solve_set" => {
+            json!({ "solver": "reference", "refine": true, "background_rule": "search", "hysteresis": 0.97 })
+        }
         "snap_set" => json!({ "snap": "c64-pixel" }),
         "mask_source_remove" => json!({ "layer": 1, "index": 0 }),
         "mask_source_set_combine" => json!({ "layer": 1, "index": 0, "combine": "min" }),

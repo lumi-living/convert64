@@ -7,7 +7,7 @@ use convert64_core::layer::{
     RangeMethod, Sharpen, suggest_range_match,
 };
 use convert64_core::mode::Mode;
-use convert64_core::solve::{Background, Solution};
+use convert64_core::solve::{Background, BackgroundRule, Solution};
 use convert64_formats::BitmapFormat;
 use convert64_project::paths::{absolute, relative};
 use convert64_project::{Embed, FsStore, JsonCommand, LayerRef, PaletteSpec, ProjectFile, Session};
@@ -173,6 +173,25 @@ impl From<SolverArg> for convert64_core::solve::SolverKind {
     }
 }
 
+/// `--bg-rule`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum BgRuleArg {
+    /// png2amiga's: the background is always colour 0 (the default).
+    Black,
+    /// png2c64's: all 16 backgrounds tried, the lowest total cell error kept.
+    Search,
+}
+
+impl From<BgRuleArg> for BackgroundRule {
+    fn from(r: BgRuleArg) -> Self {
+        match r {
+            BgRuleArg::Black => Self::Black,
+            BgRuleArg::Search => Self::Search,
+        }
+    }
+}
+
 /// `--match-range-method`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -239,10 +258,15 @@ pub(crate) struct Overrides {
     /// Dither strength, 0–1. Default 1.
     #[arg(long)]
     pub(crate) strength: Option<f32>,
-    /// Background: auto (search all 16) or a colour index 0–15 (multicolor only).
-    /// Default auto.
+    /// Background: auto (the solver chooses; see --bg-rule) or a colour index 0–15
+    /// (multicolor only). Default auto.
     #[arg(long)]
     pub(crate) bg: Option<String>,
+    /// How the reference solver chooses an unpinned multicolor background: black
+    /// (png2amiga's colour 0, the default) or search (png2c64's search of all 16). The
+    /// png2c64 and native solvers always search; hi-res has no background.
+    #[arg(long, value_enum)]
+    pub(crate) bg_rule: Option<BgRuleArg>,
     /// Supersample factor, 1–8. Default 4.
     #[arg(long)]
     pub(crate) supersample: Option<u8>,
@@ -356,6 +380,7 @@ impl Overrides {
             dither: self.dither.or_else(|| base.dither.clone()),
             strength: self.strength.or(base.strength),
             bg: self.bg.or_else(|| base.bg.clone()),
+            bg_rule: self.bg_rule.or(base.bg_rule),
             supersample: self.supersample.or(base.supersample),
             no_cell_clamp: self.no_cell_clamp || base.no_cell_clamp,
             max_luma_diff: self.max_luma_diff.or(base.max_luma_diff),
@@ -545,6 +570,9 @@ impl Overrides {
                 ),
             };
         }
+        if let Some(r) = self.bg_rule {
+            file.solve.background_rule = r.into();
+        }
         if let Some(s) = self.solver {
             file.solve.solver = s.into();
         }
@@ -717,6 +745,7 @@ pub(crate) fn run(run: &mut Run, job: &ConvertJob<'_>) -> Result<u8, Fail> {
     run.set("mode", mode);
     run.set("palette", session.palette().name());
     run.set("refine", session.project().solve.refine);
+    run.set("background_rule", session.project().solve.background_rule);
     if let Some(m) = forced
         && m != mode
     {

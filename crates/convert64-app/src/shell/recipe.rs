@@ -20,7 +20,7 @@ use convert64_core::layer::{
     Levels, Method, Metric, Orientation, PatternPhase, Radius, RangeMatch, RangeMethod, Recipe,
     Sharpen,
 };
-use convert64_core::solve::{Divergences, SolverKind};
+use convert64_core::solve::{BackgroundRule, Divergences, SolverKind};
 use convert64_project::{JsonCommand, LayerRef};
 use egui::{Response, RichText, Ui};
 
@@ -1798,6 +1798,24 @@ const SOLVERS: [(SolverKind, &str, &str); 3] = [
 /// The Refine checkbox's tooltip.
 const REFINE_TIP: &str = "png2amiga's cell refine: keeps the result only if SSIMULACRA2 improves";
 
+/// The background rule's tooltip.
+const BG_RULE_TIP: &str = "How the reference solver picks an unpinned multicolor background \
+                           (hi-res has none; png2c64 and Native always search)";
+
+/// The background rules, as the Advanced group offers them.
+const BG_RULES: [(BackgroundRule, &str, &str); 2] = [
+    (
+        BackgroundRule::Black,
+        "Black",
+        "png2amiga's: always colour 0 (the default)",
+    ),
+    (
+        BackgroundRule::Search,
+        "Search",
+        "png2c64's: all 16 tried, the lowest total cell error kept",
+    ),
+];
+
 fn advanced(f: &mut Form, layer: &Layer, s: &SolveSettings, ui: &mut Ui) {
     let d = SolveSettings::default();
     let changed = *s != d;
@@ -1835,6 +1853,34 @@ fn advanced(f: &mut Form, layer: &Layer, s: &SolveSettings, ui: &mut Ui) {
                     None,
                     SolveSet {
                         refine: Some(v),
+                        ..Default::default()
+                    },
+                );
+            }
+        });
+        ui.horizontal(|ui| {
+            let lab = label_tip(
+                ui,
+                "Background",
+                s.background_rule != d.background_rule,
+                Some(BG_RULE_TIP),
+            );
+            let mut v = s.background_rule;
+            ui.horizontal_wrapped(|ui| {
+                for (k, n, tip) in BG_RULES {
+                    if ui.selectable_label(v == k, n).on_hover_text(tip).clicked() {
+                        v = k;
+                    }
+                }
+            });
+            if lab.double_clicked() {
+                v = d.background_rule;
+            }
+            if v != s.background_rule {
+                f.solve(
+                    None,
+                    SolveSet {
+                        background_rule: Some(v),
                         ..Default::default()
                     },
                 );
@@ -2028,6 +2074,7 @@ fn advanced(f: &mut Form, layer: &Layer, s: &SolveSettings, ui: &mut Ui) {
             SolveSet {
                 solver: Some(d.solver),
                 refine: Some(d.refine),
+                background_rule: Some(d.background_rule),
                 divergences: Some(d.divergences),
                 hysteresis: Some(d.hysteresis),
                 luma_pair_bias: Some(d.luma_pair_bias),
