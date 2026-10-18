@@ -181,6 +181,21 @@ impl Workspace {
         }
     }
 
+    /// What to solve: the document as it is, with the solution on screen as the previous
+    /// one. A solution of another mode (after `mode_set`, or its undo or redo) is dropped
+    /// first: it can neither be drawn on the new grid nor seed the solve (#279).
+    pub fn snapshot(&mut self) -> crate::scheduler::Snapshot {
+        let multicolor = self.doc.mode() == convert64_core::mode::Mode::MulticolorBitmap;
+        if self
+            .solution
+            .as_ref()
+            .is_some_and(|s| s.background.is_some() != multicolor)
+        {
+            self.solution = None;
+        }
+        self.doc.snapshot(self.solution.clone())
+    }
+
     /// Starts (or moves) the method picker's live preview (UX §6a): what to solve on
     /// the interactive path, the project as it is with `method` in `target`'s recipe and
     /// the committed result as the previous solution. Nothing enters the history.
@@ -788,7 +803,7 @@ mod tests {
     }
 
     fn solve(s: &mut Scheduler, ws: &mut Workspace, mode: SolveMode) {
-        s.submit(ws.doc.snapshot(ws.solution.clone()), mode);
+        s.submit(ws.snapshot(), mode);
         while s.tick() {}
         let r = s.poll().expect("a result");
         ws.solving = r.provisional;
@@ -860,6 +875,51 @@ mod tests {
             (history.0, true),
             "back where it was, with a redo"
         );
+    }
+
+    /// A `mode_set` run as a plain edit (`--command`, the Run action), the result
+    /// header's dropdown, and the undo and redo of either: the next solve is in the new
+    /// mode and the frame after it renders the result at the new grid's size. Before
+    /// the fix the solve took the grid from before the change and the frame panicked
+    /// drawing a multicolor solution on the hi-res grid.
+    #[test]
+    fn a_mode_change_solves_and_renders_in_the_new_mode() {
+        use convert64_core::command::ModeSet;
+        use convert64_core::mode::Mode;
+        let ctx = egui::Context::default();
+        let mut s = Scheduler::stepping(Config::default());
+        let mut ws = workspace();
+        let frame = |s: &mut Scheduler, ws: &mut Workspace, mode: Mode| {
+            solve(s, ws, SolveMode::Full);
+            ws.prepare(&ctx, false);
+            let multicolor = mode == Mode::MulticolorBitmap;
+            let width = if multicolor { 160 } else { 320 };
+            assert_eq!(ws.result_texture().map(|t| t.size()), Some([width, 200]));
+            assert_eq!(
+                ws.solution.as_ref().unwrap().background.is_some(),
+                multicolor
+            );
+            let _ = ws.cell_info((39, 24));
+        };
+        frame(&mut s, &mut ws, Mode::MulticolorBitmap);
+        let mode_set = |mode| JsonCommand::ModeSet(ModeSet { mode });
+
+        // The Run action's path: the solution on screen stays until the solve replaces it.
+        ws.edit(None, mode_set(Mode::HiresBitmap), false).unwrap();
+        assert_eq!(ws.doc.grid().target(), Mode::HiresBitmap);
+        frame(&mut s, &mut ws, Mode::HiresBitmap);
+        assert!(ws.doc.undo());
+        // The hi-res solution is not passed on to the multicolor solve.
+        assert!(ws.snapshot().previous.is_none());
+        assert!(ws.solution.is_none());
+        frame(&mut s, &mut ws, Mode::MulticolorBitmap);
+        ws.doc.redo().unwrap();
+        frame(&mut s, &mut ws, Mode::HiresBitmap);
+
+        // The dropdown's path (`Action::SetMode`): the solution is dropped first.
+        ws.doc.run(mode_set(Mode::MulticolorBitmap)).unwrap();
+        ws.solution = None;
+        frame(&mut s, &mut ws, Mode::MulticolorBitmap);
     }
 
     /// A preview started while a full solve was running asks for a solve on revert.
