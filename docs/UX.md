@@ -268,16 +268,20 @@ One glossary, used identically in the app, `convert64 --help`, MCP tool names an
 | **Adaptive / Force** | fitting modes (ArcPaint64's terms, kept so scene users recognise them) | "soft / hard" |
 | **Mode** | the C64 graphics mode (Multicolor, Hi-res, Charset…) | "format" (format is the export file type) |
 
-Copy rules (ux-writing defaults): sentence case; verb-first buttons (**Open image…**, **Export Koala**, **Reset group**); no "please", no exclamation marks; errors name cause and remedy and keep the user's input; numerals; units on every number (`px`, `%`, `ms`, `B`).
+Copy rules (ux-writing defaults): sentence case; verb-first buttons (**Open image…**, **Export Koala**, **Reset group**); no "please", no exclamation marks; errors name cause and remedy and keep the user's input; numerals; units on every number (`px`, `%`, `ms`); file sizes in human units, SI, two or three digits (`512 B`, `9.8 kB`, `10 kB`, `1.8 MB`; #241).
 
 Sample strings:
 
 - Status, healthy: `Source · 200 % · cell 17,9 · 3 colours + bg · Colour-limited cells: 0 · solve 38 ms`
 - Status, with colour-limited cells: `… · Colour-limited cells: 12 · …` in normal text; tooltip: `Cells where the solver wanted more colours than the mode allows, so it used the closest ones it may. The picture is still legal and exports as it is. Shift C shows them.` The hint beside it, once: **Show colour-limited cells (Shift C)**.
-- Export success (toast, 3 s): `Exported title.kla (10 003 B) and title.asm`
+- Export success (toast, 3 s, once the files are written): `Exported title.kla (10 kB), title.prg (10 kB)`
+- Save success: natively `Saved /path/title.convert64 (1.3 MB)`; in the browser `Saved title.convert64 (1.3 MB)` once the file is written (Save dialog) or handed to the browser as a download, never before (#241).
 - Export blocked (in the `error` colour, the only red text): `Can't export: 12 cells still exceed 4 colours. Let the solver resolve them (Layer › Fitting › Adaptive).`
 - Slow solve: `Solving charset budget… 2 of 16 backgrounds` with a **Pause** button, never a spinner alone.
-- Project has unsaved steering: `Unsaved pins and locks` in the title bar, Photoshop's asterisk convention.
+- Unsaved changes: the window title natively, the tab title in the browser, is `title.png* — Convert64` from the first change after the last Save until the next Save, Photoshop's asterisk convention; a restored session starts with it (#241). Export does not clear it: exporting does not save the project.
+- Restore bar (under the toolbar, non-modal): `Restore your last session (title.convert64, 3 layers, 2 min ago)?` **Restore** · Discard
+- Quit with unsaved changes (native only; the browser shows its own "Leave site?"): `Save changes to title.png before quitting?` / `Your changes are lost if you don't save them.` **Save** · Don't save · Cancel
+- Autosave failed (status bar, warning colour, dismissible): `Autosave failed: storage is full. Save to keep your work.`
 - Empty state: see §5.
 - Tooltip, Force: `Keep this layer's colours even if neighbours pay`
 - Tooltip, Adaptive: `Let the solver reassign cell colours for the lowest error`
@@ -300,7 +304,11 @@ Sample strings:
 | Solving (fast path) | nothing visible; results arrive within a frame or two |
 | Solving (full search, >200 ms) | status bar progress text + Pause; preview keeps the last result, slightly desaturated |
 | Colour-limited cells | count in the status bar and the result header in normal text with a tooltip (a diagnostic: the result is legal); the overlay suggested once via a dismissible hint, never auto-enabled; no dots on the result panel until it is on (#243) |
-| Export | file dialog (native) / download (browser); toast on success; blocked export explains and links to the fix |
+| Export | file dialog (native) / the browser's Save dialog where it has one (Chromium), else a download, with no overlay (#241); toast once the files are written; blocked export explains and links to the fix |
+| Save | natively to the project's file (Save As asks); in the browser as Export, the project with every source embedded; the toast and the cleared `*` come only once the file is written |
+| Unsaved changes | `*` after the name in the window or tab title (§9); in the browser a `beforeunload` guard asks before a reload or a closed tab drops them; natively quitting asks Save · Don't save · Cancel, and only then |
+| Autosave | nothing visible: 1 s after each committed change (a drag counts on release), to OPFS or IndexedDB in the browser, a recovery folder natively ([reference/autosave.md](reference/autosave.md)); a failure is one line in the status bar's warning colour and work goes on |
+| Restore | on start, a bar under the toolbar offers the last session if it holds changes the last Save does not: **Restore** opens it as unsaved work, Discard deletes it; ignoring it changes nothing |
 | Undo | every steering action, recipe change and layer edit; slider drags coalesced; `Edit › History` list (v2) |
 | Error in a file | inline in the status bar + a details popover with the byte offset; never a modal unless data would be lost |
 

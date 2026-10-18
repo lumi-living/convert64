@@ -124,6 +124,26 @@ impl Document {
         self.saved = self.revision;
     }
 
+    /// Records that `revision` was saved: the browser's save finishes after the user
+    /// picks a place, perhaps after more edits, which stay unsaved.
+    pub fn mark_saved_at(&mut self, revision: u64) {
+        self.saved = revision;
+    }
+
+    /// An autosaved session restored (#241): unsaved work until the next Save, which
+    /// natively writes to `path`, the file it came from.
+    pub fn restored(name: &str, session: Session, path: Option<PathBuf>) -> Self {
+        Self {
+            revision: 1,
+            ..Self::new(name, session, path)
+        }
+    }
+
+    /// Whether a drag's command is the last one run (the drag may still be going).
+    pub fn in_gesture(&self) -> bool {
+        self.gesture.is_some()
+    }
+
     /// Layer `layer`'s evaluated mask on the super grid (sources and modifiers applied),
     /// 16-bit, row-major; `None` if it has no mask or is hidden.
     pub fn evaluated_mask(&mut self, layer: usize) -> Option<(u32, u32, Vec<u16>)> {
@@ -414,6 +434,20 @@ impl Document {
     }
 }
 
+/// The window (natively) or tab (browser) title: `title.png* — Convert64`, the
+/// document's name with Photoshop's asterisk while it has changes since the last Save
+/// (UX §9), or just `Convert64` with nothing open.
+pub fn window_title(doc: Option<&Document>) -> String {
+    match doc {
+        Some(d) => format!(
+            "{}{} — Convert64",
+            d.name,
+            if d.is_dirty() { "*" } else { "" }
+        ),
+        None => "Convert64".to_owned(),
+    }
+}
+
 /// `solution` as RGBA8 on the target grid (160 × 200 multicolor, 320 × 200 hi-res), every
 /// pixel a colour of `palette`. Drawn with nearest filtering at 2:1 for multicolor.
 pub fn result_rgba(solution: &Solution, palette: &Palette, grid: SuperGrid) -> (u32, u32, Vec<u8>) {
@@ -467,6 +501,30 @@ mod tests {
         let (rw, rh, px) = result_rgba(&result.solution, session_doc.palette(), session_doc.grid());
         assert_eq!((rw, rh), (160, 200));
         assert!(px.chunks(4).all(|p| p[3] == 255));
+    }
+
+    /// UX §9's asterisk: there after an edit, gone after a save, back after an edit and
+    /// there for a restored session from the start.
+    #[test]
+    fn the_title_marks_unsaved_changes() {
+        assert_eq!(window_title(None), "Convert64");
+        let mut doc = Document::from_png("ramp.png", &png()).unwrap();
+        assert_eq!(window_title(Some(&doc)), "ramp.png — Convert64");
+        doc.run(JsonCommand::ModeSet(convert64_core::command::ModeSet {
+            mode: Mode::HiresBitmap,
+        }))
+        .unwrap();
+        assert_eq!(window_title(Some(&doc)), "ramp.png* — Convert64");
+        let saving = doc.revision();
+        doc.mark_saved_at(saving);
+        assert_eq!(window_title(Some(&doc)), "ramp.png — Convert64");
+        // An edit while the browser's Save dialog was open stays unsaved.
+        doc.undo();
+        doc.mark_saved_at(saving);
+        assert!(window_title(Some(&doc)).contains('*'));
+        let session = Document::from_png("ramp.png", &png()).unwrap().session;
+        let restored = Document::restored("ramp.png", session, None);
+        assert_eq!(window_title(Some(&restored)), "ramp.png* — Convert64");
     }
 
     #[test]

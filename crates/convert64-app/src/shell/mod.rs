@@ -13,6 +13,7 @@ mod mask;
 mod menu;
 pub mod method_picker;
 mod recipe;
+mod session;
 pub mod shortcuts;
 mod status;
 mod toolbar;
@@ -138,6 +139,14 @@ pub enum KeyFocus {
 pub enum Action {
     /// Close the app (native) or do nothing (web).
     Quit,
+    /// The answer to "Save changes before quitting?" (native, #241).
+    AnswerQuit(QuitAnswer),
+    /// The restore bar's Restore: open the autosaved session (#241).
+    RestoreSession,
+    /// The restore bar's Discard: delete the autosaved session.
+    DiscardSession,
+    /// Dismiss the autosave warning in the status bar.
+    DismissAutosaveWarning,
     /// Follow the system theme, or force light or dark (View › Theme).
     SetTheme(egui::ThemePreference),
     /// Change the target mode (the result header's dropdown): `mode_set`, then a full
@@ -182,6 +191,17 @@ pub enum Action {
     /// place of the recipe's (interactively, nothing in the history), or with `None`
     /// show the committed result again.
     PreviewMethod(Option<(RecipeTarget, convert64_core::layer::Method)>),
+}
+
+/// How the user answered "Save changes to … before quitting?".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuitAnswer {
+    /// Save, then quit.
+    Save,
+    /// Quit without saving.
+    DontSave,
+    /// Keep working.
+    Cancel,
 }
 
 /// The smallest and largest dock width (`docs/UX.md` §3: 260–420 px). Not a Figma
@@ -249,6 +269,12 @@ pub struct Shell {
     clash_hint_dismissed: bool,
     /// The last error, shown in the status bar: summary and details for its popover.
     pub error: Option<(String, String)>,
+    /// The autosave's last failure, one line in the status bar's warning colour (#241).
+    pub autosave_warning: Option<String>,
+    /// The restore bar's question, while an autosaved session is on offer (#241).
+    pub restore_offer: Option<String>,
+    /// Quitting with unsaved changes (native): the document's name, for the question.
+    pub quit_prompt: Option<String>,
     /// Whether Edit › Undo and Redo have something to do (set by the app each frame).
     pub history: (bool, bool),
     /// `\` is held: the working view shows the other image.
@@ -318,6 +344,9 @@ impl Default for Shell {
             hand: false,
             clash_hint_dismissed: false,
             error: None,
+            autosave_warning: None,
+            restore_offer: None,
+            quit_prompt: None,
             history: (false, false),
             flip_held: false,
             fit_pending: true,
@@ -591,6 +620,11 @@ impl Shell {
                         mask::options_bar(self, ws.as_deref(), ui, &mut actions)
                     });
             }
+            if let Some(text) = &self.restore_offer {
+                egui::Panel::top("restore_bar")
+                    .exact_size(layout::TOOLBAR_HEIGHT)
+                    .show(ui, |ui| session::restore_bar(text, ui, &mut actions));
+            }
             egui::Panel::bottom("status_bar")
                 .exact_size(layout::STATUS_HEIGHT)
                 .show(ui, |ui| status::show(self, ws.as_deref(), ui, &mut actions));
@@ -616,6 +650,7 @@ impl Shell {
                 working::show(self, ui, ws.as_deref(), &mut actions)
             });
         export_dialog::show(self, ws.as_deref(), ui.ctx(), &mut actions);
+        session::quit_prompt(self, ui.ctx(), &mut actions);
         // The picker closes (reverting its preview) when its recipe is no longer shown.
         if self.picker.open.is_some() && !self.picker.drawn {
             self.picker.close(&mut actions);
