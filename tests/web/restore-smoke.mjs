@@ -20,7 +20,8 @@
 //      and checks that a real download completed (`Browser.downloadProgress`) and holds
 //      the nudged project.
 //
-// Exit code 0 when every check passes. `SHOTS=dir` also saves screenshots there.
+// Exit code 0 when every check passes. `SHOTS=dir` also saves screenshots there;
+// `STORAGE=idb` takes OPFS writes away first, so the app autosaves to IndexedDB.
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -150,7 +151,24 @@ const click = async (x, y) => {
   await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
 };
 // The newest autosaved record in OPFS, parsed, with its project parsed too.
-const record = () => ev(`(async () => {
+// With STORAGE=idb the page has no OPFS writes, so the app falls back to IndexedDB.
+const idb = process.env.STORAGE === 'idb';
+const record = () => ev(idb ? `(async () => {
+  if (!(await indexedDB.databases()).some(d => d.name === 'convert64-autosave')) return null;
+  const db = await new Promise((ok, no) => { const r = indexedDB.open('convert64-autosave'); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
+  if (!db.objectStoreNames.contains('entries')) { db.close(); return null; }
+  const st = db.transaction('entries').objectStore('entries');
+  const get = req => new Promise(ok => { req.onsuccess = () => ok(req.result); });
+  let best = null;
+  for (const name of await get(st.getAllKeys())) {
+    if (!String(name).startsWith('session-')) continue;
+    const r = JSON.parse(new TextDecoder().decode(await get(st.get(name))));
+    if (!best || r.modified_ms > best.modified_ms) best = r;
+  }
+  db.close();
+  if (best) best.project = JSON.parse(best.project);
+  return best;
+})()` : `(async () => {
   const root = await navigator.storage.getDirectory();
   let dir; try { dir = await root.getDirectoryHandle('convert64-autosave'); } catch { return null; }
   let best = null;
@@ -167,6 +185,11 @@ const loaded = () => until('the app starts', `!document.getElementById('loading_
 await send('Runtime.enable');
 await send('Page.enable');
 await send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: 1, mobile: false });
+if (idb) {
+  await send('Page.addScriptToEvaluateOnNewDocument', {
+    source: 'delete FileSystemFileHandle.prototype.createWritable;',
+  });
+}
 await sendOn(browserWs, 'Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads, eventsEnabled: true });
 const origin = `http://127.0.0.1:${httpPort}/`;
 await send('Page.navigate', { url: origin });
@@ -191,13 +214,9 @@ for (let i = 0; i < 3; i++) await key('ArrowRight', 'ArrowRight', 39);
 await until('the title marks unsaved changes', `document.title.startsWith('title.png*')`);
 
 // 3. The autosave, about a second later.
-await until('the autosave writes the session', `(async () => {
-  const root = await navigator.storage.getDirectory();
-  try { const d = await root.getDirectoryHandle('convert64-autosave');
-    for await (const n of d.keys()) if (n.startsWith('session-')) return true; } catch {}
-  return false; })()`, 10000);
-await sleep(500);
-const before = await record();
+let before = null;
+for (let t = 0; t < 50 && !before; t++) { before = await record(); if (!before) await sleep(200); }
+check(before !== null, `the autosave writes the session (${idb ? 'IndexedDB' : 'OPFS'})`);
 check(before && before.layers === 1 && before.project_key !== before.saved_key, 'the record holds unsaved work, one layer');
 check(before && before.sources.length === 1 && !JSON.stringify(before.project).includes('png_base64'),
   'the source is a blob by content, not in the JSON');
