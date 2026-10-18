@@ -102,20 +102,20 @@ fn solve(layers: &[Layer], mode: Mode, opts: &SolveOptions) -> Result<Solution, 
     Ok(Solver::new(&palette).solve(c.frame(), &Steering::new(), None, opts))
 }
 
-fn source(name: &str) -> Result<RgbaImage, String> {
+pub(crate) fn source(name: &str) -> Result<RgbaImage, String> {
     let path = repo_root().join("fixtures").join(name).join("source.png");
     Ok(image::open(&path)
         .map_err(|e| format!("{}: {e}", path.display()))?
         .to_rgba8())
 }
 
-fn png(path: &std::path::Path) -> Result<RgbImage, String> {
+pub(crate) fn png(path: &std::path::Path) -> Result<RgbImage, String> {
     Ok(image::open(path)
         .map_err(|e| format!("{}: {e}", path.display()))?
         .to_rgb8())
 }
 
-fn identical(a: &RgbImage, b: &RgbImage) -> f64 {
+pub(crate) fn identical(a: &RgbImage, b: &RgbImage) -> f64 {
     let same = a.pixels().zip(b.pixels()).filter(|(x, y)| x == y).count();
     100.0 * same as f64 / f64::from(a.width() * a.height())
 }

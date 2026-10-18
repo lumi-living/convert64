@@ -31,9 +31,11 @@
 mod aliasing;
 mod baselines;
 mod bluenoise;
+mod cause_sheet;
 mod font;
 mod frontend;
 mod goldens;
+mod metric_check;
 mod png2amiga;
 mod previews;
 mod reference_sheet;
@@ -174,6 +176,14 @@ enum Command {
     /// sources under the old scaler, png2amiga's exact one and the mip-accelerated one,
     /// each tile with its SSIMULACRA2, in `docs/reference/dither-previews/convert64-sheets/`.
     ReferenceSheet,
+    /// The cause sheet (#273): each fixture under png2amiga's port with one of its
+    /// differences from png2c64 swapped at a time, every tile's flags and its share of
+    /// pixels identical to the png2c64 baseline (`sheet-cause.png`, `sheet-cause.md`).
+    CauseSheet,
+    /// Scores candidate quality metrics against Jaakko's eye-ranked pairs
+    /// (`fixtures/eye-rankings.toml`): each pair re-rendered as the reviewed sheet showed
+    /// it, both scored against the same reference; prints each metric's agreement.
+    MetricCheck,
     /// The reference png2amiga (ADR-013): build it, or render the baselines and previews.
     Png2amiga {
         #[command(subcommand)]
@@ -286,6 +296,8 @@ fn main() -> ExitCode {
             None => goldens::run(accept, reason.as_deref(), pr),
         },
         Command::ReferenceSheet => reference_sheet::run(),
+        Command::CauseSheet => cause_sheet::run(),
+        Command::MetricCheck => metric_check::run(),
         Command::Png2amiga { action } => match action {
             Png2amigaAction::Build { variant, compiler } => png2amiga::build(variant, &compiler),
             Png2amigaAction::Renders { bin, skip_previews } => {
