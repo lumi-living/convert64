@@ -18,11 +18,11 @@ use crate::paths;
 use crate::store::Store;
 use convert64_core::command::{
     AdjustmentsSet, Command, Dirty, LayerAdd, LayerDuplicate, LayerNudge, LayerRemove, LayerRename,
-    LayerReorder, LayerRotate, LayerSetBlend, LayerSetOpacity, LayerSetTransform, LayerSetVisible,
-    LayerViaMask, MaskClear, MaskFill, MaskFromAlpha, MaskGradient, MaskKey, MaskLoad,
-    MaskSetModifier, MaskSourceRemove, MaskSourceSetCombine, MaskStroke, PaletteSet, RecipeSet,
-    RegionAdd, RegionClear, RegionFill, RegionGradient, RegionRemove, RegionRename, RegionReorder,
-    RegionSetRecipe, RegionStroke,
+    LayerReorder, LayerRotate, LayerSetBlend, LayerSetDownscale, LayerSetOpacity,
+    LayerSetTransform, LayerSetVisible, LayerViaMask, MaskClear, MaskFill, MaskFromAlpha,
+    MaskGradient, MaskKey, MaskLoad, MaskSetModifier, MaskSourceRemove, MaskSourceSetCombine,
+    MaskStroke, PaletteSet, RecipeSet, RegionAdd, RegionClear, RegionFill, RegionGradient,
+    RegionRemove, RegionRename, RegionReorder, RegionSetRecipe, RegionStroke,
 };
 use convert64_core::layer::{Layer, SourceImage};
 use convert64_core::mask::{Mask, MaskRaster};
@@ -66,6 +66,8 @@ pub struct Session {
     /// Cells changed since the last solve (from the compositor's dirty-cell API).
     dirty: convert64_core::CellSet,
     store: Box<dyn Store>,
+    /// The clock the compositors time their mip builds with ([`Session::set_clock`]).
+    clock: Option<convert64_core::composite::Clock>,
     /// What loading changed in an older file (#236), for the front-end to say once.
     notes: Vec<String>,
 }
@@ -128,6 +130,7 @@ impl Session {
                 .set_opacity(entry.opacity)
                 .map_err(|e| invalid(format!("{what}: {e}")))?;
             layer.set_blend(entry.blend);
+            layer.set_downscale(entry.downscale);
             layer.set_visible(entry.visible);
             layer.set_recipe(entry.recipe);
             layer.set_adjustments(entry.adjustments);
@@ -185,6 +188,7 @@ impl Session {
             origins,
             dirty: convert64_core::CellSet::all(),
             store,
+            clock: None,
             notes,
         };
         for (i, cmd) in file.commands.into_iter().enumerate() {
@@ -240,6 +244,7 @@ impl Session {
                 transform: l.transform(),
                 opacity: l.opacity(),
                 blend: l.blend(),
+                downscale: l.downscale(),
                 recipe: *l.recipe(),
                 adjustments: l.adjustments().clone(),
                 mask: l.mask().map(|m| MaskSpec {
@@ -516,6 +521,12 @@ impl Session {
                 layer: self.resolve(&layer)?,
                 blend,
             }),
+            JsonCommand::LayerSetDownscale { layer, downscale } => {
+                Command::LayerSetDownscale(LayerSetDownscale {
+                    layer: self.resolve(&layer)?,
+                    downscale,
+                })
+            }
             JsonCommand::LayerSetTransform {
                 layer,
                 transform,
@@ -686,6 +697,7 @@ impl Session {
             let n = self.compositor.grid().n();
             let grid = SuperGrid::new(p.target, n).expect("mode_set checks the mode");
             self.compositor = Compositor::new(grid);
+            self.compositor.set_clock(self.clock);
             self.last = None;
             self.dirty = convert64_core::CellSet::all();
         }
@@ -778,6 +790,13 @@ impl Session {
         Ok((w, h, out))
     }
 
+    /// The composite on the target grid, brought up to date: what the solver solves
+    /// (the method picker crops its Picture thumbnails from it, UX §6a).
+    pub fn target_frame(&mut self) -> &convert64_core::TargetFrame {
+        self.composite();
+        self.compositor.frame()
+    }
+
     /// The composite on the target grid as RGBA8 (straight sRGB, alpha = coverage).
     pub fn composite_rgba(&mut self) -> (u32, u32, Vec<u8>) {
         self.composite();
@@ -806,6 +825,27 @@ impl Session {
     /// still shows its detail and its sub-pixel placement.
     pub const PREVIEW_N: u8 = 4;
 
+    /// Times the mip levels the session's compositors build (#235) with `clock`
+    /// (milliseconds from a fixed origin; the core has no clock of its own).
+    pub fn set_clock(&mut self, clock: Option<convert64_core::composite::Clock>) {
+        self.clock = clock;
+        self.compositor.set_clock(clock);
+        if let Some(p) = &mut self.preview {
+            p.set_clock(clock);
+        }
+    }
+
+    /// The mip reductions (#235) the session's compositors have built, and the
+    /// milliseconds they took by the clock of [`Session::set_clock`].
+    pub fn mip_stats(&self) -> (u64, f64) {
+        let mut stats = (self.compositor.mip_builds(), self.compositor.mip_build_ms());
+        if let Some(p) = &self.preview {
+            stats.0 += p.mip_builds();
+            stats.1 += p.mip_build_ms();
+        }
+        stats
+    }
+
     /// The composite at [`Session::PREVIEW_N`] or the project's factor, whichever is
     /// larger, as RGBA8: straight sRGB, alpha = coverage. The app's Source view draws it.
     /// Width and height first; a multicolor super pixel is two hi-res pixels wide.
@@ -816,13 +856,9 @@ impl Session {
             self.compositor.canvas()
         } else {
             let p = self.editor.project();
-            let grid = SuperGrid::new(p.target, Self::PREVIEW_N).expect("a bitmap grid");
-            // Only the canvas is drawn, so png2c64's front end (a frame) is skipped.
-            let fresh = || {
-                let mut c = Compositor::new(grid);
-                c.set_png2c64_front_end(false);
-                c
-            };
+            let grid = self.preview_grid();
+            let clock = self.clock;
+            let fresh = || preview_compositor(grid, clock);
             let preview = self.preview.get_or_insert_with(fresh);
             if preview.grid() != grid {
                 *preview = fresh();
@@ -830,19 +866,52 @@ impl Session {
             preview.update(&p.layers, &p.regions);
             preview.canvas()
         };
-        let (w, h) = canvas.grid().size();
-        let rgba = canvas
-            .pixels()
-            .iter()
-            .flat_map(|&[r, g, b, a]| {
-                if a <= 0.0 {
-                    return [0; 4];
-                }
-                let [r, g, b] = [r, g, b].map(|c| linear_to_srgb8(c / a));
-                [r, g, b, (a.min(1.0) * 255.0).round() as u8]
-            })
-            .collect();
-        (w, h, rgba)
+        canvas_rgba8(canvas)
+    }
+
+    /// The session's own composite, on the grid the solve reads (the project's factor,
+    /// 1× by default), as RGBA8 like [`Self::canvas_rgba`]. The app's Source view shows it,
+    /// upscaled, while a slider is dragged (#264): it costs a fraction of the preview's 4×.
+    pub fn solve_canvas_rgba(&mut self) -> (u32, u32, Vec<u8>) {
+        self.composite();
+        canvas_rgba8(self.compositor.canvas())
+    }
+
+    /// The layers `range` (stack indices, bottom first) composited by themselves, on the
+    /// grid of [`Self::canvas_rgba`], as RGBA8 like it. With Normal blends the stack is
+    /// the layers below, a layer and the layers above, each composited alone and laid over
+    /// each other; the app does that on the GPU while a layer is moved (#264). A fresh
+    /// compositor each time: nothing is cached between calls.
+    pub fn layers_canvas_rgba(&self, range: std::ops::Range<usize>) -> (u32, u32, Vec<u8>) {
+        let mut c = preview_compositor(self.preview_grid(), self.clock);
+        let layers = self.editor.project().layers.get(range).unwrap_or_default();
+        canvas_rgba8(c.composite(layers))
+    }
+
+    /// Layer `layer` by itself at `transform` instead of its own, like
+    /// [`Self::layers_canvas_rgba`]: the app's texture of a layer being moved, made at the
+    /// transform it had when the drag started (#264). Transparent for an unknown layer.
+    pub fn layer_canvas_rgba_at(
+        &self,
+        layer: usize,
+        transform: convert64_core::Transform,
+    ) -> (u32, u32, Vec<u8>) {
+        let mut c = preview_compositor(self.preview_grid(), self.clock);
+        let mut moved = self.editor.project().layers.get(layer).cloned();
+        if let Some(l) = &mut moved {
+            l.set_transform(transform);
+        }
+        canvas_rgba8(c.composite(moved.as_slice()))
+    }
+
+    /// The grid the Source view is drawn at: [`Self::PREVIEW_N`] or the project's factor,
+    /// whichever is larger.
+    fn preview_grid(&self) -> SuperGrid {
+        let grid = self.compositor.grid();
+        if grid.n() >= Self::PREVIEW_N {
+            return grid;
+        }
+        SuperGrid::new(self.editor.project().target, Self::PREVIEW_N).expect("a bitmap grid")
     }
 
     /// The attribute map's debug render on the target grid as RGBA8 (hue = dither
@@ -859,6 +928,36 @@ impl Session {
             .collect();
         (w, h, rgba)
     }
+}
+
+/// A compositor for the Source view on `grid`. Only its canvas is drawn, so png2c64's
+/// front end (a frame) is skipped.
+fn preview_compositor(
+    grid: SuperGrid,
+    clock: Option<convert64_core::composite::Clock>,
+) -> Compositor {
+    let mut c = Compositor::new(grid);
+    c.set_png2c64_front_end(false);
+    c.set_clock(clock);
+    c
+}
+
+/// `canvas` (premultiplied linear light) as straight sRGB RGBA8, alpha = coverage; width
+/// and height first.
+fn canvas_rgba8(canvas: &convert64_core::composite::Canvas) -> (u32, u32, Vec<u8>) {
+    let (w, h) = canvas.grid().size();
+    let rgba = canvas
+        .pixels()
+        .iter()
+        .flat_map(|&[r, g, b, a]| {
+            if a <= 0.0 {
+                return [0; 4];
+            }
+            let [r, g, b] = [r, g, b].map(|c| linear_to_srgb8(c / a));
+            [r, g, b, (a.min(1.0) * 255.0).round() as u8]
+        })
+        .collect();
+    (w, h, rgba)
 }
 
 /// Paths on disk, for the native front-ends.

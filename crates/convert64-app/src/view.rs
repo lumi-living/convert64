@@ -247,7 +247,8 @@ impl Compare {
 pub struct Overlays {
     /// The cell grid (`Cmd '`).
     pub grid: bool,
-    /// The clash heatmap (`Shift C`).
+    /// The colour-limited cells (the core's clashes) as a heatmap, and as dots on the
+    /// result panel (`Shift C`; off by default, #243).
     pub clashes: bool,
     /// Pinned and locked cells.
     pub steering: bool,

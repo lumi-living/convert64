@@ -101,10 +101,50 @@ impl AttributeMap {
         }
     }
 
+    /// A map from its parts, as [`Self::pixels`], [`Self::layer_recipes`] and
+    /// [`Self::region_recipes`] return them (#265: a solve in a web worker).
+    ///
+    /// # Panics
+    /// If `px` is not one entry per target pixel of `grid`.
+    pub fn from_parts(
+        grid: SuperGrid,
+        layers: Vec<Recipe>,
+        regions: Vec<Recipe>,
+        px: Vec<TargetAttr>,
+    ) -> Self {
+        let (tw, th) = grid.target_size();
+        assert_eq!(
+            px.len(),
+            tw as usize * th as usize,
+            "an attribute map needs one entry per target pixel"
+        );
+        Self {
+            grid,
+            layers,
+            regions,
+            px,
+        }
+    }
+
+    /// The recipes of [`AttrSource::Layer`] sources, by layer index.
+    pub fn layer_recipes(&self) -> &[Recipe] {
+        &self.layers
+    }
+
+    /// The recipes of [`AttrSource::Region`] sources, by region index.
+    pub fn region_recipes(&self) -> &[Recipe] {
+        &self.regions
+    }
+
     /// Replaces the recipe tables the sources refer to.
     pub(crate) fn set_recipes(&mut self, layers: Vec<Recipe>, regions: Vec<Recipe>) {
         self.layers = layers;
         self.regions = regions;
+    }
+
+    /// The layer and region recipe tables, copied.
+    pub(crate) fn recipes(&self) -> (Vec<Recipe>, Vec<Recipe>) {
+        (self.layers.clone(), self.regions.clone())
     }
 
     /// Mutable target pixels, for the compositor's fused fold-and-filter.

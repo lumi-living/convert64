@@ -15,3 +15,11 @@ Share of png2c64's baseline pixels each front end's solve reproduces (#190), at 
 |---|---|
 | portrait | 96.912 % |
 | lineart | 91.314 % |
+
+#235, large sources (4096 px, shrunk 12.8×; multicolor, checker 0.7, error clamp 0.1, gamma 1.5, pepto). Grain leakage: the share of output pixels that change between `title-grain-4096` and the same upscale without grain (gate: Auto ≤ 5 %). The reference is the source box-averaged to 320 × 200 in linear light, then the same front end and solver; the evidence (#238) averaged the 8-bit sRGB values instead, which is given beside it. Auto vs reference: the share of the reference's solve that Auto's reproduces.
+
+| Source | exact (png2c64) | auto (mip level) | area-averaged reference | box on sRGB values |
+|---|---|---|---|---|
+| title-grain-4096, grain leakage | 24.4 % | 4.5 % | 4.2 % | 2.5 % |
+| zoneplate-4096, auto vs reference | | 89.9 % same | | |
+| title-grain-4096, auto vs reference | | 93.1 % same | | |

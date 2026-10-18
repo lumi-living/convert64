@@ -3,8 +3,8 @@
 use crate::report::{Fail, NOT_LEGAL, Run};
 use clap::ValueEnum;
 use convert64_core::layer::{
-    CellMetric, DitherKind, Gamma, Metric, OrderedSemantics, Radius, RangeMatch, Sharpen,
-    suggest_range_match,
+    CellMetric, DitherKind, Downscale, Gamma, Metric, OrderedSemantics, Radius, RangeMatch,
+    Sharpen, suggest_range_match,
 };
 use convert64_core::mode::Mode;
 use convert64_core::solve::{Background, Solution};
@@ -272,6 +272,12 @@ pub(crate) struct Overrides {
     /// 0–0.1 in OKLab L (png2c64 has none: 0, the default).
     #[arg(long, value_name = "L")]
     pub(crate) sharpen_threshold: Option<f32>,
+    /// How every layer shrunk a long way is sampled (#235): auto (the default) takes a
+    /// cached, box-reduced mip level of the source past a 4× shrink, so large sources do
+    /// not alias; exact always samples the original with png2c64's four Mitchell taps,
+    /// as png2c64 does. Up to 4× (sources up to 1280 px fitted) the two are identical.
+    #[arg(long, value_name = "auto|exact")]
+    pub(crate) downscale: Option<Downscale>,
     /// Turn every layer to this many degrees, clockwise on screen, about its anchor
     /// (`layer_rotate`, ADR-011). The project's snap applies.
     #[arg(long, value_name = "DEG", allow_hyphen_values = true)]
@@ -324,6 +330,7 @@ impl Overrides {
             sharpen: self.sharpen.or(base.sharpen),
             sharpen_radius: self.sharpen_radius.or(base.sharpen_radius),
             sharpen_threshold: self.sharpen_threshold.or(base.sharpen_threshold),
+            downscale: self.downscale.or(base.downscale),
             rotate: self.rotate.or(base.rotate),
             anchor: self.anchor.or_else(|| base.anchor.clone()),
         }
@@ -513,6 +520,9 @@ impl Overrides {
                     self.sharpen_threshold.unwrap_or(s.threshold()),
                 )
                 .map_err(Fail::input)?;
+            }
+            if let Some(d) = self.downscale {
+                layer.downscale = d;
             }
         }
         let rotations = self.rotations(file.layers.len())?;

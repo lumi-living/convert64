@@ -14,15 +14,15 @@ Sources: a survey of Photoshop, Affinity Photo 2, PhotoCraft, GIMP 3, Krita 5, A
 | **Scene graphician** | a reference image and strong opinions about dithering | a conversion good enough to finish by hand in Pixcen/Multipaint/ArcPaint64 | 1–2 h, iterative, keyboard-heavy |
 | **Demo coder** | any picture | bytes in assembler-ready form, fast | 5 min, CLI-first, GUI for checking |
 
-The core loop is the same for all three: **open → see the C64 result immediately → steer (layers, recipes, pins) → check clashes → export → come back later and re-run**. The UI exists to make "steer" precise and "check" instant. It is not a paint program.
+The core loop is the same for all three: **open → see the C64 result immediately → steer (layers, recipes, pins) → check the colour-limited cells → export → come back later and re-run**. The UI exists to make "steer" precise and "check" instant. It is not a paint program.
 
 ## 2. Design principles
 
 1. **The C64 result is always visible.** A 320×200 result at 1× is small on any modern display, so it does not fight for the main canvas: it lives at the top of the right dock, always on, in hardware colours, never themed, and updates with every change. The main canvas is where the user *works* (on the 16-bit source) and *inspects* (the result, zoomed, compared).
 2. **Every change is live; nothing is modal.** No "Convert" button, no apply dialogs. Dragging a slider re-solves (fast path while dragging, full search on release). The one exception is a *pause* toggle for slow modes.
-3. **Legality is visible, quantified and navigable.** Clash count in the status bar at all times; a heatmap overlay on demand; jump-to-worst-cell. Users never discover illegality at export.
+3. **Legality is guaranteed; colour limits are visible, quantified and navigable.** The colour-limited cell count in the status bar at all times, in neutral text because the result is legal by construction; a heatmap overlay on demand; jump-to-worst-cell. Red is kept for what blocks export (a failed export, a file that cannot be read), so users never discover illegality at export and never mistake a diagnostic for an error (#243).
 4. **Steering survives re-solving.** Pins, locks and region overrides are part of the project, not edits of the output. Re-run from scratch and they still apply.
-5. **Borrow every convention that has one.** Photoshop-family layout, shortcuts and layer-row anatomy. Invent only where no tool has gone: per-layer recipes, cell steering, clash UX.
+5. **Borrow every convention that has one.** Photoshop-family layout, shortcuts and layer-row anatomy. Invent only where no tool has gone: per-layer recipes, cell steering, colour-limit UX.
 6. **Keyboard-first, mouse-complete.** Everything has a shortcut; nothing *needs* one.
 7. **Same words everywhere.** One glossary (§9) used in UI, CLI flags, MCP tool names and docs.
 
@@ -46,7 +46,7 @@ Consensus across the surveyed editors: menu bar → options/tool bar → canvas 
 │                                          │  (selected tab)     │ 320 px
 │                                          │                     │ (260–420)
 ├──────────────────────────────────────────┴─────────────────────┤
-│ Status  Multicolor 160×200 · Source · cell 12,7 · px 48,56 · 400%   3 clashes · solve 42 ms │ 22 px
+│ Status  Multicolor 160×200 · Source · cell 12,7 · px 48,56 · 400%   Colour-limited cells: 3 · solve 42 ms │ 22 px
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -67,8 +67,9 @@ The 16-bit composite of all layers at any zoom, with the C64 cell grid projected
 |---|---|
 | Zoom | fractional allowed (it is a source image): 25 %–800 %, `Cmd/Ctrl +/−`, `Cmd/Ctrl 0` fit (leaving 5 % of the view free around the picture, as Figma does, so the transform handles stay clear of the edge), `Cmd/Ctrl 1` 100 %, wheel around the cursor |
 | Aspect | square source pixels; the projected cell grid shows the 2:1 stretch of multicolor modes as 4×8-equivalent rectangles |
-| Overlays | **Cell grid** `Cmd/Ctrl '`, **Pins & locks**, **Regions**, **Clashes** (the heatmap projected onto source cells), **Result ghost** (result at 30 % over the source — the reverse of the ghost in Result mode) |
+| Overlays | **Cell grid** `Cmd/Ctrl '`, **Pins & locks**, **Regions**, **Colour-limited cells** `Shift+C` (the heatmap projected onto source cells), **Result ghost** (result at 30 % over the source — the reverse of the ghost in Result mode) |
 | Selection | the selected layer's bounds are outlined; its transform handles are drawn in Source mode only |
+| While dragging | a transform drag (nudge, scale, rotate, held arrow keys) moves the layer's cached picture, at full detail, until release (a translucent layer, a blend mode or a mask over other layers: as a slider drag); a slider drag shows the picture at the solve's resolution (1×, square-edged pixels) until release. On release the full-detail view returns. The full-detail view takes about 60 ms per frame to make in the browser; this takes a few (#264) |
 
 ### 4.2 Result mode
 
@@ -80,15 +81,15 @@ The solved C64 image, for inspection and comparison.
 | Aspect | 2:1 pixels in multicolor modes rendered as 2 device px per C64 px at 1×; optional "PAL 0.936" correction toggle, off by default | what the solver optimised, then what a TV would show |
 | Pan | `Space`+drag, middle-drag, scroll, or the result panel as navigator | universal |
 | Border | 32 px-equivalent border in the chosen border colour, toggle `View › Border` | judging edge colours against the frame is part of the craft |
-| Overlays | **Grid**, **Clashes** `Shift+C` (heatmap: per-cell error, colour-starved cells outlined), **Pins & locks**, **Attribute map** (debug: which recipe governs each pixel), **Source ghost** (source at 30 % over the result) | painter calls over the same rect; overlays in semantic theme colours |
+| Overlays | **Grid**, **Colour-limited cells** `Shift+C` (heatmap: per-cell error, colour-limited cells outlined; off by default), **Pins & locks**, **Attribute map** (debug: which recipe governs each pixel), **Source ghost** (source at 30 % over the result) | painter calls over the same rect; overlays in semantic theme colours |
 | Compare | **Hold `\`** shows the source in place (and in Source mode, hold `\` shows the result — the key always flips to the other one); **Split** draggable divider; **A/B flicker** at 2 Hz; **Side by side** source \| result with linked cursor; `,` cycles | three habits from three editor families; cheap to offer all |
 | Cursor readout | status bar: cursor cell x,y; the cell's colour set; its error; its pin/lock state | the "why is this cell like that" question answered without a dialog |
 
 ### 4.3 The result panel (right dock, top)
 
 - Always visible while the dock is visible; 320×200 at 1× (2:1 pixels already applied), with the border, inside a frame that reads in both themes. It never scales up; it scales down only if the dock is narrower than 320.
-- Header row: mode dropdown (*Multicolor · Hi-res · Charset…*) and the clash count in `clash` colour; one line below: `0 clashes · solve 38 ms`. The clash count is a button that enables the Clashes overlay and switches the working view to Result at the worst cell.
-- Overlays on the panel: clash dots only (not the full heatmap), and the navigator rectangle in Result mode.
+- Header row: mode dropdown (*Multicolor · Hi-res · Charset…*) and the colour-limited cell count, `Colour-limited cells: 367`, in normal text, not red: a colour-limited cell is one where the solver wanted more colours than the mode allows and used the closest it may, so the result is still legal and the count is a diagnostic, not a warning (usability review M1, #243). Its tooltip says so. The count is a button that turns the Colour-limited cells overlay on and switches the working view to Result at the worst cell.
+- Overlays on the panel: dots on the colour-limited cells (not the full heatmap), only while that overlay is on (`Shift C`, *View › Colour-Limited Cells*; off by default, so the main output is clean), and the navigator rectangle in Result mode.
 - Mode switching re-solves immediately; the panel desaturates slightly while a full search runs (>200 ms) and shows `Solving…` in place of the timing.
 - The working view and the panel are the same texture at two sizes; there is no second render.
 
@@ -134,12 +135,12 @@ Controls: `Slider` for bounded values with the value field editable on click; `D
 
 ## 7. Cell tools (steering)
 
-Three tools in the toolbar, all operate on the preview, all additive to the project, all undoable. **Nudge** (`V`, Move in Photoshop and Figma) is the default, on first run and for every picture opened, so a stray click selects a layer and changes nothing; Pin, Lock and Region act only once picked, and a click outside the picture (on the border or the pasteboard) never pins, locks or paints (#242):
+Three tools in the toolbar, all operate on the preview, all additive to the project, all undoable. **Nudge** (`V`, Move in Photoshop and Figma) is the default, on first run and for every picture opened, so a stray click selects a layer and changes nothing; Pin, Lock and Region act only once picked, and a click outside the picture (on the border or the pasteboard) never pins, locks or paints (#242). Every drag, with these tools, the mask tools (§7a) and the Hand, counts from where the button went down, not from where the pointer passed egui's 6 pt drag threshold: a nudge moves by the whole drag, and a rectangle, stroke or gradient starts at the press (#263):
 
 | Tool | Key | Click | Drag | Feedback |
 |---|---|---|---|---|
 | **Pin** colour set | `P` | pin the cell's current colour set; `Alt`-click to pin one colour only (from the status-bar swatch or the palette strip) | pin a rectangle of cells | pinned cells get a small pin glyph at top-right; status bar: "Pinned 7 cells" |
-| **Lock** cell | `L` | freeze the cell's output exactly as solved | lock a rectangle | lock glyph; locked cells are skipped by re-solve and drawn with a faint hatch when Clashes overlay is on |
+| **Lock** cell | `L` | freeze the cell's output exactly as solved | lock a rectangle | lock glyph; locked cells are skipped by re-solve and drawn with a faint hatch when the Colour-limited cells overlay is on |
 | **Region** override | `R` | — | paint a soft mask that carries its own recipe (dither/metric/allowed colours) | region shows as a tinted outline; its recipe editor opens in the Recipe panel as a pseudo-layer |
 | **Nudge** (move) | `V` | select layer under cursor | move the layer in sub-pixel steps | X/Y readout in status bar; the solver re-runs on drop |
 | **Transform** (scale / rotate) | `Cmd T` or `S` | select layer; shows its (rotated) bounding box with 8 handles and the anchor | corner = uniform scale (hold `Shift` for free aspect), edge = one axis, just outside a corner = rotate (hold `Shift` for 15° steps), inside = move, `Alt` = about the centre, drag the anchor to move the pivot; scroll wheel over the box = ±1 %; hold `Cmd` to invert the current Snap for this drag | live W/H %, angle and X/Y in status bar, all sub-pixel; Interactive solve during drag, Full on release; `Enter` commits, `Esc` reverts the whole drag (one undo step) |
@@ -148,7 +149,7 @@ Right-click on any cell: a small menu — *Pin colours · Lock · Clear pin/lock
 
 ## 7a. Mask tools (ADR-008)
 
-Masks are edited inside Convert64 because the edge is tuned against the cell grid: move it, change the feather, watch the clash overlay. A mask is one raster in layer space plus non-destructive modifiers; every tool below is a command with undo. The brush is the only freehand tool in the app and it paints weight, never colour (ADR-003).
+Masks are edited inside Convert64 because the edge is tuned against the cell grid: move it, change the feather, watch the Colour-limited cells overlay. A mask is one raster in layer space plus non-destructive modifiers; every tool below is a command with undo. The brush is the only freehand tool in the app and it paints weight, never colour (ADR-003).
 
 Entering mask mode (`M`, or **Edit mask** in the Recipe panel, or clicking the mask thumbnail) switches the toolbar to the mask tools and shows the mask as a **red quick-mask overlay** on the working view (Photoshop convention; red is distinct from every overlay colour in §10 and from the C64 palette's two reds at 50 % opacity). `Alt`-click the mask thumbnail shows the mask alone as greyscale. `Esc` or `M` leaves mask mode.
 
@@ -162,7 +163,7 @@ Entering mask mode (`M`, or **Edit mask** in the Recipe panel, or clicking the m
 | **Feather** | slider in options bar | — | — | 0–32 target px; applies after snap |
 | **Invert / Clear / Fill / Load PNG / From alpha** | options-bar buttons | — | — | — |
 
-Feedback: while a brush stroke is in progress only the quick-mask overlay updates; the solver re-runs on mouse-up for the cells under the stroke's bounding box and the status bar says "Re-solved 14 cells". A clash that sits under a feathered edge gets a one-line hint in the Clashes panel: *"Edge straddles cell 12,7 — try Snap to cells or a smaller feather."*
+Feedback: while a brush stroke is in progress only the quick-mask overlay updates; the solver re-runs on mouse-up for the cells under the stroke's bounding box and the status bar says "Re-solved 14 cells". A colour-limited cell that sits under a feathered edge gets a one-line hint: *"Edge straddles cell 12,7 — try Snap to cells or a smaller feather."*
 
 Mask thumbnails in the Layers panel (§5) show the raster with modifiers applied; the chain icon between layer and mask thumbnails is informational in v1 (masks always move with the layer; unlinking is v2).
 
@@ -193,7 +194,7 @@ Mask thumbnails in the Layers panel (§5) show the raster with modifiers applied
 | Mask mode on/off; mask tools Brush, Lasso, Gradient, Key | `M`; `B`, `W`, `G`, `K` | Photoshop (`B`, `G`), ours (`M`, `W`, `K`) |
 | Brush size down / up; swap Add/Subtract | `[` / `]`; `X` | Photoshop |
 | Show mask alone | `Alt`-click mask thumbnail | Photoshop |
-| Grid / Clashes / Border | `Cmd '` / `Shift C` / `Cmd B` | Affinity/Pixelmator for grid; ours |
+| Grid / Colour-limited cells / Border | `Cmd '` / `Shift C` / `Cmd B` | Affinity/Pixelmator for grid; ours |
 | Hold-to-compare (flips to the other image) | `\` (hold) | Photoshop |
 | Split / A-B / side-by-side | `,` cycles | Affinity's "split view cycle" |
 | Next / previous worst cell | `Shift Cmd ]` / `[` | ours |
@@ -215,7 +216,7 @@ One glossary, used identically in the app, `convert64 --help`, MCP tool names an
 | **Solve** / re-solve | run the constraint solver; produces the result | "convert", "render", "process" (CLI keeps `convert` as the verb for files) |
 | **Result** | the solved C64 image shown in the preview | "output", "preview" (preview is the *view* of the result) |
 | **Cell** | a 4×8 or 8×8 colour cell | "block", "tile", "char" (tile and char are reserved for charset mode) |
-| **Clash** | a cell that needed more colours than the mode allows; the solver dropped some | "error", "conflict" |
+| **Colour-limited cell** | a cell where the solver wanted more colours than the mode allows and used the closest it may; the result is still legal. The core's report, the CLI and the MCP server keep the field name `clashes` | "clash" in the app, "error", "conflict" |
 | **Pin** | require colours in a cell | "force" (Force is the fitting mode) |
 | **Lock** | freeze a cell's result | "freeze" |
 | **Region** | a painted area with its own recipe | "selection", "mask" (mask is per-layer alpha) |
@@ -229,10 +230,10 @@ Copy rules (ux-writing defaults): sentence case; verb-first buttons (**Open imag
 
 Sample strings:
 
-- Status, healthy: `Source · 200 % · cell 17,9 · 3 colours + bg · 0 clashes · solve 38 ms`
-- Status, with clashes: `… · 12 clashes, worst at 31,4 · …` (the "worst at" is a link; click switches to Result and jumps there)
+- Status, healthy: `Source · 200 % · cell 17,9 · 3 colours + bg · Colour-limited cells: 0 · solve 38 ms`
+- Status, with colour-limited cells: `… · Colour-limited cells: 12 · …` in normal text; tooltip: `Cells where the solver wanted more colours than the mode allows, so it used the closest ones it may. The picture is still legal and exports as it is. Shift C shows them.` The hint beside it, once: **Show colour-limited cells (Shift C)**.
 - Export success (toast, 3 s): `Exported title.kla (10 003 B) and title.asm`
-- Export blocked: `Can't export: 12 cells still exceed 4 colours. Use Clashes to find them, or let the solver resolve them (Layer › Fitting › Adaptive).`
+- Export blocked (in the `error` colour, the only red text): `Can't export: 12 cells still exceed 4 colours. Let the solver resolve them (Layer › Fitting › Adaptive).`
 - Slow solve: `Solving charset budget… 2 of 16 backgrounds` with a **Pause** button, never a spinner alone.
 - Project has unsaved steering: `Unsaved pins and locks` in the title bar, Photoshop's asterisk convention.
 - Empty state: see §5.
@@ -242,7 +243,7 @@ Sample strings:
 ## 10. Visual language
 
 - **Theme:** egui `Visuals::light()` / `dark()`, system-following, override in View (ADR-007). Dark is what most users of this category expect (Photoshop, Affinity, Krita, PhotoCraft Pro default dark); light must be equally finished.
-- **Semantic colours** (one `Theme` struct, two instances): `clash` (red family), `pin` (amber), `lock` (blue-grey), `region` (teal), `selection` (accent), `grid` (40 % of fg), each verified for ≥3:1 against the dock surface and visible over the four test palette colours (Black, White, Yellow, Blue).
+- **Semantic colours** (one `Theme` struct, two instances): `clash` (red family; the Colour-limited cells overlay only, never text: red text is kept for errors, which block export, #243), `pin` (amber), `lock` (blue-grey), `region` (teal), `selection` (accent), `grid` (40 % of fg), each verified for ≥3:1 against the dock surface and visible over the four test palette colours (Black, White, Yellow, Blue).
 - **Type:** egui default proportional at 13 px for panels, the status bar in egui's `Small` style as the Figma `Status Bar` draws it (#203; monospace numbers there are a Figma follow-up), monospace for any address/size. Headings 14 px semibold. No display type.
 - **Density:** 8 px spacing unit; rows 24 px in the layer list; 28 px touch targets minimum on controls (egui default), toolbar buttons 24×24 in the 28 px toolbar (Figma `Toolbar Button`; #203).
 - **Icons:** Material Symbols, glyph map in ADR-007, 16 px in rows and toolbar, 20 px for the four tools. Icon + text on every toolbar button except tools (icon + tooltip + key).
@@ -256,7 +257,7 @@ Sample strings:
 | Loading an image | the preview shows the source immediately, then the first solve (<100 ms) replaces it |
 | Solving (fast path) | nothing visible; results arrive within a frame or two |
 | Solving (full search, >200 ms) | status bar progress text + Pause; preview keeps the last result, slightly desaturated |
-| Clashes present | count in status bar in `clash` colour; Clashes overlay suggested once via a dismissible hint, never auto-enabled |
+| Colour-limited cells | count in the status bar and the result header in normal text with a tooltip (a diagnostic: the result is legal); the overlay suggested once via a dismissible hint, never auto-enabled; no dots on the result panel until it is on (#243) |
 | Export | file dialog (native) / download (browser); toast on success; blocked export explains and links to the fix |
 | Undo | every steering action, recipe change and layer edit; slider drags coalesced; `Edit › History` list (v2) |
 | Error in a file | inline in the status bar + a details popover with the byte offset; never a modal unless data would be lost |
@@ -267,7 +268,7 @@ Sample strings:
 - Arrow keys work inside the preview for cell navigation when a tool is active; `Enter` applies the tool to the focused cell.
 - Contrast ≥4.5:1 for text, ≥3:1 for controls and overlays, in both themes.
 - Native AccessKit on desktop; the browser build has no screen-reader support (egui limitation) — stated in the README, not hidden.
-- No information by colour alone: clashes also get an outline and a count; pins/locks have glyphs; disabled swatches are hatched.
+- No information by colour alone: colour-limited cells also get an outline and a count; pins/locks have glyphs; disabled swatches are hatched.
 
 ## 13. What we deliberately do not build
 
@@ -277,10 +278,10 @@ Brushes, pencil, fill, selection marquees, text, skew and perspective (transform
 
 1. Right dock split ratio Recipe : Layers under the fixed Result panel — start 55 : 45, make the divider draggable, see where users leave it. On short windows (<800 px), does the Result panel need a collapse-to-half-height option?
 2. Does the sub-pixel nudge need a visible 0.25 px grid, or is the status-bar readout enough?
-3. Clash heatmap: per-cell error magnitude (continuous) or clash/no-clash (binary) by default?
+3. Colour-limited cells heatmap: per-cell error magnitude (continuous) or limited/not (binary) by default? (Usability review M1: continuous.)
 4. Should "Region" be a pseudo-layer in the Layers list (discoverable) or stay a tool-only object (simpler)?
 5. Does anyone stay in Result mode to work, or is Source-by-default right? Log mode time in the test.
-6. First usability test: 5 users (2 game devs, 2 graphicians, 1 coder), tasks: convert the `title` fixture with a smooth sky; pin the soldier's face colours; export a Koala that loads in VICE. Measure time-to-first-legal-export and whether anyone finds Clashes without a hint.
+6. First usability test: 5 users (2 game devs, 2 graphicians, 1 coder), tasks: convert the `title` fixture with a smooth sky; pin the soldier's face colours; export a Koala that loads in VICE. Measure time-to-first-legal-export and whether anyone finds the Colour-limited cells overlay without a hint.
 
 ## References
 

@@ -21,26 +21,34 @@
 //! counts as stale everywhere.
 //!
 //! **Drivers.** Natively ([`Worker`]) one worker thread runs the work and the core's
-//! `parallel` feature is on. In wasm ([`Stepper`]) there are no threads: the work is cut
-//! at stage boundaries (composite, then solve) and [`Scheduler::tick`] runs it a stage
-//! at a time inside a frame budget ([`Config::frame_budget_ms`], 10 ms by default, so a
-//! 60 Hz frame keeps about 6 ms for the user interface). A full solve then first
-//! delivers the interactive fast path as a provisional result ([`Config::preview_full`],
-//! on in wasm), so the preview follows a release within a frame or two while the full
-//! search runs. A stage is one call into the core and cannot be split, so a full solve
-//! (about 25–75 ms in wasm) is one long frame; it comes after the preview is on screen.
-//! The core is unchanged: every solution is exactly `Solver::solve` on the compositor's
-//! frame.
+//! `parallel` feature is on. In the browser (`Remote`, #265) the submission's composite
+//! stage runs on the page when it is submitted and the solve stages run in a dedicated
+//! Web Worker running the same wasm module; they exchange [`protocol`] messages, each
+//! one transferred `ArrayBuffer` ([`remote`] has both halves, `web` the browser glue).
+//! A full solve first delivers the interactive fast path as a provisional result
+//! ([`Config::preview_full`], on in wasm), so the preview follows a release quickly
+//! while the full search runs. Should the worker fail to start, the browser falls back
+//! to [`Stepper`]: the work cut at stage boundaries and [`Scheduler::tick`] running it a
+//! stage at a time inside a frame budget ([`Config::frame_budget_ms`], 10 ms by
+//! default), where a stage is one call into the core and so one long frame (#194). The
+//! stepping driver also serves headless use and tests everywhere. The core is
+//! unchanged: every solution is exactly `Solver::solve` on the compositor's frame.
 
-mod clock;
+pub(crate) mod clock;
 mod engine;
+pub mod protocol;
+pub mod remote;
 mod stepper;
 #[cfg(test)]
 mod tests;
+#[cfg(target_arch = "wasm32")]
+mod web;
 #[cfg(not(target_arch = "wasm32"))]
 mod worker;
 
 pub use stepper::Stepper;
+#[cfg(target_arch = "wasm32")]
+pub use web::{Remote, serve as serve_worker};
 #[cfg(not(target_arch = "wasm32"))]
 pub use worker::Worker;
 
@@ -77,10 +85,9 @@ pub struct Snapshot {
 /// Wall-clock milliseconds a result took.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Timing {
-    /// Bringing the compositor (and the solver's palette tables, when the palette
-    /// changed) up to date with the snapshot.
+    /// Bringing the compositor up to date with the snapshot.
     pub composite_ms: f64,
-    /// The solve.
+    /// The solve (with the solver's palette tables, when the palette changed).
     pub solve_ms: f64,
 }
 
@@ -137,23 +144,50 @@ impl Default for Config {
 enum Driver {
     #[cfg(not(target_arch = "wasm32"))]
     Thread(Worker),
+    #[cfg(target_arch = "wasm32")]
+    Remote(Box<Remote>),
     Steps(Box<Stepper>),
 }
 
-/// The app's solve scheduler: a worker thread natively, stepping in wasm.
+/// The app's solve scheduler: a worker thread natively, a Web Worker in the browser.
 #[derive(Debug)]
 pub struct Scheduler {
     driver: Driver,
 }
 
 impl Scheduler {
-    /// The platform's driver: a worker thread natively, stepping in wasm.
+    /// The platform's driver: a worker thread natively, a Web Worker in the browser
+    /// (stepping on the page if the worker cannot start).
     pub fn new(config: Config) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         let driver = Driver::Thread(Worker::new(config));
         #[cfg(target_arch = "wasm32")]
-        let driver = Driver::Steps(Box::new(Stepper::new(config)));
+        let driver = match Remote::new(config) {
+            Ok(r) => Driver::Remote(Box::new(r)),
+            Err(e) => {
+                clock::log(&format!(
+                    "convert64: no solve worker ({e:?}); solving on the page instead"
+                ));
+                Driver::Steps(Box::new(Stepper::new(config)))
+            }
+        };
         Self { driver }
+    }
+
+    /// Replaces a failed Web Worker with the stepping driver, which takes over the
+    /// submission that was in the worker.
+    #[cfg(target_arch = "wasm32")]
+    fn fall_back(&mut self) {
+        if !matches!(&self.driver, Driver::Remote(r) if r.failed()) {
+            return;
+        }
+        let Driver::Remote(remote) = std::mem::replace(
+            &mut self.driver,
+            Driver::Steps(Box::new(Stepper::new(Config::default()))),
+        ) else {
+            unreachable!("matched above");
+        };
+        self.driver = Driver::Steps(Box::new(remote.into_fallback()));
     }
 
     /// The stepping driver on any platform (what wasm uses).
@@ -170,6 +204,8 @@ impl Scheduler {
         match &mut self.driver {
             #[cfg(not(target_arch = "wasm32"))]
             Driver::Thread(w) => w.submit(snapshot, mode),
+            #[cfg(target_arch = "wasm32")]
+            Driver::Remote(r) => r.submit(snapshot, mode),
             Driver::Steps(s) => s.submit(snapshot, mode),
         }
     }
@@ -179,6 +215,8 @@ impl Scheduler {
         match &mut self.driver {
             #[cfg(not(target_arch = "wasm32"))]
             Driver::Thread(w) => w.cancel(),
+            #[cfg(target_arch = "wasm32")]
+            Driver::Remote(r) => r.cancel(),
             Driver::Steps(s) => s.cancel(),
         }
     }
@@ -186,20 +224,29 @@ impl Scheduler {
     /// The newest result not yet taken, if any. Call once per frame, after
     /// [`Self::tick`].
     pub fn poll(&mut self) -> Option<SolveResult> {
+        #[cfg(target_arch = "wasm32")]
+        self.fall_back();
         match &mut self.driver {
             #[cfg(not(target_arch = "wasm32"))]
             Driver::Thread(w) => w.poll(),
+            #[cfg(target_arch = "wasm32")]
+            Driver::Remote(r) => r.poll(),
             Driver::Steps(s) => s.poll(),
         }
     }
 
     /// Does this frame's share of the work. Returns whether to request another frame
-    /// for it: stepping work remains. Natively the worker needs no frames (`false`); the
-    /// waker ([`Self::set_waker`]) asks for a repaint when a result is ready.
+    /// for it: stepping work remains. The worker thread and the Web Worker need no
+    /// frames (`false`); the waker ([`Self::set_waker`]) asks for a repaint when a result
+    /// is ready.
     pub fn tick(&mut self) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        self.fall_back();
         match &mut self.driver {
             #[cfg(not(target_arch = "wasm32"))]
             Driver::Thread(_) => false,
+            #[cfg(target_arch = "wasm32")]
+            Driver::Remote(_) => false,
             Driver::Steps(s) => s.tick(),
         }
     }
@@ -209,6 +256,8 @@ impl Scheduler {
         match &self.driver {
             #[cfg(not(target_arch = "wasm32"))]
             Driver::Thread(w) => w.is_busy(),
+            #[cfg(target_arch = "wasm32")]
+            Driver::Remote(r) => r.is_busy(),
             Driver::Steps(s) => s.is_busy(),
         }
     }
@@ -219,6 +268,8 @@ impl Scheduler {
         match &mut self.driver {
             #[cfg(not(target_arch = "wasm32"))]
             Driver::Thread(w) => w.set_waker(waker),
+            #[cfg(target_arch = "wasm32")]
+            Driver::Remote(r) => r.set_waker(waker),
             Driver::Steps(s) => s.set_waker(waker),
         }
     }

@@ -184,6 +184,75 @@ fn composite_10_masked_layers() {
     });
 }
 
+/// Milliseconds since the first call: the compositor's mip clock (#235).
+fn now_ms() -> f64 {
+    static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    ORIGIN.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
+}
+
+/// #235: a 4096 × 2560 16-bit source fitted to the screen (shrunk 12.8×) under
+/// `Downscale::Auto`: the mip levels its first composite builds (the 512 px level, 3 × 3
+/// box reductions), timed by the compositor's clock; the whole cold composite; and a
+/// 0.25 px nudge after it, which builds nothing.
+///
+/// ```sh
+/// cargo test --release -p convert64-core --test bench mip -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "benchmark: run in release with --ignored --nocapture"]
+fn mip_build_4096() {
+    let (w, h) = (4096u32, 2560u32);
+    // 16-bit values, as a 16-bit PNG decodes: a smooth field with fine detail.
+    let px: Vec<[f32; 4]> = (0..w * h)
+        .map(|i| {
+            let (x, y) = (i % w, i / w);
+            let q = |v: u32| (v % 65536) as f32 / 65535.0;
+            [q(x * 16 + y), q(y * 25 + (x ^ y)), q((x * y) >> 4), 1.0]
+        })
+        .collect();
+    let threads = if PARALLEL { "parallel" } else { "sequential" };
+    for mode in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
+        let grid = SuperGrid::new(mode, 1).unwrap();
+        let (mut build, mut cold, mut nudge, mut levels) = (vec![], vec![], vec![], 0);
+        for _ in 0..5 {
+            let src = Arc::new(SourceImage::from_linear(w, h, px.clone()).unwrap());
+            let mut layer = Layer::new("4k", src);
+            let t = Transform::new(
+                Vec2::ZERO,
+                Vec2::new(320.0 / 4096.0, 200.0 / 2560.0),
+                false,
+                false,
+            )
+            .unwrap();
+            layer.set_transform(t);
+            let mut c = Compositor::new(grid);
+            c.set_clock(Some(now_ms));
+            let t0 = Instant::now();
+            c.update(std::slice::from_ref(&layer), &[]);
+            cold.push(t0.elapsed());
+            build.push(Duration::from_secs_f64(c.mip_build_ms() / 1000.0));
+            levels = c.mip_builds();
+            layer.set_transform(
+                Transform::new(Vec2::new(0.25, 0.0), t.scale(), false, false).unwrap(),
+            );
+            let t0 = Instant::now();
+            c.update(std::slice::from_ref(&layer), &[]);
+            nudge.push(t0.elapsed());
+            assert_eq!(c.mip_builds(), levels, "a nudge builds no level");
+        }
+        let (b, c, n) = (stat(build), stat(cold), stat(nudge));
+        println!(
+            "bench: mip build 4096x2560 16-bit, {mode}, {threads}: {levels} reductions {:.1} ms \
+             (min {:.1}, max {:.1}); cold composite with it {:.1} ms; nudge after {:.2} ms",
+            ms(b.median),
+            ms(b.min),
+            ms(b.max),
+            ms(c.median),
+            ms(n.median)
+        );
+    }
+}
+
 /// Times the four cases on `layers` for both modes and prints them, each case name
 /// followed by `suffix`. `nudge(t, k)` is layer 4's transform after `k` steps of the
 /// nudge row, from its transform `t` in `layers`.

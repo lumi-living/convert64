@@ -20,9 +20,9 @@ use crate::colour::ColourIndex;
 use crate::document::SolveSettings;
 use crate::geom::{PxRect, Vec2};
 use crate::layer::{
-    Adjustments, Blend, BrightnessContrast, CellMetric, Curves, FitMode, Gamma, Hsl, Layer, Levels,
-    Method, Metric, OrderedSemantics, PatternPhase, RangeMatch, Recipe, RecipeError, Sharpen, Snap,
-    Transform,
+    Adjustments, Blend, BrightnessContrast, CellMetric, Curves, Downscale, FitMode, Gamma, Hsl,
+    Layer, Levels, Method, Metric, OrderedSemantics, PatternPhase, RangeMatch, Recipe, RecipeError,
+    Sharpen, Snap, Transform,
 };
 use crate::mask::paint::{self, PaintMode};
 use crate::mask::{
@@ -382,6 +382,17 @@ pub struct LayerSetBlend {
     pub layer: usize,
     /// The blend mode.
     pub blend: Blend,
+}
+
+/// Sets how a layer is sampled when shrunk a long way (`layer_set_downscale`, #235):
+/// `auto` samples a cached mip level past a 4× shrink, `exact` always the original, as
+/// png2c64 does.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayerSetDownscale {
+    /// Layer index.
+    pub layer: usize,
+    /// `auto` or `exact`.
+    pub downscale: Downscale,
 }
 
 /// Places a layer on the canvas (`layer_set_transform`): the whole transform, snapped
@@ -842,6 +853,8 @@ pub enum Command {
     LayerSetOpacity(LayerSetOpacity),
     /// `layer_set_blend`.
     LayerSetBlend(LayerSetBlend),
+    /// `layer_set_downscale`.
+    LayerSetDownscale(LayerSetDownscale),
     /// `layer_set_transform`.
     LayerSetTransform(LayerSetTransform),
     /// `layer_rotate`.
@@ -981,6 +994,11 @@ pub const REGISTRY: &[CommandInfo] = &[
     CommandInfo {
         name: "layer_set_blend",
         summary: "Set a layer's blend mode: normal, multiply, screen or overlay.",
+    },
+    CommandInfo {
+        name: "layer_set_downscale",
+        summary: "Set how a layer shrunk a long way is sampled: auto (a cached, \
+                  box-reduced mip level past a 4x shrink) or exact (the original, as png2c64).",
     },
     CommandInfo {
         name: "layer_set_transform",
@@ -1164,6 +1182,7 @@ enum Prop {
     Visible(bool),
     Opacity(f32),
     Blend(Blend),
+    Downscale(Downscale),
     Transform(Transform),
     Name(String),
     Adjustments(Box<Adjustments>),
@@ -1229,6 +1248,7 @@ impl Command {
             Self::LayerSetVisible(_) => "layer_set_visible",
             Self::LayerSetOpacity(_) => "layer_set_opacity",
             Self::LayerSetBlend(_) => "layer_set_blend",
+            Self::LayerSetDownscale(_) => "layer_set_downscale",
             Self::LayerSetTransform(_) => "layer_set_transform",
             Self::LayerRotate(_) => "layer_rotate",
             Self::LayerNudge(_) => "layer_nudge",
@@ -1336,6 +1356,7 @@ impl Command {
             | Self::LayerReorder(_)
             | Self::LayerSetVisible(_)
             | Self::LayerSetBlend(_)
+            | Self::LayerSetDownscale(_)
             | Self::LayerSetTransform(_)
             | Self::LayerDuplicate(_)
             | Self::AdjustmentsSet(_)
@@ -1505,6 +1526,7 @@ impl Command {
             Self::LayerSetVisible(c) => set_prop(p, c.layer, Prop::Visible(c.visible)),
             Self::LayerSetOpacity(c) => set_prop(p, c.layer, Prop::Opacity(c.opacity)),
             Self::LayerSetBlend(c) => set_prop(p, c.layer, Prop::Blend(c.blend)),
+            Self::LayerSetDownscale(c) => set_prop(p, c.layer, Prop::Downscale(c.downscale)),
             Self::LayerSetTransform(c) => {
                 let t = snapped(p, c.layer, c.transform, c.snap)?;
                 set_prop(p, c.layer, Prop::Transform(t))
@@ -1778,6 +1800,11 @@ fn swap_prop(l: &mut Layer, value: Prop) -> Result<Prop, CommandError> {
             let old = l.blend();
             l.set_blend(v);
             Prop::Blend(old)
+        }
+        Prop::Downscale(v) => {
+            let old = l.downscale();
+            l.set_downscale(v);
+            Prop::Downscale(old)
         }
         Prop::Transform(v) => {
             let old = l.transform();
@@ -2403,7 +2430,7 @@ mod tests {
         ] {
             assert!(names.contains(&c.name()));
         }
-        assert_eq!(names.len(), 43);
+        assert_eq!(names.len(), 44);
     }
 
     /// #198: transform commands snap by the project's setting unless told otherwise;
@@ -2547,6 +2574,10 @@ mod tests {
             Command::LayerSetBlend(LayerSetBlend {
                 layer: 1,
                 blend: Blend::Screen,
+            }),
+            Command::LayerSetDownscale(LayerSetDownscale {
+                layer: 1,
+                downscale: Downscale::Exact,
             }),
             Command::LayerSetTransform(LayerSetTransform {
                 layer: 0,

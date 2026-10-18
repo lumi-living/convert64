@@ -9,6 +9,8 @@ use convert64_core::solve::{Pin, Solver};
 use convert64_core::{CellPos, CellSet, ColourSet, Compositor};
 use std::time::Duration;
 
+mod remote;
+
 const WAIT: Duration = Duration::from_secs(120);
 
 /// A colourful full-screen background and a small square on top at `x`.
