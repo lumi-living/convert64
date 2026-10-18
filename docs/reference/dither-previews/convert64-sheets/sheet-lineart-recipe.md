@@ -9,7 +9,7 @@
 | lineart | 100.000 % | 87.614 % |
 | logo (tile 13's settings on the port) | 100.000 % | 94.402 % |
 
-Checks: tile 13 rebuilt here from the ports is 100.000 % identical to the cause sheet's; the recipe's golden (`fixtures/lineart/expected_lineart-recipe.png`) is 87.614 % identical to tile 13.
+Checks: tile 13 rebuilt here from the ports is 100.000 % identical to the cause sheet's; the recipe's golden (`fixtures/lineart/expected_lineart-recipe.png`) is 100.000 % identical to tile 13.
 
 ## What tile 13 does that #273's recipe did not
 
