@@ -272,6 +272,29 @@ struct Check {
     port_bg: Option<u8>,
 }
 
+/// Tile 13 of lineart's row, as the cause sheet renders it: png2amiga's port with its
+/// widened Lanczos-3, gamma 1.5 and `--black-point 0.5`, hi-res `none`, the cells limited
+/// to Pepto's greys (`cargo xtask lineart-sheet` compares the line-art recipe with it).
+pub(crate) fn lineart_tile13() -> Result<RgbImage, String> {
+    let f = Fixture::load("lineart", true)?;
+    let greys = GREYS.iter().fold(0u16, |m, &g| m | (1 << g));
+    let greys_only = c64::Hooks {
+        rules: vec![
+            quantize::CellRule {
+                candidates: greys,
+                required: 0,
+            };
+            1000
+        ],
+        ..c64::Hooks::default()
+    };
+    Ok(draw(&f.p2a_encode(
+        &f.p2a_front(Scaler::Lanczos, 0.5),
+        1.0,
+        &greys_only,
+    )))
+}
+
 /// Every tile of one fixture's row.
 fn row(name: &str, hires: bool) -> Result<(Vec<Tile>, Check), String> {
     let root = repo_root();

@@ -319,3 +319,45 @@ match-range-amount = 400
     assert_eq!(b["refine"], false, "{b:#}");
     assert_eq!(file("c.png")["exit_code"], 2);
 }
+
+/// ADR-014 §4: the line-art recipe file (`examples/recipes/lineart.toml`) works as a
+/// manifest: hi-res Art Studio files, solved by the reference, using only the greys.
+#[test]
+fn the_line_art_recipe_file_is_a_manifest() {
+    let dir = temp("batch-lineart");
+    let art = dir.join("art");
+    std::fs::create_dir_all(&art).unwrap();
+    picture(&art.join("a.png"), 0);
+    let manifest =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/recipes/lineart.toml");
+    let r = convert64(
+        &dir,
+        &[
+            "batch",
+            "art",
+            "--manifest",
+            manifest.to_str().unwrap(),
+            "--out",
+            "build",
+            "--json",
+        ],
+    );
+    let v = report(&r);
+    assert_eq!(r.status.code(), Some(0), "{v:#}");
+    let a = &v["files"][0];
+    assert_eq!(a["mode"], "hires-bitmap", "{a:#}");
+    assert_eq!(a["solver"], "reference", "{a:#}");
+    let bytes = std::fs::read(dir.join("build/a.art")).unwrap();
+    let file = convert64_formats::BitmapFormat::ArtStudio
+        .read(&bytes)
+        .unwrap();
+    let greys = [0u8, 11, 12, 15, 1];
+    let used: Vec<u8> = file
+        .image
+        .to_indexed()
+        .pixels()
+        .iter()
+        .map(|c| c.get())
+        .collect();
+    assert!(used.iter().all(|c| greys.contains(c)));
+}

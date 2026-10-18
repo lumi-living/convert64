@@ -250,6 +250,26 @@ fn solved_with(
     opts: &SolveOptions,
     gamma: Gamma,
 ) -> Arc<Solved> {
+    solved_layer(name, format, variant, opts, &|layer| {
+        layer.set_recipe(recipe);
+        // png2c64's preprocessing (`Gamma::PNG2C64`), so both converters solve (and are
+        // scored against) the same picture (#142).
+        layer.set_adjustments(Adjustments {
+            gamma,
+            ..Adjustments::default()
+        });
+    })
+}
+
+/// [`solved_with`] for a layer `setup` makes: the fixture fitted to the screen, then
+/// `setup`'s recipe, adjustments and resampling.
+fn solved_layer(
+    name: &str,
+    format: BitmapFormat,
+    variant: &str,
+    opts: &SolveOptions,
+    setup: &dyn Fn(&mut Layer),
+) -> Arc<Solved> {
     static CACHE: OnceLock<Mutex<HashMap<String, Arc<Solved>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Mutex::default);
     let key = format!("{name}/{variant}");
@@ -278,13 +298,7 @@ fn solved_with(
         )
         .expect("fit to screen"),
     );
-    layer.set_recipe(recipe);
-    // png2c64's preprocessing (`Gamma::PNG2C64`), so both converters solve (and are
-    // scored against) the same picture (#142).
-    layer.set_adjustments(Adjustments {
-        gamma,
-        ..Adjustments::default()
-    });
+    setup(&mut layer);
     let grid = SuperGrid::with_default_factor(mode_of(format)).expect("bitmap grid");
     let mut c = Compositor::new(grid);
     c.update(&[layer], &[]);
@@ -340,6 +354,17 @@ fn variant_result(
     gamma: Gamma,
 ) -> (Arc<Solved>, Result<(), String>) {
     let s = solved_with(name, format, variant, recipe, opts, gamma);
+    judge_variant(name, format, variant, s)
+}
+
+/// A solved variant validated, rendered, written as a candidate `expected_<variant>.png`
+/// and compared with the committed one within the fixture's `mse_vs_golden_max`.
+fn judge_variant(
+    name: &str,
+    format: BitmapFormat,
+    variant: &str,
+    s: Arc<Solved>,
+) -> (Arc<Solved>, Result<(), String>) {
     assert_eq!(validate(&s.output), Ok(()), "{name}/{variant}: not legal");
     let rendered = render(&s.output, &Palette::pepto_pal());
     let file = format!("expected_{variant}.png");
@@ -368,6 +393,65 @@ fn variant_result(
         ))
     };
     (s, result)
+}
+
+/// ADR-014 §4: the line-art recipe, an opt-in chosen by eye on #273's cause sheet (tile
+/// 13) and made on the reference path: hi-res `none` at gamma 1.5, the layer resampled
+/// with png2amiga's widened Lanczos-3, black point 0.5, and the cells limited to Pepto's
+/// greys (black, dark grey, grey, light grey, white).
+mod line_art {
+    use super::{BitmapFormat, judge_variant, solved_layer};
+    use convert64_core::ColourIndex;
+    use convert64_core::colour::ColourSet;
+    use convert64_core::layer::FitMode;
+    use convert64_core::layer::{
+        Adjustments, BlackPoint, DitherKind, Gamma, Method, Metric, PatternPhase, Recipe, Resample,
+    };
+    use convert64_core::solve::{SolveOptions, SolverKind};
+
+    /// Pepto's greys by lightness: black, dark grey, grey, light grey, white.
+    pub(super) const GREYS: [u8; 5] = [0, 11, 12, 15, 1];
+
+    #[test]
+    fn lineart_recipe() {
+        let s = solved_layer(
+            "lineart",
+            BitmapFormat::ArtStudio,
+            "lineart-recipe",
+            &SolveOptions::default(),
+            &|layer| {
+                let greys: ColourSet = GREYS
+                    .iter()
+                    .map(|&c| ColourIndex::new(c).expect("a palette index"))
+                    .collect();
+                let recipe = Recipe::new(
+                    Method::new(DitherKind::None),
+                    0.0,
+                    PatternPhase::default(),
+                    Metric::default(),
+                    greys,
+                    FitMode::default(),
+                )
+                .expect("a valid recipe");
+                layer.set_recipe(recipe);
+                layer.set_adjustments(Adjustments {
+                    gamma: Gamma::PNG2C64,
+                    black_point: BlackPoint::new(0.5).expect("in range"),
+                    ..Adjustments::default()
+                });
+                layer.set_resample(Resample::Lanczos);
+            },
+        );
+        assert_eq!(s.solution.solver, SolverKind::Reference);
+        assert_eq!(s.solution.fallback, None);
+        let used: std::collections::BTreeSet<u8> =
+            s.output.pixels().iter().map(|c| c.get()).collect();
+        assert!(used.iter().all(|c| GREYS.contains(c)), "{used:?}");
+        let (_, result) = judge_variant("lineart", BitmapFormat::ArtStudio, "lineart-recipe", s);
+        if let Err(e) = result {
+            panic!("{e}");
+        }
+    }
 }
 
 /// Solver knobs (#123) on `portrait`.

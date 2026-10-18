@@ -35,6 +35,7 @@ mod cause_sheet;
 mod font;
 mod frontend;
 mod goldens;
+mod lineart_sheet;
 mod metric_check;
 mod png2amiga;
 mod previews;
@@ -180,6 +181,10 @@ enum Command {
     /// differences from png2c64 swapped at a time, every tile's flags and its share of
     /// pixels identical to the png2c64 baseline (`sheet-cause.png`, `sheet-cause.md`).
     CauseSheet,
+    /// The line-art recipe (ADR-014 §4) on the reference path, next to png2c64's
+    /// baseline, png2amiga as shipped and the cause sheet's tile 13, on lineart and on a
+    /// synthetic logo (`sheet-lineart.png`, `sheet-lineart.md`).
+    LineartSheet,
     /// Scores candidate quality metrics against Jaakko's eye-ranked pairs
     /// (`fixtures/eye-rankings.toml`): each pair re-rendered as the reviewed sheet showed
     /// it, both scored against the same reference; prints each metric's agreement.
@@ -297,6 +302,7 @@ fn main() -> ExitCode {
         },
         Command::ReferenceSheet => reference_sheet::run(),
         Command::CauseSheet => cause_sheet::run(),
+        Command::LineartSheet => lineart_sheet::run(),
         Command::MetricCheck => metric_check::run(),
         Command::Png2amiga { action } => match action {
             Png2amigaAction::Build { variant, compiler } => png2amiga::build(variant, &compiler),
