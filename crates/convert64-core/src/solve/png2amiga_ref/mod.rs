@@ -1,5 +1,5 @@
-//! The reference solver since ADR-013: a faithful port of png2amiga's C64 bitmap path
-//! (#261).
+//! A faithful port of png2amiga's C64 bitmap path (#261): the png2amiga solver, a
+//! comparison solver since ADR-014 (ADR-013 had made it the reference).
 //!
 //! Ported from [png2amiga](https://github.com/tinic/png2amiga) by Tinic Uro, MIT licence,
 //! at commit `4a8777653536ac07074a650ee86860347c8755fb` (v1.111.2); see `THIRD_PARTY.md`.

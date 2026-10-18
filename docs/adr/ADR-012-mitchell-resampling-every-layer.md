@@ -1,6 +1,6 @@
 # ADR-012: png2c64's Mitchell bicubic for every layer, on the target grid
 
-**Status:** Accepted; superseded in part by ADR-013 (png2amiga's widened Lanczos-3 replaces Mitchell for every layer's colour, #261)
+**Status:** Accepted
 **Date:** 2026-10-13
 **Deciders:** Jaakko Haaparanta
 

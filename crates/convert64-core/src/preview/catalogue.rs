@@ -42,10 +42,24 @@ impl MethodInfo {
         crate::solve::reference::ref_method(self.kind).is_some()
     }
 
-    /// Whether png2amiga's C64 path has this method: the reference solver solves it
+    /// Whether png2amiga's C64 path has this method: the png2amiga solver solves it
     /// (#261; the search finds it by `png2amiga`).
     pub const fn in_png2amiga(&self) -> bool {
         crate::solve::reference_png2amiga::ref_method(self.kind).is_some()
+    }
+
+    /// The card's tooltip: the description, and for one of png2amiga's own methods
+    /// (ADR-014 §6) what it does on the default solver.
+    pub fn tooltip(&self) -> String {
+        if self.kind.is_png2amiga_only() {
+            format!(
+                "{}\npng2amiga's method (experimental): exact with the png2amiga solver; \
+                 the Reference solver runs a native stand-in",
+                self.description
+            )
+        } else {
+            self.description.to_owned()
+        }
     }
 
     /// Whether every word of `query` (case-insensitive) is part of the name, the id, an
@@ -737,6 +751,28 @@ mod tests {
         assert_eq!(palette_aware.len(), 13);
         assert!(search("png2amiga").contains(&DitherKind::OptChecker));
         assert!(!search("png2amiga").contains(&DitherKind::Ostromoukhov));
+    }
+
+    /// ADR-014 §6: png2amiga's 32 own methods say on their card that they are the
+    /// png2amiga solver's; every other card is its description.
+    #[test]
+    fn png2amiga_s_own_methods_say_so() {
+        let own: Vec<_> = CATALOGUE
+            .iter()
+            .filter(|m| m.kind.is_png2amiga_only())
+            .collect();
+        assert_eq!(own.len(), 32);
+        for m in &CATALOGUE {
+            assert_eq!(
+                m.tooltip().contains("png2amiga solver"),
+                m.kind.is_png2amiga_only(),
+                "{:?}",
+                m.kind
+            );
+            if m.kind.is_png2amiga_only() {
+                assert!(m.in_png2amiga() && !m.in_png2c64(), "{:?}", m.kind);
+            }
+        }
     }
 
     #[test]

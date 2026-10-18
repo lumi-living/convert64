@@ -450,6 +450,47 @@ impl DitherKind {
         }
     }
 
+    /// Whether this is one of the 32 methods only png2amiga has (#261): the png2amiga
+    /// solver's. On the reference (png2c64's port) they go to the native solver, which runs
+    /// [`Self::native`]'s stand-in, until each is judged on our pipeline (ADR-014 §6).
+    pub const fn is_png2amiga_only(self) -> bool {
+        matches!(
+            self,
+            Self::Bayer3
+                | Self::Bayer5
+                | Self::Bayer6
+                | Self::Bayer7
+                | Self::V4x2
+                | Self::Bayer4x2
+                | Self::Bayer2x4
+                | Self::LineVChecker
+                | Self::Fractal16
+                | Self::AsepriteOld
+                | Self::Libcaca3
+                | Self::Libcaca6
+                | Self::Pegasus
+                | Self::VoidCluster
+                | Self::ClusterNoise
+                | Self::CranleyBayer
+                | Self::IgnTri
+                | Self::R2Tri
+                | Self::Quasicrystal
+                | Self::Truchet
+                | Self::FloydSteinbergOklab
+                | Self::Gilbert
+                | Self::Dbs
+                | Self::StructureFs
+                | Self::ContrastFs
+                | Self::Yliluoma
+                | Self::OptChecker
+                | Self::OptLine
+                | Self::OptLineChecker
+                | Self::OptVline
+                | Self::OptVlineChecker
+                | Self::TriTone
+        )
+    }
+
     /// The kind the native solver runs for this one (#261). The kinds only png2amiga has
     /// are the reference's; on the native solver its threshold patterns are used as they
     /// are (`solve::ordered::threshold`), and the others stand in for the nearest native

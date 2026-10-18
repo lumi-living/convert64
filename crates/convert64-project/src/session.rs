@@ -754,7 +754,7 @@ impl Session {
     }
 
     /// SSIMULACRA2 of the last solve against the frame it was solved from, the prepared
-    /// composite on the target grid (ADR-013 §4, [`convert64_core::quality::score_bitmap`]
+    /// composite on the target grid (information only, ADR-014 §7; [`convert64_core::quality::score_bitmap`]
     /// gives the pairing). `None` before the first solve. Call it right after
     /// [`Self::solve`]: anything that composites again in between (an edit, a preview)
     /// moves the frame on. About 2 ms native and 8 ms in wasm for 320 × 200.

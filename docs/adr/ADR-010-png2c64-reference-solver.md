@@ -1,6 +1,6 @@
 # ADR-010: png2c64's pipeline, ported, as the default bitmap solver
 
-**Status:** Accepted; superseded in part by ADR-013 (png2amiga's C64 path is the reference, #261)
+**Status:** Accepted
 **Date:** 2026-10-12
 **Deciders:** Jaakko Haaparanta
 

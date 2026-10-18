@@ -1,4 +1,4 @@
-//! SSIMULACRA2 against png2amiga's own (ADR-013 §4): every pair below must score what
+//! SSIMULACRA2 against png2amiga's own (#261): every pair below must score what
 //! png2amiga's `ssimulacra2::compute` scores it, recorded in
 //! `tests/data/ssimulacra2/reference.toml`.
 //!

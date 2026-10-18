@@ -1,11 +1,15 @@
-# png2amiga's C64 path as the reference solver (#261, ADR-013)
+# png2amiga's C64 path, ported: the png2amiga solver (#261, ADR-014)
 
 `convert64_core::solve::png2amiga_ref` ports png2amiga's C64 bitmap path (multicolor and
-hi-res) so that our output is pixel-identical to png2amiga's. It is the reference solver
-(`SolverKind::Reference`) since [ADR-013](../adr/ADR-013-png2amiga-c64-reference.md) (in PR #262), which moved the reference from
-png2c64 ([png2c64-reference.md](png2c64-reference.md), kept behind `--solver png2c64`).
-This page records which png2amiga build is "the reference", why, what differs from the
-png2c64 port, and how the test data was produced.
+hi-res) so that its output is pixel-identical to png2amiga's. It is a comparison solver,
+`SolverKind::Png2amiga` (`--solver png2amiga`), with png2amiga's own front end (its
+widened Lanczos-3 for every layer and its preprocessing maths). [ADR-013](../adr/ADR-013-png2amiga-c64-reference.md)
+made it the reference; by eye its pictures were worse than png2c64's on five of six
+fixtures, so [ADR-014](../adr/ADR-014-png2c64-stays-reference.md) kept png2c64's port
+([png2c64-reference.md](png2c64-reference.md)) as the reference. This page records which
+png2amiga build the port is tested against, why, what differs from the png2c64 port, and
+how the test data was produced. The renders are committed (`fixtures/png2amiga/`,
+`dither-previews/png2amiga-*`); CI never builds png2amiga.
 
 ## The reference build
 
@@ -75,8 +79,8 @@ png2amiga's C64 encoder began as a merge of png2c64 (`c64.hpp`). File by file, a
 | `cell_graph_refine.hpp` (`--cell-refine`) | — | opt-in Refine: coordinate descent on the 3 × 3-blurred image difference (every register: background, screen-RAM nibbles, colour RAM; then every bitmap bit unless the method is ordered, which instead re-runs its picker), four passes in linear RGB and four in OKLab, a full-image SSIMULACRA2 after each, the best kept only if it beats the start; it may change the multicolor background |
 
 Convert64's own defaults (`checker` 0.7, error clamp 0.1, gamma 1.5, Pepto, cell metric
-`mse`) do not change with ADR-013: they need a separate decision. The fixture baselines
-are made with them, spelled out; the portrait previews use png2amiga's own defaults.
+`mse`) are not png2amiga's. The png2amiga baselines (`fixtures/png2amiga/`) are made with
+Convert64's, spelled out; the portrait previews use png2amiga's own defaults.
 
 **Background rule (#273).** `solve.background_rule` (`--bg-rule`, `solve_set`'s
 `background_rule`): `black` is png2amiga's colour 0 and the default, which the parity
@@ -84,7 +88,8 @@ tests use; `search` runs png2c64's outer loop over all 16 backgrounds on png2ami
 encoder (`png2amiga_ref::c64::search_background`): per background, the sum over the free
 cells of each cell's least `mse` error over the 455 triples of the other colours
 (unbiased; png2c64 biases it for ordered methods), the lowest total winning. It acts only
-on the reference in multicolor when the background is not pinned.
+on the png2amiga solver in multicolor when the background is not pinned (experimental;
+the reference always searches, as png2c64 does).
 
 **Which differences cost the quality (#273).** `cargo xtask cause-sheet` swaps one
 difference at a time at png2c64's baseline flags
@@ -108,25 +113,27 @@ preprocessing (identical steps at equal gamma) each move at most 1 point of iden
 
 and requires at least 99 % of pixels identical to png2amiga's render in each case. **All
 224 cases are 100 %.** `crates/convert64-cli/tests/png2amiga_convert.rs` holds
-`convert64 convert` (the product: compositor front end, reference solver, Refine) to the
-fixture renders. CI runs both in the `png2amiga parity` step; png2c64's parity test is
-kept but ignored (`cargo test --test png2c64_parity -- --ignored`).
+`convert64 convert --solver png2amiga` (the product: png2amiga's front end in the
+compositor, the png2amiga solver, Refine; `--match-range-method hull` for png2amiga's
+`--match-range`) to the fixture renders: 20 cases, all 100 %. CI runs both in its own
+`png2amiga parity` step, a test of the port, not of quality; png2c64's parity is the gate
+of the reference (ADR-014).
 
 The renders are png2amiga's own `.koa` / `.hir` output (their bytes are Convert64's Koala
 and Art Studio layouts), drawn at 320 × 200 through Pepto:
 
 | Where | What |
 |---|---|
-| `fixtures/<name>/baseline.kla` / `.art`, `baseline.png` | the fixture at its baseline's settings |
-| `fixtures/<name>/baseline_match_range.png`, `baseline_refine.png` | with `--match-range`, `--cell-refine` |
-| `fixtures/portrait/baseline_sharpen_±0.5.png` | with `--sharpen ±0.5` |
+| `fixtures/png2amiga/<name>/baseline.kla` / `.art`, `baseline.png` | the fixture at its baseline's settings |
+| `fixtures/png2amiga/<name>/baseline_match_range.png`, `baseline_refine.png` | with `--match-range`, `--cell-refine` |
+| `fixtures/png2amiga/portrait/baseline_sharpen_±0.5.png` | with `--sharpen ±0.5` |
 | `docs/reference/dither-previews/png2amiga-card/`, `png2amiga-card-hires/`, `png2amiga-portrait/` | every method |
 
-png2c64's baselines moved to `fixtures/archive/png2c64/` and are no longer gated.
+The fixtures' gated baselines are png2c64's, in `fixtures/<name>/` (ADR-014).
 
 ## SSIMULACRA2
 
-The score on the sheets and in `--json` is png2amiga's own SSIMULACRA2
+The score in `--json` (information only, ADR-014 §7) is png2amiga's own SSIMULACRA2
 (`convert64_core::quality`, bit-identical to png2amiga's scalar build), taken as png2amiga
 takes it for C64: the prepared input against the render, at the mode's logical raster,
 in linear light. The Refine step keeps its result only if that score improves, so the port

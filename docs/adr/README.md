@@ -16,3 +16,5 @@ One file per decision, `ADR-NNN-short-title.md`, copied from `ADR-000-template.m
 | [010](ADR-010-png2c64-reference-solver.md) | png2c64's pipeline, ported, as the default bitmap solver | Accepted |
 | [011](ADR-011-layer-transform-affine-subpixel.md) | Layer transform: translate, scale, rotate; sub-pixel by default, snapping on request | Accepted (resampling amended by 012) |
 | [012](ADR-012-mitchell-resampling-every-layer.md) | png2c64's Mitchell bicubic for every layer, on the target grid | Accepted |
+| [013](ADR-013-png2amiga-c64-reference.md) | png2amiga's C64 path as the reference | Superseded by 014 |
+| [014](ADR-014-png2c64-stays-reference.md) | png2c64 stays the reference; png2amiga becomes a comparison solver (reverses 013) | Accepted |

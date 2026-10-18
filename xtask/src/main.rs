@@ -189,7 +189,8 @@ enum Command {
     /// (`fixtures/eye-rankings.toml`): each pair re-rendered as the reviewed sheet showed
     /// it, both scored against the same reference; prints each metric's agreement.
     MetricCheck,
-    /// The reference png2amiga (ADR-013): build it, or render the baselines and previews.
+    /// png2amiga's reference build (the png2amiga solver's parity references): build it,
+    /// or render its baselines (`fixtures/png2amiga/`) and previews.
     Png2amiga {
         #[command(subcommand)]
         action: Png2amigaAction,

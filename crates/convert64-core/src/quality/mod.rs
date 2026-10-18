@@ -1,7 +1,8 @@
-//! Quality scores of a result against what it was made from (ADR-013 §4).
+//! Quality scores of a result against what it was made from (#261).
 //!
-//! [`ssimulacra2`] is the score: on the sheets, in the CLI's `--json` and in the app's
-//! status bar. [`score_bitmap`] pairs a solve's output with its frame the way png2amiga
+//! [`ssimulacra2`] is reported in the CLI's `--json` and by the MCP `solve` tool, as
+//! information only: no score decides quality, and none is a gate or in the app until it
+//! agrees with the eye on 90 % of `fixtures/eye-rankings.toml` (ADR-014 §7). [`score_bitmap`] pairs a solve's output with its frame the way png2amiga
 //! scores its C64 output.
 
 mod ssimulacra2;

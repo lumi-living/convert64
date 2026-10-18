@@ -2,9 +2,8 @@
 //!
 //! What differs from png2c64's (`png2c64_ref::preprocess`):
 //!
-//! - **Gamma defaults to 1** (png2c64: 1.5). Convert64's own default stays 1.5 (a
-//!   separate decision, ADR-013); the reference's [`Settings::default`] is
-//!   png2amiga's.
+//! - **Gamma defaults to 1** (png2c64: 1.5). Convert64's own default stays 1.5; this
+//!   port's [`Settings::default`] is png2amiga's.
 //! - **The OKLab conversions are png2amiga's** (its fast cube root and fused
 //!   multiply-adds, [`super::colour`]), so the same steps give slightly different bits.
 //!   The steps themselves (gamma, the 3 × 3 sharpen/blur on L, levels, brightness,

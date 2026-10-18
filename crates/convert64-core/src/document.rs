@@ -51,23 +51,25 @@ impl Default for Project {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SolveSettings {
-    /// The solver: `reference` (png2amiga's C64 path, the default since ADR-013),
-    /// `png2c64` (png2c64's port) or `native`.
+    /// The solver: `reference` (png2c64's pipeline, the default; `png2c64` is read as
+    /// another name), `png2amiga` (png2amiga's C64 path, a comparison solver, ADR-014) or
+    /// `native`.
     #[serde(default)]
     pub solver: SolverKind,
-    /// png2amiga's `--cell-refine` after the reference solve (#261), kept only if
-    /// SSIMULACRA2 improves; off by default, written only when on.
+    /// png2amiga's `--cell-refine` after a png2amiga solve (#261; experimental, the
+    /// png2amiga solver only), kept only if SSIMULACRA2 improves; off by default, written
+    /// only when on.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub refine: bool,
-    /// The png2c64 port's named divergences, all off by default.
+    /// The reference solver's named divergences from png2c64, all off by default.
     #[serde(default, skip_serializing_if = "Divergences::none")]
     pub divergences: Divergences,
-    /// Background: `auto` (default: not pinned) or `{"fixed": n}`.
+    /// Background: `auto` (default: search all 16) or `{"fixed": n}`.
     #[serde(default)]
     pub background: Background,
-    /// How the reference chooses an unpinned multicolor background: `black` (default,
-    /// png2amiga's colour 0) or `search` (png2c64's search of all 16); written only when
-    /// not the default.
+    /// How the png2amiga solver chooses an unpinned multicolor background: `black`
+    /// (default, png2amiga's colour 0) or `search` (png2c64's search of all 16); written
+    /// only when not the default. The other solvers always search.
     #[serde(default, skip_serializing_if = "BackgroundRule::is_default")]
     pub background_rule: BackgroundRule,
     /// Refinement hysteresis ratio, e.g. 0.97; absent = off.

@@ -143,7 +143,7 @@ pub(crate) struct AffineMap {
     inv_mip: (f64, f64),
     /// Half the footprint's extent along u and v around its centre.
     half: (f64, f64),
-    /// The colour's Lanczos along u and v (ADR-013): `1 / filter_scale` and the reach in
+    /// The colour's Lanczos along u and v (ADR-014 §3): `1 / filter_scale` and the reach in
     /// taps each side, widened by the footprint's shrink on the level.
     lanczos: [(f32, i64); 2],
     /// The super pixels the layer's quad can touch: its bounding box on the grid.
@@ -369,7 +369,7 @@ impl AffineMap {
     /// The colour's Lanczos sample of `src` (mip level [`Self::level`], `mw × mh`) at
     /// layer `(u, v)` (level-0 coordinates), separable along the source's axes: each row
     /// of taps summed across in tap order from 0 and clamped to `0..=1`, the rows summed
-    /// down the same way and clamped (ADR-013). `wx` and `wy` are scratch for the
+    /// down the same way and clamped (as png2amiga's scaler). `wx` and `wy` are scratch for the
     /// weights. A lattice map copies, as [`Self::sample`] does.
     #[inline(always)]
     #[expect(

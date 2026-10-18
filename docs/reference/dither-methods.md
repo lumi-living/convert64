@@ -119,30 +119,34 @@ most converters lack.
 `mse` (default), `blur` (Pappas–Neuhoff: compare after a small blur — models
 the eye at viewing distance, good for charsets/PETSCII), `ssim` (Wang).
 These choose cell colour sets; the dither method then places pixels. On the png2amiga
-reference (#261) `mse` and `blur` are png2amiga's and choose the colours only of cells
+solver (#261) `mse` and `blur` are png2amiga's and choose the colours only of cells
 whose method is `none`; png2amiga's own default is `blur`, Convert64's stays `mse`.
 
-## 7. png2amiga's methods (#261, ADR-013)
+## 7. png2amiga's methods: the png2amiga solver (#261, ADR-014)
 
-Since ADR-013 the reference solver is png2amiga's C64 path
-([png2amiga-reference.md](png2amiga-reference.md)), and every method it offers for C64
-is a kind, solved by the reference exactly as png2amiga solves it (the parity test covers
-all 68 of its ids on the card, multicolor and hi-res, and the portrait). On png2amiga's
-path **every method runs after the cell colours are chosen**: ordered and noise
+The png2amiga solver (`--solver png2amiga`, a comparison solver since
+[ADR-014](../adr/ADR-014-png2c64-stays-reference.md);
+[png2amiga-reference.md](png2amiga-reference.md)) solves every method png2amiga offers
+for C64 exactly as png2amiga does (its parity test covers all 68 of its ids on the card,
+multicolor and hi-res, and the portrait). The 32 below are kinds Convert64 did not have.
+**They are png2amiga-solver methods**: on the reference (png2c64's port, the default)
+they fall back to the native solver, which runs the stand-ins at the end of this
+section, until each is judged by eye on a sheet on the png2c64 pipeline (ADR-014 §6, #275). On
+png2amiga's path **every method runs after the cell colours are chosen**: ordered and noise
 thresholds offset the target (`L + 0.15·t·s`, `a, b + 0.03·t·s`), diffusion spreads the
 residual in gamma-encoded sRGB, palette-aware methods pick from the cell's 2 or 4 colours.
 Renders: `dither-previews/png2amiga-card/`, `png2amiga-card-hires/`,
 `png2amiga-portrait/`.
 
-Kinds Convert64 already had take png2amiga's algorithm on the reference path where the
-ids match: `bayer2/4/8`, `checker`, `h2x4`, `clustered4`, `halftone8`, `diagonal8`,
+Kinds Convert64 already had take png2amiga's algorithm on the png2amiga solver where the
+ids match (on the reference they keep png2c64's or ours): `bayer2/4/8`, `checker`, `h2x4`, `clustered4`, `halftone8`, `diagonal8`,
 `spiral5`, `hex5`, `hex8`, `line-h2/4/8`, `line-v2/4/8`, `line-checker`, `blue-noise`,
 `ign`, `r2`, `white-noise`, `crosshatch`, `radial` (centred at (160, 128), as png2amiga),
 `value-noise`, `floyd-steinberg`, `atkinson`, `jarvis-judice-ninke`, `stucki` (the last
 three with png2amiga's OKLab-tuned weights), `sierra-lite`, `zhou-fang` (png2amiga's:
 Floyd–Steinberg with hashed noise on L), `riemersma` (png2amiga's: a 16-deep exponential
-history in scan order), `yliluoma1`, `yliluoma2`, `knoll`. Kinds png2amiga lacks
-(`fs-wide`, `line-fs`, `ostromoukhov`) go to the png2c64 port; the rest (`bayer16`,
+history in scan order), `yliluoma1`, `yliluoma2`, `knoll`. Under the png2amiga solver,
+kinds png2amiga lacks (`fs-wide`, `line-fs`, `ostromoukhov`) go to the reference; the rest (`bayer16`,
 `clustered8`, `dot`, `diamond`, `star`, `diag-*`, `custom`, `false-fs`, `burkes`,
 `sierra`, `sierra2`, `stevenson-arce`, `shiau-fan1/2`, `yliluoma3`, `luma`, `pair`) to the
 native solver.
@@ -168,8 +172,8 @@ New kinds (png2amiga's spelling accepted as an alias where it differs):
 | `opt-line-checker`, `opt-vline-checker` | Palette-aware | a 4-entry plan on the line / column checker |
 | `tri-tone` | Palette-aware | Yliluoma's tri-tone: a 4-entry plan on Bayer 2 |
 
-On the native solver (`--solver native`, or a frame it must take) the new threshold
-kinds use png2amiga's thresholds (shifted into 0–1, Truchet clamped); the others stand in
+On the native solver (`--solver native`, or a frame it must take, as the reference hands
+it these kinds) the new threshold kinds use png2amiga's thresholds (shifted into 0–1, Truchet clamped); the others stand in
 for the nearest native method (`DitherKind::native`): the Floyd–Steinberg variants for
 `floyd-steinberg`, `gilbert` and `dbs` for `none`, `yliluoma` for `yliluoma2`, the
 optimal pairs and plans for `pair`, `tri-tone` for `knoll`.
