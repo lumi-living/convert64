@@ -15,6 +15,7 @@ convert64-formats = { workspace = true }
 clap = { workspace = true }
 image = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
 
 [lints]
 workspace = true

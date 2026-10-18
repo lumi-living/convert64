@@ -13,6 +13,8 @@ Source images for golden tests. Each folder holds `source.png` (the input) and a
 
 Palette test files (`.vpl`) live in [palettes/](palettes/), generated from the reference table.
 
+[eye-rankings.toml](eye-rankings.toml) holds the pairs of pictures Jaakko ranked by eye on #273's review sheets; `cargo xtask metric-check` scores candidate quality metrics against them (TAD §6). Edit it only to add pairs a human judged.
+
 Layered compositor scenes (E4) live in [composite/](composite/): each `scene.toml` stacks the sources above with transforms, masks, blend modes and regions, and the golden harness compares the 1× composite and the attribute-map debug render.
 
 Rules for new fixtures are in [CONTRIBUTING.md](../CONTRIBUTING.md): rights-clear only, PNG, ≤ 2 MB, 16:10, and a README. Keep `fixtures/_local/` (git-ignored) for anything you cannot redistribute.

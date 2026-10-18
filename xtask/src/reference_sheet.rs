@@ -182,6 +182,123 @@ fn solve_prepared(px: Vec<Lin>, mode: Mode) -> (RgbImage, Vec<Lin>) {
     (img, lin)
 }
 
+/// One tile of the #273 review sheets, rendered as [`run`] renders it (the same calls
+/// with the same arguments), for `cargo xtask metric-check`: `sheet` is `baselines`,
+/// `match-range`, `refine` or `large-sources`; `variant` the tile's name in
+/// `fixtures/eye-rankings.toml`. Returns the 320 × 200 picture and, for the
+/// large sources, the source it was made from.
+pub(crate) fn review_tile(
+    sheet: &str,
+    fixture: &str,
+    variant: &str,
+) -> Result<(RgbImage, Mode), String> {
+    let root = repo_root();
+    let unknown = || format!("unknown review tile {sheet}/{fixture}/{variant}");
+    if sheet == "large-sources" {
+        if fixture != "zoneplate-4096" {
+            return Err(unknown());
+        }
+        let mode = Mode::MulticolorBitmap;
+        let (zone, _, _) = aliasing::fixtures()?;
+        let img = match variant {
+            "old-mitchell-mip" => solve_prepared(old_mitchell_mip(&zone, mode), mode).0,
+            "png2amiga-exact" => solve_prepared(prepared(&zone, mode), mode).0,
+            "mip-accelerated" => {
+                let layer = layer_from_rgba(
+                    "large",
+                    &zone,
+                    convert64_core::layer::DitherKind::Checker,
+                    0.7,
+                    Downscale::Auto,
+                )?;
+                draw(
+                    &solve(&[layer], mode, &SolveOptions::default())?,
+                    &Palette::pepto_pal(),
+                )
+            }
+            _ => return Err(unknown()),
+        };
+        return Ok((img, mode));
+    }
+    let (_, mode, kind, strength) = FIXTURES
+        .into_iter()
+        .find(|f| f.0 == fixture)
+        .ok_or_else(unknown)?;
+    let archived = || png(&root.join(format!("fixtures/archive/png2c64/{fixture}/baseline.png")));
+    let palette = Palette::pepto_pal();
+    let base = || -> Result<Layer, String> {
+        layer_from_rgba(fixture, &source(fixture)?, kind, strength, Downscale::Auto)
+    };
+    let img = match (sheet, variant) {
+        ("baselines", "png2c64") | ("match-range", "png2c64-baseline") => archived()?,
+        ("baselines", "png2amiga") => png(&root.join(format!("fixtures/{fixture}/baseline.png")))?,
+        ("match-range", "off" | "box" | "hull") => {
+            let m = match variant {
+                "off" => None,
+                "box" => Some(
+                    RangeMatch::for_palette(
+                        &palette,
+                        RangeMatch::DEFAULT_PERCENTILE,
+                        RangeMatch::DEFAULT_MARGIN,
+                    )
+                    .map_err(|e| format!("{e:?}"))?,
+                ),
+                _ => Some(RangeMatch::hull(&palette, 1.0).map_err(|e| format!("{e:?}"))?),
+            };
+            let mut layer = base()?;
+            let mut adj = layer.adjustments().clone();
+            adj.match_range = m;
+            layer.set_adjustments(adj);
+            draw(&solve(&[layer], mode, &SolveOptions::default())?, &palette)
+        }
+        ("refine", "off" | "on") => {
+            let opts = SolveOptions {
+                refine: variant == "on",
+                ..SolveOptions::default()
+            };
+            draw(&solve(&[base()?], mode, &opts)?, &palette)
+        }
+        _ => return Err(unknown()),
+    };
+    Ok((img, mode))
+}
+
+/// Where [`review_tile`]'s tile sits in the committed sheet [`run`] wrote: the file and
+/// the tile's top-left corner (the `sheet_with` layout: 8 px gaps, 20 px labels).
+pub(crate) fn review_tile_place(
+    sheet: &str,
+    fixture: &str,
+    variant: &str,
+) -> Option<(&'static str, u32, u32)> {
+    let row = FIXTURES.iter().position(|f| f.0 == fixture);
+    let (file, index, columns) = match (sheet, variant) {
+        ("baselines", "png2c64") | ("match-range", "png2c64-baseline") => {
+            ("sheet-reference-baselines.png", 2 * row?, 4)
+        }
+        ("baselines", "png2amiga") => ("sheet-reference-baselines.png", 2 * row? + 1, 4),
+        ("match-range", v) => (
+            "sheet-match-range.png",
+            3 * row? + ["off", "box", "hull"].iter().position(|x| *x == v)?,
+            3,
+        ),
+        ("refine", v) => (
+            "sheet-refine.png",
+            2 * row? + ["off", "on"].iter().position(|x| *x == v)?,
+            4,
+        ),
+        ("large-sources", v) if fixture == "zoneplate-4096" => (
+            "sheet-large-sources.png",
+            ["old-mitchell-mip", "png2amiga-exact", "mip-accelerated"]
+                .iter()
+                .position(|x| *x == v)?,
+            3,
+        ),
+        _ => return None,
+    };
+    let (col, r) = (index as u32 % columns, index as u32 / columns);
+    Some((file, 8 + col * (320 + 8), 8 + r * (200 + 20 + 8) + 20))
+}
+
 pub(crate) fn run() -> Result<(), String> {
     let root = repo_root();
     let out = root.join("docs/reference/dither-previews/convert64-sheets");

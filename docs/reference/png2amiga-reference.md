@@ -78,6 +78,24 @@ Convert64's own defaults (`checker` 0.7, error clamp 0.1, gamma 1.5, Pepto, cell
 `mse`) do not change with ADR-013: they need a separate decision. The fixture baselines
 are made with them, spelled out; the portrait previews use png2amiga's own defaults.
 
+**Background rule (#273).** `solve.background_rule` (`--bg-rule`, `solve_set`'s
+`background_rule`): `black` is png2amiga's colour 0 and the default, which the parity
+tests use; `search` runs png2c64's outer loop over all 16 backgrounds on png2amiga's
+encoder (`png2amiga_ref::c64::search_background`): per background, the sum over the free
+cells of each cell's least `mse` error over the 455 triples of the other colours
+(unbiased; png2c64 biases it for ordered methods), the lowest total winning. It acts only
+on the reference in multicolor when the background is not pinned.
+
+**Which differences cost the quality (#273).** `cargo xtask cause-sheet` swaps one
+difference at a time at png2c64's baseline flags
+([sheet-cause.md](dither-previews/convert64-sheets/sheet-cause.md)). Three account for
+png2amiga's output differing from png2c64's: the scaler (widened Lanczos-3 against
+4-tap Mitchell), the cell colours (the global Floyd–Steinberg top 3 against png2c64's
+threshold-biased brute force) and the ordered amplitude (strength once, against
+png2c64's strength²). With all three swapped, png2amiga's port reproduces png2c64's
+baselines on 99.886–100 % of pixels. The background search, the colour maths and the
+preprocessing (identical steps at equal gamma) each move at most 1 point of identical pixels.
+
 ## The parity test
 
 `crates/convert64-core/tests/png2amiga_parity.rs` runs the port on:
