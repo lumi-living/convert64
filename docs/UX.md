@@ -128,10 +128,52 @@ Collapsible groups, in this order, all open by default on a tall window:
 1. **Transform** (ADR-011) — X, Y as `DragValue` with 0.01 px step; **W %, H %** with a chain toggle (uniform by default), 0.01 % step, 1–1000 %; **Rotate** in degrees, 0.01° step, −180…180; **anchor** 3×3 picker (pivot for scale and rotate, default centre); **Snap** *Off · C64 pixel · Cell* (default **Off** — everything is sub-pixel because the source is 16-bit and fractional placement is what steers the solver; snapping is for pixel-art sources and logos that must sit on the grid); presets menu: *Fit width · Fit height · Fit screen · Fill screen · 1 source px = 1 C64 px · 2 source px = 1 C64 px · 100 %*; Flip H/V toggles. Arrow keys nudge 1 px, `Shift+arrow` 10 px, `Alt+arrow` 0.25 px (the sub-pixel nudge is the feature; it gets the modifier that no editor uses). Position, scale and rotation are in **C64 target pixels** and are continuous unless Snap is on, so "1 C64 px" means the same thing in hi-res and multicolor (multicolor's 2:1 is applied by the compositor, never by the user).
 2. **Adjustments** — Brightness, Contrast, Saturation, Hue as sliders −100…100 with numeric entry; Levels (black/gamma/white) and Curves (own widget over a histogram); **Range** (*Match the palette's range*, applied last), its own row after Curves. Then **Sharpen** as its own collapsible group right after Adjustments, with its own changed-value dot and Reset (#237) — Amount −100…300 % (negative softens, for noisy photos), Radius as a segment *png2c64 · Gaussian* (png2c64's 3×3 kernel is the default) with the Gaussian's σ (0.3–3.0 C64 px) in a field beside the segment when Gaussian is chosen, Threshold 0–10 % of lightness (tooltip: "Skip changes smaller than this, so noise isn't sharpened") — on lightness only, at the C64 grid after the layer is scaled, so what you see on the Source view is exactly what the solver gets. Reset per widget via double-click on the label (PhotoCraft-style scrubby label) and a group Reset button.
 3. **Mask** — see §7a. Feather radius (target px, slider 0–32), Invert, Levels (black/white/gamma), Snap to cells (*Off / Expand / Contract / Nearest*), a **Sources** list (painted strokes, gradients, keys — each with its combine mode and a delete), and **Edit mask** (enters the mask tools, §7a). A layer without a mask shows one button: **Add mask** (from PNG alpha if the layer has any, otherwise full white).
-4. **Dither recipe** — Method (segmented by family: *None · Ordered · Diffusion · Noise*, then a dropdown within the family), Strength 0–100 % slider, Pattern phase (*Screen-locked / Layer-locked*), Orientation (*Auto / Vertical-biased*). Grouping by family follows Ditherista's lesson: a flat list of 30 methods is unusable.
+4. **Dither recipe** — **Method** (the picker in §6a), Strength 0–100 % slider, Pattern phase (*Screen-locked / Layer-locked*), Orientation (*Auto / Vertical-biased*). Methods are grouped by family, following Ditherista's lesson that a flat list of 60 names is unusable. Every method is shown as a picture, because a dither is judged by eye, not by name.
 5. **Colour fitting** — Metric (*OKLab · CIELAB · Pepto YUV · RGB*), Fitting (*Adaptive / Force*, segmented, with one-line help: "Adaptive lets the solver reassign cell colours for the lowest error. Force keeps this layer's colours even if neighbours pay."), Luma-pair bias toggle, **Allowed colours**: the 16 palette swatches as toggles (all on by default; a disabled swatch is drawn hatched, not hidden).
 
 Controls: `Slider` for bounded values with the value field editable on click; `DragValue` for integers and unbounded numbers; a changed-from-default value shows a small dot before its label (Lightroom/Affinity convention) so the user can see what they touched. Changes commit to undo on drag end, never per frame.
+
+## 6a. Method picker
+
+The Method row is a button: a 32 px thumbnail of the current method, its name and ▾ (Figma `Method Field`), with ▲▼ step buttons beside it (png2amiga's dither stepper). Clicking it, or pressing `Enter` while it has focus, opens the picker (Figma `Method Picker`). The picker is a popover anchored to the dock's left edge, opening over the working view so the result panel stays visible. It is 4 columns wide (about 680 px) and at most the window height minus 120 px, scrolling inside. The same picker serves layer recipes and region recipes.
+
+**Contents, top to bottom**
+
+1. A search field, focused on open. It filters by name, CLI id and aliases (`fs`, `checker`, `png2c64 line2`). Typing anywhere in the picker types into it.
+2. **Preview on:** *Gradient · Picture* (segmented, remembered).
+   - *Gradient* is a diagonal ramp through the current palette's greys plus one hue. The ramp carries ±2/255 seeded jitter, because without it error-diffusion kernels lock into regular patterns that look ordered (png2amiga's lesson).
+   - *Picture* is a 32 × 32 C64-pixel crop of the selected layer, taken at the last cell the cursor was over (or the picture's centre), so methods are compared on the user's own image.
+3. **Recent** — the last four methods used in this project.
+4. Families in fixed order, each under a small uppercase heading: **None · Ordered · Ordered noise · Error diffusion · Palette-aware · Effects**.
+
+**Card (Figma `Method Card`)**
+- A 64 px square thumbnail: 32 × 32 C64 pixels at 2×, nearest-neighbour, with 2:1 pixels in multicolor.
+- The name to its right, wrapping to two lines.
+- A *slow* badge for methods whose full solve exceeds 200 ms (DBS, Yliluoma 1).
+- States:
+  - Default.
+  - Hover: a lighter fill.
+  - Selected: an accent outline and a tinted fill (the current method).
+  - Focused: a focus ring.
+  - Rendering: a neutral placeholder, never a spinner.
+- The tooltip gives the one-line description and the CLI id from `docs/reference/dither-methods.md`.
+
+**Thumbnails are real solves.** Each one is rendered by the solver with the recipe's current mode, palette, strength, phase, metric and allowed colours, so it shows what this layer would get.
+- They render in the background, visible cards first, and can be cancelled. In the browser build they are rendered in small batches, one batch per frame.
+- They are cached by method, settings and source tile. Changing strength re-renders them; reopening the picker does not.
+
+**Live preview** (the font-menu convention of Figma and Photoshop):
+- Resting on a card, or arrowing to it, for 150 ms previews that method on the whole result with an Interactive solve. The result header shows `Preview: Atkinson`.
+- Moving off the card reverts the preview.
+- A click or `Enter` commits the method as one undo step and closes the picker.
+- `Esc` or a click outside reverts and closes.
+
+**Keyboard**
+- The arrows move across the grid.
+- `Home` / `End` jump to the first and last card.
+- With the closed Method button focused, `↑` / `↓` step through methods in picker order with live preview (Photoshop's blend-mode stepping).
+
+**Accessibility:** every card is a focusable widget whose label reads "Atkinson, error diffusion, selected".
 
 ## 7. Cell tools (steering)
 
