@@ -59,6 +59,7 @@ pub(super) fn show(
     let small = |text: String| RichText::new(text).small();
     ui.horizontal_centered(|ui| {
         error(shell, ui);
+        autosave_warning(shell, ui, actions);
         let Some(ws) = ws else {
             ui.label(small("No project".to_owned()));
             return;
@@ -158,6 +159,25 @@ pub(super) fn show(
             }
         });
     });
+}
+
+/// The autosave's failure, one line in the warning colour with a way to dismiss it
+/// (#241: work goes on; the next committed change tries again).
+fn autosave_warning(shell: &Shell, ui: &mut Ui, actions: &mut Vec<Action>) {
+    let Some(text) = &shell.autosave_warning else {
+        return;
+    };
+    let colour = Theme::current(ui.ctx()).warn;
+    ui.label(
+        RichText::new(format!("{} {text}", crate::icons::WARNING.codepoint))
+            .small()
+            .color(colour),
+    );
+    let close = egui::Button::new(crate::icons::CLOSE.rich_text().small()).frame(false);
+    if ui.add(close).on_hover_text("Dismiss").clicked() {
+        actions.push(Action::DismissAutosaveWarning);
+    }
+    ui.separator();
 }
 
 /// The last error, inline in the error colour; a click shows the details and a way to

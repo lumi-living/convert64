@@ -30,7 +30,7 @@ pub use file::{
     EXTENSION, Embed, OLDEST_SCHEMA_VERSION, PaletteSpec, ProjectFile, SCHEMA_VERSION, SolveSpec,
 };
 pub use recipe::RecipeFile;
-pub use session::Session;
+pub use session::{RecoverySource, Session};
 #[cfg(feature = "fs")]
 pub use store::FsStore;
 pub use store::{MemoryStore, Store};
