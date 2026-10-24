@@ -1416,7 +1416,7 @@ mod tests {
     fn tool_options_do_not_leak_between_tools() {
         use convert64_core::mask::PaintMode;
         let none = egui::Modifiers::NONE;
-        let press = |shell, k| frame(shell, vec![key(k, none)]).0;
+        let press = |shell, k| frame_open(shell, vec![key(k, none)]).0;
         // The mask Brush (with mask mode off it builds a selection): X makes it subtract.
         let shell = press(Shell::default(), egui::Key::B);
         let shell = press(shell, egui::Key::X);
