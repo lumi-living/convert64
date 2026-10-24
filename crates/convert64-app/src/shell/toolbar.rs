@@ -69,7 +69,12 @@ pub(super) fn show(
             }
         } else {
             for tool in Tool::ALL {
-                let tip = format!("{} ({})", tool.label(), tool.key().name());
+                let mut tip = format!("{} ({}", tool.label(), tool.key().name());
+                // Transform's Cmd T beside its S, where the platform has it (#286).
+                if let Some(s) = shell.keys.transform.filter(|_| tool == Tool::Transform) {
+                    tip.push_str(&format!(" or {}", ui.ctx().format_shortcut(&s)));
+                }
+                tip.push(')');
                 let on = shell.tool == tool && shell.mask.tool.is_none();
                 if button(ui, tool.icon(), &tip, on, true) {
                     shell.tool = tool;
