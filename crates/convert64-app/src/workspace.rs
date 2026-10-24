@@ -1138,7 +1138,9 @@ mod drag_tests {
     fn a_layer_reaching_past_the_screen_has_the_1x_composite_under_it() {
         let ctx = egui::Context::default();
         let mut ws = workspace(&ctx);
-        ws.edit(None, nudge(0, 10.0), false).unwrap();
+        // The 64 × 40 picture opens at 1:1 at x 128 (#306): 150 px puts it across the
+        // right edge.
+        ws.edit(None, nudge(0, 150.0), false).unwrap();
         ws.prepare(&ctx, false);
         assert_eq!(ws.composites(), composites(2, 0, 0));
         for (i, x) in [1.0, 2.0, 3.0].into_iter().enumerate() {
