@@ -30,7 +30,7 @@ contract: designers change values, not names.
 
 | Collection | Modes | Maps to |
 |---|---|---|
-| `egui / Visuals` | Light, Dark | `egui::Visuals` — `widgets.{noninteractive,inactive,hovered,active,open}.{weak_bg_fill,bg_fill,bg_stroke,fg_stroke}`, `panel_fill`, `window_fill`, `window_stroke`, `faint_bg_color`, `extreme_bg_color`, `code_bg_color`, `selection.*`, `hyperlink_color`, `warn_fg_color`, `error_fg_color`, `text_cursor`, shadows, corner radii, stroke widths |
+| `egui / Visuals` | Light, Dark | `egui::Visuals` — `widgets.{noninteractive,inactive,hovered,active,open}.{weak_bg_fill,bg_fill,bg_stroke,fg_stroke}`, `weak_text_color`, `panel_fill`, `window_fill`, `window_stroke`, `faint_bg_color`, `extreme_bg_color`, `code_bg_color`, `selection.*`, `hyperlink_color`, `warn_fg_color`, `error_fg_color`, `text_cursor`, shadows, corner radii, stroke widths |
 | `egui / Spacing` | Default | `egui::style::Spacing` (`item_spacing`, `button_padding`, `window_margin`, `menu_margin`, `indent`, `interact_size`, `slider_width`, `combo_width`, `text_edit_width`, `icon_width`, …) plus Convert64 layout constants under `convert64/*` → `layout::DOCK_WIDTH`, `RESULT_HEIGHT`, `TOOLBAR_HEIGHT`, `STATUS_HEIGHT`, `LAYER_ROW_HEIGHT`, `ICON_SIZE`, `SWATCH_SIZE` |
 | `egui / Text` | Default | `TextStyle::{Small,Body,Button,Monospace,Heading}` sizes, `FontFamily::{Proportional,Monospace}`, `weak_text_alpha` |
 | `Convert64 / Semantic` | Light, Dark | the app `Theme` struct: `overlay/{clash,pin,lock,region,nudge,cell_grid,char_grid}`, `canvas/{bg,checker_a,checker_b}`, `status/{ok,warn,error}`, `accent`. `warn`/`error`/`accent` alias egui visuals |
@@ -45,8 +45,22 @@ Button / Monospace (egui 0.36: 13 / 13 / 13), `faint_bg_color` as an opaque
 grey (egui: additive luminance 5, which a variable cannot hold) and
 `scroll/bar_width` 6 (egui: 10).
 
+For contrast (usability review M11, #293; WCAG AA, 4.5:1 for text on every
+background it sits on, checked by `theme::tests`) these differ too, and are
+changed in `design/tokens.json` ahead of the Figma file (see #293's Figma
+follow-up):
+- `weak_text_color`, a variable egui leaves unset (it then draws hints as the
+  text colour at `weak_text_alpha` 0.6, about 2.7:1): Light `#606060`, Dark
+  `#8c8c8c`. While it is set, `weak_text_alpha` is unused.
+- `widgets/noninteractive/fg_stroke` (body text) Dark `#aaaaaa` (egui:
+  `#8c8c8c`), so hints stay quieter than body text.
+- `hyperlink_color` (also `accent`) Light `#0062bd` (egui: `#009bff`, 2.8:1
+  on the panel).
+- `TextStyle::Small` 11 (egui: 9): the size of every hint line.
+
 Fonts: Inter stands in for egui's bundled Ubuntu-Light, JetBrains Mono for
-Hack. Sizes are egui's (9 / 12.5 / 12 / 18). If we bundle different fonts in
+Hack. Sizes are Small 11, Body 12.5, Monospace 12, Heading 18 (egui: 9 / 13 /
+13 / 18). If we bundle different fonts in
 the app, update `egui / Text` first.
 
 Deviation from the usual Figma convention: the WEB code syntax holds a Rust

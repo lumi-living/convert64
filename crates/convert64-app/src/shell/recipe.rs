@@ -2477,6 +2477,84 @@ mod tests {
         assert!(!texts.iter().any(|(t, _)| t == "Palette-aware"));
     }
 
+    /// Usability review M11 (#293): with every group open, in both themes, no text in
+    /// the window is smaller than egui's `Small` (11 px), and the hint lines are painted
+    /// in the weak text colour at 4.5:1 or better on the dock.
+    #[test]
+    fn hints_are_small_style_or_larger_and_readable() {
+        fn walk(shape: &egui::Shape, out: &mut Vec<(String, f32, egui::Color32)>) {
+            match shape {
+                egui::Shape::Text(t) => {
+                    for s in &t.galley.job.sections {
+                        let text =
+                            t.galley.job.text[s.byte_range.start.0..s.byte_range.end.0].to_owned();
+                        let colour = if s.format.color == egui::Color32::PLACEHOLDER {
+                            t.fallback_color
+                        } else {
+                            s.format.color
+                        };
+                        let colour = t.override_text_color.unwrap_or(colour);
+                        out.push((text, s.format.font_id.size, colour));
+                    }
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        for theme in [egui::Theme::Light, egui::Theme::Dark] {
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx);
+            ctx.set_theme(theme);
+            let mut ws = workspace(Sharpen::default());
+            let mut shell = Shell {
+                tab: super::super::DockTab::Recipe,
+                ..Shell::default()
+            };
+            for title in GROUP_ORDER {
+                shell.groups.set_open(title, true);
+            }
+            let input = || egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(WINDOW, 3000.0),
+                )),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input(), |ui| {
+                shell.show(ui, Some(&mut ws));
+            });
+            output.textures_delta.clear();
+            let mut output = ctx.run_ui(input(), |ui| {
+                shell.show(ui, Some(&mut ws));
+            });
+            output.textures_delta.clear();
+            let mut texts = Vec::new();
+            for clipped in &output.shapes {
+                walk(&clipped.shape, &mut texts);
+            }
+            let small = crate::theme::text_styles()[&egui::TextStyle::Small].size;
+            let tiny: Vec<_> = texts
+                .iter()
+                .filter(|(t, size, _)| !t.trim().is_empty() && *size < small)
+                .collect();
+            assert!(tiny.is_empty(), "{theme:?}: smaller than Small: {tiny:?}");
+            let visuals = crate::theme::style(theme).visuals;
+            for hint in [
+                "No mask: the whole layer shows.",
+                "Adaptive lets the solver reassign cell colours for the lowest error.",
+            ] {
+                let (_, size, colour) = texts
+                    .iter()
+                    .find(|(t, _, _)| t == hint)
+                    .unwrap_or_else(|| panic!("{theme:?}: no {hint:?}"));
+                assert!(*size >= small, "{hint}: {size} px");
+                assert_eq!(*colour, visuals.weak_text_color(), "{theme:?}: {hint}");
+                let ratio = crate::theme::contrast(*colour, visuals.panel_fill);
+                assert!(ratio >= 4.5, "{theme:?}: {hint} at {ratio:.2}:1");
+            }
+        }
+    }
+
     /// #288: a click on a heading opens the group and the choice is the user's: it
     /// survives the app's storage and holds for another layer's form.
     #[test]

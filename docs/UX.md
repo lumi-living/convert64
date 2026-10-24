@@ -377,7 +377,8 @@ Sample strings:
 
 - **Theme:** egui `Visuals::light()` / `dark()`, system-following, override in View (ADR-007). Dark is what most users of this category expect (Photoshop, Affinity, Krita, PhotoCraft Pro default dark); light must be equally finished.
 - **Semantic colours** (one `Theme` struct, two instances): `clash` (red family; the Colour-limited cells overlay only, never text: red text is kept for errors, which block export, #243), `pin` (amber), `lock` (blue-grey), `region` (teal), `selection` (accent), `grid` (40 % of fg), each verified for ≥3:1 against the dock surface and visible over the four test palette colours (Black, White, Yellow, Blue).
-- **Type:** egui default proportional at 13 px for panels, the status bar in egui's `Small` style as the Figma `Status Bar` draws it (#203), its numbers in the monospace font at that size (m4), monospace for any address/size. Headings 14 px semibold. No display type.
+- **Type:** egui default proportional at 13 px for panels, the status bar in egui's `Small` style as the Figma `Status Bar` draws it (#203), its numbers in the monospace font at that size (m4), monospace for any address/size. Headings 14 px semibold. No display type. No text is smaller than `Small`, which is **11 px** (usability review M11, #293; egui's default is 9): hint lines, the status bar, badges and the working-view hint all use it.
+- **Text colours** (usability review M11, #293): body text, hint (weak) text and links each reach 4.5:1 on every background they sit on (panel, popup, faint stripe, text field, the canvas) in both themes. Hints are egui's `weak_text_color`, set per theme by the `egui / Visuals` variable of that name (Light `#606060`, Dark `#8c8c8c`), not body text at 60 % alpha; dark body text is `#aaaaaa` so hints stay a step quieter; the light accent and link colour is `#0062bd`. A disabled control's faded text is exempt (WCAG 1.4.3), so text that has to be read is never drawn disabled (the dock's line before a picture is open, #292).
 - **Density:** 8 px spacing unit; rows 24 px in the layer list; 28 px touch targets minimum on controls (egui default), toolbar buttons 24×24 in the 28 px toolbar (Figma `Toolbar Button`; #203).
 - **Icons:** Material Symbols, glyph map in ADR-007, 16 px in rows and toolbar, 20 px for the four tools. Icon + text on every toolbar button except tools (icon + tooltip + key).
 - **Motion:** none beyond egui's 100 ms panel animations; the A/B flicker is the only "animation" and it is a feature.
@@ -404,7 +405,7 @@ Sample strings:
 
 - Every control reachable by `Tab`; custom-painted areas (preview, curves, palette swatches) are focusable and report a `WidgetInfo`.
 - Arrow keys work inside the preview for cell navigation when a tool is active; `Enter` applies the tool to the focused cell.
-- Contrast ≥4.5:1 for text, ≥3:1 for controls and overlays, in both themes.
+- Contrast ≥4.5:1 for text, ≥3:1 for controls and overlays, in both themes. The text colours are tested against their backgrounds from the generated theme (§10, #293).
 - Native AccessKit on desktop; the browser build has no screen-reader support (egui limitation) — stated in the README, not hidden.
 - No information by colour alone: colour-limited cells also get an outline and a count; pins/locks have glyphs; disabled swatches are hatched.
 
