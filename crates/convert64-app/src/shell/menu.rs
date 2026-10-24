@@ -77,16 +77,13 @@ pub(super) fn show(
             item(ui, "Reset to Defaults", None, false);
         });
         ui.menu_button("Export", |ui| {
-            if item(ui, "Export…", Some(&s::EXPORT), open)
-                && let Some(ws) = ws
-            {
-                shell.open_export(ws);
+            // Export… shows the Export panel (UX §6b); Export Again writes its set.
+            if item(ui, "Export…", Some(&s::EXPORT), open) {
+                shell.show_export(ui.ctx());
             }
-            let again = open && shell.last_export.is_some();
-            if item(ui, "Export Again", Some(&s::EXPORT_AGAIN), again)
-                && let Some((settings, name)) = shell.last_export.clone()
-            {
-                actions.push(Action::Export(settings, name));
+            let again = ws.is_some_and(|ws| !ws.doc.session().project().exports.is_empty());
+            if item(ui, "Export Again", Some(&s::EXPORT_AGAIN), again) {
+                actions.push(Action::Export { again: true });
             }
         });
         ui.menu_button("Help", |ui| {

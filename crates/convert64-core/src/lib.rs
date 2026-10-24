@@ -8,6 +8,7 @@ pub mod colour;
 pub mod command;
 pub mod composite;
 pub mod document;
+pub mod export;
 pub mod geom;
 pub mod layer;
 pub mod mask;

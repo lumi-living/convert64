@@ -12,7 +12,7 @@ Unknown fields are errors, so a typo never silently does nothing. Values are che
 | `2` | This document as saved before #236, when the default `supersample` was 4 (and every save wrote it) | reads it and migrates it to 3: `supersample` becomes 1, whatever it was |
 | `3` | This document (#236) | reads and writes |
 
-A file with `schema_version` above 3 or below 2 is refused with a message naming the version. A change that old readers would misread (a renamed field, a new meaning) increments `schema_version`, with a migration from the old version; adding an optional field with a default does not.
+A file with `schema_version` above 3 or below 2 is refused with a message naming the version. A change that old readers would misread (a renamed field, a new meaning) increments `schema_version`, with a migration from the old version; adding an optional field with a default does not. Such a field is written only when it differs from its default, so a project that does not use it saves byte for byte as before and still opens in older builds; one that uses it is refused by builds older than the field, since unknown fields are errors. `snap` (#198), `downscale` (#235), a layer's `resample` and `exports` (#287) were added this way, within version 3.
 
 **Migration from 2 (#236).** ADR-012 made 1× the default composite factor, png2c64's look; a version-2 project stores the 4× it was saved with and would keep the softer composite. Loading one sets `supersample` to 1 (the field stays and is written, `"supersample": 1`), so every project looks the same, and reports it once with the note **"Updated project from v2: now uses 1× resampling"**: a `note:` line on stderr and the `notes` array of `--json` reports ([cli.md](cli.md#--json)), a message in the app's status bar, a `note:` line in the MCP server's `project_open` reply. Saving writes version 3, which loads as written and without a note. Version-1 recipe files are not migrated: a recipe states `supersample` only when it means it. (`ProjectFile::migrate`, `ProjectFile::migration_note`, `Session::notes`.)
 
@@ -43,6 +43,7 @@ A file with `schema_version` above 3 or below 2 is refused with a message naming
 | `steering` | no | none | Pins, locks, allow and deny lists; see [Steering](#steering) |
 | `solve` | no | defaults | See [Solve options](#solve-options) |
 | `snap` | no | `"off"` | What `layer_set_transform` and `layer_rotate` round a transform to ([ADR-011](../adr/ADR-011-layer-transform-affine-subpixel.md)): `"off"`, `"c64-pixel"` (translate and the unrotated box's edges on whole target pixels, multicolor 2 canvas px across; rotation in 0.5° steps) or `"cell"` (cell boundaries, 8 × 8 canvas px; 15° steps). Written only when not `"off"`; set by `snap_set` (#198) |
+| `exports` | no | none | The export set: what the app's Export panel, `Shift Cmd E`, `convert64 export` without `--asm` and the MCP server's `export_run` write; see [Export set](#export-set). Written only when not empty; set by `export_set` (#287) |
 | `commands` | no | none | Registry commands run in order after loading, as in a recipe file (`convert64 commands` lists them; since #193 they cover every field above: layers, adjustments, recipes, `target` (`mode_set`), `palette` (`palette_set`), `solve.background` (`background_pin`), the other solve options (`solve_set`) and, since #198, `snap` (`snap_set`)). A saved project has none: their result is in the fields. |
 
 ## Palette
@@ -155,6 +156,28 @@ Cells are `x` 0–39, `y` 0–24; colours are indices 0–15. A pin names 1–4 
 | `luma_pair_bias` | `0.0` | Same-luma pair bias per pair (positive penalises, negative rewards) |
 | `refinements` | `2` | Refinement rounds, 0–2 |
 | `finalists` | `3` | Backgrounds carried from the search into dithering, 1–16 |
+
+## Export set
+
+```json
+"exports": [
+  { "format": "picture" },
+  { "format": "prg" },
+  { "format": "kickass", "data": "include-raw" },
+  { "format": "png", "zoom": 4, "name": "title@4x" }
+]
+```
+
+The rows of the app's Export panel (UX §6b, #287), in order. Each writes the files [file-formats.md](file-formats.md) describes, from the full solve, named after `name` or, without one, the project: in the app the document's name, on the command line the project file's (`title.convert64` writes `title.kla`) unless `--name` gives one.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `format` | | `picture` (Koala `.kla` in multicolor, Art Studio `.art` in hi-res), `prg` (the self-displaying PRG), `raw` (the raw bitmap set: `.bin` blocks and a JSON manifest), `kickass` (`.asm`), `acme` (`.a`), `64tass` (`.tas`), `ca65` (`.s`), `c` (a C header, `.h`) or `png` (the PNG preview) |
+| `name` | the project's | The files' base name, without extension. Not empty, no folders, no leading dot. Written only when set |
+| `zoom` | `2` | The PNG's zoom, 1–8; `png` only. Written only when not 2 |
+| `data` | `"bytes"` | How source code carries the picture: `bytes` (in the source), `include-raw` (includes of the raw set's `.bin` files, written beside it) or `include-picture` (an include of the `.kla`/`.art` file); source formats only. Written only when not `bytes` |
+
+A file two rows write is written once when the bytes agree (two assemblers including the raw set). Two rows writing different bytes to one name, such as two PNGs at different zooms both named after the project, are refused, naming both rows: give one a `name`. `export_set` replaces the whole list (`[]` clears it) and checks each row; `convert64 export` without `--asm` writes it ([cli.md](cli.md#export)).
 
 ## Round trip
 

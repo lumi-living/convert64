@@ -708,6 +708,29 @@ As built in #241 (2026-10-18): autosave and restore, the unsaved-changes guard a
 - **Browser API.** Everything is reached by name through `js_sys::Reflect` and `Function` calls on eframe's re-exports, as #265 does: OPFS, IndexedDB, the pickers, `Blob`, `URL.createObjectURL`, `document.title`, `beforeunload`. No new crates or `web-sys` features; `serde` (already in this list) became a direct dependency of the app for the record.
 - **Tests.** `autosave::tests` against `MemoryStorage` (with a quota) and a temporary `DirStorage`: one save per drag on release, bursts capped at 5 s, sources stored once, last + previous kept and blobs collected, a full storage warning once without retrying, restore detection (unsaved, saved, undone back to saved), restore round trips (memory and the native folder, relinked or embedded), Discard, quitting without saving, the offer surviving other sessions; the title marker; human sizes; `Session::to_recovery_file` in `convert64-project/tests/memory.rs`. `tests/web/restore-smoke.mjs` drives the release bundle in headless Chrome over the DevTools protocol (Node 22, no packages): nudge, autosave, reload (the guard asks), Restore, the nudge still there, Save as a real download.
 
+As built in #287 (2026-10-24): the export set and the Export panel (UX §6b; usability review M4).
+
+- **Model.** `convert64_core::export`: `ExportEntry { format, name?, zoom, data }` and `ExportFormat` (`picture`, `prg`, `raw`, `kickass`, `acme`, `64tass`, `ca65`, `c`, `png`) in three `ExportGroup`s (C64 files, Source code, Preview). The project holds the rows as `Project::exports`, in order. Pure data: the core still does no I/O.
+- **Command.** `export_set { exports }` replaces the whole list and checks each row (zoom 1–8; a name that is not empty, a path or hidden). Like `snap_set` it is a document setting (`Setting::Exports`), so it undoes, and its dirty set is an empty `Dirty::Cells`.
+- **Project file.** A top-level `exports`, written only when not empty, with each row writing only what differs from its defaults; schema version 3 stays ([project-file.md](reference/project-file.md#export-set)).
+- **Writers.** `convert64_formats::export::files` makes one row's files from a solved `BitmapImage`, with the calls `convert` and `export --asm` already made. `set_files` makes the whole set, writes a file two rows share once, and refuses two rows writing different bytes to one name. Three front-ends call them:
+  - the app's Export panel and `Shift Cmd E`;
+  - `convert64 export` without `--asm` (`convert64_cli::export_set`, the CLI library);
+  - the MCP server's `export_run { dir, name? }`, through that library.
+- **App.** The Export tab is the panel (`shell::export_panel`), and the export dialog is gone. Every row edit is an `export_set` action. Each row's files and sizes are computed once per solution and set.
+  - Natively, Export writes into a folder picked with `rfd`, and Export Again writes into the same folder.
+  - In the browser it goes through #241's path (`web::export_files`): `showDirectoryPicker` (its handle kept for Export Again while the page is open), else one `<a download>` per file.
+  - `Cmd E` shows the panel.
+- **Dialogs.** `Shell::dialog_open` is true while the quit question is up or any egui modal was drawn last frame (`Memory::top_modal_layer`). The shell's shortcuts then return at once, so `Esc` reaches the modal's own close and nothing acts behind it.
+- **Tests.**
+  - Core: ids and groups, row checks, `export_set` with undo.
+  - Formats: every format in both modes, a set's shared and clashing files.
+  - Project: `exports` optional and round-tripping, unknown options refused.
+  - CLI: `tests/export.rs`, the export set from a project, against `convert`'s Koala.
+  - MCP: `export_set` and `export_run`.
+  - App: the panel's rows, + and Export; `Cmd E` and `Shift Cmd E`; a dialog blocking `Q`, `Shift C` and the rest until `Esc` closes it.
+  - `parity.rs` runs `export_set`'s example through the CLI and the MCP server.
+
 As built in #288 (2026-10-24): the Recipe tab in the order of use and the picture-wide settings with the result (usability review M5, UX §4.3, §6).
 
 - **Picture row.** Mode, Palette and Background moved from the top of the Recipe tab (#209's picture group) to a row under the result header (`shell::dock`): the mode dropdown (the only one now), the palette dropdown and a compact background dropdown (a 12 px swatch with `Auto` or the pinned colour's name; inside, Auto and the 16 swatches, open until a click outside). The commands are unchanged: `mode_set`, `palette_set`, `background_pin`.

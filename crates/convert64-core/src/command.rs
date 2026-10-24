@@ -452,6 +452,16 @@ pub struct SnapSet {
     pub snap: Snap,
 }
 
+/// Replaces the project's export set (`export_set`, UX §3, #287): the rows the Export
+/// panel shows and `Shift Cmd E`, `convert64 export` and `export_run` write. An empty
+/// list clears it. The composite does not change.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExportSet {
+    /// The rows, in order.
+    pub exports: Vec<crate::export::ExportEntry>,
+}
+
 /// Moves a layer by a (sub-pixel) offset in canvas pixels (`layer_nudge`, TAD §3.3).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LayerNudge {
@@ -912,6 +922,8 @@ pub enum Command {
     SolveSet(SolveSet),
     /// `snap_set`.
     SnapSet(SnapSet),
+    /// `export_set`.
+    ExportSet(ExportSet),
     /// `mask_source_remove`.
     MaskSourceRemove(MaskSourceRemove),
     /// `mask_source_set_combine`.
@@ -1092,6 +1104,12 @@ pub const REGISTRY: &[CommandInfo] = &[
                   0.5°) or cell (cell boundaries, 15°).",
     },
     CommandInfo {
+        name: "export_set",
+        summary: "Replace the export set: rows of format (picture, prg, raw, kickass, acme, \
+                  64tass, ca65, c, png), zoom (png), data (source code) and file name, \
+                  which convert64 export and export_run write.",
+    },
+    CommandInfo {
         name: "mask_source_remove",
         summary: "Remove one entry (a gradient or key) of a layer mask's sources list.",
     },
@@ -1236,6 +1254,7 @@ enum Setting {
     Palette(Box<Palette>),
     Solve(Box<SolveSettings>),
     Snap(Snap),
+    Exports(Vec<crate::export::ExportEntry>),
 }
 
 /// The layer's mask, creating a fully opaque one if it has none. Returns whether it was
@@ -1302,6 +1321,7 @@ impl Command {
             Self::BackgroundPin(_) => "background_pin",
             Self::SolveSet(_) => "solve_set",
             Self::SnapSet(_) => "snap_set",
+            Self::ExportSet(_) => "export_set",
             Self::MaskSourceRemove(_) => "mask_source_remove",
             Self::MaskSourceSetCombine(_) => "mask_source_set_combine",
             Self::RegionAdd(_) => "region_add",
@@ -1388,6 +1408,10 @@ impl Command {
                 .apply(&SolveSettings::default())
                 .check()
                 .map_err(|e| param("solve", e)),
+            Self::ExportSet(c) => c.exports.iter().enumerate().try_for_each(|(i, row)| {
+                row.check()
+                    .map_err(|e| param("exports", format!("row {i}: {e}")))
+            }),
             Self::MaskGradient(_)
             | Self::MaskKey(_)
             | Self::MaskLoad(_)
@@ -1635,6 +1659,7 @@ impl Command {
                 Ok(set_setting(p, Setting::Solve(Box::new(s))))
             }
             Self::SnapSet(c) => Ok(set_setting(p, Setting::Snap(c.snap))),
+            Self::ExportSet(c) => Ok(set_setting(p, Setting::Exports(c.exports.clone()))),
             Self::MaskSourceRemove(c) => edit_mask(p, c.layer, |m| {
                 m.remove_source(c.index)?;
                 Ok(())
@@ -1883,11 +1908,11 @@ fn set_setting(p: &mut Project, value: Setting) -> (Memento, Dirty) {
     (Memento::Setting(swap_setting(p, value)), dirty)
 }
 
-/// What changing a setting dirties: the snap changes no pixel (an empty cell set);
-/// the others re-solve the whole picture.
+/// What changing a setting dirties: the snap and the export set change no pixel (an
+/// empty cell set); the others re-solve the whole picture.
 fn setting_dirty(s: &Setting) -> Dirty {
     match s {
-        Setting::Snap(_) => Dirty::Cells(crate::geom::CellSet::EMPTY),
+        Setting::Snap(_) | Setting::Exports(_) => Dirty::Cells(crate::geom::CellSet::EMPTY),
         _ => Dirty::Settings,
     }
 }
@@ -1898,6 +1923,7 @@ fn swap_setting(p: &mut Project, value: Setting) -> Setting {
         Setting::Palette(v) => Setting::Palette(Box::new(std::mem::replace(&mut p.palette, *v))),
         Setting::Solve(v) => Setting::Solve(Box::new(std::mem::replace(&mut p.solve, *v))),
         Setting::Snap(v) => Setting::Snap(std::mem::replace(&mut p.snap, v)),
+        Setting::Exports(v) => Setting::Exports(std::mem::replace(&mut p.exports, v)),
     }
 }
 
@@ -2478,7 +2504,42 @@ mod tests {
         ] {
             assert!(names.contains(&c.name()));
         }
-        assert_eq!(names.len(), 45);
+        assert_eq!(names.len(), 46);
+    }
+
+    /// #287: `export_set` replaces the export set, changes no pixel, refuses a bad row
+    /// (naming it) and undoes.
+    #[test]
+    fn export_set_replaces_the_set_and_undoes() {
+        use crate::export::{ExportEntry, ExportFormat};
+        let mut e = Editor::new(stack());
+        assert!(e.project().exports.is_empty());
+        let rows = vec![
+            ExportEntry::new(ExportFormat::Picture),
+            ExportEntry {
+                zoom: 4,
+                ..ExportEntry::new(ExportFormat::Png)
+            },
+        ];
+        let set = |exports| Command::ExportSet(ExportSet { exports });
+        assert_eq!(
+            e.execute(set(rows.clone())).unwrap(),
+            Dirty::Cells(crate::geom::CellSet::EMPTY)
+        );
+        assert_eq!(e.project().exports, rows);
+        let bad = ExportEntry {
+            zoom: 0,
+            ..ExportEntry::new(ExportFormat::Png)
+        };
+        let err = e.execute(set(vec![rows[0].clone(), bad])).unwrap_err();
+        assert!(err.to_string().contains("row 1"), "{err}");
+        assert_eq!(e.project().exports, rows, "a refused set changes nothing");
+        e.execute(set(Vec::new())).unwrap();
+        assert!(e.project().exports.is_empty());
+        e.undo();
+        assert_eq!(e.project().exports, rows);
+        e.undo();
+        assert!(e.project().exports.is_empty());
     }
 
     /// #198: transform commands snap by the project's setting unless told otherwise;
@@ -2692,6 +2753,12 @@ mod tests {
             }),
             Command::SnapSet(SnapSet {
                 snap: Snap::C64Pixel,
+            }),
+            // #287: the export set.
+            Command::ExportSet(ExportSet {
+                exports: vec![crate::export::ExportEntry::new(
+                    crate::export::ExportFormat::Prg,
+                )],
             }),
             // #216: regions.
             Command::RegionAdd(Box::new(RegionAdd {

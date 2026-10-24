@@ -29,10 +29,14 @@ pub struct Project {
     pub solve: SolveSettings,
     /// What transform commands snap to (ADR-011); never stored in a transform.
     pub snap: Snap,
+    /// The export set: what the Export panel, `Shift Cmd E` and `convert64 export`
+    /// write (UX §3, #287), in row order.
+    pub exports: Vec<crate::export::ExportEntry>,
 }
 
 impl Default for Project {
-    /// No layers, multicolor bitmap, Pepto PAL, the default solve settings, no snap.
+    /// No layers, multicolor bitmap, Pepto PAL, the default solve settings, no snap,
+    /// nothing to export.
     fn default() -> Self {
         Self {
             layers: Vec::new(),
@@ -42,6 +46,7 @@ impl Default for Project {
             palette: Palette::pepto_pal(),
             solve: SolveSettings::default(),
             snap: Snap::Off,
+            exports: Vec::new(),
         }
     }
 }

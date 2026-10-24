@@ -132,19 +132,22 @@ enum Command {
         #[command(flatten)]
         overrides: Overrides,
     },
-    /// Solve a project, or every project in a directory, and write assembler source.
+    /// Solve a project, or every project in a directory, and write its export set or
+    /// assembler source.
     ///
-    /// For each project and each --asm target: `<name>.asm` (KickAssembler), `.a` (ACME),
-    /// `.tas` (64tass), `.s` (ca65) or `.h` (C), plus the binaries it includes, in
-    /// --out. Options override the projects' settings. Exit codes as for convert; the
-    /// worst project's wins.
+    /// Without --asm: each project's export set (its `exports`, the app's Export panel:
+    /// Koala, PRG, raw set, source code, PNG) into --out. With --asm, for each target:
+    /// `<name>.asm` (KickAssembler), `.a` (ACME), `.tas` (64tass), `.s` (ca65) or `.h`
+    /// (C), plus the binaries it includes. Options override the projects' settings.
+    /// Exit codes as for convert; the worst project's wins.
     Export {
         /// A .convert64 project, or a directory of them.
         input: PathBuf,
         /// Targets: kickass, acme, 64tass, ca65, c, or all. Repeatable or comma-separated.
-        #[arg(long, value_delimiter = ',', required = true, value_name = "TARGET")]
+        /// Without it, the projects' export sets.
+        #[arg(long, value_delimiter = ',', value_name = "TARGET")]
         asm: Vec<String>,
-        /// How the data is written: include-raw (the raw set's .bin files, the
+        /// With --asm, how the data is written: include-raw (the raw set's .bin files, the
         /// default), include-picture (the .kla/.art file) or bytes (in the source).
         #[arg(long, value_enum, default_value = "include-raw")]
         data: export::DataArg,

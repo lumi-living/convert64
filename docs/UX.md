@@ -195,6 +195,49 @@ The Method row is a button: a 32 px thumbnail of the current method, its name an
 
 **Accessibility:** every card is a focusable widget whose label reads "Atkinson, error diffusion, selected".
 
+## 6b. Export panel
+
+The Export tab is the export panel (usability review M4, #287), after Figma's Export section in the properties panel: a list of rows, **+** to add one, and one **Export** button that writes them all. There is no export dialog. The rows are the project's **export set**: saved in the project file (`exports`, [project-file.md](reference/project-file.md#export-set)), changed with the `export_set` command (one undo step per change), and written the same way by `Shift Cmd E`, `convert64 export` without `--asm` and the MCP server's `export_run` (ADR-005), so the Makefile case has a visible definition.
+
+```
+┌ Export ─────────────────────────────────────┐
+│ [Koala (.kla)         ▾]                  × │  row: format · options · remove
+│ [title         ]  title.kla · 10 kB         │       file name · preview with size
+│ [KickAssembler (.asm) ▾] [Include raw set ▾]× │
+│ [title         ]  title.asm + 4 files · 21 kB│
+│ [PNG (.png)           ▾] [2× ▾]           × │
+│ [title@2x      ]  title@2x.png · 4.1 kB     │
+│ + Add format                                │
+│ ┌─────────────────────────────────────────┐ │
+│ │            Export 3 formats             │ │  primary, accent fill
+│ └─────────────────────────────────────────┘ │
+│ To a folder you pick. Export Again ⇧⌘E      │  weak
+└─────────────────────────────────────────────┘
+```
+
+**A row** is two lines:
+1. The **format** dropdown, the format's **options**, and **×** to remove the row.
+   - The dropdown lists the formats in three groups, each under a small heading:
+     - *C64 files*: Koala `.kla` (Art Studio `.art` in hi-res), PRG (self-displaying), Raw bitmap set (`.bin` blocks and a JSON manifest).
+     - *Source code*: KickAssembler `.asm`, ACME `.a`, 64tass `.tas`, ca65 `.s`, C header `.h`.
+     - *Preview*: PNG.
+   - Each entry names its extension. Its tooltip says what the file is for ("A self-displaying program: LOAD and RUN it").
+   - Options: PNG has a zoom, 1×–8× (default 2×). Source code has *Inline bytes* (one file, the default) · *Include raw set* · *Include picture file*. The C64 files have none.
+2. The **file name** and what the row writes.
+   - The name field's placeholder is the project's name (`title`). An empty field means that name, so renaming the project renames the files. The name is committed on `Enter` or when the field loses focus. A name with a folder in it or a leading dot is refused with a toast, and the field keeps the old name.
+   - Beside it, in weak text, the first file and its size: `title.kla · 10 kB`. A row that writes several files says so, `title.asm + 4 files · 21 kB`, and its tooltip lists each file with its size. Sizes are of the result on screen, in §9's human units. While the first full solve runs the size reads `…`.
+   - Two rows that would write different bytes to one file name (two PNGs at different zooms, both named `title`) mark the second row in the `error` colour: `Same file as row 1: give one another name`. Export is disabled until that is fixed. Rows that share an included file (two assemblers including the raw set) write it once.
+
+**+ Add format** adds a row with the next format the set lacks, in this order: the picture file, PRG, PNG, KickAssembler, then the rest. With no rows the panel shows one sentence and the button: *"Choose what to export. The set is saved with the project."* **+ Add format**.
+
+**Export** is the panel's one primary button (accent fill, like Figma's), full width under the rows. It reads `Export 1 format` / `Export 3 formats` (`Export` with no rows), and is disabled with no rows, while the first full solve runs, or while two rows clash. It writes every file:
+- Natively, into a folder the user picks.
+- In the browser, through #241's direct save path: into a folder picked with `showDirectoryPicker` where the browser has it (Chromium), otherwise one download (`<a download>`) per file. There is no overlay.
+
+The toast follows once the files are written (§9). Under the button, in weak text: `To a folder you pick. Export Again ⇧⌘E`, and after an export `Last: build/ · Export Again ⇧⌘E` (the folder's name).
+
+**Export Again** (`Shift Cmd E`, *Export › Export Again*) writes the set again, into the same folder, without asking. In the browser that is the same directory handle while the page is open; after a reload, or where the browser has no folder picker, it asks or downloads as Export does. With no folder yet it asks, as Export does. With an empty set it shows the Export tab instead. `Cmd E` (*Export › Export…*) shows the Export tab: the dock and the UI are shown if they were hidden.
+
 ## 7. Cell tools (steering)
 
 Three tools in the toolbar, all operate on the preview, all additive to the project, all undoable. **Nudge** (`V`, Move in Photoshop and Figma) is the default, on first run and for every picture opened, so a stray click selects a layer and changes nothing; Pin, Lock and Region act only once picked, and a click outside the picture (on the border or the pasteboard) never pins, locks or paints (#242). Every drag, with these tools, the mask tools (§7a) and the Hand, counts from where the button went down, not from where the pointer passed egui's 6 pt drag threshold: a nudge moves by the whole drag, and a rectangle, stroke or gradient starts at the press (#263):
@@ -233,12 +276,14 @@ Mask thumbnails in the Layers panel (§5) show the raster with modifiers applied
 
 `Cmd` on macOS, `Ctrl` elsewhere; `Option`↔`Alt`. Menu items show the accelerator via `ctx.format_shortcut`. Single-key shortcuts are suppressed only while text is being typed (a text field, or a number field after a click on it); a slider or button with focus leaves them working, though arrows then belong to that control. `Enter` and the end of a drag hand the keyboard back from a slider or number field, a press anywhere else ends typing, and `Esc` always returns the keyboard to the canvas (Figma behaviour; #244).
 
+**Dialogs.** `Esc` closes any dialog: the quit question (as **Cancel**), the method picker (reverting its preview), a menu or popover. While a dialog is open, no shortcut acts on the app behind it: `Q`, `Shift C`, `Cmd E` and the rest wait until it closes. The usability review saw `Q` and `Shift C` switch the view and the overlay behind the old export dialog (M4, #287).
+
 | Action | Shortcut | Convention source |
 |---|---|---|
 | Open image / project | `Cmd O` | all |
 | Save project / Save as | `Cmd S` / `Shift Cmd S` | all |
-| Export | `Cmd E` | Pixelmator, GIMP (Photoshop uses `Shift Cmd Alt W`; too obscure) |
-| Export again, same settings | `Shift Cmd E` | our own; the Makefile case |
+| Export: show the Export panel (§6b) | `Cmd E` | Pixelmator, GIMP (Photoshop uses `Shift Cmd Alt W`; too obscure) |
+| Export Again: write the export set into the last folder | `Shift Cmd E` | our own; the Makefile case |
 | Undo / Redo | `Cmd Z` / `Shift Cmd Z` (also `Cmd Y`) | all; `Cmd Y` for GIMP users |
 | Zoom in / out / fit / 100 % | `Cmd =` / `Cmd −` / `Cmd 0` / `Cmd 1` | Photoshop family; bare `1` also = 100 % for Krita/Aseprite users |
 | Working view: Source ⇄ Result | `Q` | ours (unused by the Photoshop family for anything we need) |
@@ -324,7 +369,8 @@ Sample strings:
 | Solving (fast path) | nothing visible; results arrive within a frame or two |
 | Solving (full search, >200 ms) | status bar progress text + Pause; preview keeps the last result, slightly desaturated |
 | Colour-limited cells | count in the status bar and the result header in normal text with a tooltip (a diagnostic: the result is legal); the overlay suggested once via a dismissible hint, never auto-enabled; no dots on the result panel until it is on (#243) |
-| Export | file dialog (native) / the browser's Save dialog where it has one (Chromium), else a download, with no overlay (#241); toast once the files are written; blocked export explains and links to the fix |
+| Export | the Export panel (§6b): a folder dialog natively, the browser's folder picker where it has one (Chromium), else a download per file, with no overlay (#241, #287); toast once the files are written; blocked export explains and links to the fix |
+| Dialog open | the quit question is the one modal; `Esc` closes it, and no shortcut reaches the app behind it (§8) |
 | Save | natively to the project's file (Save As asks); in the browser as Export, the project with every source embedded; the toast and the cleared `*` come only once the file is written |
 | Unsaved changes | `*` after the name in the window or tab title (§9); in the browser a `beforeunload` guard asks before a reload or a closed tab drops them; natively quitting asks Save · Don't save · Cancel, and only then |
 | Autosave | nothing visible: 1 s after each committed change (a drag counts on release), to OPFS or IndexedDB in the browser, a recovery folder natively ([reference/autosave.md](reference/autosave.md)); a failure is one line in the status bar's warning colour and work goes on |
