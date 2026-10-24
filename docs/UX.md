@@ -144,7 +144,7 @@ The Method row is a button: a 32 px thumbnail of the current method, its name an
    - *Gradient* is a diagonal ramp through the current palette's greys plus one hue. The ramp carries ±2/255 seeded jitter, because without it error-diffusion kernels lock into regular patterns that look ordered (png2amiga's lesson).
    - *Picture* is a 32 × 32 C64-pixel crop of the selected layer, taken at the last cell the cursor was over (or the picture's centre), so methods are compared on the user's own image.
 3. **Recent** — the last four methods used in this project.
-4. Families in fixed order, each under a small uppercase heading: **None · Ordered · Ordered noise · Error diffusion · Palette-aware · Effects**.
+4. Families in fixed order, each under a small uppercase heading: **None · Ordered · Ordered noise · Error diffusion · Palette-aware · Effects**. All 90 methods (`docs/reference/dither-methods.md`): png2c64's 30, Convert64's own 28 and png2amiga's 32, each family's in that file's order.
 
 **Card (Figma `Method Card`)**
 - A 64 px square thumbnail: 32 × 32 C64 pixels at 2×, nearest-neighbour, with 2:1 pixels in multicolor.
@@ -156,7 +156,7 @@ The Method row is a button: a 32 px thumbnail of the current method, its name an
   - Selected: an accent outline and a tinted fill (the current method).
   - Focused: a focus ring.
   - Rendering: a neutral placeholder, never a spinner.
-- The tooltip gives the one-line description and the CLI id from `docs/reference/dither-methods.md`.
+- The tooltip gives the one-line description and the CLI id from `docs/reference/dither-methods.md`. For png2amiga's 32 methods (#275) it adds where the method comes from (*From png2amiga, on png2c64's pipeline; the png2amiga solver runs png2amiga's own.*) and png2amiga's own name where it differs (`--dither bayer3 (png2amiga: bayer3x3)`); `gilbert` and `dbs` say that on C64 png2amiga runs them as a nearest pick.
 
 **Thumbnails are real solves.** Each one is rendered by the solver with the recipe's current mode, palette, strength, phase, metric and allowed colours, so it shows what this layer would get.
 - They render in the background, visible cards first, and can be cancelled. In the browser build they are rendered in small batches, one batch per frame.

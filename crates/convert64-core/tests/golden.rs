@@ -459,11 +459,14 @@ mod line_art {
 /// matrix, noise function or kernel fails a test. Solved from the raw source with a
 /// fixed black background and no refinement (fast, and the pattern is what is under
 /// test), at full strength with continuous ratios (`mix_levels = 0`) so every
-/// threshold of a matrix shows. These have no png2c64 bar: effects (`radial`,
-/// `crosshatch`, `value-noise`) are not quantisers, and png2c64 has no equivalent of
-/// most ids.
+/// threshold of a matrix shows, on the native solver; png2amiga's 32 methods png2c64
+/// lacks on the reference solver instead, on png2c64's pipeline (#275). These have no
+/// png2c64 bar: effects (`radial`, `crosshatch`, `value-noise`) are not quantisers, and
+/// png2c64 has no equivalent of most ids.
 mod methods {
-    use super::{BitmapFormat, DitherKind, Gamma, Recipe, SolveOptions, variant_result};
+    use super::{
+        BitmapFormat, DitherKind, Gamma, Recipe, SolveOptions, SolverKind, variant_result,
+    };
     use convert64_core::ColourIndex;
     use convert64_core::layer::Method;
     use convert64_core::solve::Background;
@@ -482,25 +485,73 @@ mod methods {
             finalists: 1,
             ..super::native()
         };
+        // png2amiga's 32 methods png2c64 lacks are the reference solver's, on png2c64's
+        // pipeline (#275): the native solver only has stand-ins for them, so they are
+        // solved by the reference, with the same fixed black background, at its default
+        // recipe knobs (`mix_levels` is a native knob).
+        let reference = SolveOptions {
+            background: Background::Fixed(ColourIndex::BLACK),
+            ..SolveOptions::default()
+        };
         // Every method is solved and its candidate written before any failure is
         // reported, so one `regen-goldens` run picks them all up.
         let failures: Vec<String> = DitherKind::ALL
             .into_iter()
             .filter_map(|kind| {
-                let r = Recipe::with_method(kind, 1.0)
-                    .and_then(|r| r.with_mix_levels(0))
-                    .expect("recipe");
+                let (r, opts) = if kind.is_png2amiga_only() {
+                    (Recipe::with_method(kind, 1.0).expect("recipe"), &reference)
+                } else {
+                    (
+                        Recipe::with_method(kind, 1.0)
+                            .and_then(|r| r.with_mix_levels(0))
+                            .expect("recipe"),
+                        &opts,
+                    )
+                };
                 let variant = format!("m-{}", id(kind));
-                variant_result(
+                let (s, result) = variant_result(
                     "gradient",
                     BitmapFormat::Koala,
                     &variant,
                     r,
-                    &opts,
+                    opts,
                     Gamma::IDENTITY,
-                )
-                .1
-                .err()
+                );
+                if kind.is_png2amiga_only() {
+                    assert_eq!(s.solution.solver, SolverKind::Reference, "{kind:?}");
+                    assert_eq!(s.solution.fallback, None, "{kind:?}");
+                }
+                result.err()
+            })
+            .collect();
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+}
+
+/// #275: png2amiga's 32 methods png2c64 lacks on `portrait`, solved by the reference on
+/// png2c64's pipeline at png2c64's baseline settings (multicolor, strength 0.7, the
+/// source through `--gamma 1.5`), as #280's sheets showed them when Jaakko kept them.
+mod png2amiga_methods {
+    use super::{BitmapFormat, DitherKind, Recipe, SolveOptions, SolverKind, variant_result};
+
+    #[test]
+    fn portrait_with_png2amiga_s_methods_on_png2c64_s_pipeline() {
+        let failures: Vec<String> = DitherKind::ALL
+            .into_iter()
+            .filter(|k| k.is_png2amiga_only())
+            .filter_map(|kind| {
+                let r = Recipe::with_method(kind, 0.7).expect("recipe");
+                let (s, result) = variant_result(
+                    "portrait",
+                    BitmapFormat::Koala,
+                    &format!("p2a-{}", kind.id()),
+                    r,
+                    &SolveOptions::default(),
+                    super::Gamma::PNG2C64,
+                );
+                assert_eq!(s.solution.solver, SolverKind::Reference, "{kind:?}");
+                assert_eq!(s.solution.fallback, None, "{kind:?}");
+                result.err()
             })
             .collect();
         assert!(failures.is_empty(), "{}", failures.join("\n"));

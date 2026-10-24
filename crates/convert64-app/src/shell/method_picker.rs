@@ -325,9 +325,9 @@ pub(super) fn field(
         ui.painter()
             .galley(pos2(text_x, y), galley, visuals.text_color());
         let response = response.on_hover_text(format!(
-            "{}\nCLI: --dither {}\nClick or Enter: all methods · ↑↓: step",
+            "{}\nCLI: {}\nClick or Enter: all methods · ↑↓: step",
             info.tooltip(),
-            info.id()
+            info.cli()
         ));
         if response.clicked()
             || (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
@@ -680,7 +680,7 @@ fn card(
             hidden.push(job);
         }
     }
-    response.on_hover_text(format!("{}\nCLI: --dither {}", info.tooltip(), info.id()))
+    response.on_hover_text(format!("{}\nCLI: {}", info.tooltip(), info.cli()))
 }
 
 #[cfg(test)]
