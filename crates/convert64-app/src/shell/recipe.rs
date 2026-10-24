@@ -2496,7 +2496,7 @@ mod tests {
             assert!(tiny.is_empty(), "{theme:?}: smaller than Small: {tiny:?}");
             let visuals = crate::theme::style(theme).visuals;
             for hint in [
-                "No mask: the whole layer shows.",
+                "No mask: the whole layer shows. Start one from:",
                 "Adaptive lets the solver reassign cell colours for the lowest error.",
             ] {
                 let (_, size, colour) = texts
