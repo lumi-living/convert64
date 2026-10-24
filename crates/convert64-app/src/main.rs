@@ -1,9 +1,10 @@
 //! eframe/egui user interface; native via `cargo run -p convert64-app`, web via `trunk build` (`docs/TAD.md §4`).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
+use convert64_app::autosave::{self, Autosave, Notice};
 use convert64_app::document::Document;
-use convert64_app::files::{FileEvent, Files, Purpose};
-use convert64_app::shell::{Action, Shell};
+use convert64_app::files::{FileEvent, Files, Purpose, SaveTag, human_size};
+use convert64_app::shell::{Action, QuitAnswer, Shell};
 use convert64_app::theme;
 use convert64_app::workspace::Workspace;
 use convert64_core::solve::SolveMode;
@@ -30,6 +31,14 @@ struct App {
     title: String,
     /// The egui context, for the time solves are submitted at.
     ctx: egui::Context,
+    /// Autosave and restore (#241).
+    autosave: Autosave,
+    /// The user answered the quit question (or there was nothing to ask): let the
+    /// window close.
+    quit_confirmed: bool,
+    /// Whether the page's `beforeunload` guard should ask (browser).
+    #[cfg(target_arch = "wasm32")]
+    unsaved: std::rc::Rc<std::cell::Cell<bool>>,
     /// `--screenshot`: save the window to a PNG after a few frames, then quit (native).
     #[cfg(not(target_arch = "wasm32"))]
     screenshot: Option<screenshot::Request>,
@@ -61,7 +70,44 @@ impl App {
         let ctx = cc.egui_ctx.clone();
         app.scheduler
             .set_waker(std::sync::Arc::new(move || ctx.request_repaint()));
+        if let Some(storage) = autosave::platform_storage() {
+            app.set_autosave(Autosave::new(storage));
+        }
+        #[cfg(target_arch = "wasm32")]
+        convert64_app::web::guard_unload(std::rc::Rc::clone(&app.unsaved));
         app
+    }
+
+    /// Autosaves into `autosave`'s storage from now on; what it holds is read now
+    /// (natively; in the browser the restore bar appears once it is read).
+    fn set_autosave(&mut self, autosave: Autosave) {
+        self.autosave = autosave;
+        self.poll_autosave();
+    }
+
+    /// Acts on what the autosave finished: a restored session opens, unsaved.
+    fn poll_autosave(&mut self) {
+        for notice in self.autosave.poll() {
+            match notice {
+                Notice::Restored(doc, record) => {
+                    self.open(*doc);
+                    if let Some(ws) = &self.workspace {
+                        self.autosave
+                            .opened(&ws.doc, Some(&record), autosave::wall_ms());
+                    }
+                    let ctx = self.ctx.clone();
+                    self.shell
+                        .toast(&ctx, format!("Restored {}", record.name), false);
+                }
+                Notice::RestoreFailed(e) => self.shell.report_error(
+                    "Can't restore the last session",
+                    format!("{e}. Discard it, or open the project from a file."),
+                ),
+            }
+        }
+        let now = autosave::wall_ms();
+        self.shell.restore_offer = self.autosave.offer().map(|r| r.offer_text(now));
+        self.shell.autosave_warning = self.autosave.warning().map(str::to_owned);
     }
 
     fn set_theme(&mut self, ctx: &egui::Context, preference: egui::ThemePreference) {
@@ -72,6 +118,7 @@ impl App {
     /// Opens `doc`: the working view fits it and a full solve starts.
     fn open(&mut self, doc: Document) {
         self.scheduler.cancel();
+        self.autosave.opened(&doc, None, autosave::wall_ms());
         let mut ws = Workspace::new(doc);
         let ctx = self.ctx.clone();
         ws.method_thumbs
@@ -100,8 +147,7 @@ impl App {
         if mode == SolveMode::Full {
             ws.solve_started = Some(ctx.input(|i| i.time));
         }
-        let previous = ws.solution.clone();
-        scheduler.submit(ws.doc.snapshot(previous), mode);
+        scheduler.submit(ws.snapshot(), mode);
     }
 
     /// The method picker's live preview (UX §6a): the result solved with `method` in
@@ -202,13 +248,22 @@ impl App {
             let Some(path) = path else {
                 return;
             };
+            let key = self.autosave.snapshot_key(&ws.doc);
             match ws.doc.save_to(&path) {
-                Ok(()) => self
-                    .shell
-                    .toast(ctx, format!("Saved {}", path.display()), false),
+                Ok(()) => {
+                    self.autosave.saved(&ws.doc, key, autosave::wall_ms());
+                    let size = std::fs::metadata(&path).map_or(0, |m| m.len() as usize);
+                    self.shell.toast(
+                        ctx,
+                        format!("Saved {} ({})", path.display(), human_size(size)),
+                        false,
+                    );
+                }
                 Err(e) => self.shell.toast(ctx, format!("Can't save: {e}"), true),
             }
         }
+        // Straight to disk (the Save dialog, or a download), no overlay; the document
+        // counts as saved once the file is written (#241).
         #[cfg(target_arch = "wasm32")]
         {
             let _ = ask;
@@ -217,9 +272,12 @@ impl App {
                 .project_json(std::path::Path::new(""), convert64_project::Embed::All)
             {
                 Ok(json) => {
-                    ws.doc.mark_saved();
+                    let tag = SaveTag::Project {
+                        revision: ws.doc.revision(),
+                        key: self.autosave.snapshot_key(&ws.doc),
+                    };
                     self.files
-                        .save_files(ctx, vec![(file_name, json.into_bytes())], "Saved");
+                        .save_files(ctx, vec![(file_name, json.into_bytes())], "Saved", tag);
                 }
                 Err(e) => self.shell.toast(ctx, format!("Can't save: {e}"), true),
             }
@@ -253,7 +311,8 @@ impl App {
         ) {
             Ok(files) => {
                 self.shell.last_export = Some((settings, name));
-                self.files.save_files(ctx, files, "Exported");
+                self.files
+                    .save_files(ctx, files, "Exported", SaveTag::Export);
             }
             Err(e) => self.shell.toast(ctx, e, true),
         }
@@ -312,7 +371,12 @@ impl App {
             eprintln!("action {action:?}");
         }
         match action {
+            // The close request asks first if there are unsaved changes (`ui`).
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Action::AnswerQuit(answer) => self.answer_quit(ctx, answer),
+            Action::RestoreSession => self.autosave.restore_offer(),
+            Action::DiscardSession => self.autosave.discard_offer(),
+            Action::DismissAutosaveWarning => self.autosave.dismiss_warning(),
             Action::SetTheme(preference) => self.set_theme(ctx, preference),
             Action::SetMode(mode) => {
                 let Some(ws) = &mut self.workspace else {
@@ -471,10 +535,16 @@ impl App {
                     path.as_deref(),
                     purpose == Purpose::AddLayer,
                 ),
-                FileEvent::Saved(files, verb) => {
+                FileEvent::Saved(files, verb, tag) => {
+                    if let SaveTag::Project { revision, key } = tag
+                        && let Some(ws) = &mut self.workspace
+                    {
+                        ws.doc.mark_saved_at(revision);
+                        self.autosave.saved(&ws.doc, key, autosave::wall_ms());
+                    }
                     let list: Vec<String> = files
                         .iter()
-                        .map(|(n, b)| format!("{n} ({} B)", group(*b)))
+                        .map(|(n, b)| format!("{n} ({})", human_size(*b)))
                         .collect();
                     self.shell
                         .toast(ctx, format!("{verb} {}", list.join(", ")), false);
@@ -484,19 +554,88 @@ impl App {
         }
     }
 
-    /// The window title: the document's name, `*` while it has unsaved edits (UX §9).
+    /// The window (natively) or tab (browser) title: the document's name, `*` while it
+    /// has unsaved edits (UX §9).
     fn update_title(&mut self, ctx: &egui::Context) {
-        let title = match &self.workspace {
-            Some(ws) => format!(
-                "{}{} — Convert64",
-                ws.doc.name,
-                if ws.doc.is_dirty() { "*" } else { "" }
-            ),
-            None => "Convert64".to_owned(),
-        };
+        let title =
+            convert64_app::document::window_title(self.workspace.as_ref().map(|ws| &ws.doc));
         if title != self.title {
+            #[cfg(not(target_arch = "wasm32"))]
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            // eframe's web backend ignores the viewport title: the tab's is the page's.
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = ctx;
+                convert64_app::web::set_title(&title);
+            }
             self.title = title;
+        }
+        #[cfg(target_arch = "wasm32")]
+        self.unsaved
+            .set(self.workspace.as_ref().is_some_and(|ws| ws.doc.is_dirty()));
+    }
+
+    /// Whether quitting now would lose changes since the last Save.
+    fn unsaved_name(&self) -> Option<String> {
+        self.workspace
+            .as_ref()
+            .filter(|ws| ws.doc.is_dirty())
+            .map(|ws| ws.doc.name.clone())
+    }
+
+    /// Carries out the answer to "Save changes before quitting?".
+    fn answer_quit(&mut self, ctx: &egui::Context, answer: QuitAnswer) {
+        match answer {
+            QuitAnswer::Save => {
+                self.save(ctx, false);
+                // Saved (not cancelled in the dialog, no error): quit.
+                if self.unsaved_name().is_none() {
+                    self.quit_confirmed = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+            QuitAnswer::DontSave => {
+                // The user dropped these changes: don't offer them on the next start.
+                self.autosave.discard_current();
+                self.poll_autosave();
+                self.quit_confirmed = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            QuitAnswer::Cancel => {}
+        }
+    }
+
+    /// Natively, a close (`Cmd Q`, the window's close button) with unsaved changes asks
+    /// first; without any it closes at once (#241).
+    fn guard_close(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.viewport().close_requested()) || self.quit_confirmed {
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.screenshot.is_some() {
+            return;
+        }
+        if let Some(name) = self.unsaved_name() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.shell.quit_prompt = Some(name);
+        }
+    }
+
+    /// This frame's autosave: due once a committed change has settled for a second.
+    fn autosave_frame(&mut self, ctx: &egui::Context) {
+        self.poll_autosave();
+        let Some(ws) = &self.workspace else {
+            return;
+        };
+        // A drag holds the pointer or an arrow key; its changes count on release.
+        let held = ctx.input(|i| i.pointer.any_down()) || arrows_down(ctx);
+        let settled = !(ws.doc.in_gesture() && held);
+        let now = ctx.input(|i| i.time);
+        if let Some(wait) = self
+            .autosave
+            .frame(&ws.doc, settled, now, autosave::wall_ms())
+        {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait + 0.01));
         }
     }
 }
@@ -514,19 +653,6 @@ fn arrows_down(ctx: &egui::Context) -> bool {
         .into_iter()
         .any(|k| i.key_down(k))
     })
-}
-
-/// `10003` as `10 003` (UX §9 sample strings).
-fn group(n: usize) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push('\u{2009}');
-        }
-        out.push(c);
-    }
-    out
 }
 
 /// `View › Theme`'s stored form.
@@ -588,6 +714,8 @@ impl eframe::App for App {
             ws.end_drag();
         }
         self.update_title(ui.ctx());
+        self.autosave_frame(ui.ctx());
+        self.guard_close(ui.ctx());
 
         #[cfg(not(target_arch = "wasm32"))]
         let mut delete = false;
@@ -658,7 +786,7 @@ impl eframe::App for App {
 /// [--tab recipe|layers|export] [--command <json>]… [--zoom <n>] [--centre <x>,<y>]
 /// [--mask] [--tool <name>] [--drag <x0>,<y0>:<x1>,<y1>] [--export <dir>]
 /// [--dock-scroll <points>] [--hide-ui] [--delete-layer]
-/// [--method-picker gradient|picture]`: draws a few frames, saves the window as a PNG and
+/// [--method-picker gradient|picture] [--restore-bar] [--quit-prompt]`: draws a few frames, saves the window as a PNG and
 /// quits. The PR screenshots come from it (#203).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
@@ -754,6 +882,12 @@ mod screenshot {
         /// `--method-picker gradient|picture`: the method picker open on the selected
         /// layer's recipe, its thumbnails on that source (#260).
         pub(super) method_picker: Option<String>,
+        /// `--restore-bar`: the picture opened, edited by the `--command`s and
+        /// autosaved two minutes ago, then closed: the start a reload finds, with the
+        /// restore bar (#241). Screenshot runs autosave in memory only.
+        pub(super) restore_bar: bool,
+        /// `--quit-prompt`: the question a quit with unsaved changes asks (#241).
+        pub(super) quit_prompt: bool,
         frame: u32,
     }
 
@@ -791,6 +925,8 @@ mod screenshot {
             let mut dock_scroll = None;
             let mut hide_ui = false;
             let mut method_picker = None;
+            let mut restore_bar = false;
+            let mut quit_prompt = false;
             while let Some(arg) = args.next() {
                 let mut value = || args.next().ok_or(format!("{arg} needs a value"));
                 match arg.as_str() {
@@ -810,6 +946,8 @@ mod screenshot {
                     "--mask" => mask = true,
                     "--delete-layer" => delete_layer = true,
                     "--hide-ui" => hide_ui = true,
+                    "--restore-bar" => restore_bar = true,
+                    "--quit-prompt" => quit_prompt = true,
                     "--method-picker" => method_picker = Some(value()?),
                     "--tool" => tool = Some(value()?),
                     "--drag" => {
@@ -881,6 +1019,8 @@ mod screenshot {
                     dock_scroll,
                     hide_ui,
                     method_picker,
+                    restore_bar,
+                    quit_prompt,
                     frame: 0,
                 }),
             })
@@ -970,6 +1110,11 @@ fn main() -> eframe::Result {
         native_options,
         Box::new(move |cc| {
             let mut app = App::new(cc);
+            // A screenshot run never touches the user's autosaved sessions.
+            let memory = convert64_app::autosave::MemoryStorage::new();
+            if request.is_some() {
+                app.set_autosave(Autosave::new(Box::new(memory.clone())));
+            }
             if let Some(path) = args.open {
                 app.files.open_path(path);
                 app.poll_files(&cc.egui_ctx);
@@ -1062,6 +1207,21 @@ fn main() -> eframe::Result {
                 };
                 if let Some(preference) = request.theme {
                     app.set_theme(&cc.egui_ctx, preference);
+                }
+                if request.quit_prompt {
+                    app.shell.quit_prompt = app.unsaved_name();
+                    // Shown at once, not half way through the modal's fade-in.
+                    cc.egui_ctx.all_styles_mut(|s| s.animation_time = 0.0);
+                }
+                if request.restore_bar {
+                    if let Some(ws) = app.workspace.take() {
+                        let then = autosave::wall_ms() - 125_000.0;
+                        app.autosave.opened(&ws.doc, None, then);
+                        app.autosave.write_now(&ws.doc, then);
+                        app.autosave.poll();
+                    }
+                    app.scheduler.cancel();
+                    app.set_autosave(Autosave::new(Box::new(memory)));
                 }
                 app.screenshot = Some(request);
             }

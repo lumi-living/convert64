@@ -241,6 +241,15 @@ pub enum SourceSpec {
     Shared(Shared),
 }
 
+impl SourceSpec {
+    /// `bytes` (a picture file) embedded in base64.
+    pub fn embedded(bytes: &[u8]) -> Self {
+        Self::Embedded(Embedded {
+            png_base64: crate::base64::encode(bytes),
+        })
+    }
+}
+
 /// One layer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

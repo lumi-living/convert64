@@ -1,8 +1,30 @@
 # The line-art recipe (ADR-014 §4): an opt-in for black-and-white line art, chosen by eye
-# on #273's cause sheet (tile 13) and made on the reference path (png2c64's port).
-# Thin lines come out more even and dark, with no colour bleeding in. It does not suit
-# coloured art or logos: the black point turns dark colours black, and the colour limit
-# turns everything grey (docs/reference/dither-previews/convert64-sheets/sheet-lineart.png).
+# on #273's cause sheet (tile 13). Since #276 it runs on the png2amiga solver, which
+# reproduces tile 13 exactly (100.000 % of its pixels on the lineart fixture; #273's
+# version of this recipe on the reference path gave 87.6 %, darker, with more black).
+# Thin lines come out more even, in dark grey rather than black, with no colour.
+#
+# Black-and-white line art only: on coloured art and logos the black point turns dark
+# colours black and the colour limit turns everything grey, so coloured shapes fill
+# black (the logo row of docs/reference/dither-previews/convert64-sheets/
+# sheet-lineart-recipe.png).
+#
+# What tile 13 does that #273's recipe did not (sheet-lineart-recipe.md, each swapped into
+# tile 13 alone; share of pixels identical to tile 13):
+#
+#   difference                 tile 13 (png2amiga)          #273 (png2c64 path)       swapped
+#   hi-res `none` cell pair    120-pair brute force, mse    the same search, then      87.5 %
+#                                                           png2c64's global Floyd-
+#                                                           Steinberg replacement
+#   scaler                     widened Lanczos-3            the same kernel            100 %
+#   preprocessing maths        png2amiga's OKLab            png2c64's OKLab            100 %
+#   black point 0.5            OKLab L levels after gamma   the same, same place       100 %
+#   grey limit                 0, 11, 12, 15, 1             the same indices           100 %
+#   cell metric, gamma         mse, 1.5                     mse, 1.5                   100 %
+#
+# So the one difference that matters is png2c64's Floyd-Steinberg replacement of each
+# cell's pair, which spreads a grey line into black and white. png2c64 has no option
+# to skip it, so the recipe takes png2amiga's solver (opt-in, ADR-014 §2).
 #
 # As a batch manifest, for every PNG in a directory:
 #
@@ -11,17 +33,19 @@
 # The same on one picture:
 #
 #     convert64 convert lineart.png --mode hires --dither none --gamma 1.5 \
-#         --resample lanczos --black-point 0.5 --allowed 0,11,12,15,1 -o lineart.art
+#         --resample lanczos --black-point 0.5 --allowed 0,11,12,15,1 \
+#         --solver png2amiga -o lineart.art
 #
 # In the app: Mode Hi-res; Dither None; Gamma 1.5 and Black point 50 % (Adjustments);
 # Resample Lanczos (Transform); Allowed limited to black, dark grey, grey, light
-# grey and white (Colour fitting).
+# grey and white (Colour fitting); Solver png2amiga (comparison) (Advanced).
 
 [defaults]
 mode = "hires"            # hi-res bitmap (Art Studio)
 dither = "none"           # each pixel the nearer of its cell's two colours
-gamma = 1.5               # png2c64's default gamma
-resample = "lanczos"      # png2amiga's widened Lanczos-3: more even thin lines
-black-point = 0.5         # png2c64's --black-point: darker half of lightness to black
+gamma = 1.5               # png2c64's default gamma (png2amiga's own is 1)
+resample = "lanczos"      # png2amiga's widened Lanczos-3 (its solver's front end uses it anyway)
+black-point = 0.5         # the darker half of OKLab lightness to black
 allowed = "0,11,12,15,1"  # Pepto's greys: black, dark grey, grey, light grey, white
+solver = "png2amiga"      # brute-force cell pairs, no Floyd-Steinberg replacement (#276)
 outputs = ["art"]
