@@ -1019,11 +1019,46 @@ fn curves(f: &mut Form, shell: &mut Shell, c: &Curves, ui: &mut Ui) {
     }
 }
 
+/// The Region tool's breadcrumb (UX §7, usability review M7): `Region 1 ‹ source`, the
+/// region in the heading style, then the selected layer's name as a link back to its
+/// recipe (and to the Nudge tool, as `V`).
+fn breadcrumb(shell: &mut Shell, ws: &Workspace, ui: &mut Ui) {
+    let project = ws.doc.session().project();
+    let here = project
+        .regions
+        .get(shell.region)
+        .map_or("Regions", |r| r.name());
+    let Some(layer) = project
+        .layers
+        .get(shell.layer.min(project.layers.len().saturating_sub(1)))
+    else {
+        return;
+    };
+    ui.horizontal(|ui| {
+        let heading = RichText::new(here)
+            .size(14.0)
+            .color(ui.visuals().strong_text_color())
+            .family(egui::FontFamily::Name(crate::theme::MEDIUM.into()));
+        ui.label(heading);
+        ui.label(RichText::new("‹").weak());
+        let key = super::Tool::Nudge.key().name();
+        let back = ui
+            .link(layer.name())
+            .on_hover_text(format!("Back to {}'s recipe ({key})", layer.name()));
+        if back.clicked() {
+            shell.tool = super::Tool::Nudge;
+            shell.mask.stroke.clear();
+        }
+    });
+    ui.separator();
+}
+
 /// The Region tool's panel: the regions (select, add, rename, remove) and the selected
 /// region's dither recipe and colour fitting, edited like a layer's (`region_set_recipe`).
 fn regions(f: &mut Form, shell: &mut Shell, ws: &Workspace, ui: &mut Ui) {
     use convert64_project::command::RegionRef;
     let regions = &ws.doc.session().project().regions;
+    breadcrumb(shell, ws, ui);
     ui.label(RichText::new("Regions: a recipe painted over the picture. Paint with R; the first stroke makes a region.").small().weak());
     for (k, r) in regions.iter().enumerate() {
         ui.horizontal(|ui| {
@@ -1059,11 +1094,6 @@ fn regions(f: &mut Form, shell: &mut Shell, ws: &Workspace, ui: &mut Ui) {
         return;
     };
     ui.separator();
-    ui.label(
-        RichText::new(format!("Region: {}", region.name()))
-            .small()
-            .weak(),
-    );
     f.region = Some(shell.region);
     dither(f, shell, ws, region.recipe(), ui);
     fitting(f, region.recipe(), ws, ui);
@@ -2510,9 +2540,53 @@ mod tests {
         let (texts, _) = frame(&ctx, &mut shell, &mut ws, Vec::new());
         let texts = dock(texts);
         let y = |t: &str| find(&texts, t).center().y;
-        assert!(y("Region: Sky") < y("Dither recipe"));
+        assert!(y("Sky") < y("Dither recipe"));
         assert!(y("Dither recipe") < y("Method") && y("Method") < y("Colour fitting"));
         assert!(!texts.iter().any(|(s, _)| s == "Mode"), "{texts:?}");
+    }
+
+    /// #290 (usability review M7): the Region tool's Recipe tab opens with the
+    /// breadcrumb `Sky ‹ ramp.png`, and a click on the layer's name goes back to that
+    /// layer's recipe and the Nudge tool.
+    #[test]
+    fn the_region_breadcrumb_goes_back_to_the_layer() {
+        let mut ws = workspace(Sharpen::default());
+        ws.doc
+            .run(JsonCommand::RegionAdd {
+                name: "Sky".to_owned(),
+                recipe: Box::default(),
+                index: None,
+            })
+            .unwrap();
+        let name = ws.doc.session().project().layers[0].name().to_owned();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut shell = Shell {
+            tab: super::super::DockTab::Recipe,
+            tool: super::super::Tool::Region,
+            ..Shell::default()
+        };
+        let mut texts = Vec::new();
+        for _ in 0..2 {
+            texts = dock(frame(&ctx, &mut shell, &mut ws, Vec::new()).0);
+        }
+        let here = find(&texts, "Sky");
+        let sep = find(&texts, "‹");
+        let back = find(&texts, &name);
+        let same_row = |r: egui::Rect| (r.center().y - here.center().y).abs() < 4.0;
+        assert!(same_row(sep) && same_row(back), "{texts:?}");
+        assert!(here.right() < sep.left() && sep.right() < back.left());
+        // Above the region list and the recipe.
+        assert!(here.bottom() < find(&texts, "Add region").top());
+        assert!(!texts.iter().any(|(t, _)| t.starts_with("Layer 1 of")));
+
+        for events in click(back.center()) {
+            frame(&ctx, &mut shell, &mut ws, events);
+        }
+        assert_eq!(shell.tool, super::super::Tool::Nudge);
+        let texts = dock(frame(&ctx, &mut shell, &mut ws, Vec::new()).0);
+        assert!(texts.iter().any(|(t, _)| t == "Layer 1 of 1 · 64 × 40 px"));
+        assert!(!texts.iter().any(|(t, _)| t == "Sky" || t == "‹"));
     }
 
     /// The transforms the frame asked `layer_set_transform` for.
