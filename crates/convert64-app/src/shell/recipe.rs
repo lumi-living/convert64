@@ -1082,14 +1082,18 @@ fn rebuilt(
         .ok()
 }
 
-/// The Transform group (UX §6 item 1, ADR-011): X, Y, W %, H % (chained by default),
-/// rotation, the anchor, Snap, flips, Downscale (#235: Auto or Exact), Resample
-/// (ADR-014 §3: Mitchell or Lanczos) and presets, in C64 (canvas) pixels, sub-pixel.
+/// The Transform group (UX §6 item 1, ADR-011, usability review M6, #289): X, Y and
+/// W × H in screen pixels (the 320 × 200 grid every mode is composited on; a multicolor
+/// pixel is 2 wide), the scale as a % of the source under them, rotation, the 3 × 3
+/// anchor, the presets Fit · Fill · 1:1 · 2:1, the flip toggles, Snap, Downscale (#235:
+/// Auto or Exact) and Resample (ADR-014 §3: Mitchell or Lanczos); all sub-pixel.
 fn transform_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, ui: &mut Ui) {
+    use crate::presets::{self, Preset};
     use convert64_core::Vec2;
     let t = layer.transform();
     let size = layer.source().size();
     let (w, h) = (size.0 as f32, size.1 as f32);
+    let mode = ws.doc.mode();
     let changed = t.rotate() != 0.0
         || t.flip_h()
         || t.flip_v()
@@ -1155,17 +1159,20 @@ fn transform_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Laye
                 f.end();
             }
         }
+        // W × H in screen pixels (#289), the chain between them.
         ui.horizontal(|ui| {
-            label(ui, "W / H", false);
-            let mut wp = sc.x * 100.0;
-            let mut hp = sc.y * 100.0;
-            let rw = ui.add(
-                egui::DragValue::new(&mut wp)
-                    .speed(0.1)
-                    .range(1.0..=1000.0)
-                    .fixed_decimals(2)
-                    .suffix(" %"),
-            );
+            label_tip(ui, "W × H", false, Some(SIZE_TIP));
+            let (pw, ph) = presets::screen_size(&t, size);
+            let (mut wv, mut hv) = (pw, ph);
+            let rw = ui
+                .add(
+                    egui::DragValue::new(&mut wv)
+                        .speed(0.1)
+                        .range(w * 0.01..=w * 10.0)
+                        .fixed_decimals(2)
+                        .suffix(" px"),
+                )
+                .on_hover_text(SIZE_TIP);
             let glyph = if shell.scale_linked {
                 crate::icons::CHAIN
             } else {
@@ -1183,32 +1190,29 @@ fn transform_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Laye
             {
                 shell.scale_linked = !shell.scale_linked;
             }
-            let rh = ui.add(
-                egui::DragValue::new(&mut hp)
-                    .speed(0.1)
-                    .range(1.0..=1000.0)
-                    .fixed_decimals(2)
-                    .suffix(" %"),
-            );
+            let rh = ui
+                .add(
+                    egui::DragValue::new(&mut hv)
+                        .speed(0.1)
+                        .range(h * 0.01..=h * 10.0)
+                        .fixed_decimals(2)
+                        .suffix(" px"),
+                )
+                .on_hover_text(SIZE_TIP);
             let linked = shell.scale_linked;
+            // The chain keeps H / W as it is (UX §6 item 1).
             let target = if rw.changed() {
+                let sx = presets::scale_for(wv, size.0);
                 Some((
-                    wp / 100.0,
-                    if linked {
-                        sc.y * wp / 100.0 / sc.x
-                    } else {
-                        sc.y
-                    },
+                    sx,
+                    if linked { sc.y * sx / sc.x } else { sc.y },
                     rw.dragged(),
                 ))
             } else if rh.changed() {
+                let sy = presets::scale_for(hv, size.1);
                 Some((
-                    if linked {
-                        sc.x * hp / 100.0 / sc.y
-                    } else {
-                        sc.x
-                    },
-                    hp / 100.0,
+                    if linked { sc.x * sy / sc.y } else { sc.x },
+                    sy,
                     rh.dragged(),
                 ))
             } else {
@@ -1223,6 +1227,17 @@ fn transform_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Laye
                 f.end();
             }
         });
+        // The secondary readout: % of the source, and multicolor pixels.
+        ui.horizontal(|ui| {
+            // Under the fields: the label column and its spacing.
+            ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for line in presets::secondary(&t, size, mode) {
+                    ui.label(RichText::new(line).small().weak());
+                }
+            });
+        });
         let (edit, stopped) = field(ui, "Rotate", t.rotate(), 0.05, -180.0..=180.0, "°");
         if let Some((deg, drag)) = edit
             && let Ok(n) = t.with_rotation(deg)
@@ -1234,66 +1249,42 @@ fn transform_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Laye
         }
         ui.horizontal(|ui| {
             label(ui, "Anchor", t.anchor() != Vec2::new(0.5, 0.5));
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
-                for ay in [0.0, 0.5, 1.0] {
-                    ui.horizontal(|ui| {
-                        for ax in [0.0, 0.5, 1.0] {
-                            let on = t.anchor() == Vec2::new(ax, ay);
-                            let (rect, resp) = ui
-                                .allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
-                            let v = ui.visuals();
-                            let stroke = if resp.hovered() {
-                                v.widgets.hovered.fg_stroke
-                            } else {
-                                v.widgets.inactive.fg_stroke
-                            };
-                            if on {
-                                ui.painter().rect_filled(
-                                    rect,
-                                    2.0,
-                                    Theme::current(ui.ctx()).accent,
-                                );
-                            } else {
-                                ui.painter().rect_stroke(
-                                    rect.shrink(1.0),
-                                    2.0,
-                                    stroke,
-                                    egui::StrokeKind::Inside,
-                                );
-                            }
-                            if resp.on_hover_text("Pivot for scale and rotate").clicked()
-                                && !on
-                                && let Ok(n) = t.reanchored(Vec2::new(ax, ay), size)
-                            {
-                                set(f, None, n);
-                            }
-                        }
-                    });
-                }
-            });
+            if let Some(a) = anchor_control(ui, t.anchor())
+                && let Ok(n) = t.reanchored(a, size)
+            {
+                set(f, None, n);
+            }
         });
         ui.horizontal(|ui| {
-            label(ui, "Snap", false);
-            super::toolbar::snap_menu(Some(ws), ui, f.actions);
+            let now = Preset::matching(&t, size, mode);
+            label_tip(ui, "Presets", false, Some(PRESETS_TIP));
+            for preset in Preset::ALL {
+                if ui
+                    .selectable_label(now == Some(preset), preset.label())
+                    .on_hover_text(preset.tip())
+                    .clicked()
+                    && let Some(n) = preset.apply(&t, size, mode)
+                {
+                    set(f, None, n);
+                }
+            }
         });
         ui.horizontal(|ui| {
             label(ui, "Flip", flips.0 || flips.1);
-            for (name, fl) in [
-                ("Horizontal", (!flips.0, flips.1)),
-                ("Vertical", (flips.0, !flips.1)),
+            for (vertical, on, fl) in [
+                (false, flips.0, (!flips.0, flips.1)),
+                (true, flips.1, (flips.0, !flips.1)),
             ] {
-                let on = if name == "Horizontal" {
-                    flips.0
-                } else {
-                    flips.1
-                };
-                if ui.selectable_label(on, name).clicked()
+                if flip_toggle(ui, on, vertical).clicked()
                     && let Some(n) = rebuilt(&t, p, sc, fl)
                 {
                     set(f, None, n);
                 }
             }
+        });
+        ui.horizontal(|ui| {
+            label(ui, "Snap", false);
+            super::toolbar::snap_menu(Some(ws), ui, f.actions);
         });
         ui.horizontal(|ui| {
             use convert64_core::Downscale;
@@ -1362,32 +1353,130 @@ fn transform_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Laye
                 }
             }
         });
-        ui.horizontal(|ui| {
-            label(ui, "Presets", false);
-            ui.menu_button("Fit…", |ui| {
-                let (sw, sh) = (320.0, 200.0);
-                let centred = |s: f32| Vec2::new((sw - w * s) / 2.0, (sh - h * s) / 2.0);
-                let presets: [(&str, f32); 7] = [
-                    ("Fit width", sw / w),
-                    ("Fit height", sh / h),
-                    ("Fit screen", (sw / w).min(sh / h)),
-                    ("Fill screen", (sw / w).max(sh / h)),
-                    ("1 source px = 1 C64 px", 1.0),
-                    ("2 source px = 1 C64 px", 0.5),
-                    ("100 %", 1.0),
-                ];
-                for (name, s) in presets {
-                    if ui.button(name).clicked() {
-                        if let Some(n) = rebuilt(&t, centred(s), Vec2::new(s, s), flips) {
-                            set(f, None, n);
-                        }
-                        ui.close();
-                    }
-                }
-            });
-        });
         false
     });
+}
+
+/// The W × H row's tooltip: what the unit is (#289).
+const SIZE_TIP: &str = "The layer's size on the screen, in screen pixels: the 320 × 200 grid \
+                        every mode is placed on. A multicolor pixel is 2 px wide";
+
+/// The Presets row's tooltip.
+const PRESETS_TIP: &str = "Scale and place the layer; rotation, anchor and flips stay. The one \
+                           the layer is at is selected";
+
+/// The anchor control's cells, row by row: the anchor and its name.
+const ANCHORS: [((f32, f32), &str); 9] = [
+    ((0.0, 0.0), "top left"),
+    ((0.5, 0.0), "top"),
+    ((1.0, 0.0), "top right"),
+    ((0.0, 0.5), "left"),
+    ((0.5, 0.5), "centre"),
+    ((1.0, 0.5), "right"),
+    ((0.0, 1.0), "bottom left"),
+    ((0.5, 1.0), "bottom"),
+    ((1.0, 1.0), "bottom right"),
+];
+
+/// The side of one of the anchor control's cells, in points (UX §6 item 1: about 16).
+const ANCHOR_CELL: f32 = 16.0;
+
+/// The anchor control (UX §6 item 1, #289): a 3 × 3 grid of 16 px cells in one frame,
+/// the anchor's cell filled in the accent colour, the others a dot, a hovered one
+/// lighter. Returns the anchor clicked, if it is a new one.
+fn anchor_control(ui: &mut Ui, anchor: convert64_core::Vec2) -> Option<convert64_core::Vec2> {
+    let (gap, pad) = (2.0, 2.0);
+    let side = 3.0 * ANCHOR_CELL + 2.0 * gap + 2.0 * pad;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+    let accent = Theme::current(ui.ctx()).accent;
+    let v = ui.visuals().clone();
+    ui.painter().rect(
+        rect,
+        v.widgets.inactive.corner_radius,
+        v.extreme_bg_color,
+        v.widgets.inactive.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+    let mut picked = None;
+    for (k, ((ax, ay), name)) in ANCHORS.into_iter().enumerate() {
+        let (col, row) = ((k % 3) as f32, (k / 3) as f32);
+        let cell = egui::Rect::from_min_size(
+            rect.min
+                + egui::vec2(
+                    pad + col * (ANCHOR_CELL + gap),
+                    pad + row * (ANCHOR_CELL + gap),
+                ),
+            egui::vec2(ANCHOR_CELL, ANCHOR_CELL),
+        );
+        let id = ui.id().with(("anchor", k));
+        let resp = ui.interact(cell, id, egui::Sense::click());
+        let on = anchor == convert64_core::Vec2::new(ax, ay);
+        let label = format!("Pivot: {name}");
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, &label)
+        });
+        let painter = ui.painter();
+        if resp.hovered() {
+            painter.rect_filled(cell, 2.0, v.widgets.hovered.weak_bg_fill);
+        }
+        if on {
+            painter.rect_filled(cell.shrink(3.0), 2.0, accent);
+        } else {
+            let dot = if resp.hovered() {
+                v.widgets.hovered.fg_stroke.color
+            } else {
+                v.widgets.inactive.fg_stroke.color
+            };
+            painter.circle_filled(cell.center(), 2.0, dot);
+        }
+        let clicked = resp
+            .on_hover_text(format!("{label}: scale and rotate about it"))
+            .clicked();
+        if clicked && !on {
+            picked = Some(convert64_core::Vec2::new(ax, ay));
+        }
+    }
+    picked
+}
+
+/// A flip toggle (UX §6 item 1, #289): the flip glyph, turned a quarter for `vertical`,
+/// on a selectable button's background when `on`.
+fn flip_toggle(ui: &mut Ui, on: bool, vertical: bool) -> Response {
+    let name = if vertical {
+        "Flip vertical"
+    } else {
+        "Flip horizontal"
+    };
+    let side = ui.spacing().interact_size.y + 4.0;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, name));
+    let visuals = ui.style().interact_selectable(&resp, on);
+    if on || resp.hovered() || resp.has_focus() {
+        ui.painter().rect(
+            rect,
+            visuals.corner_radius,
+            visuals.weak_bg_fill,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+    let galley = egui::WidgetText::from(super::icon(crate::icons::FLIP)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    );
+    let angle = if vertical {
+        std::f32::consts::FRAC_PI_2
+    } else {
+        0.0
+    };
+    // Turned about its own centre: the text's origin is its top left corner.
+    let half = galley.size() / 2.0;
+    let pos = rect.center() - egui::emath::Rot2::from_angle(angle) * half;
+    ui.painter()
+        .add(egui::epaint::TextShape::new(pos, galley, visuals.text_color()).with_angle(angle));
+    resp.on_hover_text(name)
 }
 
 /// The Mask group (UX §6 item 3): modifiers, the sources list and Edit mask; a layer
@@ -2424,6 +2513,121 @@ mod tests {
         assert!(y("Region: Sky") < y("Dither recipe"));
         assert!(y("Dither recipe") < y("Method") && y("Method") < y("Colour fitting"));
         assert!(!texts.iter().any(|(s, _)| s == "Mode"), "{texts:?}");
+    }
+
+    /// The transforms the frame asked `layer_set_transform` for.
+    fn transforms(actions: &[Action]) -> Vec<convert64_core::Transform> {
+        actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::Run(JsonCommand::LayerSetTransform { transform, .. }) => Some(*transform),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// #289 (usability review M6): W × H in screen pixels with the % of the source and
+    /// the multicolor width under them; Fill selected for an opened picture; the
+    /// presets as visible buttons, 1:1 landing on whole multicolor pixels; the flips as
+    /// toggles; the dock keeps its width.
+    #[test]
+    fn the_transform_group_shows_screen_pixels_and_presets() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        // 64 × 40, opened: Fill, which on a 16:10 picture is 5 × 5, the whole screen.
+        let mut ws = workspace(Sharpen::default());
+        let mut groups = RecipeGroups::default();
+        groups.set_open("Transform", true);
+        let mut shell = Shell {
+            tab: super::super::DockTab::Recipe,
+            groups,
+            ..Shell::default()
+        };
+        let mut texts = Vec::new();
+        for _ in 0..2 {
+            texts = dock(frame(&ctx, &mut shell, &mut ws, Vec::new()).0);
+        }
+        let row = find(&texts, "W × H");
+        let on_row = |text: &str, at: egui::Rect| {
+            texts
+                .iter()
+                .find(|(t, r)| t == text && (r.center().y - at.center().y).abs() < 4.0)
+                .map(|(_, r)| *r)
+                .unwrap_or_else(|| panic!("no {text:?} on the row: {texts:?}"))
+        };
+        let w = on_row("320.00", row);
+        let h = on_row("200.00", row);
+        assert!(row.right() < w.left() && w.right() < h.left());
+        let pct = find(&texts, "500.00 % × 500.00 % of the source");
+        let mc = find(&texts, "160.0 multicolor px wide");
+        assert!(row.bottom() < pct.top() && pct.bottom() <= mc.top());
+        assert!(mc.bottom() < find(&texts, "Rotate").top());
+        let presets = find(&texts, "Presets");
+        let buttons = ["Fit", "Fill", "1:1", "2:1"].map(|p| on_row(p, presets));
+        assert!(buttons.windows(2).all(|b| b[0].right() < b[1].left()));
+        // Nothing pushed the dock wider than its default.
+        let tab = find(&texts, "Recipe");
+        assert!(tab.left() > WINDOW - layout::DOCK_WIDTH, "{tab:?}");
+        assert!(texts.iter().all(|(_, r)| r.right() <= WINDOW), "{texts:?}");
+
+        // 1:1 is one source pixel per screen pixel, centred on whole multicolor pixels.
+        let mut asked = Vec::new();
+        for events in click(buttons[2].center()) {
+            asked.extend(frame(&ctx, &mut shell, &mut ws, events).1);
+        }
+        let one = transforms(&asked);
+        assert_eq!(one.len(), 1, "{asked:?}");
+        assert_eq!(one[0].scale(), convert64_core::Vec2::new(1.0, 1.0));
+        assert_eq!(one[0].translate(), convert64_core::Vec2::new(128.0, 80.0));
+
+        // The flips are two icon toggles beside the Flip label; the first is horizontal.
+        let flip = find(&texts, "Flip");
+        let mut glyphs: Vec<egui::Rect> = texts
+            .iter()
+            .filter(|(t, r)| {
+                t == crate::icons::FLIP.codepoint && (r.center().y - flip.center().y).abs() < 6.0
+            })
+            .map(|(_, r)| *r)
+            .collect();
+        glyphs.sort_by(|a, b| a.left().total_cmp(&b.left()));
+        assert_eq!(glyphs.len(), 2, "{texts:?}");
+        assert!(flip.right() < glyphs[0].left());
+        let mut asked = Vec::new();
+        for events in click(glyphs[0].center()) {
+            asked.extend(frame(&ctx, &mut shell, &mut ws, events).1);
+        }
+        let flipped = transforms(&asked);
+        assert_eq!(flipped.len(), 1, "{asked:?}");
+        assert!(flipped[0].flip_h() && !flipped[0].flip_v());
+    }
+
+    /// #289: the anchor control's cells are 16 px, in a 3 × 3 grid.
+    #[test]
+    fn the_anchor_control_is_3_by_3_at_16_px() {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 300.0),
+            )),
+            ..Default::default()
+        };
+        let mut size = egui::Vec2::ZERO;
+        let mut out = ctx.run_ui(input, |ui| {
+            let before = ui.cursor().min;
+            ui.horizontal(|ui| {
+                anchor_control(ui, convert64_core::Vec2::new(0.5, 0.5));
+            });
+            size = ui.min_rect().max - before;
+        });
+        out.textures_delta.clear();
+        assert_eq!(ANCHOR_CELL, 16.0);
+        assert_eq!(ANCHORS.len(), 9);
+        // Three cells and two gaps and the frame's padding each way.
+        assert!(
+            size.x >= 3.0 * ANCHOR_CELL && size.y >= 3.0 * ANCHOR_CELL,
+            "{size:?}"
+        );
     }
 
     /// The rectangle of the first text that reads `text`.
