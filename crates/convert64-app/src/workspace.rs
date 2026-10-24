@@ -145,6 +145,8 @@ pub struct MovingPicture<'a> {
 pub struct CellInfo {
     /// The cell's colours, background first in multicolor.
     pub colours: Vec<Color32>,
+    /// Their names, in the same order (the status bar's swatch tooltips).
+    pub names: Vec<&'static str>,
     /// The cell's error (Σ weight × distance), if solved.
     pub error: Option<f32>,
     /// The cell's colour set is pinned.
@@ -623,10 +625,14 @@ impl Workspace {
         if let Some(sol) = &self.solution {
             let palette = self.doc.palette();
             let cols = self.doc.grid().cells().0;
-            info.colours
-                .extend(sol.background.map(|bg| rgb(palette.rgb(bg))));
-            if let Some(set) = sol.sets.get((cell.1 * cols + cell.0) as usize) {
-                info.colours.extend(set.iter().map(|c| rgb(palette.rgb(c))));
+            let set = sol.sets.get((cell.1 * cols + cell.0) as usize);
+            let indices = sol
+                .background
+                .into_iter()
+                .chain(set.into_iter().flat_map(|s| s.iter()));
+            for c in indices {
+                info.colours.push(rgb(palette.rgb(c)));
+                info.names.push(c.name());
             }
             if let Some(report) = sol.report.cell(pos) {
                 info.error = Some(report.error);

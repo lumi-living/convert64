@@ -605,6 +605,30 @@ pub struct RecipeChange {
 }
 
 impl RecipeChange {
+    /// Every field of `r`: applied to any recipe, it gives `r` (the app's Paste Recipe
+    /// and Reset Recipe, one `recipe_set` each).
+    pub fn all(r: &Recipe) -> Self {
+        Self {
+            method: Some(r.method()),
+            strength: Some(r.strength()),
+            phase: Some(r.phase()),
+            metric: Some(r.metric()),
+            allowed: Some(r.allowed().iter().collect()),
+            allow: None,
+            deny: None,
+            fit_mode: Some(r.fit_mode()),
+            cell_clamp: Some(r.cell_clamp()),
+            max_luma_diff: Some(r.max_luma_diff()),
+            adaptive: Some(r.adaptive()),
+            mix_levels: Some(r.mix_levels()),
+            smooth: Some(r.smooth()),
+            cell_metric: Some(r.cell_metric()),
+            error_clamp: Some(r.error_clamp()),
+            ordered_semantics: Some(r.ordered_semantics()),
+            chroma_guard: Some(r.chroma_guard()),
+        }
+    }
+
     /// `r` with these changes, through the recipe's validating constructors.
     pub fn apply(&self, r: &Recipe) -> Result<Recipe, RecipeError> {
         let mut allowed = self.allowed.as_deref().map_or(r.allowed(), colour_set);
@@ -2215,6 +2239,29 @@ impl Editor {
 mod tests {
     use super::*;
     use crate::layer::SourceImage;
+
+    /// The app's Copy / Paste Recipe (usability review m5): `RecipeChange::all` carries
+    /// every field, so pasting it onto any recipe gives the copied one.
+    #[test]
+    fn a_change_of_all_fields_gives_the_recipe_back() {
+        let d = Recipe::default();
+        let r = RecipeChange {
+            strength: Some(0.4),
+            metric: Some(Metric::Rgb),
+            fit_mode: Some(FitMode::Force),
+            deny: Some(vec![ColourIndex::ALL[3], ColourIndex::ALL[9]]),
+            smooth: Some(!d.smooth()),
+            cell_clamp: Some(!d.cell_clamp()),
+            error_clamp: Some(0.3),
+            chroma_guard: Some(!d.chroma_guard()),
+            ..Default::default()
+        }
+        .apply(&d)
+        .unwrap();
+        assert_ne!(r, d);
+        assert_eq!(RecipeChange::all(&r).apply(&d).unwrap(), r);
+        assert_eq!(RecipeChange::all(&d).apply(&r).unwrap(), d);
+    }
     use crate::mask::{GradientKind, KeyChannel};
     use std::sync::Arc;
 

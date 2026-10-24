@@ -317,6 +317,8 @@ pub struct Shell {
     /// Which Recipe groups are open: the user's choice, kept in the app's storage
     /// (#288).
     pub groups: RecipeGroups,
+    /// *Edit › Copy Recipe*: the recipe *Paste Recipe* sets (usability review m5).
+    pub recipe_clipboard: Option<convert64_core::layer::Recipe>,
 }
 
 impl Default for Shell {
@@ -371,6 +373,7 @@ impl Default for Shell {
             dock_left: None,
             last_cell: None,
             groups: RecipeGroups::default(),
+            recipe_clipboard: None,
         }
     }
 }
@@ -424,7 +427,7 @@ impl Shell {
     pub fn set_ui_hidden(&mut self, ctx: &egui::Context, hidden: bool) {
         self.chrome_hidden = hidden;
         if hidden {
-            let keys = ctx.format_shortcut(&shortcuts::HIDE_UI);
+            let keys = crate::shell::shortcuts::format(ctx, &shortcuts::HIDE_UI);
             self.toast(
                 ctx,
                 format!("UI hidden — press {keys} or Esc to show it"),
@@ -484,6 +487,13 @@ impl Shell {
     /// Keeps the camera as set instead of fitting after an open (screenshots).
     pub fn keep_camera(&mut self) {
         self.fit_pending = false;
+    }
+
+    /// Whether the Transform tool's box and handles are drawn and catch the pointer:
+    /// with that tool, outside mask mode, and only while the working view shows the
+    /// source (UX §4.1; usability review m3).
+    pub fn transform_handles(&self) -> bool {
+        self.tool == Tool::Transform && self.mask.tool.is_none() && self.shown() == ViewMode::Source
     }
 
     /// The image the working view shows now: the view mode, flipped while `\` is held.
@@ -725,7 +735,7 @@ impl Shell {
                         ui.add(egui::Label::new(text).extend());
                         if undo {
                             ui.label("·");
-                            let keys = ctx.format_shortcut(&shortcuts::UNDO);
+                            let keys = crate::shell::shortcuts::format(ctx, &shortcuts::UNDO);
                             undone = ui
                                 .link("Undo")
                                 .on_hover_text(format!("Undo ({keys})"))
@@ -1022,6 +1032,103 @@ pub(super) fn drag_step(response: &egui::Response) -> egui::Vec2 {
     }
 }
 
+/// Headless frames of the whole shell, read back as the texts they draw (#292).
+#[cfg(test)]
+pub(crate) mod ui_test {
+    use super::{Action, Shell};
+    use crate::workspace::Workspace;
+    use egui::{Color32, Event, Pos2, Rect, Shape};
+
+    /// A text a frame drew: what it says, where, and the colour it was painted in (a
+    /// disabled widget's fade included).
+    #[derive(Debug, Clone)]
+    pub struct Text {
+        pub text: String,
+        pub rect: Rect,
+        pub colour: Color32,
+    }
+
+    /// The colour `t` is painted in: its override, its first section's colour, or the
+    /// widget's text colour, faded by the shape's opacity.
+    fn colour(t: &egui::epaint::TextShape) -> Color32 {
+        let own = t
+            .galley
+            .job
+            .sections
+            .first()
+            .map(|s| s.format.color)
+            .filter(|c| *c != Color32::PLACEHOLDER);
+        t.override_text_color
+            .or(own)
+            .unwrap_or(t.fallback_color)
+            .gamma_multiply(t.opacity_factor)
+    }
+
+    fn collect(shape: &Shape, out: &mut Vec<Text>) {
+        match shape {
+            Shape::Text(t) => out.push(Text {
+                text: t.galley.text().to_owned(),
+                rect: t.visual_bounding_rect(),
+                colour: colour(t),
+            }),
+            Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
+            _ => {}
+        }
+    }
+
+    /// One frame of `shell` in a `size` window with `events`: the texts drawn and the
+    /// actions asked for.
+    pub fn frame(
+        ctx: &egui::Context,
+        shell: &mut Shell,
+        ws: Option<&mut Workspace>,
+        size: egui::Vec2,
+        events: Vec<Event>,
+    ) -> (Vec<Text>, Vec<Action>) {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            events,
+            ..Default::default()
+        };
+        let mut actions = Vec::new();
+        let mut ws = ws;
+        let mut output = ctx.run_ui(input, |ui| actions = shell.show(ui, ws.as_deref_mut()));
+        output.textures_delta.clear();
+        let mut texts = Vec::new();
+        for clipped in &output.shapes {
+            collect(&clipped.shape, &mut texts);
+        }
+        (texts, actions)
+    }
+
+    /// The first text that reads `text`.
+    pub fn find<'a>(texts: &'a [Text], text: &str) -> &'a Text {
+        texts
+            .iter()
+            .find(|t| t.text == text)
+            .unwrap_or_else(|| panic!("no {text:?} in {:?}", names(texts)))
+    }
+
+    /// Every text's string, for a failure message.
+    pub fn names(texts: &[Text]) -> Vec<&str> {
+        texts.iter().map(|t| t.text.as_str()).collect()
+    }
+
+    /// A press and release at `p`, as two frames' events.
+    pub fn click(p: Pos2) -> [Vec<Event>; 2] {
+        let button = |pressed| Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        [
+            vec![Event::PointerMoved(p), button(true)],
+            vec![button(false)],
+        ]
+    }
+}
+
 /// Headless drags with real pointer events, for the canvas tools' tests (#248, #263).
 #[cfg(test)]
 pub(super) mod drag_test {
@@ -1071,6 +1178,46 @@ pub(super) mod drag_test {
             output.textures_delta.clear();
         }
     }
+}
+
+/// Shift-drag on a slider or a number field moves a tenth as far (UX §6; usability review
+/// m9, the Figma and Photoshop convention).
+pub(crate) const FINE: f32 = 10.0;
+
+/// A slider's value during a Shift-drag (UX §6, m9): from where the value stood, the
+/// pointer's movement across the rail at a tenth of the plain rate, rounded to
+/// `decimals`. `None` when the slider is not being Shift-dragged, and then the slider's own
+/// value stands (it follows the pointer again). egui's `DragValue` already moves a tenth
+/// as far with Shift held; its `Slider` does not.
+pub(super) fn fine_slider(
+    ui: &egui::Ui,
+    slider: &egui::Response,
+    value: f32,
+    range: std::ops::RangeInclusive<f32>,
+    decimals: usize,
+) -> Option<f32> {
+    let id = slider.id.with("fine");
+    let shift = ui.input(|i| i.modifiers.shift_only());
+    let k = 10f32.powi(decimals as i32);
+    let held = ui.data(|d| d.get_temp::<f32>(id));
+    // The release of a fine drag keeps its value: egui's slider would jump to the
+    // pointer on that frame.
+    if slider.drag_stopped()
+        && let Some(held) = held.filter(|_| shift)
+    {
+        ui.data_mut(|d| d.remove::<f32>(id));
+        return Some((held * k).round() / k);
+    }
+    if !(slider.dragged() && shift) {
+        ui.data_mut(|d| d.remove::<f32>(id));
+        return None;
+    }
+    let (lo, hi) = (*range.start(), *range.end());
+    let width = slider.rect.width().max(1.0);
+    let dx = ui.input(|i| i.pointer.delta().x);
+    let now = (held.unwrap_or(value) + dx / width * (hi - lo) / FINE).clamp(lo, hi);
+    ui.data_mut(|d| d.insert_temp(id, now));
+    Some((now * k).round() / k)
 }
 
 /// An icon at the toolbar and row size (`layout::ICON_SIZE`).
@@ -1213,6 +1360,302 @@ mod tests {
         shell.toggle_mask_mode();
         let (shell, _) = frame(shell, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
         assert!(!shell.mask.active && !shell.chrome_hidden);
+    }
+
+    /// Clicks the menu `menu`, then its item `item`, in a 1280 × 800 window: the actions
+    /// that asked for.
+    fn menu_click(
+        ctx: &egui::Context,
+        shell: &mut Shell,
+        ws: &mut Workspace,
+        menu: &str,
+        item: &str,
+    ) -> Vec<Action> {
+        use ui_test::{click, find, frame};
+        let size = egui::vec2(1280.0, 800.0);
+        let mut actions = Vec::new();
+        let (texts, _) = frame(ctx, shell, Some(ws), size, vec![]);
+        for events in click(find(&texts, menu).rect.center()) {
+            actions.extend(frame(ctx, shell, Some(ws), size, events).1);
+        }
+        // The menu opens over a few frames.
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            texts = frame(ctx, shell, Some(ws), size, vec![]).0;
+        }
+        for events in click(find(&texts, item).rect.center()) {
+            actions.extend(frame(ctx, shell, Some(ws), size, events).1);
+        }
+        actions
+    }
+
+    /// Usability review m5: Edit › Copy Recipe takes the selected layer's recipe and
+    /// Paste Recipe sets all of it on another layer as one `recipe_set`; Recipe › Reset
+    /// Recipe sets the defaults.
+    #[test]
+    fn copy_and_paste_recipe_set_the_whole_recipe() {
+        use convert64_core::command::RecipeChange;
+        use convert64_core::layer::Metric;
+        use convert64_project::{JsonCommand, LayerRef};
+        let (ctx, mut ws) = two_layers();
+        let change = RecipeChange {
+            strength: Some(0.35),
+            metric: Some(Metric::Rgb),
+            ..Default::default()
+        };
+        ws.doc
+            .run(JsonCommand::RecipeSet {
+                layer: LayerRef::Index(0),
+                recipe: change,
+            })
+            .unwrap();
+        let copied = *ws.doc.session().project().layers[0].recipe();
+        let mut shell = Shell {
+            layer: 0,
+            ..Shell::default()
+        };
+        shell.keep_camera();
+        menu_click(&ctx, &mut shell, &mut ws, "Edit", "Copy Recipe");
+        assert_eq!(shell.recipe_clipboard, Some(copied));
+        shell.layer = 1;
+        let actions = menu_click(&ctx, &mut shell, &mut ws, "Edit", "Paste Recipe");
+        let want = Action::Run(JsonCommand::RecipeSet {
+            layer: LayerRef::Index(1),
+            recipe: RecipeChange::all(&copied),
+        });
+        assert_eq!(actions, vec![want]);
+        let actions = menu_click(&ctx, &mut shell, &mut ws, "Recipe", "Reset Recipe");
+        let want = Action::Run(JsonCommand::RecipeSet {
+            layer: LayerRef::Index(1),
+            recipe: RecipeChange::all(&Default::default()),
+        });
+        assert_eq!(actions, vec![want]);
+    }
+
+    /// Usability review m5: toggles carry a check mark (blank, same width, when off),
+    /// Show/Hide items say what they will do, and the ghost is "Overlay the …".
+    #[test]
+    fn menus_check_toggles_and_name_show_or_hide() {
+        use ui_test::{find, frame};
+        let (ctx, mut ws) = two_layers();
+        let mut shell = Shell::default();
+        shell.keep_camera();
+        shell.overlays.border = true;
+        shell.overlays.grid = false;
+        menu_click(&ctx, &mut shell, &mut ws, "View", "Cell Grid");
+        assert!(shell.overlays.grid, "the click toggled it");
+        let size = egui::vec2(1280.0, 800.0);
+        // Open the View menu again and read it.
+        let (texts, _) = frame(&ctx, &mut shell, Some(&mut ws), size, vec![]);
+        for events in ui_test::click(find(&texts, "View").rect.center()) {
+            frame(&ctx, &mut shell, Some(&mut ws), size, events);
+        }
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            texts = frame(&ctx, &mut shell, Some(&mut ws), size, vec![]).0;
+        }
+        let check = crate::icons::CHECK.codepoint;
+        let marks: Vec<_> = texts.iter().filter(|t| t.text == check).collect();
+        // The menu is drawn last: its item is the last text that reads `label`.
+        let on = |label: &str| {
+            let row = texts
+                .iter()
+                .rev()
+                .find(|t| t.text == label)
+                .unwrap_or_else(|| panic!("no {label}"))
+                .rect;
+            marks
+                .iter()
+                .find(|m| (m.rect.center().y - row.center().y).abs() < 4.0)
+                .is_some_and(|m| m.colour.a() > 0)
+        };
+        assert!(
+            on("Cell Grid") && on("Border") && on("Source"),
+            "{:?}",
+            ui_test::names(&texts)
+        );
+        assert!(!on("Colour-Limited Cells") && !on("Result"));
+        find(&texts, "Overlay the Result");
+        find(&texts, "Hide Dock");
+        assert!(!texts.iter().any(|t| t.text.contains("Ghost")));
+        assert_eq!(menu::overlay_label(ViewMode::Result), "Overlay the Source");
+    }
+
+    /// Usability review m8 (UX §4.3, §14 Q1): under 800 px of window the result is a
+    /// 112 px strip (160 × 100 and its border), so the tabs move up by 88 px.
+    #[test]
+    fn a_short_window_collapses_the_result_to_a_strip() {
+        use ui_test::{find, frame};
+        assert_eq!(dock::result_height(640.0), 112.0);
+        assert_eq!(dock::result_height(799.0), 112.0);
+        assert_eq!(dock::result_height(800.0), layout::RESULT_HEIGHT);
+        let tab_top = |h: f32| {
+            let (ctx, mut ws) = two_layers();
+            let mut shell = Shell::default();
+            let size = egui::vec2(1024.0, h);
+            frame(&ctx, &mut shell, Some(&mut ws), size, vec![]);
+            let (texts, _) = frame(&ctx, &mut shell, Some(&mut ws), size, vec![]);
+            texts
+                .iter()
+                .filter(|t| t.text == "Layers" && t.rect.left() > size.x - layout::DOCK_WIDTH - 1.0)
+                .map(|t| t.rect.top())
+                .next()
+                .unwrap_or_else(|| panic!("no Layers tab in {:?}", ui_test::names(&texts)))
+        };
+        let (short, tall) = (tab_top(640.0), tab_top(900.0));
+        assert!((tall - short - 88.0).abs() < 1.0, "{short} {tall}");
+        let _ = find;
+    }
+
+    /// Usability review m9 (UX §6): Shift-drag moves a slider a tenth as far as a plain
+    /// drag, and egui's `DragValue` does the same.
+    #[test]
+    fn shift_drag_makes_fine_steps() {
+        fn run(shift: bool, drag_value: bool) -> f32 {
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx);
+            let mods = if shift {
+                egui::Modifiers::SHIFT
+            } else {
+                egui::Modifiers::NONE
+            };
+            let mut value = 50.0_f32;
+            let step = |ctx: &egui::Context, events: Vec<egui::Event>, value: &mut f32| {
+                let mut rect = egui::Rect::NOTHING;
+                let mut all = vec![egui::Event::ModifiersChanged(mods)];
+                all.extend(events);
+                let input = egui::RawInput {
+                    events: all,
+                    ..Default::default()
+                };
+                let mut output = ctx.run_ui(input, |ui| {
+                    ui.spacing_mut().slider_width = 200.0;
+                    let mut v = *value;
+                    let r = if drag_value {
+                        ui.add(egui::DragValue::new(&mut v).range(0.0..=100.0))
+                    } else {
+                        let r = ui.add(egui::Slider::new(&mut v, 0.0..=100.0).fixed_decimals(2));
+                        if let Some(f) = fine_slider(ui, &r, *value, 0.0..=100.0, 2) {
+                            v = f;
+                        }
+                        r
+                    };
+                    rect = r.rect;
+                    *value = v;
+                });
+                output.textures_delta.clear();
+                rect
+            };
+            let rect = step(&ctx, vec![], &mut value);
+            // Press on the slider's knob (its middle at 50) or on the field, and move 40 pt.
+            let from = if drag_value {
+                rect.center()
+            } else {
+                egui::pos2(rect.left() + 0.5 * rect.width(), rect.center().y)
+            };
+            let press = |pressed, pos| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: mods,
+            };
+            // A press on a slider's rail jumps there; the drag counts from the press.
+            step(
+                &ctx,
+                vec![egui::Event::PointerMoved(from), press(true, from)],
+                &mut value,
+            );
+            let start = value;
+            for k in 1..=8 {
+                let p = from + egui::vec2(5.0 * k as f32, 0.0);
+                step(&ctx, vec![egui::Event::PointerMoved(p)], &mut value);
+            }
+            let to = from + egui::vec2(40.0, 0.0);
+            step(&ctx, vec![press(false, to)], &mut value);
+            value - start
+        }
+        for drag_value in [false, true] {
+            let plain = run(false, drag_value);
+            let fine = run(true, drag_value);
+            assert!(plain > 1.0, "{drag_value}: {plain}");
+            let ratio = fine / plain;
+            assert!(
+                (0.05..=0.2).contains(&ratio),
+                "drag value {drag_value}: plain {plain}, fine {fine}"
+            );
+        }
+    }
+
+    /// Usability review m7: a layer row is the name over its subtitle, the recipe in
+    /// short form with the opacity when not 100 %; nothing is clipped at the dock's edge;
+    /// each strip icon has a tooltip.
+    #[test]
+    fn layer_rows_show_a_subtitle_and_the_strip_has_tooltips() {
+        use convert64_project::{JsonCommand, LayerRef};
+        use ui_test::{find, frame};
+        let (ctx, mut ws) = two_layers();
+        ws.doc
+            .run(JsonCommand::LayerSetOpacity {
+                layer: LayerRef::Index(1),
+                opacity: 0.5,
+            })
+            .unwrap();
+        let mut shell = Shell {
+            tab: DockTab::Layers,
+            layer: 1,
+            ..Shell::default()
+        };
+        ctx.all_styles_mut(|s| s.interaction.tooltip_delay = 0.0);
+        let size = egui::vec2(1280.0, 800.0);
+        frame(&ctx, &mut shell, Some(&mut ws), size, vec![]);
+        let (texts, _) = frame(&ctx, &mut shell, Some(&mut ws), size, vec![]);
+        let top = find(&texts, "top").rect;
+        let sub = find(&texts, "FS 100% · OKLab · Adaptive · 50% opacity").rect;
+        assert!(sub.top() >= top.bottom() - 1.0 && (sub.left() - top.left()).abs() < 1.0);
+        find(&texts, "FS 100% · OKLab · Adaptive");
+        let dock_right = size.x - ui_test_margin();
+        for t in &texts {
+            if t.rect.left() > size.x - layout::DOCK_WIDTH {
+                assert!(t.rect.right() <= dock_right + 0.5, "{:?} clipped", t.text);
+            }
+        }
+        assert!(!texts.iter().any(|t| t.text == "50%"), "no opacity column");
+        // Hover each strip icon: its tooltip names it.
+        for (glyph, tip) in [
+            (crate::icons::ADD, "New layer from file"),
+            (crate::icons::DUPLICATE, "Duplicate"),
+            (crate::icons::FILL, "Add mask"),
+            (crate::icons::DELETE, "Delete layer"),
+        ] {
+            let at = texts
+                .iter()
+                .rev()
+                .find(|t| t.text == glyph.codepoint)
+                .expect("the strip icon")
+                .rect
+                .center();
+            let mut shown = Vec::new();
+            for _ in 0..3 {
+                shown = frame(
+                    &ctx,
+                    &mut shell,
+                    Some(&mut ws),
+                    size,
+                    vec![egui::Event::PointerMoved(at)],
+                )
+                .0;
+            }
+            assert!(
+                shown.iter().any(|t| t.text.starts_with(tip)),
+                "{tip}: {:?}",
+                ui_test::names(&shown)
+            );
+        }
+    }
+
+    /// The dock's inner margin on the right, in points.
+    fn ui_test_margin() -> f32 {
+        6.0
     }
 
     /// A document with two layers, "ramp" and "top", and a context to draw it on.

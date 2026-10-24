@@ -159,6 +159,9 @@ fn label_tip(ui: &mut Ui, text: &str, changed: bool, tip: Option<&str>) -> Respo
     })
 }
 
+/// The tooltip line every slider and number field shares (UX §6, m9).
+pub(super) const FINE_TIP: &str = "Shift-drag for fine steps";
+
 /// What a slider row did this frame.
 enum Edit {
     /// Nothing.
@@ -203,19 +206,24 @@ fn slider_tip(
         ui.spacing_mut().slider_width =
             (ui.available_width() - value_box).max(ui.spacing().interact_size.x);
         let mut r = ui.add(
-            egui::Slider::new(&mut v, range)
+            egui::Slider::new(&mut v, range.clone())
                 .suffix(suffix)
                 .fixed_decimals(decimals),
         );
-        if let Some(tip) = tip {
-            r = r.on_hover_text(tip);
+        let fine = super::fine_slider(ui, &r, value, range, decimals);
+        if let Some(fine) = fine {
+            v = fine;
         }
+        r = r.on_hover_text(match tip {
+            Some(tip) => format!("{tip}\n{FINE_TIP}"),
+            None => FINE_TIP.to_owned(),
+        });
         // The slider rounds to its decimals: a value it merely snapped (0.6 × 100 is not
         // exactly 60) is not an edit, or it would be re-sent every frame.
         let step = 0.5 * 10f32.powi(-(decimals as i32));
         if lab.double_clicked() {
             edit = Edit::Set(default);
-        } else if r.changed() && (v - value).abs() > step {
+        } else if (r.changed() || fine.is_some()) && (v - value).abs() > step {
             edit = if r.dragged() {
                 Edit::Drag(v)
             } else {
@@ -1729,11 +1737,23 @@ fn dither(f: &mut Form, shell: &mut Shell, ws: &Workspace, r: &Recipe, ui: &mut 
         );
         ui.horizontal(|ui| {
             let lab = label(ui, "Phase", r.phase() != d.phase());
-            for (phase, name) in [
-                (PatternPhase::Screen, "Screen-locked"),
-                (PatternPhase::Layer, "Layer-locked"),
+            // Short segments, so the row fits the narrowest dock (usability review m6).
+            for (phase, name, tip) in [
+                (
+                    PatternPhase::Screen,
+                    "Screen",
+                    "Screen-locked: the pattern stays put on the screen as the layer moves",
+                ),
+                (
+                    PatternPhase::Layer,
+                    "Layer",
+                    "Layer-locked: the pattern moves with the layer",
+                ),
             ] {
-                if ui.selectable_label(r.phase() == phase, name).clicked() && r.phase() != phase {
+                let segment = ui
+                    .selectable_label(r.phase() == phase, name)
+                    .on_hover_text(tip);
+                if segment.clicked() && r.phase() != phase {
                     f.recipe(
                         None,
                         RecipeChange {
@@ -2401,6 +2421,30 @@ mod tests {
         for row in ["Method", "Metric", "Brightness", "Threshold"] {
             assert!(has(row), "{row} missing: {texts:?}");
         }
+    }
+
+    /// Usability review m6: the dither family control that wrapped "Palette-aware" is
+    /// gone (the #260 method picker replaced it). The segmented rows left, Phase and
+    /// Orientation, sit on one line and are narrower than the dock at its narrowest
+    /// (Phase's *Screen-locked · Layer-locked* were not: 281 px).
+    #[test]
+    fn the_segmented_dither_rows_fit_the_narrowest_dock() {
+        let (texts, _) = draw(workspace(Sharpen::default()));
+        let texts = dock(texts);
+        let margin = 2.0 * 6.0;
+        let narrowest = *super::super::DOCK_WIDTH_RANGE.start() - margin;
+        for (label, last) in [("Phase", "Layer"), ("Orientation", "2:1")] {
+            let row = find(&texts, label);
+            let end = find(&texts, last);
+            assert!(
+                (row.center().y - end.center().y).abs() < 2.0,
+                "{label}: {last} wrapped"
+            );
+            // From the changed-value dot (6 px and a gap before the label) to the end.
+            let width = end.right() - (row.left() - 6.0 - 8.0);
+            assert!(width <= narrowest, "{label} row is {width} px");
+        }
+        assert!(!texts.iter().any(|(t, _)| t == "Palette-aware"));
     }
 
     /// #288: a click on a heading opens the group and the choice is the user's: it

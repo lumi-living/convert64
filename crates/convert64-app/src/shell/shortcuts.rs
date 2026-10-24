@@ -1,6 +1,6 @@
 //! The keyboard shortcuts of `docs/UX.md` §8 that have a menu item or a shell action.
 //! `COMMAND` is `Cmd` on macOS and `Ctrl` elsewhere; menus show each one with
-//! `ctx.format_shortcut`.
+//! [`format`] (symbols for punctuation keys, usability review m5).
 
 use egui::{Key, KeyboardShortcut, Modifiers};
 
@@ -84,3 +84,73 @@ pub const SNAP_CYCLE: KeyboardShortcut = shift_cmd(Key::Semicolon);
 pub const SCALE_UP: KeyboardShortcut = cmd(Key::CloseBracket);
 /// Scale the selected layer down 1 %.
 pub const SCALE_DOWN: KeyboardShortcut = cmd(Key::OpenBracket);
+
+/// The key as menus and tooltips show it: its symbol for punctuation (`=`, `−`, `'`,
+/// `[`), its name otherwise (`O`, `Delete`, `Up`). egui spells `Equals`, `Minus` and
+/// `Quote` out on Windows and Linux, and `Quote` on macOS too (usability review m5).
+pub fn key_text(key: Key) -> &'static str {
+    match key {
+        Key::Quote => "'",
+        Key::ArrowDown | Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp => key.name(),
+        _ => key.symbol_or_name(),
+    }
+}
+
+/// `shortcut` as menus and tooltips show it: egui's modifiers (`⇧⌘` on macOS,
+/// `Ctrl+Shift+` elsewhere) and the key by [`key_text`]: `⌘=`, `Ctrl+=`, `Ctrl+'`, never
+/// `Ctrl+Equals` (UX §8).
+pub fn format(ctx: &egui::Context, shortcut: &KeyboardShortcut) -> String {
+    let full = ctx.format_shortcut(shortcut);
+    let key = shortcut.logical_key;
+    let modifiers = [key.symbol_or_name(), key.name()]
+        .into_iter()
+        .find_map(|k| full.strip_suffix(k))
+        .unwrap_or(&full);
+    format!("{modifiers}{}", key_text(key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Usability review m5: punctuation keys read as their symbols, on every platform;
+    /// egui's own text spelt them out ("Ctrl+Equals", "Ctrl+Quote", "⌘Quote").
+    #[test]
+    fn shortcuts_show_symbols_not_key_names() {
+        let ctx = egui::Context::default();
+        // egui decides on the modifier symbols by the fonts, which the first frame loads.
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        let cases = [
+            (ZOOM_IN, "="),
+            (ZOOM_OUT, "\u{2212}"),
+            (GRID, "'"),
+            (SNAP_CYCLE, ";"),
+            (HIDE_UI, "\\"),
+            (OPEN, "O"),
+        ];
+        for (os, prefix) in [
+            (egui::os::OperatingSystem::Windows, "Ctrl+"),
+            (egui::os::OperatingSystem::Nix, "Ctrl+"),
+            // "⌘" once the fonts have the symbol, "Cmd+" before.
+            (egui::os::OperatingSystem::Mac, "Cmd"),
+        ] {
+            ctx.set_os(os);
+            for (shortcut, key) in cases {
+                let text = format(&ctx, &shortcut);
+                assert!(text.ends_with(key), "{os:?}: {text}");
+                assert!(
+                    text.contains(prefix) || text.contains('⌘') || shortcut.modifiers.is_none(),
+                    "{os:?}: {text}"
+                );
+                for name in ["Equals", "Minus", "Quote", "Semicolon", "Backslash"] {
+                    assert!(!text.contains(name), "{os:?}: {text}");
+                }
+            }
+        }
+        ctx.set_os(egui::os::OperatingSystem::Windows);
+        assert_eq!(format(&ctx, &ZOOM_IN), "Ctrl+=");
+        assert_eq!(format(&ctx, &SAVE_AS), "Ctrl+Shift+S");
+        assert_eq!(format(&ctx, &DELETE_LAYER), "Delete");
+    }
+}

@@ -350,7 +350,7 @@ fn selection_buttons(shell: &mut Shell, ui: &mut Ui, actions: &mut Vec<Action>) 
     let has = parts > 0;
     let via = format!(
         "Layer via mask ({})",
-        ctx.format_shortcut(&super::shortcuts::DUPLICATE_LAYER)
+        crate::shell::shortcuts::format(&ctx, &super::shortcuts::DUPLICATE_LAYER)
     );
     if ui
         .add_enabled(has, egui::Button::new(RichText::new(via).small()))
@@ -360,7 +360,7 @@ fn selection_buttons(shell: &mut Shell, ui: &mut Ui, actions: &mut Vec<Action>) 
     }
     let cut = format!(
         "Via cut ({})",
-        ctx.format_shortcut(&super::shortcuts::VIA_CUT)
+        crate::shell::shortcuts::format(&ctx, &super::shortcuts::VIA_CUT)
     );
     if ui
         .add_enabled(has, egui::Button::new(RichText::new(cut).small()))

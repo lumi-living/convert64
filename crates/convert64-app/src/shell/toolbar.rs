@@ -80,7 +80,12 @@ pub(super) fn show(
         snap_menu(ws, ui, actions);
         ui.separator();
         let ctx = ui.ctx().clone();
-        let tip = |label: &str, shortcut| format!("{label} ({})", ctx.format_shortcut(shortcut));
+        let tip = |label: &str, shortcut| {
+            format!(
+                "{label} ({})",
+                crate::shell::shortcuts::format(&ctx, shortcut)
+            )
+        };
         if button(
             ui,
             icons::ZOOM_IN,

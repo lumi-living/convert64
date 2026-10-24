@@ -135,7 +135,7 @@ pub(super) fn show(shell: &mut Shell, ws: &Workspace, ui: &mut Ui, actions: &mut
     {
         actions.push(Action::Export { again: false });
     }
-    let again = ui.ctx().format_shortcut(&super::shortcuts::EXPORT_AGAIN);
+    let again = crate::shell::shortcuts::format(ui.ctx(), &super::shortcuts::EXPORT_AGAIN);
     let note = match &shell.last_export_dir {
         Some(dir) => format!("Last: {dir}/ · Export Again {again}"),
         None => format!("To a folder you pick. Export Again {again}"),

@@ -31,6 +31,7 @@ Confirmed 2026-10-11 in a side-by-side comparison with Phosphor at 12–32 px; M
 | Contrast / levels | `contrast` | Settings | `settings` |
 | A/B compare | `compare` | Light / dark theme | `light_mode` / `dark_mode` |
 | Method field: open, previous, next (#260) | `arrow_drop_down`, `keyboard_arrow_up`, `keyboard_arrow_down` | Method picker search (#260) | `search` |
+| Menu item on (View, Theme; m5) | `check` | | |
 
 ## Axis values (binding for code and Figma)
 
