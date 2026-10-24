@@ -7,7 +7,7 @@
 //! [`crate::theme::layout`] and colours from [`crate::theme::Theme`].
 
 mod dock;
-mod export_dialog;
+mod export_panel;
 mod layers;
 mod mask;
 mod menu;
@@ -28,7 +28,6 @@ use crate::workspace::Workspace;
 use convert64_core::mode::Mode;
 
 pub use crate::view::ViewMode;
-pub use export_dialog::ExportDialog;
 pub use mask::{MaskState, MaskTool};
 pub use method_picker::{PickerState, RecipeTarget};
 pub use recipe::{GROUP_ORDER, RecipeGroups};
@@ -159,9 +158,12 @@ pub enum Action {
     Save,
     /// File › Save As… (`Shift Cmd S`).
     SaveAs,
-    /// Export with these settings, files named after the stem (the dialog, or Export
-    /// Again).
-    Export(crate::export::Settings, String),
+    /// Write the export set (UX §6b): the panel's Export button asks for a folder;
+    /// `again` (Export Again, `Shift Cmd E`) writes into the last one without asking.
+    Export {
+        /// Export Again: the last folder, if there is one.
+        again: bool,
+    },
     /// Run a registry command (ADR-005).
     Run(convert64_project::JsonCommand),
     /// Run several commands as one undo step, then show the message ("Pinned 7 cells").
@@ -286,12 +288,12 @@ pub struct Shell {
     view_rect: Option<egui::Rect>,
     /// The picture point under the pointer, in screen units.
     hover: Option<egui::Pos2>,
-    /// The export dialog, while open.
-    pub export: Option<ExportDialog>,
-    /// `Cmd E` this frame: open the dialog once the workspace is at hand.
-    export_requested: bool,
-    /// The last export, for Export Again.
-    pub last_export: Option<(crate::export::Settings, String)>,
+    /// The Export panel's file previews (UX §6b), rebuilt per solution and set.
+    export_cache: export_panel::ExportCache,
+    /// The Export panel's file name being typed: the row and the text so far.
+    export_edit: Option<(usize, String)>,
+    /// The folder the last export went into, by name, for the panel's note.
+    pub last_export_dir: Option<String>,
     /// A message shown at the bottom of the window until the time (egui seconds) passes.
     toast: Option<(String, bool, f64)>,
     /// The toast offers Undo (a deleted layer).
@@ -356,9 +358,9 @@ impl Default for Shell {
             fit_pending: true,
             view_rect: None,
             hover: None,
-            export: None,
-            export_requested: false,
-            last_export: None,
+            export_cache: export_panel::ExportCache::default(),
+            export_edit: None,
+            last_export_dir: None,
             toast: None,
             toast_undo: false,
             key_focus: KeyFocus::default(),
@@ -437,13 +439,20 @@ impl Shell {
         }
     }
 
-    /// Opens the export dialog for `ws`.
-    pub fn open_export(&mut self, ws: &Workspace) {
-        let (settings, name) = self
-            .last_export
-            .clone()
-            .unwrap_or_else(|| (crate::export::Settings::default(), ws.doc.stem()));
-        self.export = Some(ExportDialog { settings, name });
+    /// Shows the Export panel (`Cmd E`, Export › Export…; UX §6b): the Export tab, with
+    /// the dock and the UI shown if they were hidden.
+    pub fn show_export(&mut self, ctx: &egui::Context) {
+        self.tab = DockTab::Export;
+        self.dock_hidden = false;
+        if self.chrome_hidden {
+            self.set_ui_hidden(ctx, false);
+        }
+    }
+
+    /// Whether a dialog is open (the quit question, or any egui modal last frame): `Esc`
+    /// is its, and no shortcut reaches the app behind it (UX §8, #287).
+    pub fn dialog_open(&self, ctx: &egui::Context) -> bool {
+        self.quit_prompt.is_some() || ctx.memory(|m| m.top_modal_layer()).is_some()
     }
 
     /// A new document starts with the default tool (Nudge) and out of mask mode, so a
@@ -552,9 +561,6 @@ impl Shell {
         if let Some(ws) = ws.as_deref_mut() {
             ws.prepare(ui.ctx(), self.overlays.ghost);
             ws.prepare_thumbs(ui.ctx(), self.picker.source, self.last_cell);
-            if std::mem::take(&mut self.export_requested) {
-                self.open_export(ws);
-            }
             if let Some(forward) = self.nav_request.take() {
                 self.step_worst(ws, forward);
             }
@@ -600,7 +606,6 @@ impl Shell {
                 None
             };
         }
-        self.export_requested = false;
         self.nav_request = None;
         self.scale_request = None;
         self.snap_cycle = false;
@@ -654,7 +659,6 @@ impl Shell {
             .show(ui, |ui| {
                 working::show(self, ui, ws.as_deref(), &mut actions)
             });
-        export_dialog::show(self, ws.as_deref(), ui.ctx(), &mut actions);
         session::quit_prompt(self, ui.ctx(), &mut actions);
         // The picker closes (reverting its preview) when its recipe is no longer shown.
         if self.picker.open.is_some() && !self.picker.drawn {
@@ -744,11 +748,17 @@ impl Shell {
         // (#244). Arrows, though, belong to whichever widget has focus.
         // The open method picker takes typing and the arrows (UX §6a), from its first
         // frame on, before its search field has the focus.
+        // An open dialog takes the keys, `Esc` among them (UX §8): nothing acts behind it.
+        if self.dialog_open(ctx) {
+            self.flip_held = false;
+            return;
+        }
         let picker = self.picker.open.is_some();
         let typing = ctx.text_edit_focused() || picker;
         let widget_focused = ctx.egui_wants_keyboard_input() || picker;
         let delete_applies = self.delete_keys_apply(ctx);
         let mut hide_ui = None;
+        let mut show_export = false;
         ctx.input_mut(|i| {
             // A press moves the keys away from the canvas and the Layers panel, unless
             // it lands on one of them (they say so as they draw); `Esc` brings them back.
@@ -868,12 +878,11 @@ impl Shell {
             } else if i.consume_shortcut(&s::SAVE) {
                 actions.push(Action::Save);
             }
+            // Shift Cmd E before Cmd E, as for Save As.
             if i.consume_shortcut(&s::EXPORT_AGAIN) {
-                if let Some((settings, name)) = self.last_export.clone() {
-                    actions.push(Action::Export(settings, name));
-                }
+                actions.push(Action::Export { again: true });
             } else if i.consume_shortcut(&s::EXPORT) {
-                self.export_requested = true;
+                show_export = true;
             }
             // `Cmd \` is Show/Hide UI, not a flip.
             self.flip_held = !typing && !i.modifiers.command && i.key_down(egui::Key::Backslash);
@@ -967,6 +976,9 @@ impl Shell {
         });
         if let Some(hidden) = hide_ui {
             self.set_ui_hidden(ctx, hidden);
+        }
+        if show_export {
+            self.show_export(ctx);
         }
     }
 }
@@ -1533,6 +1545,174 @@ mod tests {
         assert_eq!(shell.camera.source_zoom, 3.0);
         assert!(shell.overlays.grid && shell.overlays.clashes);
         assert_eq!(shell.compare, Compare::Split);
+    }
+
+    /// #287, UX §8: while a dialog is open (the quit question) no shortcut acts behind
+    /// it, `Q` and `Shift C` among them (the usability review saw both act behind the
+    /// old export dialog); `Esc` closes it, as Cancel, and the shortcuts work again.
+    #[test]
+    fn an_open_dialog_blocks_shortcuts_and_esc_closes_it() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut shell = Shell {
+            quit_prompt: Some("title.png".to_owned()),
+            ..Shell::default()
+        };
+        let run = |shell: &mut Shell, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut actions = Vec::new();
+            let mut out = ctx.run_ui(input, |ui| actions = shell.show(ui, None));
+            out.textures_delta.clear();
+            actions
+        };
+        let none = egui::Modifiers::NONE;
+        let cmd = egui::Modifiers::COMMAND;
+        // The modal's first frame.
+        assert!(run(&mut shell, vec![]).is_empty());
+        let actions = run(
+            &mut shell,
+            vec![
+                key(egui::Key::Q, none),
+                key(egui::Key::C, egui::Modifiers::SHIFT),
+                key(egui::Key::P, none),
+                key(egui::Key::E, cmd),
+                key(egui::Key::E, cmd.plus(egui::Modifiers::SHIFT)),
+                key(egui::Key::O, cmd),
+                key(egui::Key::Backslash, cmd),
+            ],
+        );
+        assert!(actions.is_empty(), "{actions:?}");
+        assert_eq!(shell.view, ViewMode::Source, "Q acted behind the dialog");
+        assert!(!shell.overlays.clashes, "Shift C acted behind the dialog");
+        assert_eq!(shell.tool, Tool::Nudge);
+        assert_eq!(shell.tab, DockTab::Recipe);
+        assert!(!shell.chrome_hidden);
+        assert!(shell.quit_prompt.is_some());
+
+        let actions = run(&mut shell, vec![key(egui::Key::Escape, none)]);
+        assert_eq!(actions, vec![Action::AnswerQuit(QuitAnswer::Cancel)]);
+        assert!(shell.quit_prompt.is_none());
+        // The modal is gone once a frame has drawn without it.
+        run(&mut shell, vec![]);
+        run(&mut shell, vec![key(egui::Key::Q, none)]);
+        assert_eq!(shell.view, ViewMode::Result, "Q works again");
+    }
+
+    /// #287, UX §6b: `Cmd E` shows the Export panel, the dock and UI with it;
+    /// `Shift Cmd E` asks for Export Again.
+    #[test]
+    fn cmd_e_shows_the_export_panel_and_shift_cmd_e_exports_again() {
+        let cmd = egui::Modifiers::COMMAND;
+        let hidden = Shell {
+            dock_hidden: true,
+            chrome_hidden: true,
+            ..Shell::default()
+        };
+        let (shell, actions) = frame(hidden, vec![key(egui::Key::E, cmd)]);
+        assert!(actions.is_empty(), "{actions:?}");
+        assert_eq!(shell.tab, DockTab::Export);
+        assert!(!shell.dock_hidden && !shell.chrome_hidden);
+        let (shell, actions) = frame(
+            Shell::default(),
+            vec![key(egui::Key::E, cmd.plus(egui::Modifiers::SHIFT))],
+        );
+        assert_eq!(actions, vec![Action::Export { again: true }]);
+        assert_eq!(shell.tab, DockTab::Recipe);
+    }
+
+    /// The galley rectangle of the first text shape `ctx` drew last frame that reads
+    /// `text`.
+    fn text_rect(output: &egui::FullOutput, text: &str) -> Option<egui::Rect> {
+        output.shapes.iter().find_map(|s| match &s.shape {
+            egui::Shape::Text(t) if t.galley.text() == text => {
+                Some(t.galley.rect.translate(t.pos.to_vec2()))
+            }
+            _ => None,
+        })
+    }
+
+    /// #287, UX §6b: the Export panel shows each row's file name preview, adds a row
+    /// with **+ Add format** and exports with its one primary button, every change an
+    /// `export_set` (so it is saved with the project and undoes).
+    #[test]
+    fn the_export_panel_lists_rows_adds_one_and_exports() {
+        use convert64_core::export::{ExportEntry, ExportFormat};
+        let (ctx, mut ws) = two_layers();
+        let rows = vec![
+            ExportEntry::new(ExportFormat::Picture),
+            ExportEntry::new(ExportFormat::Prg),
+        ];
+        ws.doc
+            .run(convert64_project::JsonCommand::ExportSet(
+                convert64_core::command::ExportSet {
+                    exports: rows.clone(),
+                },
+            ))
+            .unwrap();
+        let mut scheduler = crate::scheduler::Scheduler::stepping(Default::default());
+        scheduler.submit(
+            ws.doc.snapshot(None),
+            convert64_core::solve::SolveMode::Full,
+        );
+        ws.solution = loop {
+            scheduler.tick();
+            if let Some(r) = scheduler.poll().filter(|r| !r.provisional) {
+                break Some(r.solution);
+            }
+        };
+        ws.solving = false;
+        let mut shell = Shell {
+            tab: DockTab::Export,
+            ..Shell::default()
+        };
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+        let mut draw = |shell: &mut Shell, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            let mut actions = Vec::new();
+            let mut out = ctx.run_ui(input, |ui| actions = shell.show(ui, Some(&mut ws)));
+            out.textures_delta.clear();
+            (out, actions)
+        };
+        let mut out = None;
+        for _ in 0..3 {
+            let (o, actions) = draw(&mut shell, vec![]);
+            assert!(actions.is_empty(), "{actions:?}");
+            out = Some(o);
+        }
+        let out = out.unwrap();
+        let texts: Vec<String> = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        assert!(text_rect(&out, "ramp.kla · 10 kB").is_some(), "{texts:?}");
+        assert!(text_rect(&out, "Koala (.kla)").is_some());
+        let add = text_rect(&out, "Add format").expect("the + Add format button");
+        let export = text_rect(&out, "Export 2 formats").expect("the Export button");
+
+        draw(&mut shell, press(add.center(), true));
+        let (_, actions) = draw(&mut shell, press(add.center(), false));
+        let mut more = rows.clone();
+        more.push(ExportEntry::new(ExportFormat::Png));
+        assert_eq!(
+            actions,
+            vec![Action::Run(convert64_project::JsonCommand::ExportSet(
+                convert64_core::command::ExportSet { exports: more }
+            ))]
+        );
+        draw(&mut shell, press(export.center(), true));
+        let (_, actions) = draw(&mut shell, press(export.center(), false));
+        assert_eq!(actions, vec![Action::Export { again: false }]);
     }
 
     /// Every tab and view draws with an open document, in both themes, without panics

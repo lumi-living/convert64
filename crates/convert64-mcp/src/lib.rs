@@ -9,8 +9,9 @@
 //!
 //! Tools: `project_open` (alias `recipe_open`), `project_save`, one tool per registry
 //! command (`layer_add`, `recipe_set`, `mask_key`, `cell_pin`, … with a project file's
-//! JSON arguments), `undo`, `redo`, `solve`, `clash_report`, `mask_export`,
-//! `composite_export` and `attributes_export`.
+//! JSON arguments, `export_set` among them), `undo`, `redo`, `solve`, `clash_report`,
+//! `export_run` (the export set's files, #287), `mask_export`, `composite_export` and
+//! `attributes_export`.
 
 use convert64_cli::schema::{command_schema, layer_schema, object_schema};
 use convert64_core::command::REGISTRY;
@@ -25,6 +26,8 @@ pub const PROTOCOL_VERSION: &str = "2025-06-18";
 #[derive(Default)]
 pub struct Server {
     session: Option<Session>,
+    /// The open project's file, whose name the export set's files take by default.
+    path: Option<std::path::PathBuf>,
 }
 
 fn tools() -> Value {
@@ -78,6 +81,14 @@ fn tools() -> Value {
         "inputSchema": object_schema(json!({ "worst": { "type": "integer", "minimum": 0, "default": 10 } }), &[]),
     }));
     list.push(json!({
+        "name": "export_run",
+        "description": "Solve in full and write the project's export set (set it with export_set) into dir: the files the app's Export panel and convert64 export write. name is the base name for rows without their own (default: the project file's name). Returns each file's path and size in bytes.",
+        "inputSchema": object_schema(json!({
+            "dir": { "type": "string" },
+            "name": { "type": "string", "minLength": 1 }
+        }), &["dir"]),
+    }));
+    list.push(json!({
         "name": "composite_export",
         "description": "Write the composite on the target grid (sRGB, alpha = coverage) as a PNG.",
         "inputSchema": object_schema(json!({ "path": { "type": "string" } }), &["path"]),
@@ -121,8 +132,9 @@ impl Server {
                         "serverInfo": { "name": "convert64-mcp", "version": env!("CARGO_PKG_VERSION") },
                         "instructions": "Open a project with project_open, edit it with the registry tools \
                                          (layer_*, recipe_set, adjustments_set, mode_set, palette_set, \
-                                         background_pin, solve_set, snap_set, mask_*, cell_*), solve, read the clash \
-                                         report, and save with project_save. Layers are referenced by index or name."
+                                         background_pin, solve_set, snap_set, export_set, mask_*, cell_*), solve, read the clash \
+                                         report, write the export set with export_run, and save with project_save. \
+                                         Layers are referenced by index or name."
                     }),
                 )
             }
@@ -182,6 +194,7 @@ impl Server {
                     text.push_str(n);
                 }
                 self.session = Some(s);
+                self.path = Some(path.into());
                 Ok(text)
             }
             "project_save" => {
@@ -246,6 +259,23 @@ impl Server {
                     .clash_report_json(usize::try_from(worst).unwrap_or(usize::MAX))
                     .ok_or("nothing solved yet; call solve first")?;
                 Ok(serde_json::to_string(&v).expect("serialisable"))
+            }
+            "export_run" => {
+                let dir = str_arg("dir")?;
+                let stem = match args.get("name").and_then(Value::as_str) {
+                    Some(n) => n.to_owned(),
+                    None => self.path.as_deref().map_or_else(
+                        || "picture".to_owned(),
+                        convert64_cli::export_set::default_stem,
+                    ),
+                };
+                let written =
+                    convert64_cli::export_set::write(self.session()?, &stem, Path::new(&dir))?;
+                let files: Vec<Value> = written
+                    .iter()
+                    .map(|(p, n)| json!({ "path": p.display().to_string(), "bytes": n }))
+                    .collect();
+                Ok(serde_json::to_string(&json!({ "files": files })).expect("serialisable"))
             }
             "composite_export" => {
                 let path = str_arg("path")?;
@@ -389,6 +419,87 @@ mod tests {
             "{text}"
         );
         assert!(!open(&mut s, "new.convert64").contains("note:"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #287: `export_set` sets the export set, `export_run` writes it (named after the
+    /// project file unless told otherwise), and the saved project keeps it.
+    #[test]
+    fn export_set_and_export_run() {
+        let dir = std::env::temp_dir().join(format!("convert64-mcp-287-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let rgba = (0..32 * 20)
+            .flat_map(|i| [(i % 32 * 8) as u8, (i / 32 * 12) as u8, 120, 255])
+            .collect();
+        std::fs::write(
+            dir.join("a.png"),
+            convert64_project::codec::encode_rgba8(32, 20, rgba),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("title.convert64"),
+            r#"{"schema_version":3,"target":"multicolor-bitmap",
+                "layers":[{"name":"a","source":{"path":"a.png"}}]}"#,
+        )
+        .unwrap();
+        let mut s = Server::default();
+        let path = dir.join("title.convert64").display().to_string();
+        s.call("project_open", json!({ "path": path })).unwrap();
+        let out = dir.join("build").display().to_string();
+        let err = s.call("export_run", json!({ "dir": out })).unwrap_err();
+        assert!(err.contains("no export set"), "{err}");
+        s.call(
+            "export_set",
+            json!({ "exports": [{ "format": "picture" }, { "format": "prg" },
+                                { "format": "png", "zoom": 1, "name": "preview" }] }),
+        )
+        .unwrap();
+        assert!(
+            s.call(
+                "export_set",
+                json!({ "exports": [{ "format": "png", "zoom": 0 }] })
+            )
+            .is_err()
+        );
+        let v: Value =
+            serde_json::from_str(&s.call("export_run", json!({ "dir": out })).unwrap()).unwrap();
+        let files = v["files"].as_array().unwrap();
+        let names: Vec<String> = files
+            .iter()
+            .map(|f| {
+                Path::new(f["path"].as_str().unwrap())
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(names, ["title.kla", "title.prg", "preview.png"]);
+        assert_eq!(files[0]["bytes"], 10_003);
+        assert_eq!(
+            std::fs::read(dir.join("build/title.kla")).unwrap().len(),
+            10_003
+        );
+        let v: Value = serde_json::from_str(
+            &s.call("export_run", json!({ "dir": out, "name": "intro" }))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            v["files"][0]["path"]
+                .as_str()
+                .unwrap()
+                .ends_with("intro.kla")
+        );
+        let saved = dir.join("saved.convert64");
+        s.call(
+            "project_save",
+            json!({ "path": saved.display().to_string() }),
+        )
+        .unwrap();
+        let p: Value = serde_json::from_str(&std::fs::read_to_string(&saved).unwrap()).unwrap();
+        assert_eq!(p["exports"][2]["name"], "preview", "{p}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
