@@ -285,15 +285,15 @@ pub(super) fn draw(shell: &Shell, ws: &Workspace, painter: &egui::Painter, view:
     );
 }
 
-/// The status bar readout while transforming: X/Y, W/H % and the angle.
-pub(super) fn readout(t: &Transform) -> String {
-    let (p, s) = (t.translate(), t.scale());
+/// The status bar readout while transforming a layer of a source of `size`: X/Y and
+/// W × H in screen pixels, as the Transform group shows them (#289), and the angle.
+pub(super) fn readout(t: &Transform, size: (u32, u32)) -> String {
+    let p = t.translate();
+    let (w, h) = crate::presets::screen_size(t, size);
     format!(
-        "X {:.2} Y {:.2} · W {:.2} % H {:.2} % · {:.2}°",
+        "X {:.2} Y {:.2} · W {w:.2} × H {h:.2} px · {:.2}°",
         p.x,
         p.y,
-        s.x * 100.0,
-        s.y * 100.0,
         t.rotate()
     )
 }
@@ -304,6 +304,15 @@ mod tests {
 
     fn t() -> Transform {
         Transform::new(Vec2::new(10.0, 20.0), Vec2::new(0.5, 0.5), false, false).unwrap()
+    }
+
+    /// #289: the status bar reads W × H in screen pixels, as the Transform group does.
+    #[test]
+    fn the_readout_is_in_screen_pixels() {
+        assert_eq!(
+            readout(&t(), (640, 400)),
+            "X 10.00 Y 20.00 · W 320.00 × H 200.00 px · 0.00°"
+        );
     }
 
     #[test]
