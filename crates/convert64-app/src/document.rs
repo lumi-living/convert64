@@ -30,6 +30,13 @@ pub struct Document {
     redo_steps: Vec<usize>,
 }
 
+/// The file name the bundled sample picture opens as (the project is named `title`).
+pub const SAMPLE_NAME: &str = "title.png";
+
+/// The sample picture the empty state offers (UX §5, #292): the `title` fixture's
+/// painting at 640 × 398 (`assets/sample/README.md`), small enough for the browser build.
+pub const SAMPLE: &[u8] = include_bytes!("../assets/sample/title.png");
+
 /// Whether `name` is a project file rather than a picture.
 pub fn is_project(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
@@ -491,6 +498,20 @@ mod tests {
             .flat_map(|i| [(i % w * 255 / w) as u8, 100, 100, 255])
             .collect();
         encode_rgba8(w, h, rgba)
+    }
+
+    /// #292: the bundled sample is the `title` painting at 640 × 398, and opens as a
+    /// picture named `title` would, with no file behind it.
+    #[test]
+    fn the_sample_picture_opens_as_title() {
+        let doc = Document::open(SAMPLE_NAME, SAMPLE, None).unwrap();
+        assert_eq!(doc.stem(), "title");
+        assert!(doc.path().is_none(), "Save asks where to save it");
+        let layers = &doc.session().project().layers;
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].source().size(), (640, 398));
+        // Small enough for the browser build (the fixture itself is 954 kB).
+        assert!(SAMPLE.len() < 400_000, "{} bytes", SAMPLE.len());
     }
 
     /// #289 (usability review M6): a picture opens at a uniform scale, Fill, in the

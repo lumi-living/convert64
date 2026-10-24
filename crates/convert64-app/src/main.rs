@@ -402,6 +402,10 @@ impl App {
                 }
             }
             Action::Open => self.files.pick_open(ctx, Purpose::Open),
+            Action::OpenSample => {
+                use convert64_app::document::{SAMPLE, SAMPLE_NAME};
+                self.receive(ctx, SAMPLE_NAME, SAMPLE, None, false);
+            }
             Action::NewLayer if self.workspace.is_some() => {
                 self.files.pick_open(ctx, Purpose::AddLayer)
             }
