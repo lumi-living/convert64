@@ -1,5 +1,6 @@
-//! The Recipe tab (UX §6): the selected layer's adjustments, dither recipe and colour
-//! fitting, then **Advanced**: the solver (the png2c64 reference, png2amiga's for
+//! The Recipe tab (UX §6): the layer header (thumbnail and name), then the selected
+//! layer's groups ordered by use (#288): dither recipe, colour fitting, adjustments,
+//! sharpen, transform, mask, then **Advanced**: the solver (the png2c64 reference, png2amiga's for
 //! comparison or the native one, ADR-014), ADR-010's divergences from png2c64 and the
 //! solver's own settings, collapsed and off by default. Every change is a registry command
 //! (`adjustments_set`, `recipe_set`, `solve_set`); a drag is one undo step.
@@ -27,6 +28,60 @@ use egui::{Response, RichText, Ui};
 /// The width of a row's label column, in points.
 const LABEL_WIDTH: f32 = 90.0;
 
+/// The Recipe tab's groups, top to bottom (UX §6, usability review M5, #288): the
+/// dither method first, Sharpen right after Adjustments (#237), Advanced last.
+pub const GROUP_ORDER: [&str; 7] = [
+    "Dither recipe",
+    "Colour fitting",
+    "Adjustments",
+    "Sharpen",
+    "Transform",
+    "Mask",
+    "Advanced",
+];
+
+/// Which of the Recipe tab's groups are open (UX §6): the user's own choice, kept in the
+/// app's storage (eframe's, not the project) and the same for every layer and region.
+/// Transform, Mask and Advanced start collapsed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RecipeGroups {
+    /// The groups the user opened (true) or closed (false); the others are at their
+    /// default.
+    chosen: std::collections::BTreeMap<String, bool>,
+}
+
+impl RecipeGroups {
+    /// Whether `title` is open before the user opens or closes it.
+    pub fn default_open(title: &str) -> bool {
+        !matches!(title, "Transform" | "Mask" | "Advanced")
+    }
+
+    /// Whether the group `title` is open.
+    pub fn is_open(&self, title: &str) -> bool {
+        self.chosen
+            .get(title)
+            .copied()
+            .unwrap_or_else(|| Self::default_open(title))
+    }
+
+    /// Opens or closes the group `title`.
+    pub fn set_open(&mut self, title: &str, open: bool) {
+        self.chosen.insert(title.to_owned(), open);
+    }
+
+    /// The stored form: a JSON object of the groups the user opened or closed.
+    pub fn to_storage(&self) -> String {
+        serde_json::to_string(&self.chosen).unwrap_or_default()
+    }
+
+    /// The groups as [`Self::to_storage`] stored them; anything unreadable is the default.
+    pub fn from_storage(s: &str) -> Self {
+        Self {
+            chosen: serde_json::from_str(s).unwrap_or_default(),
+        }
+    }
+}
+
 /// Emits commands for one layer, or for one region's recipe (the Region tool's
 /// pseudo-layer, UX §7).
 struct Form<'a> {
@@ -34,6 +89,8 @@ struct Form<'a> {
     layer: usize,
     /// Recipe changes go to this region instead of the layer.
     region: Option<usize>,
+    /// Which groups are open; a click on a heading changes it.
+    groups: RecipeGroups,
 }
 
 impl Form<'_> {
@@ -189,25 +246,31 @@ fn commit(
     }
 }
 
-/// A collapsible group with a dot when anything in it changed and a Reset button.
+/// A collapsible group with a dot when anything in it changed and a Reset button; open
+/// as `f.groups` says, and a click on the heading opens or closes it there (#288).
 fn group(
+    f: &mut Form,
     ui: &mut Ui,
     title: &str,
     changed: bool,
-    open: bool,
-    add: impl FnOnce(&mut Ui) -> bool,
+    add: impl FnOnce(&mut Form, &mut Ui) -> bool,
 ) -> bool {
     let mut reset = false;
     let mut text = RichText::new(title).family(egui::FontFamily::Name(crate::theme::MEDIUM.into()));
     if changed {
         text = text.color(Theme::current(ui.ctx()).accent);
     }
-    egui::CollapsingHeader::new(text)
+    let open = f.groups.is_open(title);
+    let r = egui::CollapsingHeader::new(text)
         .id_salt(title)
-        .default_open(open)
+        .open(Some(open))
         .show(ui, |ui| {
-            reset = add(ui);
+            reset = add(f, ui);
         });
+    if r.header_response.clicked() {
+        f.groups.set_open(title, !open);
+        ui.ctx().request_repaint();
+    }
     reset
 }
 
@@ -231,33 +294,66 @@ pub(super) fn show(shell: &mut Shell, ws: &Workspace, ui: &mut Ui, actions: &mut
     }
     let i = shell.layer.min(project.layers.len() - 1);
     let layer = &project.layers[i];
-    if shell.tool == super::Tool::Region && shell.mask.tool.is_none() {
-        let mut f = Form {
-            actions,
-            layer: i,
-            region: None,
-        };
-        return regions(&mut f, shell, ws, ui);
-    }
     let mut f = Form {
         actions,
         layer: i,
         region: None,
+        groups: std::mem::take(&mut shell.groups),
     };
-    picture(&mut f, ws, ui);
-    ui.label(
-        RichText::new(format!("Layer: {}", layer.name()))
-            .small()
-            .weak(),
-    );
+    if shell.tool == super::Tool::Region && shell.mask.tool.is_none() {
+        regions(&mut f, shell, ws, ui);
+    } else {
+        layer_header(ws, i, ui);
+        // GROUP_ORDER (#288).
+        dither(&mut f, shell, ws, layer.recipe(), ui);
+        fitting(&mut f, layer.recipe(), ws, ui);
+        adjustments(&mut f, shell, ws, layer, ui);
+        sharpen(&mut f, layer.adjustments().sharpen, ui);
+        transform_group(&mut f, shell, ws, layer, ui);
+        mask_group(&mut f, shell, ws, layer, ui);
+        advanced(&mut f, layer, &project.solve, ui);
+    }
+    shell.groups = f.groups;
+}
 
-    transform_group(&mut f, shell, ws, layer, ui);
-    adjustments(&mut f, shell, ws, layer, ui);
-    sharpen(&mut f, layer.adjustments().sharpen, ui);
-    mask_group(&mut f, shell, ws, layer, ui);
-    dither(&mut f, shell, ws, layer.recipe(), ui);
-    fitting(&mut f, layer.recipe(), ws, ui);
-    advanced(&mut f, layer, &project.solve, ui);
+/// The layer header (UX §6, usability review M5): the layer's thumbnail, its name and
+/// which layer of how many it is, with the source's size.
+fn layer_header(ws: &Workspace, i: usize, ui: &mut Ui) {
+    let layers = &ws.doc.session().project().layers;
+    let layer = &layers[i];
+    ui.horizontal(|ui| {
+        let side = 32.0;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+        ui.painter()
+            .rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+        if let Some(tex) = ws.thumbnail(i) {
+            let [w, h] = tex.size().map(|v| v as f32);
+            let s = side / w.max(h);
+            let image = egui::Rect::from_center_size(rect.center(), egui::vec2(w * s, h * s));
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            ui.painter()
+                .image(tex.id(), image, uv, egui::Color32::WHITE);
+        }
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let heading = RichText::new(layer.name())
+                .size(14.0)
+                .color(ui.visuals().strong_text_color())
+                .family(egui::FontFamily::Name(crate::theme::MEDIUM.into()));
+            ui.add(egui::Label::new(heading).truncate());
+            let (w, h) = layer.source().size();
+            ui.label(
+                RichText::new(format!(
+                    "Layer {} of {} · {w} × {h} px",
+                    layers.len() - i,
+                    layers.len()
+                ))
+                .small()
+                .weak(),
+            );
+        });
+    });
+    ui.separator();
 }
 
 /// The Adjustments group (UX §6 item 2): tone and colour, Levels, Curves and Range.
@@ -266,7 +362,7 @@ fn adjustments(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, u
     let a = layer.adjustments();
     let d = Adjustments::default();
     let changed = !adjustments_default(a);
-    let reset = group(ui, "Adjustments", changed, true, |ui| {
+    let reset = group(f, ui, "Adjustments", changed, |f, ui| {
         let bc = a.brightness_contrast;
         let hsl = a.hsl;
         let lv = a.levels;
@@ -643,7 +739,7 @@ fn sharpen(f: &mut Form, s: Sharpen, ui: &mut Ui) {
             );
         }
     };
-    let reset = group(ui, "Sharpen", changed, true, |ui| {
+    let reset = group(f, ui, "Sharpen", changed, |f, ui| {
         commit(
             f,
             "sharpen amount",
@@ -923,139 +1019,6 @@ fn curves(f: &mut Form, shell: &mut Shell, c: &Curves, ui: &mut Ui) {
     }
 }
 
-/// The picture-wide settings at the top (Figma `Recipe tab`): mode, palette (Pepto PAL
-/// and NTSC, Colodore, a `.vpl` file) and the background (auto or one colour).
-fn picture(f: &mut Form, ws: &Workspace, ui: &mut Ui) {
-    use convert64_core::Palette;
-    use convert64_core::command::BackgroundPin;
-    use convert64_core::mode::Mode;
-    use convert64_core::solve::Background;
-    use convert64_project::PaletteSpec;
-    let mode = ws.doc.mode();
-    ui.horizontal(|ui| {
-        label(ui, "Mode", false);
-        egui::ComboBox::from_id_salt("recipe_mode")
-            .selected_text(super::status::mode_name(mode))
-            .show_ui(ui, |ui| {
-                for m in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
-                    if ui
-                        .selectable_label(m == mode, super::status::mode_name(m))
-                        .clicked()
-                        && m != mode
-                    {
-                        f.actions.push(Action::SetMode(m));
-                    }
-                }
-            });
-    });
-    let palette = ws.doc.palette();
-    let presets = [
-        (PaletteSpec::PeptoPal, Palette::pepto_pal(), "Pepto PAL"),
-        (PaletteSpec::PeptoNtsc, Palette::pepto_ntsc(), "Pepto NTSC"),
-        (
-            PaletteSpec::Colodore,
-            Palette::colodore(50.0, 100.0, 50.0),
-            "Colodore",
-        ),
-    ];
-    let current = presets
-        .iter()
-        .find(|(_, p, _)| p == palette)
-        .map_or_else(|| palette.name().to_owned(), |(_, _, n)| (*n).to_owned());
-    ui.horizontal(|ui| {
-        label(ui, "Palette", current != "Pepto PAL");
-        egui::ComboBox::from_id_salt("recipe_palette")
-            .selected_text(&current)
-            .show_ui(ui, |ui| {
-                for (spec, p, name) in presets {
-                    if ui.selectable_label(&p == palette, name).clicked() && &p != palette {
-                        f.emit(None, JsonCommand::PaletteSet { palette: spec });
-                    }
-                }
-                ui.separator();
-                if ui.button("VICE palette file (.vpl)…").clicked() {
-                    f.actions.push(Action::LoadPalette);
-                }
-            });
-    });
-    let bg = ws.doc.session().project().solve.background;
-    ui.horizontal(|ui| {
-        label(ui, "Background", bg != Background::Auto);
-        ui.vertical(|ui| {
-            let mut auto = bg == Background::Auto;
-            if ui.checkbox(&mut auto, "Auto (the solver picks)").changed() {
-                let background = if auto {
-                    Background::Auto
-                } else {
-                    let chosen = ws
-                        .solution
-                        .as_ref()
-                        .and_then(|s| s.background)
-                        .unwrap_or(ColourIndex::ALL[0]);
-                    Background::Fixed(chosen)
-                };
-                f.emit(
-                    None,
-                    JsonCommand::BackgroundPin(BackgroundPin { background }),
-                );
-            }
-            let side = layout::SWATCH_SIZE;
-            ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
-            for row in ColourIndex::ALL.chunks(8) {
-                ui.horizontal(|ui| {
-                    for &c in row {
-                        let (rect, resp) =
-                            ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
-                        let rgb = palette.rgb(c);
-                        ui.painter().rect_filled(
-                            rect,
-                            1.0,
-                            egui::Color32::from_rgb(rgb.r, rgb.g, rgb.b),
-                        );
-                        let solved = ws.solution.as_ref().and_then(|s| s.background) == Some(c);
-                        let pinned = bg == Background::Fixed(c);
-                        // The chosen background is ringed: accent when pinned, text colour when
-                        // the solver picked it (not colour alone: the ring's width differs too).
-                        if pinned || solved {
-                            let (w, colour) = if pinned {
-                                (2.5, Theme::current(ui.ctx()).accent)
-                            } else {
-                                (1.5, ui.visuals().text_color())
-                            };
-                            ui.painter().rect_stroke(
-                                rect,
-                                1.0,
-                                (w, colour),
-                                egui::StrokeKind::Outside,
-                            );
-                        }
-                        let tip = format!(
-                            "Background {}{}",
-                            c.get(),
-                            if pinned {
-                                " (pinned)"
-                            } else if solved {
-                                " (solver's pick)"
-                            } else {
-                                ""
-                            }
-                        );
-                        if resp.on_hover_text(tip).clicked() && !pinned {
-                            f.emit(
-                                None,
-                                JsonCommand::BackgroundPin(BackgroundPin {
-                                    background: Background::Fixed(c),
-                                }),
-                            );
-                        }
-                    }
-                });
-            }
-        });
-    });
-    ui.separator();
-}
-
 /// The Region tool's panel: the regions (select, add, rename, remove) and the selected
 /// region's dither recipe and colour fitting, edited like a layer's (`region_set_recipe`).
 fn regions(f: &mut Form, shell: &mut Shell, ws: &Workspace, ui: &mut Ui) {
@@ -1171,7 +1134,7 @@ fn transform_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Laye
         });
         (out, stopped)
     }
-    let _ = group(ui, "Transform", changed, true, |ui| {
+    let _ = group(f, ui, "Transform", changed, |f, ui| {
         let p = t.translate();
         let sc = t.scale();
         let flips = (t.flip_h(), t.flip_v());
@@ -1433,7 +1396,7 @@ fn mask_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, ui
     use convert64_core::command::ModifierChange;
     use convert64_core::mask::{MaskSource, Modifiers, SnapToCells};
     let Some(mask) = layer.mask() else {
-        let _ = group(ui, "Mask", false, true, |ui| {
+        let _ = group(f, ui, "Mask", false, |f, ui| {
             ui.label(
                 RichText::new("No mask: the whole layer shows.")
                     .small()
@@ -1454,7 +1417,7 @@ fn mask_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, ui
         let layer = LayerRef::Index(f.layer);
         f.emit(g, JsonCommand::MaskSetModifier { layer, modifier });
     };
-    let reset = group(ui, "Mask", changed, true, |ui| {
+    let reset = group(f, ui, "Mask", changed, |f, ui| {
         let edit = if shell.mask.active {
             "Done editing"
         } else {
@@ -1622,7 +1585,7 @@ fn dither(f: &mut Form, shell: &mut Shell, ws: &Workspace, r: &Recipe, ui: &mut 
         Some(i) => RecipeTarget::Region(i),
         None => RecipeTarget::Layer(f.layer),
     };
-    let reset = group(ui, "Dither recipe", changed, true, |ui| {
+    let reset = group(f, ui, "Dither recipe", changed, |f, ui| {
         let family = r.method().kind.family();
         let mut jobs = Vec::new();
         let mut out = super::method_picker::FieldOutcome::default();
@@ -1767,7 +1730,7 @@ fn fitting(f: &mut Form, r: &Recipe, ws: &Workspace, ui: &mut Ui) {
     let d = Recipe::default();
     let changed =
         r.metric() != d.metric() || r.fit_mode() != d.fit_mode() || r.allowed() != d.allowed();
-    let reset = group(ui, "Colour fitting", changed, true, |ui| {
+    let reset = group(f, ui, "Colour fitting", changed, |f, ui| {
         ui.horizontal(|ui| {
             let lab = label(ui, "Metric", r.metric() != d.metric());
             let names = [
@@ -1939,7 +1902,7 @@ const BG_RULES: [(BackgroundRule, &str, &str); 2] = [
 fn advanced(f: &mut Form, layer: &Layer, s: &SolveSettings, ui: &mut Ui) {
     let d = SolveSettings::default();
     let changed = *s != d;
-    let reset = group(ui, "Advanced", changed, false, |ui| {
+    let reset = group(f, ui, "Advanced", changed, |f, ui| {
         ui.horizontal(|ui| {
             label(ui, "Solver", s.solver != d.solver);
             ui.horizontal_wrapped(|ui| {
@@ -2250,6 +2213,23 @@ mod tests {
     /// group and the dock at its default width: each text drawn with its rectangle, and
     /// the actions the form asked for.
     fn draw(mut ws: Workspace) -> (Vec<(String, egui::Rect)>, Vec<Action>) {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut shell = Shell {
+            tab: super::super::DockTab::Recipe,
+            ..Shell::default()
+        };
+        frame(&ctx, &mut shell, &mut ws, Vec::new())
+    }
+
+    /// One frame of `shell` on `ctx` (a [`WINDOW`] wide, 3000 point tall window) with
+    /// `events`: each text drawn with its rectangle, and the actions asked for.
+    fn frame(
+        ctx: &egui::Context,
+        shell: &mut Shell,
+        ws: &mut Workspace,
+        events: Vec<egui::Event>,
+    ) -> (Vec<(String, egui::Rect)>, Vec<Action>) {
         fn collect(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
             match shape {
                 egui::Shape::Text(t) => {
@@ -2259,27 +2239,191 @@ mod tests {
                 _ => {}
             }
         }
-        let ctx = egui::Context::default();
-        crate::theme::install(&ctx);
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
                 egui::vec2(WINDOW, 3000.0),
             )),
+            events,
             ..Default::default()
         };
-        let mut shell = Shell {
-            tab: super::super::DockTab::Recipe,
-            ..Shell::default()
-        };
         let mut actions = Vec::new();
-        let mut output = ctx.run_ui(input, |ui| actions = shell.show(ui, Some(&mut ws)));
+        let mut output = ctx.run_ui(input, |ui| actions = shell.show(ui, Some(ws)));
         output.textures_delta.clear();
         let mut texts = Vec::new();
         for clipped in &output.shapes {
             collect(&clipped.shape, &mut texts);
         }
         (texts, actions)
+    }
+
+    /// The texts in the dock (right of the working view), top to bottom.
+    fn dock(texts: Vec<(String, egui::Rect)>) -> Vec<(String, egui::Rect)> {
+        let left = WINDOW - layout::DOCK_WIDTH - 20.0;
+        let mut out: Vec<_> = texts.into_iter().filter(|(_, r)| r.left() > left).collect();
+        out.sort_by(|a, b| a.1.top().total_cmp(&b.1.top()));
+        out
+    }
+
+    /// A press and release at `p`, as two frames' events.
+    fn click(p: egui::Pos2) -> [Vec<egui::Event>; 2] {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        [
+            vec![egui::Event::PointerMoved(p), button(true)],
+            vec![button(false)],
+        ]
+    }
+
+    /// #288 (usability review M5): the groups run by use, the dither method first, and
+    /// Sharpen right after Adjustments (#237); Advanced last.
+    #[test]
+    fn the_groups_run_in_the_order_of_use() {
+        let (texts, _) = draw(workspace(Sharpen::default()));
+        let texts = dock(texts);
+        let y = |t: &str| find(&texts, t).center().y;
+        for pair in GROUP_ORDER.windows(2) {
+            assert!(y(pair[0]) < y(pair[1]), "{pair:?}: {texts:?}");
+        }
+        // The dither method is the first row of the first group.
+        assert!(y("Dither recipe") < y("Method") && y("Method") < y("Colour fitting"));
+    }
+
+    /// #288: Transform, Mask and Advanced start collapsed, the others open.
+    #[test]
+    fn transform_and_mask_start_collapsed() {
+        let groups = RecipeGroups::default();
+        for title in GROUP_ORDER {
+            let collapsed = matches!(title, "Transform" | "Mask" | "Advanced");
+            assert_eq!(groups.is_open(title), !collapsed, "{title}");
+        }
+        let (texts, _) = draw(workspace(Sharpen::default()));
+        let texts = dock(texts);
+        let has = |t: &str| texts.iter().any(|(s, _)| s == t);
+        // The headings are there, their rows are not.
+        assert!(has("Transform") && has("Mask") && has("Advanced"));
+        for row in ["Rotate", "Anchor", "Presets", "Add mask", "Solver"] {
+            assert!(!has(row), "{row} shown: {texts:?}");
+        }
+        for row in ["Method", "Metric", "Brightness", "Threshold"] {
+            assert!(has(row), "{row} missing: {texts:?}");
+        }
+    }
+
+    /// #288: a click on a heading opens the group and the choice is the user's: it
+    /// survives the app's storage and holds for another layer's form.
+    #[test]
+    fn an_opened_group_is_remembered() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut ws = workspace(Sharpen::default());
+        let mut shell = Shell {
+            tab: super::super::DockTab::Recipe,
+            ..Shell::default()
+        };
+        let (texts, _) = frame(&ctx, &mut shell, &mut ws, Vec::new());
+        let heading = find(&dock(texts), "Transform").center();
+        for events in click(heading) {
+            frame(&ctx, &mut shell, &mut ws, events);
+        }
+        assert!(shell.groups.is_open("Transform"));
+        assert!(!shell.groups.is_open("Mask"));
+        // A click on an open group's heading closes it.
+        let (texts, _) = frame(&ctx, &mut shell, &mut ws, Vec::new());
+        let heading = find(&dock(texts), "Dither recipe").center();
+        for events in click(heading) {
+            frame(&ctx, &mut shell, &mut ws, events);
+        }
+        assert!(!shell.groups.is_open("Dither recipe"));
+
+        // Stored and read back, as the app does (eframe's storage), in a new session.
+        let stored = shell.groups.to_storage();
+        let groups = RecipeGroups::from_storage(&stored);
+        assert_eq!(groups, shell.groups);
+        assert_eq!(
+            RecipeGroups::from_storage("not json"),
+            RecipeGroups::default()
+        );
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut shell = Shell {
+            tab: super::super::DockTab::Recipe,
+            groups,
+            ..Shell::default()
+        };
+        let mut ws = workspace(Sharpen::default());
+        let mut texts = Vec::new();
+        // Two frames: the first opens the group, egui draws its body once it is open.
+        for _ in 0..2 {
+            texts = dock(frame(&ctx, &mut shell, &mut ws, Vec::new()).0);
+        }
+        let has = |t: &str| texts.iter().any(|(s, _)| s == t);
+        assert!(has("Rotate"), "{texts:?}");
+        assert!(!has("Strength"), "{texts:?}");
+    }
+
+    /// #288: the form edits the layer only. Mode, Palette and Background are the
+    /// result's picture row, above the result, and only there; the layer header names
+    /// the layer.
+    #[test]
+    fn mode_palette_and_background_are_in_the_result_header_only() {
+        let ws = workspace(Sharpen::default());
+        let name = ws.doc.session().project().layers[0].name().to_owned();
+        let (texts, actions) = draw(ws);
+        assert!(actions.is_empty(), "{actions:?}");
+        let texts = dock(texts);
+        let all = |t: &str| texts.iter().filter(|(s, _)| s == t).count();
+        assert_eq!(all("Multicolor"), 1, "{texts:?}");
+        assert_eq!(all("Pepto PAL"), 1, "{texts:?}");
+        for gone in ["Mode", "Palette", "Background", "Auto (the solver picks)"] {
+            assert_eq!(all(gone), 0, "{gone}: {texts:?}");
+        }
+        // The picture row: under the header, above the tabs, on one line. (The form
+        // has an Auto of its own: Orientation's.)
+        let result = find(&texts, "Result");
+        let tab = find(&texts, "Recipe");
+        let mode = find(&texts, "Multicolor");
+        for r in [find(&texts, "Pepto PAL"), find(&texts, "Auto")] {
+            assert!((r.center().y - mode.center().y).abs() < 2.0, "{texts:?}");
+            assert!(mode.right() < r.left());
+        }
+        assert!(result.bottom() < mode.top() && mode.bottom() < tab.top());
+        // The layer header, then the first group.
+        let header = find(&texts, &name);
+        let subtitle = find(&texts, "Layer 1 of 1 · 64 × 40 px");
+        assert!(tab.bottom() < header.top() && header.bottom() <= subtitle.top());
+        assert!(subtitle.bottom() < find(&texts, "Dither recipe").top());
+    }
+
+    /// #288: a region's recipe has the layer form's order (Dither recipe, then Colour
+    /// fitting) and no Mode row.
+    #[test]
+    fn region_recipes_run_in_the_same_order() {
+        let mut ws = workspace(Sharpen::default());
+        ws.doc
+            .run(JsonCommand::RegionAdd {
+                name: "Sky".to_owned(),
+                recipe: Box::default(),
+                index: None,
+            })
+            .unwrap();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut shell = Shell {
+            tab: super::super::DockTab::Recipe,
+            tool: super::super::Tool::Region,
+            ..Shell::default()
+        };
+        let (texts, _) = frame(&ctx, &mut shell, &mut ws, Vec::new());
+        let texts = dock(texts);
+        let y = |t: &str| find(&texts, t).center().y;
+        assert!(y("Region: Sky") < y("Dither recipe"));
+        assert!(y("Dither recipe") < y("Method") && y("Method") < y("Colour fitting"));
+        assert!(!texts.iter().any(|(s, _)| s == "Mode"), "{texts:?}");
     }
 
     /// The rectangle of the first text that reads `text`.
