@@ -4,7 +4,7 @@
 //! the same tools build a **selection** for Layer via mask (`Cmd J`, `Shift Cmd J`;
 //! UX §5a). Every edit is a registry command; a stroke, polygon, gradient or key is one.
 
-use super::{Action, Shell, icon};
+use super::{Action, Shell};
 use crate::icons;
 use crate::theme::Theme;
 use crate::view::Compare;
@@ -178,7 +178,19 @@ fn layer_per_unit(ws: &Workspace, i: usize) -> f32 {
         .map_or(1.0, |l| 1.0 / l.transform().scale().x.abs().max(1e-6))
 }
 
-/// The options bar under the toolbar while a mask tool is in use.
+/// The options bar's sliders: narrow, so a whole bar fits beside the dock.
+pub(super) fn narrow_sliders(ui: &mut Ui) {
+    ui.spacing_mut().slider_width = 56.0;
+}
+
+/// A label, then its slider: labels sit before controls, as in the Recipe tab
+/// (usability review M8).
+fn labelled(ui: &mut Ui, label: &str, slider: egui::Slider<'_>) -> Response {
+    ui.label(label);
+    ui.add(slider)
+}
+
+/// The mask tools' options in the options bar (UX §7a).
 pub(super) fn options_bar(
     shell: &mut Shell,
     ws: Option<&Workspace>,
@@ -186,77 +198,78 @@ pub(super) fn options_bar(
     actions: &mut Vec<Action>,
 ) {
     let Some(tool) = shell.mask.tool else { return };
-    ui.horizontal_centered(|ui| {
-        // Narrow sliders so the whole bar fits beside a 320 px dock.
-        ui.spacing_mut().slider_width = 3.0 * ui.spacing().interact_size.x / 2.0;
-        let what = if shell.mask.active {
-            "Mask"
-        } else {
-            "Selection"
-        };
-        ui.label(
-            RichText::new(format!("{what} · {}", tool.label()))
-                .small()
-                .strong(),
-        );
-        ui.separator();
-        let m = &mut shell.mask;
-        match tool {
-            MaskTool::Brush => mode_toggle(&mut m.brush.mode, ui),
-            MaskTool::Lasso => mode_toggle(&mut m.lasso, ui),
-            MaskTool::Gradient | MaskTool::Key => {}
+    let what = if shell.mask.active {
+        "Mask"
+    } else {
+        "Selection"
+    };
+    ui.label(
+        RichText::new(format!("{what} · {}", tool.label()))
+            .small()
+            .strong(),
+    );
+    ui.separator();
+    let m = &mut shell.mask;
+    match tool {
+        MaskTool::Brush => mode_toggle(&mut m.brush.mode, ui),
+        MaskTool::Lasso => mode_toggle(&mut m.lasso, ui),
+        MaskTool::Gradient | MaskTool::Key => {}
+    }
+    match tool {
+        MaskTool::Brush => brush_sliders(&mut m.brush, ui),
+        MaskTool::Lasso => {
+            ui.label(
+                RichText::new("Drag freehand, or click vertices and double-click to close")
+                    .small()
+                    .weak(),
+            );
         }
-        match tool {
-            MaskTool::Brush => brush_sliders(&mut m.brush, ui),
-            MaskTool::Lasso => {
-                ui.label(
-                    RichText::new("Drag freehand, or click vertices and double-click to close")
-                        .small()
-                        .weak(),
-                );
-            }
-            MaskTool::Gradient => {
-                for (k, n) in [
-                    (GradientKind::Linear, "Linear"),
-                    (GradientKind::Radial, "Radial"),
-                ] {
-                    if ui.selectable_label(m.gradient.0 == k, n).clicked() {
-                        m.gradient.0 = k;
-                    }
+        MaskTool::Gradient => {
+            for (k, n) in [
+                (GradientKind::Linear, "Linear"),
+                (GradientKind::Radial, "Radial"),
+            ] {
+                if ui.selectable_label(m.gradient.0 == k, n).clicked() {
+                    m.gradient.0 = k;
                 }
-                ui.add(egui::Slider::new(&mut m.gradient.1, 0.0..=1.0).text("Softness"));
             }
-            MaskTool::Key => {
-                for (k, n) in [
-                    (KeyChannel::Luma, "Luma"),
-                    (KeyChannel::Chroma, "Chroma"),
-                    (KeyChannel::Colour, "Colour"),
-                ] {
-                    if ui.selectable_label(m.key.0 == k, n).clicked() {
-                        m.key.0 = k;
-                    }
+            labelled(
+                ui,
+                "Softness",
+                egui::Slider::new(&mut m.gradient.1, 0.0..=1.0),
+            );
+        }
+        MaskTool::Key => {
+            for (k, n) in [
+                (KeyChannel::Luma, "Luma"),
+                (KeyChannel::Chroma, "Chroma"),
+                (KeyChannel::Colour, "Colour"),
+            ] {
+                if ui.selectable_label(m.key.0 == k, n).clicked() {
+                    m.key.0 = k;
                 }
-                ui.add(egui::Slider::new(&mut m.key.1, 0.0..=1.0).text("Range"));
-                ui.add(egui::Slider::new(&mut m.key.2, 0.0..=1.0).text("Softness"));
             }
+            labelled(ui, "Range", egui::Slider::new(&mut m.key.1, 0.0..=1.0));
+            labelled(ui, "Softness", egui::Slider::new(&mut m.key.2, 0.0..=1.0));
         }
-        if matches!(tool, MaskTool::Gradient | MaskTool::Key) {
-            egui::ComboBox::from_id_salt("mask_combine")
-                .selected_text(format!("{:?}", m.combine))
-                .width(70.0)
-                .show_ui(ui, |ui| {
-                    for c in [Combine::Max, Combine::Min, Combine::Multiply] {
-                        ui.selectable_value(&mut m.combine, c, format!("{c:?}"));
-                    }
-                });
-        }
-        ui.separator();
-        if shell.mask.active {
-            mask_buttons(shell, ws, ui, actions);
-        } else {
-            selection_buttons(shell, ui, actions);
-        }
-    });
+    }
+    if matches!(tool, MaskTool::Gradient | MaskTool::Key) {
+        ui.label("Combine");
+        egui::ComboBox::from_id_salt("mask_combine")
+            .selected_text(format!("{:?}", m.combine))
+            .width(70.0)
+            .show_ui(ui, |ui| {
+                for c in [Combine::Max, Combine::Min, Combine::Multiply] {
+                    ui.selectable_value(&mut m.combine, c, format!("{c:?}"));
+                }
+            });
+    }
+    ui.separator();
+    if shell.mask.active {
+        mask_buttons(shell, ws, ui, actions);
+    } else {
+        selection_buttons(shell, ui, actions);
+    }
 }
 
 /// Add · Subtract for the tool whose own mode is `own`.
@@ -274,26 +287,101 @@ fn mode_toggle(own: &mut PaintMode, ui: &mut Ui) {
 
 /// A brush's Size, Hardness and Flow.
 fn brush_sliders(b: &mut BrushOptions, ui: &mut Ui) {
-    ui.add(
-        egui::Slider::new(&mut b.size, 0.5..=64.0)
-            .text("Size")
-            .logarithmic(true),
+    labelled(
+        ui,
+        "Size",
+        egui::Slider::new(&mut b.size, 0.5..=64.0).logarithmic(true),
     )
     .on_hover_text("[ and ] change it");
-    ui.add(egui::Slider::new(&mut b.hardness, 0.0..=1.0).text("Hardness"));
-    ui.add(egui::Slider::new(&mut b.flow, 0.0..=1.0).text("Flow"));
+    labelled(
+        ui,
+        "Hardness",
+        egui::Slider::new(&mut b.hardness, 0.0..=1.0),
+    );
+    labelled(ui, "Flow", egui::Slider::new(&mut b.flow, 0.0..=1.0));
 }
 
-/// Mask mode's modifier and raster buttons.
+/// What *Reveal all* and *Hide all* say they do.
+const REVEAL_ALL_TIP: &str = "Fill the mask white: the whole layer shows, and paint hides it";
+const HIDE_ALL_TIP: &str = "Fill the mask black: the layer is hidden, and paint shows it";
+/// What *From transparency* does (it read "From alpha").
+pub(super) const FROM_TRANSPARENCY_TIP: &str =
+    "Mask from the picture's transparency: transparent pixels hide the layer, opaque ones show it";
+
+/// Starts the selected layer's mask, or refills it, as Photoshop's *Reveal all*
+/// (white) or *Hide all* (black), and sets the mask Brush and the Lasso to the mode
+/// whose stroke shows on it: Subtract after Reveal all, Add after Hide all (usability
+/// review M8).
+pub(super) fn reveal_or_hide_all(shell: &mut Shell, reveal: bool) -> Action {
+    let mode = if reveal {
+        PaintMode::Subtract
+    } else {
+        PaintMode::Add
+    };
+    shell.mask.brush.mode = mode;
+    shell.mask.lasso = mode;
+    Action::Run(JsonCommand::MaskClear {
+        layer: layer(shell),
+        value: if reveal { 1.0 } else { 0.0 },
+    })
+}
+
+/// Reveal all · Hide all, and From transparency when the picture has any.
+pub(super) fn new_mask_buttons(
+    shell: &mut Shell,
+    l: &convert64_core::layer::Layer,
+    ui: &mut Ui,
+    actions: &mut Vec<Action>,
+) {
+    let small = |t: &str| egui::Button::new(RichText::new(t).small());
+    if ui
+        .add(small("Reveal all"))
+        .on_hover_text(REVEAL_ALL_TIP)
+        .clicked()
+    {
+        actions.push(reveal_or_hide_all(shell, true));
+    }
+    if ui
+        .add(small("Hide all"))
+        .on_hover_text(HIDE_ALL_TIP)
+        .clicked()
+    {
+        actions.push(reveal_or_hide_all(shell, false));
+    }
+    let alpha = l.source().pixels().iter().any(|p| p[3] < 1.0);
+    if alpha
+        && ui
+            .add(small("From transparency"))
+            .on_hover_text(FROM_TRANSPARENCY_TIP)
+            .clicked()
+    {
+        actions.push(Action::Run(JsonCommand::MaskFromAlpha {
+            layer: layer(shell),
+        }));
+    }
+}
+
+/// Mask mode's modifier and raster buttons; on a layer without a mask, the choice to
+/// start one (usability review M8).
 fn mask_buttons(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui, actions: &mut Vec<Action>) {
     let Some(ws) = ws else { return };
     let Some(l) = ws.doc.session().project().layers.get(shell.layer) else {
         return;
     };
-    let mods = l.mask().map(|m| m.modifiers()).unwrap_or_default();
+    let Some(mask) = l.mask() else {
+        ui.label(
+            RichText::new("This layer has no mask: start from")
+                .small()
+                .weak(),
+        );
+        new_mask_buttons(shell, l, ui, actions);
+        return;
+    };
+    let mods = mask.modifiers();
+    let target = layer(shell);
     let set = |actions: &mut Vec<Action>, g: Option<u64>, modifier| {
         let cmd = JsonCommand::MaskSetModifier {
-            layer: layer(shell),
+            layer: target.clone(),
             modifier,
         };
         actions.push(match g {
@@ -302,8 +390,10 @@ fn mask_buttons(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui, actions:
         });
     };
     let snap = mods.snap();
+    ui.label("Snap");
     egui::ComboBox::from_id_salt("mask_snap")
-        .selected_text(format!("Snap: {snap:?}"))
+        .selected_text(format!("{snap:?}"))
+        .width(70.0)
         .show_ui(ui, |ui| {
             for s in [
                 SnapToCells::Off,
@@ -318,10 +408,10 @@ fn mask_buttons(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui, actions:
         });
     let before = mods.feather();
     let mut feather = before;
-    let r = ui.add(
-        egui::Slider::new(&mut feather, 0.0..=32.0)
-            .text("Feather")
-            .suffix(" px"),
+    let r = labelled(
+        ui,
+        "Feather",
+        egui::Slider::new(&mut feather, 0.0..=32.0).suffix(" px"),
     );
     if r.changed() && (feather - before).abs() > 1e-3 {
         set(
@@ -333,53 +423,62 @@ fn mask_buttons(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui, actions:
     if r.drag_stopped() {
         actions.push(Action::EndGesture);
     }
-    let b = |glyph| egui::Button::new(icon(glyph)).frame(false);
+    ui.separator();
+    // The raster buttons, each with its name (they were bare icons; usability review M8).
+    let small = |t: &str| RichText::new(t).small();
     if ui
-        .add(egui::Button::selectable(mods.invert(), icon(icons::INVERT)).frame(false))
-        .on_hover_text("Invert")
+        .add(egui::Button::selectable(mods.invert(), small("Invert")))
+        .on_hover_text("Invert the mask: what shows is hidden and what is hidden shows")
         .clicked()
     {
         set(actions, None, ModifierChange::Invert(!mods.invert()));
     }
     if ui
-        .add(b(icons::DELETE))
-        .on_hover_text("Clear (hide all)")
+        .button(small("Reveal all"))
+        .on_hover_text(REVEAL_ALL_TIP)
         .clicked()
     {
-        actions.push(Action::Run(JsonCommand::MaskClear {
-            layer: layer(shell),
-            value: 0.0,
-        }));
+        actions.push(reveal_or_hide_all(shell, true));
     }
     if ui
-        .add(b(icons::FILL))
-        .on_hover_text("Fill (show all)")
+        .button(small("Hide all"))
+        .on_hover_text(HIDE_ALL_TIP)
         .clicked()
     {
-        actions.push(Action::Run(JsonCommand::MaskClear {
-            layer: layer(shell),
-            value: 1.0,
-        }));
+        actions.push(reveal_or_hide_all(shell, false));
     }
-    if ui.add(b(icons::OPEN)).on_hover_text("Load PNG…").clicked() {
+    if ui
+        .button(small("Load PNG…"))
+        .on_hover_text("Load a greyscale PNG as the mask: white shows, black hides")
+        .clicked()
+    {
         actions.push(Action::LoadMask);
     }
-    if ui.button(RichText::new("From alpha").small()).clicked() {
-        actions.push(Action::Run(JsonCommand::MaskFromAlpha {
-            layer: layer(shell),
-        }));
-    }
-    let tip = if shell.mask.alone {
-        "Show the overlay"
-    } else {
-        "Show the mask alone"
-    };
     if ui
-        .selectable_label(shell.mask.alone, RichText::new("Alone").small())
-        .on_hover_text(tip)
+        .button(small("From transparency"))
+        .on_hover_text(FROM_TRANSPARENCY_TIP)
         .clicked()
     {
-        shell.mask.alone = !shell.mask.alone;
+        actions.push(Action::Run(JsonCommand::MaskFromAlpha { layer: target }));
+    }
+    ui.separator();
+    // How the mask is shown (it read "Alone").
+    ui.label("View");
+    for (grey, name, tip) in [
+        (false, "Overlay", "The mask as a red overlay on the layer"),
+        (
+            true,
+            "Grey",
+            "The mask alone, in grey: white shows the layer, black hides it (Alt-click the mask thumbnail)",
+        ),
+    ] {
+        if ui
+            .selectable_label(shell.mask.alone == grey, small(name))
+            .on_hover_text(tip)
+            .clicked()
+        {
+            shell.mask.alone = grey;
+        }
     }
 }
 
@@ -504,7 +603,7 @@ pub(super) fn interact(
                         flow: b.flow,
                         mode: held(b.mode, alt),
                     };
-                    actions.push(Action::Run(cmd));
+                    actions.push(paint_on(ws, i, held(b.mode, alt), cmd));
                 }
             }
         }
@@ -526,12 +625,14 @@ pub(super) fn interact(
                     .filter_map(|p| to_layer(ws, i, p))
                     .collect();
                 if shell.mask.active {
-                    actions.push(Action::Run(JsonCommand::MaskFill {
+                    let mode = held(shell.mask.lasso, alt);
+                    let cmd = JsonCommand::MaskFill {
                         layer: layer(shell),
                         polygon,
                         value: 1.0,
-                        mode: held(shell.mask.lasso, alt),
-                    }));
+                        mode,
+                    };
+                    actions.push(paint_on(ws, i, mode, cmd));
                 } else {
                     shell
                         .mask
@@ -605,6 +706,32 @@ pub(super) fn interact(
             }
         }
     }
+}
+
+/// A brush stroke or lasso fill `cmd` on layer `i`. On a layer with no mask yet it
+/// first starts one so that the paint shows (usability review M8): an Add starts from
+/// Hide all, a Subtract from Reveal all. The core would start every mask white, where an
+/// Add changes nothing.
+fn paint_on(ws: &Workspace, i: usize, mode: PaintMode, cmd: JsonCommand) -> Action {
+    let has_mask = ws
+        .doc
+        .session()
+        .project()
+        .layers
+        .get(i)
+        .is_none_or(|l| l.mask().is_some());
+    if has_mask {
+        return Action::Run(cmd);
+    }
+    let (value, from) = match mode {
+        PaintMode::Add => (0.0, "Hide all"),
+        PaintMode::Subtract => (1.0, "Reveal all"),
+    };
+    let start = JsonCommand::MaskClear {
+        layer: LayerRef::Index(i),
+        value,
+    };
+    Action::RunAll(vec![start, cmd], format!("New mask from {from}"))
 }
 
 /// `b` moved to the nearest 45° direction from `a`.
@@ -684,28 +811,25 @@ pub(super) fn draw(
 /// The Region tool's options bar: its own brush's Add or Subtract, size, hardness and
 /// flow (usability review M7), and a note while the selected region is empty.
 pub(super) fn region_bar(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui) {
-    ui.horizontal_centered(|ui| {
-        ui.spacing_mut().slider_width = 3.0 * ui.spacing().interact_size.x / 2.0;
-        ui.label(RichText::new("Region · Brush").small().strong());
+    ui.label(RichText::new("Region · Brush").small().strong());
+    ui.separator();
+    let b = &mut shell.mask.region;
+    mode_toggle(&mut b.mode, ui);
+    brush_sliders(b, ui);
+    let regions = ws.map(|ws| &ws.doc.session().project().regions);
+    if let Some(r) = regions.and_then(|r| r.get(shell.region))
+        && region_is_empty(r)
+    {
         ui.separator();
-        let b = &mut shell.mask.region;
-        mode_toggle(&mut b.mode, ui);
-        brush_sliders(b, ui);
-        let regions = ws.map(|ws| &ws.doc.session().project().regions);
-        if let Some(r) = regions.and_then(|r| r.get(shell.region))
-            && region_is_empty(r)
-        {
-            ui.separator();
-            ui.label(
-                RichText::new(format!(
-                    "{} is empty: paint on the picture to add to it",
-                    r.name()
-                ))
-                .small()
-                .weak(),
-            );
-        }
-    });
+        ui.label(
+            RichText::new(format!(
+                "{} is empty: paint on the picture to add to it",
+                r.name()
+            ))
+            .small()
+            .weak(),
+        );
+    }
 }
 
 /// Nothing painted in the region yet.
@@ -837,7 +961,13 @@ mod tests {
     /// #263: a mask brush stroke starts where the button went down, not 6 pt along.
     #[test]
     fn a_mask_stroke_starts_at_the_press_point() {
-        let ws = workspace();
+        let mut ws = workspace();
+        ws.doc
+            .run(JsonCommand::MaskClear {
+                layer: LayerRef::Index(0),
+                value: 1.0,
+            })
+            .unwrap();
         let mut shell = Shell::default();
         shell.mask.active = true;
         shell.mask.tool = Some(MaskTool::Brush);
@@ -900,6 +1030,201 @@ mod tests {
             })
             .expect("a region stroke");
         assert!(close(points[0], v2(press)), "{:?}", points[0]);
+    }
+
+    /// One frame of the whole shell, 1600 × 900 (the test fonts are wider than the
+    /// app's), with `events`: each text drawn with its rectangle, the actions, and the
+    /// working view's rectangle.
+    fn shell_frame(
+        ctx: &egui::Context,
+        shell: &mut Shell,
+        ws: &mut Workspace,
+        events: Vec<egui::Event>,
+    ) -> (Vec<(String, Rect)>, Vec<Action>, Rect) {
+        fn collect(shape: &egui::Shape, out: &mut Vec<(String, Rect)>) {
+            match shape {
+                egui::Shape::Text(t) => {
+                    out.push((t.galley.text().to_owned(), t.visual_bounding_rect()));
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
+                _ => {}
+            }
+        }
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1600.0, 900.0))),
+            events,
+            ..Default::default()
+        };
+        let mut actions = Vec::new();
+        let mut output = ctx.run_ui(input, |ui| actions = shell.show(ui, Some(ws)));
+        output.textures_delta.clear();
+        let mut texts = Vec::new();
+        for clipped in &output.shapes {
+            collect(&clipped.shape, &mut texts);
+        }
+        let view = shell.view_rect.expect("the working view was drawn");
+        (texts, actions, view)
+    }
+
+    fn text(texts: &[(String, Rect)], t: &str) -> Rect {
+        texts
+            .iter()
+            .find(|(s, _)| s == t)
+            .unwrap_or_else(|| panic!("no {t:?} in {texts:?}"))
+            .1
+    }
+
+    /// A press and release at `p`, as two frames' events.
+    fn click(p: Pos2) -> [Vec<egui::Event>; 2] {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        [
+            vec![egui::Event::PointerMoved(p), button(true)],
+            vec![button(false)],
+        ]
+    }
+
+    /// #291 (usability review M8): the options row is always there, so the working
+    /// view and the result panel keep their rectangles in every tool and in mask mode.
+    #[test]
+    fn the_layout_does_not_shift_between_modes() {
+        let mut ws = workspace();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        type Set = fn(&mut Shell);
+        let mut rects = |set: Set| {
+            let mut shell = Shell::default();
+            set(&mut shell);
+            shell_frame(&ctx, &mut shell, &mut ws, Vec::new());
+            let (texts, _, view) = shell_frame(&ctx, &mut shell, &mut ws, Vec::new());
+            (view, text(&texts, "Result"), text(&texts, "Recipe"))
+        };
+        let normal = rects(|_| {});
+        let states: [(&str, Set); 5] = [
+            ("mask mode", |s| s.toggle_mask_mode()),
+            ("selection", |s| s.mask.tool = Some(MaskTool::Lasso)),
+            ("region", |s| s.tool = super::super::Tool::Region),
+            ("pin", |s| s.tool = super::super::Tool::Pin),
+            ("transform", |s| s.tool = super::super::Tool::Transform),
+        ];
+        for (name, set) in states {
+            assert_eq!(rects(set), normal, "{name}");
+        }
+    }
+
+    /// #291: in mask mode the labels come before their controls, the raster buttons
+    /// have their names, and "From alpha" and "Alone" are gone.
+    #[test]
+    fn the_mask_bar_has_labels_before_controls_and_named_buttons() {
+        let mut ws = workspace();
+        ws.doc
+            .run(JsonCommand::MaskClear {
+                layer: LayerRef::Index(0),
+                value: 1.0,
+            })
+            .unwrap();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut shell = Shell::default();
+        shell.toggle_mask_mode();
+        shell_frame(&ctx, &mut shell, &mut ws, Vec::new());
+        let (texts, _, view) = shell_frame(&ctx, &mut shell, &mut ws, Vec::new());
+        // The bar's texts: the row right above the working view.
+        let row = crate::theme::layout::TOOLBAR_HEIGHT;
+        let bar: Vec<_> = texts
+            .iter()
+            .filter(|(_, r)| r.center().y > view.top() - row && r.center().y < view.top())
+            .cloned()
+            .collect();
+        let left = |t: &str| text(&bar, t).left();
+        // Label, then its value: Size 6, Hardness 0.50, Flow 1.00, Feather 0.0 px.
+        let order = [
+            "Size", "6.0", "Hardness", "0.50", "Flow", "1.00", "Snap", "Off", "Feather",
+        ];
+        for pair in order.windows(2) {
+            assert!(left(pair[0]) < left(pair[1]), "{pair:?}: {bar:?}");
+        }
+        for name in [
+            "Invert",
+            "Reveal all",
+            "Hide all",
+            "Load PNG…",
+            "From transparency",
+            "View",
+            "Overlay",
+            "Grey",
+        ] {
+            text(&bar, name);
+        }
+        assert!(
+            !bar.iter().any(|(t, _)| t == "From alpha" || t == "Alone"),
+            "{bar:?}"
+        );
+    }
+
+    /// #291 (usability review M8): a new mask starts as chosen. On a layer without one,
+    /// the bar offers Reveal all and Hide all; each starts the mask and sets the brush to
+    /// the mode whose stroke shows on it. A stroke made before choosing starts a mask it
+    /// shows on.
+    #[test]
+    fn a_new_mask_starts_as_chosen() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        for (button, value, mode) in [
+            ("Reveal all", 1.0, PaintMode::Subtract),
+            ("Hide all", 0.0, PaintMode::Add),
+        ] {
+            let mut ws = workspace();
+            let mut shell = Shell::default();
+            shell.toggle_mask_mode();
+            shell_frame(&ctx, &mut shell, &mut ws, Vec::new());
+            let (texts, _, _) = shell_frame(&ctx, &mut shell, &mut ws, Vec::new());
+            text(&texts, "This layer has no mask: start from");
+            let at = text(&texts, button).center();
+            let mut asked = Vec::new();
+            for events in click(at) {
+                asked.extend(shell_frame(&ctx, &mut shell, &mut ws, events).1);
+            }
+            let cleared: Vec<f32> = asked
+                .iter()
+                .filter_map(|a| match a {
+                    Action::Run(JsonCommand::MaskClear { value, .. }) => Some(*value),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(cleared, vec![value], "{button}: {asked:?}");
+            assert_eq!(shell.mask.brush.mode, mode, "{button}");
+            assert_eq!(shell.mask.lasso, mode, "{button}");
+        }
+
+        // A stroke before a choice: Add starts from Hide all, Subtract from Reveal all.
+        for (mode, value) in [(PaintMode::Add, 0.0), (PaintMode::Subtract, 1.0)] {
+            let ws = workspace();
+            let mut shell = Shell::default();
+            shell.toggle_mask_mode();
+            shell.mask.brush.mode = mode;
+            let actions = drag_with(
+                &mut shell,
+                &ws,
+                egui::pos2(100.0, 60.0),
+                egui::vec2(40.0, 0.0),
+                interact,
+            );
+            let Some(Action::RunAll(cmds, _)) = actions.first() else {
+                panic!("{actions:?}");
+            };
+            assert!(
+                matches!(cmds.as_slice(), [
+                    JsonCommand::MaskClear { value: v, .. },
+                    JsonCommand::MaskStroke { mode: m, .. },
+                ] if *v == value && *m == mode),
+                "{cmds:?}"
+            );
+        }
     }
 
     /// The modes of the region strokes in `actions`.

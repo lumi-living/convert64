@@ -750,6 +750,12 @@ As built in #290 (2026-10-25): the Region flow (usability review M7, UX §7).
 - **Outline.** `view::mask_outline` turns a region's 320 × 200 mask into the pixel-edge segments where it crosses 50 %, runs joined; `Workspace::region_overlay` makes them with the tint, per revision, and the working view draws them in the theme's `region` colour, with the stroke in progress as a swath.
 - **Breadcrumb.** `recipe::breadcrumb` heads the Region tool's Recipe tab: `Region 1 ‹ <layer>`, the layer's name a link that picks the Nudge tool, so the tab shows that layer's recipe again.
 
+As built in #291 (2026-10-25): the options bar (usability review M8, UX §3, §7a).
+
+- **One permanent row.** `toolbar::options_bar` is a top panel of `layout::TOOLBAR_HEIGHT` drawn whenever the chrome is, so mask mode and tool changes no longer insert or remove a panel (the region and mask option panels are gone). It holds the mask tools' options (`mask::options_bar`), the Region brush's (`mask::region_bar`), Pin and Lock's usage, or for Nudge and Transform the selected layer's `transform::readout`, which left the status bar.
+- **Labels before controls** (`mask::labelled`); the raster buttons are text buttons (*Invert*, *Reveal all*, *Hide all*, *Load PNG…*, *From transparency*); *Alone* is *View: Overlay · Grey*. The commands are unchanged.
+- **New masks.** `mask::reveal_or_hide_all` sends `mask_clear` with 1 or 0 and sets the mask Brush and the Lasso to Subtract or Add, so the first stroke shows; the Recipe tab's Mask group, the options bar on a layer without a mask and the Layers panel's Add mask use it. A brush stroke or lasso fill on a layer without a mask is sent as one step with a `mask_clear` first (`mask::paint_on`): 0 for an Add, 1 for a Subtract. The core still starts a mask white when a command needs one.
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.

@@ -321,10 +321,10 @@ fn strip(shell: &mut Shell, layers: &[Layer], ui: &mut Ui, actions: &mut Vec<Act
         let has_mask = layers.get(shell.layer).is_some_and(|l| l.mask().is_some());
         let add = ui
             .add_enabled(!has_mask, b(icons::FILL))
-            .on_hover_text("Add mask (from the picture's alpha if it has any)")
+            .on_hover_text("Add mask: Reveal all, or from the picture's transparency if it has any")
             .on_disabled_hover_text("The layer has a mask: M edits it");
         if add.clicked() {
-            actions.push(add_mask(layers, shell.layer));
+            actions.push(add_mask(shell, layers));
         }
         let delete = ui.add(b(icons::DELETE)).on_hover_text("Delete (⌫)");
         if delete.clicked() {
@@ -356,16 +356,18 @@ fn mask_thumb(shell: &mut Shell, ws: &Workspace, i: usize, ui: &mut Ui) {
     }
 }
 
-/// Add mask (UX §6): from the picture's alpha if any pixel is transparent, otherwise
-/// fully opaque.
-pub(super) fn add_mask(layers: &[Layer], i: usize) -> Action {
-    let layer = at(i);
+/// Add mask (UX §5): from the picture's transparency if any pixel is transparent,
+/// otherwise Reveal all, with the mask Brush set to Subtract so its first stroke shows
+/// (usability review M8).
+pub(super) fn add_mask(shell: &mut Shell, layers: &[Layer]) -> Action {
     let alpha = layers
-        .get(i)
+        .get(shell.layer)
         .is_some_and(|l| l.source().pixels().iter().any(|p| p[3] < 1.0));
-    Action::Run(if alpha {
-        JsonCommand::MaskFromAlpha { layer }
+    if alpha {
+        Action::Run(JsonCommand::MaskFromAlpha {
+            layer: at(shell.layer),
+        })
     } else {
-        JsonCommand::MaskClear { layer, value: 1.0 }
-    })
+        super::mask::reveal_or_hide_all(shell, true)
+    }
 }
