@@ -20,6 +20,32 @@ Every existing converter (retropixels, png2c64, C64CC, editor importers) treats 
 
 …and see the real C64 result (right palette, colour clashes resolved, 2:1 pixel aspect) update live.
 
+## In pictures
+
+All of these use the `title` test picture from [fixtures/title](fixtures/title/README.md); [docs/media/make-media.sh](docs/media/make-media.sh) regenerates them.
+
+**Per-layer dithering.** The picture twice: the *Sky* layer with ordered Bayer 4×4 at 60 %, the *Foreground* copy with Floyd–Steinberg at 100 %, masked to below the tree line by a gradient. One solve gives one legal multicolor picture.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/per-layer-dithering-dark.png">
+  <img alt="Convert64 with two layers, Sky (Bayer4 60 %) and Foreground (FS 100 %), and the multicolor result: an ordered pattern in the sky, error diffusion below the trees" src="docs/media/per-layer-dithering-light.png" width="800">
+</picture>
+
+**The method picker.** Every dither method as a live thumbnail, solved on a test gradient (as here) or on the layer's own picture, with search by name, id or alias.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/method-picker-dark.png">
+  <img alt="The dither method picker: a grid of thumbnails grouped as ordered noise and error diffusion, Floyd–Steinberg selected" src="docs/media/method-picker-light.png" width="420">
+</picture>
+
+**Sub-pixel nudge.** The layer moved right in 0.25 px steps (a multicolor pixel is 2 px wide) and back; every step re-solves and the dither falls differently. Shown at 4× (each multicolor pixel 8 × 4).
+
+<img alt="An animated crop of the result as the layer moves from +0.00 to +1.00 px and back" src="docs/media/sub-pixel-nudge.gif" width="640">
+
+**In VICE.** `convert64 convert fixtures/title/source.png -o title.kla -o title.prg`, then the self-displaying PRG (the same Koala data behind a small viewer) in `x64sc`. VICE's screen matches Convert64's preview on all 64 000 pixels.
+
+<img alt="VICE showing the converted title picture inside the C64 border" src="docs/media/vice-koala.png" width="576">
+
 ## How it works (short version)
 
 ```
