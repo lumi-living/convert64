@@ -51,7 +51,7 @@ pub(super) fn show(
                 actions.push(Action::Redo);
             }
         });
-        ui.menu_button("View", |ui| view_menu(shell, ui, actions));
+        ui.menu_button("View", |ui| view_menu(shell, open, ui, actions));
         ui.menu_button("Layer", |ui| {
             let layer = convert64_project::LayerRef::Index(shell.layer);
             if item(ui, "New Layer from File…", Some(&s::NEW_LAYER), open) {
@@ -93,7 +93,7 @@ pub(super) fn show(
     });
 }
 
-fn view_menu(shell: &mut Shell, ui: &mut Ui, actions: &mut Vec<Action>) {
+fn view_menu(shell: &mut Shell, open: bool, ui: &mut Ui, actions: &mut Vec<Action>) {
     for mode in [ViewMode::Source, ViewMode::Result] {
         let button = Button::selectable(shell.view == mode, mode.label())
             .shortcut_text(ui.ctx().format_shortcut(&s::SOURCE_RESULT));
@@ -116,16 +116,17 @@ fn view_menu(shell: &mut Shell, ui: &mut Ui, actions: &mut Vec<Action>) {
         }
     });
     ui.separator();
-    if item(ui, "Zoom In", Some(&s::ZOOM_IN), true) {
+    // Zoom waits for a picture, as the toolbar's does (UX §5, #292).
+    if item(ui, "Zoom In", Some(&s::ZOOM_IN), open) {
         shell.zoom_step(true);
     }
-    if item(ui, "Zoom Out", Some(&s::ZOOM_OUT), true) {
+    if item(ui, "Zoom Out", Some(&s::ZOOM_OUT), open) {
         shell.zoom_step(false);
     }
-    if item(ui, "Zoom to Fit", Some(&s::ZOOM_FIT), true) {
+    if item(ui, "Zoom to Fit", Some(&s::ZOOM_FIT), open) {
         shell.fit();
     }
-    if item(ui, "Actual Pixels", Some(&s::ZOOM_100), true) {
+    if item(ui, "Actual Pixels", Some(&s::ZOOM_100), open) {
         shell.camera.actual(shell.view);
     }
     ui.separator();

@@ -154,6 +154,9 @@ pub enum Action {
     SetMode(Mode),
     /// File › Open… (`Cmd O`).
     Open,
+    /// The empty state's *Try a sample picture*: open the bundled `title` painting
+    /// ([`crate::document::SAMPLE`]) as if it had been opened from a file (#292).
+    OpenSample,
     /// File › Save (`Cmd S`): to the project's file, or as Save As.
     Save,
     /// File › Save As… (`Shift Cmd S`).
@@ -556,7 +559,7 @@ impl Shell {
             ui.ctx()
                 .options_mut(|o| o.input_options.surrender_focus_on = presses);
         }
-        self.handle_shortcuts(ui.ctx(), &mut actions);
+        self.handle_shortcuts(ui.ctx(), ws.is_some(), &mut actions);
         self.picker.drawn = false;
         if let Some(ws) = ws.as_deref_mut() {
             ws.prepare(ui.ctx(), self.overlays.ghost);
@@ -740,8 +743,10 @@ impl Shell {
         }
     }
 
-    /// The shortcuts of `docs/UX.md` §8 that the shell itself handles.
-    fn handle_shortcuts(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    /// The shortcuts of `docs/UX.md` §8 that the shell itself handles. Without a picture
+    /// (`open` false) the tool, zoom and Snap keys do nothing, as their buttons are
+    /// disabled (UX §5, #292).
+    fn handle_shortcuts(&mut self, ctx: &egui::Context, open: bool, actions: &mut Vec<Action>) {
         use shortcuts as s;
         // Single keys only while no text field is being edited (a `TextEdit`, or a
         // `DragValue` taking typed digits); a focused slider or button leaves them be
@@ -782,16 +787,16 @@ impl Shell {
             if self.chrome_hidden && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                 hide_ui = Some(false);
             }
-            if i.consume_shortcut(&s::ZOOM_IN) {
+            if i.consume_shortcut(&s::ZOOM_IN) && open {
                 self.zoom_step(true);
             }
-            if i.consume_shortcut(&s::ZOOM_OUT) {
+            if i.consume_shortcut(&s::ZOOM_OUT) && open {
                 self.zoom_step(false);
             }
-            if i.consume_shortcut(&s::ZOOM_FIT) {
+            if i.consume_shortcut(&s::ZOOM_FIT) && open {
                 self.fit();
             }
-            if i.consume_shortcut(&s::ZOOM_100) {
+            if i.consume_shortcut(&s::ZOOM_100) && open {
                 self.camera.actual(self.view);
             }
             if i.consume_shortcut(&s::GRID) {
@@ -864,12 +869,12 @@ impl Shell {
             if i.consume_shortcut(&s::SCALE_DOWN) {
                 self.scale_request = Some(1.0 / 1.01);
             }
-            if i.consume_shortcut(&s::TRANSFORM) {
+            if i.consume_shortcut(&s::TRANSFORM) && open {
                 self.tool = Tool::Transform;
                 self.mask.tool = None;
                 self.mask.active = false;
             }
-            if i.consume_shortcut(&s::SNAP_CYCLE) {
+            if i.consume_shortcut(&s::SNAP_CYCLE) && open {
                 self.snap_cycle = true;
             }
             // Shift Cmd S before Cmd S: a Cmd pattern also matches with Shift held.
@@ -896,7 +901,7 @@ impl Shell {
                 self.hand = !self.hand;
             }
             // Bare 1 is 100 % too, for Krita and Aseprite users (UX §8).
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::Num1) {
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::Num1) && open {
                 self.camera.actual(self.view);
             }
             if i.consume_shortcut(&s::SOURCE_RESULT) {
@@ -915,7 +920,7 @@ impl Shell {
                 }));
             }
             for tool in Tool::ALL {
-                if i.consume_key(egui::Modifiers::NONE, tool.key()) {
+                if i.consume_key(egui::Modifiers::NONE, tool.key()) && open {
                     self.tool = tool;
                     self.mask.tool = None;
                     self.mask.active = false;
@@ -1022,6 +1027,103 @@ pub(super) fn drag_step(response: &egui::Response) -> egui::Vec2 {
     }
 }
 
+/// Headless frames of the whole shell, read back as the texts they draw (#292).
+#[cfg(test)]
+pub(crate) mod ui_test {
+    use super::{Action, Shell};
+    use crate::workspace::Workspace;
+    use egui::{Color32, Event, Pos2, Rect, Shape};
+
+    /// A text a frame drew: what it says, where, and the colour it was painted in (a
+    /// disabled widget's fade included).
+    #[derive(Debug, Clone)]
+    pub struct Text {
+        pub text: String,
+        pub rect: Rect,
+        pub colour: Color32,
+    }
+
+    /// The colour `t` is painted in: its override, its first section's colour, or the
+    /// widget's text colour, faded by the shape's opacity.
+    fn colour(t: &egui::epaint::TextShape) -> Color32 {
+        let own = t
+            .galley
+            .job
+            .sections
+            .first()
+            .map(|s| s.format.color)
+            .filter(|c| *c != Color32::PLACEHOLDER);
+        t.override_text_color
+            .or(own)
+            .unwrap_or(t.fallback_color)
+            .gamma_multiply(t.opacity_factor)
+    }
+
+    fn collect(shape: &Shape, out: &mut Vec<Text>) {
+        match shape {
+            Shape::Text(t) => out.push(Text {
+                text: t.galley.text().to_owned(),
+                rect: t.visual_bounding_rect(),
+                colour: colour(t),
+            }),
+            Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
+            _ => {}
+        }
+    }
+
+    /// One frame of `shell` in a `size` window with `events`: the texts drawn and the
+    /// actions asked for.
+    pub fn frame(
+        ctx: &egui::Context,
+        shell: &mut Shell,
+        ws: Option<&mut Workspace>,
+        size: egui::Vec2,
+        events: Vec<Event>,
+    ) -> (Vec<Text>, Vec<Action>) {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            events,
+            ..Default::default()
+        };
+        let mut actions = Vec::new();
+        let mut ws = ws;
+        let mut output = ctx.run_ui(input, |ui| actions = shell.show(ui, ws.as_deref_mut()));
+        output.textures_delta.clear();
+        let mut texts = Vec::new();
+        for clipped in &output.shapes {
+            collect(&clipped.shape, &mut texts);
+        }
+        (texts, actions)
+    }
+
+    /// The first text that reads `text`.
+    pub fn find<'a>(texts: &'a [Text], text: &str) -> &'a Text {
+        texts
+            .iter()
+            .find(|t| t.text == text)
+            .unwrap_or_else(|| panic!("no {text:?} in {:?}", names(texts)))
+    }
+
+    /// Every text's string, for a failure message.
+    pub fn names(texts: &[Text]) -> Vec<&str> {
+        texts.iter().map(|t| t.text.as_str()).collect()
+    }
+
+    /// A press and release at `p`, as two frames' events.
+    pub fn click(p: Pos2) -> [Vec<Event>; 2] {
+        let button = |pressed| Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        [
+            vec![Event::PointerMoved(p), button(true)],
+            vec![button(false)],
+        ]
+    }
+}
+
 /// Headless drags with real pointer events, for the canvas tools' tests (#248, #263).
 #[cfg(test)]
 pub(super) mod drag_test {
@@ -1073,6 +1175,19 @@ pub(super) mod drag_test {
     }
 }
 
+/// A primary button (the Export panel's Export, the empty state's Open image…): the
+/// selection fill, strong text (dark on the light theme's pale accent, light on the dark
+/// theme's deep one).
+pub(super) fn primary_button(ui: &egui::Ui, text: impl Into<String>) -> egui::Button<'static> {
+    let visuals = ui.visuals();
+    egui::Button::new(
+        egui::RichText::new(text)
+            .strong()
+            .color(visuals.strong_text_color()),
+    )
+    .fill(visuals.selection.bg_fill)
+}
+
 /// An icon at the toolbar and row size (`layout::ICON_SIZE`).
 pub(crate) fn icon(icon: Icon) -> egui::RichText {
     icon.rich_text().size(layout::ICON_SIZE)
@@ -1097,6 +1212,126 @@ mod tests {
         // No renderer here: drop the font atlas uploads deliberately.
         output.textures_delta.clear();
         (shell, actions)
+    }
+
+    /// [`frame`] with a picture open (the tool, zoom and Snap keys wait for one, #292).
+    fn frame_open(mut shell: Shell, events: Vec<egui::Event>) -> (Shell, Vec<Action>) {
+        let (ctx, mut ws) = two_layers();
+        shell.keep_camera();
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        let mut actions = Vec::new();
+        let mut output = ctx.run_ui(input, |ui| actions = shell.show(ui, Some(&mut ws)));
+        output.textures_delta.clear();
+        (shell, actions)
+    }
+
+    /// UX §5, usability review M10 (#292): with no picture the working view offers the
+    /// primary Open image… and the Try a sample picture link, and each asks for its
+    /// action.
+    #[test]
+    fn the_empty_state_offers_open_and_a_sample() {
+        use ui_test::{click, find, frame};
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut shell = Shell::default();
+        let size = egui::vec2(1280.0, 800.0);
+        let (texts, _) = frame(&ctx, &mut shell, None, size, vec![]);
+        find(&texts, working::EMPTY_TEXT);
+        let view = egui::Rect::from_min_max(
+            egui::pos2(0.0, 2.0 * layout::TOOLBAR_HEIGHT),
+            egui::pos2(size.x - layout::DOCK_WIDTH, size.y - layout::STATUS_HEIGHT),
+        );
+        for (label, want) in [
+            ("Open image…", Action::Open),
+            ("Try a sample picture", Action::OpenSample),
+        ] {
+            let at = find(&texts, label).rect;
+            assert!(view.contains_rect(at), "{label} at {at:?}, view {view:?}");
+            let mut asked = Vec::new();
+            for events in click(at.center()) {
+                asked.extend(frame(&ctx, &mut shell, None, size, events).1);
+            }
+            assert_eq!(asked, vec![want], "{label}");
+        }
+        // The primary button sits above the link, both under the sentence.
+        let sentence = find(&texts, working::EMPTY_TEXT).rect;
+        let open = find(&texts, "Open image…").rect;
+        let sample = find(&texts, "Try a sample picture").rect;
+        assert!(sentence.bottom() <= open.top() && open.bottom() <= sample.top());
+    }
+
+    /// #292: with no picture the tools, zoom and Snap do nothing, by key or by click.
+    #[test]
+    fn without_a_picture_the_tools_zoom_and_snap_wait() {
+        use ui_test::{click, find, frame};
+        let none = egui::Modifiers::NONE;
+        let cmd = egui::Modifiers::COMMAND;
+        let shift_cmd = cmd.plus(egui::Modifiers::SHIFT);
+        let (shell, actions) = frame_none(vec![
+            key(egui::Key::P, none),
+            key(egui::Key::L, none),
+            key(egui::Key::S, none),
+            key(egui::Key::T, cmd),
+            key(egui::Key::Equals, cmd),
+            key(egui::Key::Minus, cmd),
+            key(egui::Key::Num1, none),
+            key(egui::Key::Semicolon, shift_cmd),
+        ]);
+        assert_eq!(shell.tool, Tool::Nudge);
+        assert_eq!(shell.camera, crate::view::Camera::default());
+        assert!(!shell.snap_cycle && actions.is_empty(), "{actions:?}");
+
+        // A click on the Pin tool or on Zoom in changes nothing either.
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut shell = Shell::default();
+        let size = egui::vec2(1280.0, 800.0);
+        let (texts, _) = frame(&ctx, &mut shell, None, size, vec![]);
+        for glyph in [crate::icons::PIN, crate::icons::ZOOM_IN] {
+            let at = find(&texts, glyph.codepoint).rect;
+            for events in click(at.center()) {
+                frame(&ctx, &mut shell, None, size, events);
+            }
+        }
+        assert_eq!(shell.tool, Tool::Nudge);
+        assert_eq!(shell.camera, crate::view::Camera::default());
+
+        // With a picture the same keys act.
+        let (shell, _) = frame_open(
+            Shell::default(),
+            vec![key(egui::Key::P, none), key(egui::Key::Equals, cmd)],
+        );
+        assert_eq!(shell.tool, Tool::Pin);
+        assert_ne!(shell.camera, crate::view::Camera::default());
+    }
+
+    /// [`frame`] with no picture, in a context with the app's look.
+    fn frame_none(events: Vec<egui::Event>) -> (Shell, Vec<Action>) {
+        frame(Shell::default(), events)
+    }
+
+    /// #292 (usability review M10): the dock's line before a picture is open is drawn in
+    /// the text colour, not faded as a disabled control.
+    #[test]
+    fn the_empty_dock_text_is_not_faded() {
+        use ui_test::{find, frame};
+        for theme in [egui::Theme::Light, egui::Theme::Dark] {
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx);
+            ctx.set_theme(theme);
+            let mut shell = Shell::default();
+            let size = egui::vec2(1280.0, 800.0);
+            frame(&ctx, &mut shell, None, size, vec![]);
+            let (texts, _) = frame(&ctx, &mut shell, None, size, vec![]);
+            let line = dock::empty_text(&ctx, "the recipe");
+            let drawn = find(&texts, &line);
+            let visuals = crate::theme::style(theme).visuals;
+            assert_eq!(drawn.colour, visuals.text_color(), "{theme:?}");
+            assert!(drawn.rect.left() > size.x - layout::DOCK_WIDTH - 1.0);
+        }
     }
 
     fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
@@ -1368,17 +1603,21 @@ mod tests {
     struct Form {
         ctx: egui::Context,
         shell: Shell,
+        /// A picture is open: the single keys pick tools only then (#292).
+        ws: Workspace,
         slider: (f32, Option<egui::Response>),
         drag: (f32, Option<egui::Response>),
     }
 
     impl Form {
         fn new() -> Self {
-            let ctx = egui::Context::default();
-            crate::theme::install(&ctx);
+            let (ctx, ws) = two_layers();
+            let mut shell = Shell::default();
+            shell.keep_camera();
             let mut form = Self {
                 ctx,
-                shell: Shell::default(),
+                shell,
+                ws,
                 slider: (0.5, None),
                 drag: (50.0, None),
             };
@@ -1393,8 +1632,9 @@ mod tests {
             };
             let mut actions = Vec::new();
             let (shell, slider, drag) = (&mut self.shell, &mut self.slider, &mut self.drag);
+            let ws = &mut self.ws;
             let mut output = self.ctx.run_ui(input, |ui| {
-                actions = shell.show(ui, None);
+                actions = shell.show(ui, Some(ws));
                 egui::Area::new(egui::Id::new("form"))
                     .fixed_pos([400.0, 300.0])
                     .show(ui.ctx(), |ui| {
@@ -1533,7 +1773,7 @@ mod tests {
 
     #[test]
     fn command_shortcuts_zoom_and_toggle_overlays() {
-        let (shell, _) = frame(
+        let (shell, _) = frame_open(
             Shell::default(),
             vec![
                 key(egui::Key::Equals, egui::Modifiers::COMMAND),
@@ -1848,7 +2088,7 @@ mod tests {
         assert!(shell.mask.active && shell.mask.tool == Some(MaskTool::Brush));
         let (shell, _) = frame(shell, vec![key(egui::Key::Escape, none)]);
         assert!(!shell.mask.active && shell.mask.tool.is_none());
-        let (shell, _) = frame(
+        let (shell, _) = frame_open(
             Shell::default(),
             vec![key(egui::Key::H, none), key(egui::Key::Num1, none)],
         );

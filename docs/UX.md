@@ -110,6 +110,10 @@ Row anatomy, left to right (editor consensus): **eye** · **thumbnail** (source,
 - Selecting a layer selects what the Recipe panel edits and what nudging moves. Multi-select applies recipe changes to all (v2).
 - Empty state (no layers): one sentence and one button — *"Drop an image here or open one. Convert64 shows the C64 result as soon as it loads."* **Open image…**
 
+**Empty state (no picture open; usability review M10, #292).** The working view shows, centred: the add-image glyph, the sentence *"Drop an image here or open one. Convert64 shows the C64 result as soon as it loads."*, one primary button **Open image…** (accent fill, like Export, §6b; it does what *File › Open…* does, `Cmd O` in its tooltip) and under it a link, **Try a sample picture**, which opens the `title` fixture's painting as if it had been opened from a file (a 640 × 398 copy bundled with the app, `crates/convert64-app/assets/sample/title.png`, so it works offline and in the browser). Until a picture is open:
+- The tools, zoom (in, out, fit) and Snap in the toolbar are disabled, with a tooltip that says why ("Open a picture first"); their keys (`V P L R S`, `Cmd =`, `Cmd −`, `Cmd 0`, `Cmd 1`, `1`, `Shift Cmd ;`) do nothing, and *View › Zoom…* is disabled too.
+- The dock keeps its groups (disabled, §11) but its one line, *"Open an image (Cmd O) to see the recipe."*, is drawn as readable secondary text, not as a disabled control.
+
 ### 5a. Splitting an image into layers
 
 Users split an image because one area needs different treatment. Which tool depends on *what* differs:
@@ -364,7 +368,7 @@ Sample strings:
 
 | State | Treatment |
 |---|---|
-| No project | empty state in the preview area (§5); dock shows disabled groups, not hidden ones |
+| No project | empty state in the preview area (§5): **Open image…**, **Try a sample picture**; the tools, zoom and Snap disabled; dock shows disabled groups, not hidden ones, and one readable line saying what to do |
 | Loading an image | the preview shows the source immediately, then the first solve (<100 ms) replaces it |
 | Solving (fast path) | nothing visible; results arrive within a frame or two |
 | Solving (full search, >200 ms) | status bar progress text + Pause; preview keeps the last result, slightly desaturated |

@@ -471,20 +471,22 @@ fn tab_content(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui, actions: 
         DockTab::Layers => (icons::LAYERS, "the layers"),
         DockTab::Export => (icons::EXPORT, "export"),
     };
-    ui.add_enabled_ui(has_project, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(icon(glyph).weak());
-            if has_project {
-                ui.label(
-                    RichText::new(format!("{} arrives with its own issue.", capitalise(what)))
-                        .weak(),
-                );
-            } else {
-                let open = ui.ctx().format_shortcut(&super::shortcuts::OPEN);
-                ui.label(RichText::new(format!("Open an image ({open}) to see {what}.")).weak());
-            }
-        });
+    // Readable text, not a disabled control's faded one: it is the one thing the dock
+    // has to say before a picture is open (usability review M10, #292).
+    ui.horizontal(|ui| {
+        ui.label(icon(glyph));
+        if has_project {
+            ui.label(format!("{} arrives with its own issue.", capitalise(what)));
+        } else {
+            ui.label(empty_text(ui.ctx(), what));
+        }
     });
+}
+
+/// The dock's line before a picture is open: "Open an image (Cmd O) to see the recipe."
+pub(super) fn empty_text(ctx: &egui::Context, what: &str) -> String {
+    let open = ctx.format_shortcut(&super::shortcuts::OPEN);
+    format!("Open an image ({open}) to see {what}.")
 }
 
 fn capitalise(s: &str) -> String {

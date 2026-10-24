@@ -8,13 +8,17 @@ use crate::view::Compare;
 use crate::workspace::Workspace;
 use egui::{Button, RichText, Ui};
 
+/// What a disabled tool, zoom or Snap control says with no picture open (UX §5, #292).
+pub(in crate::shell) const NEEDS_PICTURE: &str = "Open a picture first";
+
 /// A toolbar button: an icon, a tooltip, `selected` drawn as the toggle's on state.
+/// Disabled, its tooltip says why ([`NEEDS_PICTURE`]).
 fn button(ui: &mut Ui, glyph: icons::Icon, tooltip: &str, selected: bool, enabled: bool) -> bool {
     let side = crate::theme::layout::TOOLBAR_HEIGHT - 4.0;
     let button = Button::selectable(selected, icon(glyph)).min_size(egui::vec2(side, side));
     ui.add_enabled(enabled, button)
         .on_hover_text(tooltip)
-        .on_disabled_hover_text(tooltip)
+        .on_disabled_hover_text(format!("{tooltip}: {}", NEEDS_PICTURE.to_lowercase()))
         .clicked()
 }
 
@@ -40,7 +44,8 @@ pub(in crate::shell) fn snap_menu(ws: Option<&Workspace>, ui: &mut Ui, actions: 
                 }
             })
             .response
-            .on_hover_text("Snap transforms: Off (sub-pixel), C64 pixel, Cell (Shift Cmd ;)");
+            .on_hover_text("Snap transforms: Off (sub-pixel), C64 pixel, Cell (Shift Cmd ;)")
+            .on_disabled_hover_text(format!("Snap: {}", NEEDS_PICTURE.to_lowercase()));
     });
 }
 
@@ -50,6 +55,8 @@ pub(super) fn show(
     ui: &mut Ui,
     actions: &mut Vec<Action>,
 ) {
+    // The tools, zoom and Snap wait for a picture (UX §5, #292).
+    let open = ws.is_some();
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         if shell.mask.active {
@@ -70,8 +77,8 @@ pub(super) fn show(
         } else {
             for tool in Tool::ALL {
                 let tip = format!("{} ({})", tool.label(), tool.key().name());
-                let on = shell.tool == tool && shell.mask.tool.is_none();
-                if button(ui, tool.icon(), &tip, on, true) {
+                let on = open && shell.tool == tool && shell.mask.tool.is_none();
+                if button(ui, tool.icon(), &tip, on, open) {
                     shell.tool = tool;
                     shell.mask.tool = None;
                 }
@@ -86,7 +93,7 @@ pub(super) fn show(
             icons::ZOOM_IN,
             &tip("Zoom in", &super::shortcuts::ZOOM_IN),
             false,
-            true,
+            open,
         ) {
             shell.zoom_step(true);
         }
@@ -95,17 +102,19 @@ pub(super) fn show(
             icons::ZOOM_OUT,
             &tip("Zoom out", &super::shortcuts::ZOOM_OUT),
             false,
-            true,
+            open,
         ) {
             shell.zoom_step(false);
         }
-        button(
+        if button(
             ui,
             icons::FIT,
             &tip("Zoom to fit", &super::shortcuts::ZOOM_FIT),
             false,
-            false,
-        );
+            open,
+        ) {
+            shell.fit();
+        }
         ui.separator();
         let result = shell.view == ViewMode::Result;
         if button(
