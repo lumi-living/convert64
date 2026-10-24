@@ -139,6 +139,38 @@ pub fn set_theme(ctx: &egui::Context, preference: egui::ThemePreference) {
     ctx.set_theme(preference);
 }
 
+/// WCAG 2.x relative luminance of an opaque sRGB colour.
+fn luminance(c: egui::Color32) -> f64 {
+    let lin = |v: u8| {
+        let v = f64::from(v) / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+}
+
+/// The WCAG contrast ratio of text `fg` on `bg` (1 to 21). A translucent `fg` is
+/// blended over `bg` as the painter would.
+pub fn contrast(fg: egui::Color32, bg: egui::Color32) -> f64 {
+    let a = f32::from(fg.a()) / 255.0;
+    let fg = if fg.a() == 255 {
+        fg
+    } else {
+        // Color32 is premultiplied: fg + bg × (1 − a).
+        let mix = |f: u8, b: u8| (f32::from(f) + f32::from(b) * (1.0 - a)).round() as u8;
+        egui::Color32::from_rgb(
+            mix(fg.r(), bg.r()),
+            mix(fg.g(), bg.g()),
+            mix(fg.b(), bg.b()),
+        )
+    };
+    let (l1, l2) = (luminance(fg), luminance(bg));
+    (l1.max(l2) + 0.05) / (l1.min(l2) + 0.05)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +246,57 @@ mod tests {
         if fonts::PROPORTIONAL_MEDIUM.is_some() {
             assert!(defs.families.contains_key(&FontFamily::Name(MEDIUM.into())));
         }
+    }
+
+    /// Usability review M11 (#293): body, hint (weak) and link text reach WCAG AA, 4.5:1,
+    /// on every background they sit on (panels, popups, the faint stripe, text fields and
+    /// the canvas around the picture), in both themes, as the generated theme sets them.
+    #[test]
+    fn text_colours_reach_4_5_to_1_on_their_backgrounds() {
+        // The reference values from WCAG's own examples.
+        assert!((contrast(egui::Color32::BLACK, egui::Color32::WHITE) - 21.0).abs() < 1e-9);
+        assert!(
+            (contrast(egui::Color32::from_gray(0x76), egui::Color32::WHITE) - 4.54).abs() < 0.01
+        );
+        for theme in [egui::Theme::Light, egui::Theme::Dark] {
+            let v = style(theme).visuals;
+            let backgrounds = [
+                ("panel_fill", v.panel_fill),
+                ("window_fill", v.window_fill),
+                ("faint_bg_color", v.faint_bg_color),
+                ("extreme_bg_color", v.extreme_bg_color),
+                ("canvas/bg", Theme::of(theme).canvas_bg),
+            ];
+            let texts = [
+                ("text", v.text_color()),
+                ("weak text", v.weak_text_color()),
+                ("link / accent", v.hyperlink_color),
+            ];
+            for (bg_name, bg) in backgrounds {
+                for (fg_name, fg) in texts {
+                    let ratio = contrast(fg, bg);
+                    assert!(
+                        ratio >= 4.5,
+                        "{theme:?}: {fg_name} {fg:?} on {bg_name} {bg:?} is {ratio:.2}:1"
+                    );
+                }
+            }
+            // Hints stay quieter than body text: the hierarchy survives the fix.
+            assert!(
+                contrast(v.weak_text_color(), v.panel_fill)
+                    < contrast(v.text_color(), v.panel_fill),
+                "{theme:?}"
+            );
+        }
+    }
+
+    /// #293: no text style is smaller than 11 px, egui's `Small` as the tokens now set
+    /// it (the hint lines were 9 px).
+    #[test]
+    fn small_text_is_11_px() {
+        let styles = text_styles();
+        assert_eq!(styles[&egui::TextStyle::Small].size, 11.0);
+        assert!(styles.values().all(|f| f.size >= 11.0), "{styles:?}");
     }
 
     #[test]
