@@ -1272,12 +1272,12 @@ mod tests {
         let (shell, _) = frame(Shell::default(), vec![key(egui::Key::Backslash, cmd)]);
         assert!(shell.chrome_hidden && !shell.dock_hidden);
         let (message, error, _) = shell.toast.clone().expect("a toast on hide");
-        // "⌘\" on macOS, "Ctrl+Backslash" elsewhere, as the menus show it.
+        // "⌘\" on macOS, "Ctrl+\" elsewhere (the key as its symbol, m5), as the menus show it.
         let keys = message
             .strip_prefix("UI hidden — press ")
             .and_then(|m| m.strip_suffix(" or Esc to show it"))
             .unwrap_or_else(|| panic!("{message}"));
-        assert!(keys == "⌘\\" || keys == "Ctrl+Backslash", "{keys}");
+        assert!(keys == "⌘\\" || keys == "Ctrl+\\", "{keys}");
         assert!(!error);
 
         let (shell, _) = frame(shell, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
