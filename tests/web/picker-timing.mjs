@@ -145,14 +145,14 @@ await ev(`(async () => {
   return 1; })()`);
 if (!await waitFor(`document.title.startsWith('title.png')`, 30000)) { console.error('the picture did not open'); finish(1); }
 await sleep(5000);
-// The dock scrolled down to the Dither group (SCROLL=points to override).
+// The dock, scrolled by SCROLL points if the Dither group is below the fold (#288 put it first).
 await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1280, y: 700, button: 'none' });
-await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 1280, y: 700, deltaX: 0, deltaY: Number(process.env.SCROLL || 2000) });
+await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 1280, y: 700, deltaX: 0, deltaY: Number(process.env.SCROLL || 0) });
 await sleep(1500);
 await shoot('0-opened.png');
 
 // The Recipe tab's Method button, at 1440 × 900 (METHOD=x,y to override).
-const [mx, my] = (process.env.METHOD || '1300,584').split(',').map(Number);
+const [mx, my] = (process.env.METHOD || '1300,429').split(',').map(Number);
 for (let run = 1; run <= runs; run++) {
   const load = os.loadavg().map(v => v.toFixed(1)).join(' ');
   const t0 = Date.now();
@@ -169,7 +169,7 @@ for (let run = 1; run <= runs; run++) {
   await key('Escape', 'Escape', 27);
   await sleep(500);
   if (run < runs) {
-    const [sx, sy] = (process.env.STRENGTH || '1320,620').split(',').map(Number);
+    const [sx, sy] = (process.env.STRENGTH || '1320,465').split(',').map(Number);
     await click(sx - 20 + 8 * run, sy);
     await sleep(3000);
   }
