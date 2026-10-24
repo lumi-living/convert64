@@ -1,0 +1,68 @@
+# The browser build on GitHub Pages (#9): https://lumi-living.github.io/convert64/
+#
+# Manual only for now: merging this workflow deploys nothing. Before the first run, a
+# maintainer sets Settings › Pages › Build and deployment › Source to "GitHub Actions".
+# Run it from main (Actions › "Pages (browser build)" › Run workflow): the github-pages
+# environment GitHub creates lets only the default branch deploy.
+name: Pages (browser build)
+
+on:
+  workflow_dispatch:
+  # After the 0.1 release, deploy every version tag as well. Tags must then be allowed
+  # in Settings › Environments › github-pages › Deployment branches and tags (add `v*`).
+  # push:
+  #   tags:
+  #     - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+permissions:
+  contents: read
+
+# One deployment at a time; a newer run waits instead of cancelling one mid-deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  TRUNK_VERSION: v0.21.14
+
+jobs:
+  build:
+    name: trunk build (Pages)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # rust-toolchain.toml already lists the wasm32-unknown-unknown target.
+      - name: Install pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: pages
+      - name: Install trunk
+        run: |
+          curl -sSfL "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xzf - -C "$HOME/.cargo/bin" trunk
+          trunk --version
+      # A project page lives under /<repository>/, so every URL in index.html (the
+      # module, the wasm and solve-worker.js, which loads them relative to itself) is
+      # rooted there by trunk's <base data-trunk-public-url />.
+      - name: trunk build --release
+        working-directory: crates/convert64-app
+        run: trunk build --release --public-url "/${{ github.event.repository.name }}/"
+      - uses: actions/upload-pages-artifact@v5.0.0
+        with:
+          path: crates/convert64-app/dist/
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5.0.1
