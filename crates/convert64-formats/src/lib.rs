@@ -8,13 +8,15 @@
 //! - which bit pair each cell colour takes when they are written ([`bitpairs`]);
 //! - the raw bitmap set, headerless `.bin` files plus a JSON manifest ([`raw`]);
 //! - assembler source for KickAssembler, ACME, 64tass and ca65, and C headers ([`asm`]);
-//! - a palette-exact PNG preview at integer zoom ([`png`]).
+//! - a palette-exact PNG preview at integer zoom ([`png`]);
+//! - the files a project's export set makes, row by row ([`export`], #287).
 //!
 //! Readers and writers take and return bytes; the caller does the file I/O.
 
 pub mod asm;
 mod bitmap_files;
 pub mod bitpairs;
+pub mod export;
 pub mod png;
 pub mod prg;
 pub mod raw;

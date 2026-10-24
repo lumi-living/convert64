@@ -147,3 +147,66 @@ fn export_options_and_errors() {
         assert_eq!(convert64(&dir, &bad).status.code(), Some(2), "{bad:?}");
     }
 }
+
+/// #287: without `--asm`, `export` writes each project's export set (what the app's
+/// Export panel and `Shift Cmd E` write), named after the project unless a row names
+/// itself; a project without one is refused, saying how to add one.
+#[test]
+fn export_without_asm_writes_the_export_set() {
+    let dir = projects("export-set");
+    let set = r#"{"command":"export_set","exports":[{"format":"picture"},{"format":"prg"},
+        {"format":"kickass","data":"include-raw"},{"format":"png","zoom":4,"name":"title@4x"}]}"#;
+    ok(&convert64(
+        &dir,
+        &[
+            "apply",
+            "art/title.convert64",
+            "--command",
+            set,
+            "--in-place",
+        ],
+    ));
+    let saved = std::fs::read_to_string(dir.join("art/title.convert64")).unwrap();
+    assert!(saved.contains(r#""exports""#), "{saved}");
+    let v = ok(&convert64(
+        &dir,
+        &["export", "art/title.convert64", "--out", "build", "--json"],
+    ));
+    let report = &v["projects"][0];
+    assert_eq!(
+        report["exports"],
+        serde_json::json!(["picture", "prg", "kickass", "png"])
+    );
+    let mut files: Vec<String> = std::fs::read_dir(dir.join("build"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    files.sort();
+    assert_eq!(
+        files,
+        [
+            "title.asm",
+            "title.bg.bin",
+            "title.bitmap.bin",
+            "title.colour.bin",
+            "title.kla",
+            "title.prg",
+            "title.screen.bin",
+            "title@4x.png"
+        ]
+    );
+    assert_eq!(report["files_written"].as_array().unwrap().len(), 8);
+    // The Koala file is the solved picture, as convert writes it.
+    ok(&convert64(
+        &dir,
+        &["convert", "art/title.convert64", "-o", "title.kla"],
+    ));
+    assert_eq!(
+        std::fs::read(dir.join("build/title.kla")).unwrap(),
+        std::fs::read(dir.join("title.kla")).unwrap()
+    );
+    let out = convert64(&dir, &["export", "art/logo.convert64", "--out", "x"]);
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("no export set"), "{err}");
+}

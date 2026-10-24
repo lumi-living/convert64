@@ -234,7 +234,7 @@ fn tab_content(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui, actions: 
     let has_project = ws.is_some();
     if let Some(ws) = ws {
         match shell.tab {
-            DockTab::Export => return export_tab(shell, ws, ui),
+            DockTab::Export => return super::export_panel::show(shell, ws, ui, actions),
             DockTab::Layers => {
                 super::layers::show(shell, ws, ui, actions);
                 // A press on the panel gives it the Delete key (#245).
@@ -273,26 +273,6 @@ fn capitalise(s: &str) -> String {
     let mut c = s.chars();
     c.next()
         .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
-}
-
-/// The Export tab: the dialog's button and what Export Again would repeat.
-fn export_tab(shell: &mut Shell, ws: &Workspace, ui: &mut Ui) {
-    let shortcut = ui.ctx().format_shortcut(&super::shortcuts::EXPORT);
-    let button = Button::new("Export…").shortcut_text(shortcut);
-    if ui.add(button).clicked() {
-        shell.open_export(ws);
-    }
-    if let Some((settings, name)) = &shell.last_export {
-        let again = ui.ctx().format_shortcut(&super::shortcuts::EXPORT_AGAIN);
-        ui.label(
-            RichText::new(format!(
-                "Last: {} as {name} · Export Again {again}",
-                settings.format.label(ws.doc.mode())
-            ))
-            .small()
-            .weak(),
-        );
-    }
 }
 
 #[cfg(test)]

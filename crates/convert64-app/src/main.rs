@@ -130,7 +130,8 @@ impl App {
         self.workspace = Some(ws);
         self.shell.reset_tool();
         self.shell.fit_on_next_frame();
-        self.shell.last_export = None;
+        self.shell.last_export_dir = None;
+        self.files.forget_export_folder();
         self.shell.error = None;
     }
 
@@ -284,16 +285,20 @@ impl App {
         }
     }
 
-    /// Exports the result on screen.
-    fn export(
-        &mut self,
-        ctx: &egui::Context,
-        settings: convert64_app::export::Settings,
-        name: String,
-    ) {
+    /// Writes the export set from the result on screen (UX §6b): into a folder the user
+    /// picks, or with `again` (Export Again) into the last one. With an empty set it
+    /// shows the Export panel instead.
+    fn export(&mut self, ctx: &egui::Context, again: bool) {
         let Some(ws) = &self.workspace else {
             return;
         };
+        let exports = &ws.doc.session().project().exports;
+        if exports.is_empty() {
+            self.shell.show_export(ctx);
+            self.shell
+                .toast(ctx, "Nothing to export yet: add a format first.", false);
+            return;
+        }
         let Some(solution) = ws.solution.as_ref().filter(|_| !ws.solving) else {
             self.shell.toast(
                 ctx,
@@ -303,18 +308,13 @@ impl App {
             return;
         };
         match convert64_app::export::files(
-            solution,
+            exports,
+            &solution.image,
             ws.doc.palette(),
-            ws.doc.mode(),
-            &name,
-            &settings,
+            &ws.doc.stem(),
         ) {
-            Ok(files) => {
-                self.shell.last_export = Some((settings, name));
-                self.files
-                    .save_files(ctx, files, "Exported", SaveTag::Export);
-            }
-            Err(e) => self.shell.toast(ctx, e, true),
+            Ok(files) => self.files.export_files(ctx, files, again),
+            Err(e) => self.shell.toast(ctx, format!("Can't export: {e}."), true),
         }
     }
 
@@ -477,7 +477,7 @@ impl App {
             }
             Action::Save => self.save(ctx, false),
             Action::SaveAs => self.save(ctx, true),
-            Action::Export(settings, name) => self.export(ctx, settings, name),
+            Action::Export { again } => self.export(ctx, again),
         }
     }
 
@@ -549,6 +549,7 @@ impl App {
                     self.shell
                         .toast(ctx, format!("{verb} {}", list.join(", ")), false);
                 }
+                FileEvent::ExportFolder(folder) => self.shell.last_export_dir = Some(folder),
                 FileEvent::Failed(e) => self.shell.report_error("File error", e),
             }
         }
@@ -792,38 +793,34 @@ impl eframe::App for App {
 mod screenshot {
     use std::path::PathBuf;
 
-    /// `--export`: the picture file and the display PRG of the result on screen, made by
-    /// the Export dialog's code, written to `dir` and listed on stdout.
+    /// `--export`: the project's export set (the Export panel's rows), or without one
+    /// the picture file and the display PRG, from the result on screen, made by the
+    /// Export panel's code, written to `dir` and listed on stdout.
     pub(super) fn export(dir: &std::path::Path, ws: &convert64_app::workspace::Workspace) {
-        use convert64_app::export::{Format, Settings, files};
+        use convert64_core::export::{ExportEntry, ExportFormat};
         let Some(sol) = &ws.solution else {
             eprintln!("convert64-app: --export: nothing solved");
             return;
         };
         let _ = std::fs::create_dir_all(dir);
-        for format in [Format::Picture, Format::Prg] {
-            let settings = Settings {
-                format,
-                ..Settings::default()
-            };
-            match files(
-                sol,
-                ws.doc.palette(),
-                ws.doc.mode(),
-                &ws.doc.stem(),
-                &settings,
-            ) {
-                Ok(out) => {
-                    for (name, bytes) in out {
-                        let path = dir.join(&name);
-                        match std::fs::write(&path, &bytes) {
-                            Ok(()) => println!("exported {} ({} B)", path.display(), bytes.len()),
-                            Err(e) => eprintln!("convert64-app: {}: {e}", path.display()),
-                        }
+        let mut exports = ws.doc.session().project().exports.clone();
+        if exports.is_empty() {
+            exports = vec![
+                ExportEntry::new(ExportFormat::Picture),
+                ExportEntry::new(ExportFormat::Prg),
+            ];
+        }
+        match convert64_app::export::files(&exports, &sol.image, ws.doc.palette(), &ws.doc.stem()) {
+            Ok(out) => {
+                for (name, bytes) in out {
+                    let path = dir.join(&name);
+                    match std::fs::write(&path, &bytes) {
+                        Ok(()) => println!("exported {} ({} B)", path.display(), bytes.len()),
+                        Err(e) => eprintln!("convert64-app: {}: {e}", path.display()),
                     }
                 }
-                Err(e) => eprintln!("convert64-app: --export: {e}"),
             }
+            Err(e) => eprintln!("convert64-app: --export: {e}"),
         }
     }
 
@@ -848,7 +845,8 @@ mod screenshot {
         pub(super) overlays: Vec<String>,
         /// `--compare split|flicker|side`.
         pub(super) compare: Option<String>,
-        /// `--dialog export`: the export dialog open.
+        /// `--dialog export`: since #287 there is no export dialog; the Export tab, as
+        /// `--tab export` (kept for older screenshot scripts).
         pub(super) dialog: Option<String>,
         /// `--tab recipe|layers|export`: the dock tab.
         pub(super) tab: Option<String>,
@@ -1193,10 +1191,8 @@ fn main() -> eframe::Result {
                     Some("export") => app.shell.tab = DockTab::Export,
                     _ => {}
                 }
-                if request.dialog.as_deref() == Some("export")
-                    && let Some(ws) = &app.workspace
-                {
-                    app.shell.open_export(ws);
+                if request.dialog.as_deref() == Some("export") {
+                    app.shell.tab = DockTab::Export;
                 }
                 use convert64_app::view::Compare;
                 app.shell.compare = match request.compare.as_deref() {

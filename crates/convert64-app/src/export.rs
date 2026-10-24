@@ -1,136 +1,94 @@
-//! Export (UX §3 Export menu, #205): the E6 formats from the result on screen, as named
-//! files the app then saves (natively) or downloads (browser). The same
-//! `convert64-formats` calls `convert64 convert` and `convert64 export` make.
+//! Export (UX §6b, #287): the project's export set as named files, made from the result
+//! on screen by `convert64_formats::export`, the same calls `convert64 export` and the
+//! MCP server's `export_run` make. The app then writes them into a folder (natively) or
+//! through the browser's direct save path (#241).
 
 use convert64_core::Palette;
-use convert64_core::mode::Mode;
-use convert64_core::solve::Solution;
-use convert64_formats::BitmapFormat;
-use convert64_formats::asm::{self, Assembler, DataStyle, EmitOptions};
+use convert64_core::export::{ExportEntry, ExportFormat};
+use convert64_core::model::BitmapImage;
 
-/// What to export.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Format {
-    /// The mode's picture file: Koala (multicolor) or Art Studio (hi-res).
-    Picture,
-    /// A self-displaying PRG.
-    Prg,
-    /// A palette-exact PNG preview.
-    Png,
-    /// The raw bitmap set: headerless `.bin` files and a JSON manifest.
-    Raw,
-    /// Assembler source or a C header.
-    Source(Assembler),
-}
-
-impl Format {
-    /// Every format, in the dialog's order.
-    pub const ALL: [Self; 9] = [
-        Self::Picture,
-        Self::Prg,
-        Self::Png,
-        Self::Raw,
-        Self::Source(Assembler::ALL[0]),
-        Self::Source(Assembler::ALL[1]),
-        Self::Source(Assembler::ALL[2]),
-        Self::Source(Assembler::ALL[3]),
-        Self::Source(Assembler::ALL[4]),
-    ];
-
-    /// The format's name for `mode`, e.g. "Koala" or "KickAssembler source".
-    pub fn label(self, mode: Mode) -> String {
-        match self {
-            Self::Picture => BitmapFormat::for_mode(mode)
-                .map_or("Picture", BitmapFormat::name)
-                .to_owned(),
-            Self::Prg => "PRG (self-displaying)".to_owned(),
-            Self::Png => "PNG preview".to_owned(),
-            Self::Raw => "Raw bitmap set".to_owned(),
-            Self::Source(a) => a.name().to_owned(),
-        }
-    }
-}
-
-/// Export settings, kept for Export Again (`Shift Cmd E`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Settings {
-    /// The format.
-    pub format: Format,
-    /// PNG preview zoom, 1–8.
-    pub zoom: u8,
-    /// Assembler data: inline bytes, or include the raw set or the picture file.
-    pub data: DataStyle,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            format: Format::Picture,
-            zoom: 2,
-            data: DataStyle::Bytes,
-        }
-    }
-}
-
-/// The files `settings` makes from `solution`, named after `name` (a file stem). A
-/// picture, PRG or PNG is one file; a raw set or assembler source several.
+/// The files the whole set makes, each once, named after `stem` where a row has no
+/// name of its own.
+///
+/// # Errors
+/// A row fails, or two rows write different bytes to one name (the message says which).
 pub fn files(
-    solution: &Solution,
+    exports: &[ExportEntry],
+    image: &BitmapImage,
     palette: &Palette,
-    mode: Mode,
-    name: &str,
-    settings: &Settings,
+    stem: &str,
 ) -> Result<Vec<(String, Vec<u8>)>, String> {
-    let image = &solution.image;
-    let picture = || {
-        BitmapFormat::for_mode(mode).ok_or_else(|| {
-            format!(
-                "Can't export {}: no picture format for it yet.",
-                mode.name()
-            )
-        })
-    };
-    let named = |files: Vec<(std::path::PathBuf, Vec<u8>)>| {
-        files
-            .into_iter()
-            .map(|(p, b)| (p.to_string_lossy().into_owned(), b))
-            .collect()
-    };
-    Ok(match settings.format {
-        Format::Picture => {
-            let f = picture()?;
-            let ext = f.extensions()[0];
-            vec![(
-                format!("{name}.{ext}"),
-                f.write(image).map_err(|e| e.to_string())?,
-            )]
-        }
-        Format::Prg => {
-            let f = picture()?;
-            let file = f.write(image).map_err(|e| e.to_string())?;
-            let prg = convert64_formats::prg::display_prg(f, &file).map_err(|e| e.to_string())?;
-            vec![(format!("{name}.prg"), prg)]
-        }
-        Format::Png => {
-            let png = convert64_formats::png::preview(image, palette, settings.zoom)
-                .map_err(|e| e.to_string())?;
-            vec![(format!("{name}.png"), png)]
-        }
-        Format::Raw => {
-            named(convert64_formats::raw::write(image, name, palette).map_err(|e| e.to_string())?)
-        }
-        Format::Source(a) => {
-            let opts = EmitOptions::new(name).with_data(settings.data);
-            named(asm::emit(a, image, &opts).map_err(|e| e.to_string())?)
-        }
-    })
+    convert64_formats::export::set_files(exports, image, palette, stem)
+}
+
+/// What one row of the Export panel writes: its files' names and sizes, or why it can't.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowFiles {
+    /// The files, the first being the row's main one.
+    Files(Vec<(String, usize)>),
+    /// The row can't be written; the message says why.
+    Error(String),
+}
+
+/// What each row writes, for the panel's file name previews, and the clashes between
+/// rows: a row that would write different bytes to a file an earlier row writes says so.
+pub fn preview(
+    exports: &[ExportEntry],
+    image: &BitmapImage,
+    palette: &Palette,
+    stem: &str,
+) -> Vec<RowFiles> {
+    let mut seen: Vec<(String, Vec<u8>, usize)> = Vec::new();
+    exports
+        .iter()
+        .enumerate()
+        .map(
+            |(i, entry)| match convert64_formats::export::files(entry, image, palette, stem) {
+                Ok(files) => {
+                    for (name, bytes) in &files {
+                        match seen.iter().find(|(n, _, _)| n == name) {
+                            Some((_, b, _)) if b == bytes => {}
+                            Some((_, _, row)) => {
+                                return RowFiles::Error(format!(
+                                    "Same file as row {}: give one another name",
+                                    row + 1
+                                ));
+                            }
+                            None => seen.push((name.clone(), bytes.clone(), i)),
+                        }
+                    }
+                    RowFiles::Files(files.into_iter().map(|(n, b)| (n, b.len())).collect())
+                }
+                Err(e) => RowFiles::Error(e),
+            },
+        )
+        .collect()
+}
+
+/// The format **+ Add format** adds next: the first in this order the set lacks (UX §6b).
+pub fn next_format(exports: &[ExportEntry]) -> ExportFormat {
+    use ExportFormat as F;
+    [
+        F::Picture,
+        F::Prg,
+        F::Png,
+        F::KickAssembler,
+        F::Acme,
+        F::Tass64,
+        F::Ca65,
+        F::CHeader,
+        F::Raw,
+    ]
+    .into_iter()
+    .find(|f| !exports.iter().any(|e| e.format == *f))
+    .unwrap_or(F::Png)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::document::Document;
-    use convert64_core::solve::SolveMode;
+    use convert64_core::solve::{Solution, SolveMode};
 
     fn solved() -> (Document, Solution) {
         let rgba = (0..64 * 40)
@@ -150,28 +108,45 @@ mod tests {
     }
 
     #[test]
-    fn every_format_exports_and_the_picture_reads_back() {
+    fn rows_preview_their_files_and_clashes() {
         let (doc, sol) = solved();
-        for format in Format::ALL {
-            let settings = Settings {
-                format,
-                ..Settings::default()
-            };
-            let out = files(&sol, doc.palette(), doc.mode(), "ramp", &settings).unwrap();
-            assert!(!out.is_empty(), "{format:?}");
-            assert!(out.iter().all(|(_, b)| !b.is_empty()), "{format:?}");
-        }
-        let koala = files(
-            &sol,
-            doc.palette(),
-            doc.mode(),
-            "ramp",
-            &Settings::default(),
-        )
-        .unwrap();
-        assert_eq!(koala[0].0, "ramp.kla");
-        assert_eq!(koala[0].1.len(), 10_003);
-        let back = convert64_formats::read_koala(&koala[0].1).unwrap();
+        let png = |zoom| ExportEntry {
+            zoom,
+            ..ExportEntry::new(ExportFormat::Png)
+        };
+        let set = [
+            ExportEntry::new(ExportFormat::Picture),
+            ExportEntry::new(ExportFormat::Prg),
+            png(1),
+            png(4),
+        ];
+        let rows = preview(&set, &sol.image, doc.palette(), "ramp");
+        assert_eq!(
+            rows[0],
+            RowFiles::Files(vec![("ramp.kla".to_owned(), 10_003)])
+        );
+        assert!(matches!(&rows[1], RowFiles::Files(f) if f[0].0 == "ramp.prg"));
+        assert!(matches!(&rows[2], RowFiles::Files(f) if f[0].0 == "ramp.png"));
+        assert_eq!(
+            rows[3],
+            RowFiles::Error("Same file as row 3: give one another name".to_owned())
+        );
+        assert!(files(&set, &sol.image, doc.palette(), "ramp").is_err());
+        let out = files(&set[..3], &sol.image, doc.palette(), "ramp").unwrap();
+        let back = convert64_formats::read_koala(&out[0].1).unwrap();
         assert_eq!(back.image, sol.image);
+    }
+
+    #[test]
+    fn add_format_picks_the_next_one_missing() {
+        let mut set = Vec::new();
+        let mut order = Vec::new();
+        for _ in 0..4 {
+            let f = next_format(&set);
+            order.push(f);
+            set.push(ExportEntry::new(f));
+        }
+        use ExportFormat as F;
+        assert_eq!(order, [F::Picture, F::Prg, F::Png, F::KickAssembler]);
     }
 }
