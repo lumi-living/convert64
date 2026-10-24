@@ -83,7 +83,8 @@ pub const FILL: Icon = m::ICON_FORMAT_COLOR_FILL;
 pub const CLOSE: Icon = m::ICON_CLOSE;
 /// Tool: transform — scale and rotate (`S`, `Cmd T`).
 pub const TRANSFORM: Icon = m::ICON_TRANSFORM;
-/// Flip a layer.
+/// Flip a layer: the Transform group's flip toggles, the glyph turned a quarter for the
+/// vertical flip (#289).
 pub const FLIP: Icon = m::ICON_FLIP;
 /// Uniform scale (the W/H chain), linked and unlinked.
 pub const CHAIN: Icon = m::ICON_LINK;
