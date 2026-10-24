@@ -25,10 +25,14 @@
 //!   [--bin <path>]` (#261, ADR-013): clone and build the pinned png2amiga (strict IEEE,
 //!   the maths shim), and render the fixture baselines and every method's previews the
 //!   parity tests compare with.
+//! - `png2amiga-methods-sheet` (#275): png2amiga's 32 methods Convert64 lacked, each on
+//!   png2c64's pipeline next to the png2c64 baseline, one sheet per family
+//!   (`docs/reference/dither-previews/png2amiga-methods/`).
 //! - `tokens [--check]`: generate the app theme (`crates/convert64-app/src/theme/generated.rs`)
 //!   from the Figma variables in `design/tokens.json`; `--check` fails if it is stale.
 
 mod aliasing;
+mod amiga_methods_sheet;
 mod baselines;
 mod bluenoise;
 mod cause_sheet;
@@ -185,6 +189,11 @@ enum Command {
     /// baseline, png2amiga as shipped and the cause sheet's tile 13, on lineart and on a
     /// synthetic logo (`sheet-lineart.png`, `sheet-lineart.md`).
     LineartSheet,
+    /// png2amiga's 32 methods that Convert64 lacked (#275), each on png2c64's pipeline
+    /// (its front end and cell stage, png2amiga's threshold or per-pixel pass) next to
+    /// the png2c64 baseline, one sheet per family with the share of each tile's pixels
+    /// identical to the baseline, in `docs/reference/dither-previews/png2amiga-methods/`.
+    Png2amigaMethodsSheet,
     /// Scores candidate quality metrics against Jaakko's eye-ranked pairs
     /// (`fixtures/eye-rankings.toml`): each pair re-rendered as the reviewed sheet showed
     /// it, both scored against the same reference; prints each metric's agreement.
@@ -304,6 +313,7 @@ fn main() -> ExitCode {
         Command::ReferenceSheet => reference_sheet::run(),
         Command::CauseSheet => cause_sheet::run(),
         Command::LineartSheet => lineart_sheet::run(),
+        Command::Png2amigaMethodsSheet => amiga_methods_sheet::run(),
         Command::MetricCheck => metric_check::run(),
         Command::Png2amiga { action } => match action {
             Png2amigaAction::Build { variant, compiler } => png2amiga::build(variant, &compiler),

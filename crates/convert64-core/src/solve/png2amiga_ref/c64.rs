@@ -52,11 +52,12 @@ pub struct Hooks {
     /// Per cell, a result copied through untouched (empty: none). Its pixels are neither
     /// picked nor take or pass on error.
     pub fixed: Vec<Option<Cell>>,
-    /// The cause sheet's swap (`cargo xtask cause-sheet`, #273), not a user option: every
-    /// cell's colours by slot (multicolor `[bg, c1, c2, c3]` with `background` set to the
-    /// same `bg`; hi-res `[a, b]`), given instead of png2amiga's cell-colour stage; the
-    /// dither pass then runs within them as usual.
-    #[doc(hidden)]
+    /// Every cell's colours by slot (multicolor `[bg, c1, c2, c3]` with `background` set
+    /// to the same `bg`; hi-res `[a, b]`), given instead of png2amiga's cell-colour stage;
+    /// the dither pass then runs within them as usual. The reference solver gives
+    /// png2c64's cells to run png2amiga's methods on png2c64's pipeline (#275,
+    /// `png2c64_ref::amiga`); the cause sheet (`cargo xtask cause-sheet`, #273) swaps
+    /// them in. Not a user option.
     pub sets: Option<Vec<Vec<u8>>>,
 }
 

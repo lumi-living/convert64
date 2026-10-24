@@ -48,13 +48,26 @@ impl MethodInfo {
         crate::solve::reference_png2amiga::ref_method(self.kind).is_some()
     }
 
+    /// The tooltip's CLI line: `--dither <id>`, and for one of png2amiga's own methods
+    /// whose png2amiga name differs, that name (an accepted alias): `--dither bayer3
+    /// (png2amiga: bayer3x3)`.
+    pub fn cli(&self) -> String {
+        match crate::solve::reference_png2amiga::ref_method(self.kind)
+            .map(|m| m.name())
+            .filter(|n| self.kind.is_png2amiga_only() && *n != self.id())
+        {
+            Some(theirs) => format!("--dither {} (png2amiga: {theirs})", self.id()),
+            None => format!("--dither {}", self.id()),
+        }
+    }
+
     /// The card's tooltip: the description, and for one of png2amiga's own methods
-    /// (ADR-014 §6) what it does on the default solver.
+    /// (#275) where it comes from and how the solvers run it.
     pub fn tooltip(&self) -> String {
         if self.kind.is_png2amiga_only() {
             format!(
-                "{}\npng2amiga's method (experimental): exact with the png2amiga solver; \
-                 the Reference solver runs a native stand-in",
+                "{}\nFrom png2amiga, on png2c64's pipeline; the png2amiga solver runs \
+                 png2amiga's own.",
                 self.description
             )
         } else {
@@ -566,13 +579,13 @@ pub static CATALOGUE: [MethodInfo; 90] = [
         K::Gilbert,
         "Gilbert curve",
         &["gilbert", "png2amiga"],
-        "png2amiga's Gilbert-curve diffusion; on its C64 path a plain nearest pick.",
+        "png2amiga's Gilbert-curve diffusion. On C64, png2amiga runs this as a nearest pick, so it looks like None.",
     ),
     m(
         K::Dbs,
         "Direct binary search",
         &["dbs", "png2amiga"],
-        "png2amiga's direct binary search; on its C64 path a plain nearest pick.",
+        "png2amiga's direct binary search. On C64, png2amiga runs this as a nearest pick, so it looks like None.",
     ),
     // Palette-aware.
     m(
@@ -753,8 +766,9 @@ mod tests {
         assert!(!search("png2amiga").contains(&DitherKind::Ostromoukhov));
     }
 
-    /// ADR-014 §6: png2amiga's 32 own methods say on their card that they are the
-    /// png2amiga solver's; every other card is its description.
+    /// #275: png2amiga's 32 own methods are catalogue methods on png2c64's pipeline and
+    /// say so on their card; every other card is its description. `gilbert` and `dbs`
+    /// say that png2amiga runs them as a nearest pick on C64.
     #[test]
     fn png2amiga_s_own_methods_say_so() {
         let own: Vec<_> = CATALOGUE
@@ -764,14 +778,74 @@ mod tests {
         assert_eq!(own.len(), 32);
         for m in &CATALOGUE {
             assert_eq!(
-                m.tooltip().contains("png2amiga solver"),
+                m.tooltip().contains("on png2c64's pipeline"),
                 m.kind.is_png2amiga_only(),
                 "{:?}",
                 m.kind
             );
+            assert!(!m.tooltip().contains("experimental"), "{:?}", m.kind);
             if m.kind.is_png2amiga_only() {
                 assert!(m.in_png2amiga() && !m.in_png2c64(), "{:?}", m.kind);
             }
+        }
+        for k in [DitherKind::Gilbert, DitherKind::Dbs] {
+            assert!(
+                info(k)
+                    .description
+                    .contains("On C64, png2amiga runs this as a nearest pick"),
+                "{k:?}"
+            );
+        }
+    }
+
+    /// #275: each of png2amiga's 32 methods takes its CLI id and png2amiga's own name
+    /// (an alias where they differ), and the picker's search finds it by both.
+    #[test]
+    fn png2amiga_s_names_reach_its_methods() {
+        use serde::Deserialize;
+        use serde::de::{IntoDeserializer, value::Error};
+        for m in CATALOGUE.iter().filter(|m| m.kind.is_png2amiga_only()) {
+            let theirs = crate::solve::reference_png2amiga::ref_method(m.kind)
+                .expect("png2amiga's")
+                .name();
+            for name in [m.id(), theirs] {
+                let parsed = DitherKind::deserialize(name.into_deserializer())
+                    .map_err(|e: Error| e.to_string());
+                assert_eq!(parsed, Ok(m.kind), "{name}");
+                assert!(search(name).contains(&m.kind), "{name}");
+            }
+            assert_eq!(
+                m.cli().contains("png2amiga:"),
+                theirs != m.id(),
+                "{}",
+                m.cli()
+            );
+        }
+    }
+
+    /// `docs/reference/dither-methods.md`'s catalogue lists every method once, under its
+    /// family's heading, in picker order, with the card's name and description.
+    #[test]
+    fn the_reference_doc_lists_all_90_in_picker_order() {
+        let doc = include_str!("../../../../docs/reference/dither-methods.md");
+        let section = &doc[doc.find("## The catalogue").expect("the catalogue section")..];
+        let section = &section[..section.find("\n## 1.").expect("§1 follows")];
+        let mut family = "";
+        let mut rows = Vec::new();
+        for line in section.lines() {
+            if let Some(h) = line.strip_prefix("### ") {
+                family = h.split(" (").next().unwrap_or(h);
+            } else if let Some(row) = line.strip_prefix("| `") {
+                let cols: Vec<&str> = row.split(" | ").collect();
+                rows.push((family, cols[0].trim_end_matches('`'), cols[2], cols[3]));
+            }
+        }
+        assert_eq!(rows.len(), CATALOGUE.len());
+        for (m, (family, id, name, description)) in CATALOGUE.iter().zip(rows) {
+            assert_eq!(id, m.id());
+            assert_eq!(family, family_name(m.family()), "{id}");
+            assert_eq!(name, m.name, "{id}");
+            assert!(description.starts_with(m.description), "{id}");
         }
     }
 
@@ -781,6 +855,20 @@ mod tests {
         assert_eq!(step(DitherKind::None, 1), DitherKind::Bayer2);
         assert_eq!(step(DitherKind::ValueNoise, 1), DitherKind::ValueNoise);
         assert_eq!(step(DitherKind::Custom, 1), DitherKind::BlueNoise);
+    }
+
+    #[test]
+    fn the_cli_line_names_png2amiga_s_spelling_where_it_differs() {
+        assert_eq!(
+            info(DitherKind::Bayer3).cli(),
+            "--dither bayer3 (png2amiga: bayer3x3)"
+        );
+        assert_eq!(
+            info(DitherKind::LineVChecker).cli(),
+            "--dither line-v-checker (png2amiga: vline-checker)"
+        );
+        assert_eq!(info(DitherKind::TriTone).cli(), "--dither tri-tone");
+        assert_eq!(info(DitherKind::Bayer4).cli(), "--dither bayer4");
     }
 
     #[test]
