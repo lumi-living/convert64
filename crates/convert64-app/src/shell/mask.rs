@@ -64,21 +64,61 @@ impl MaskTool {
     }
 }
 
-/// Mask mode and the mask tools' options.
+/// One brush's options. Every tool keeps its own, so picking a tool never carries
+/// another tool's Add/Subtract or size over (usability review M7, #290).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BrushOptions {
+    /// Add or subtract (`X` swaps; `Alt` subtracts while held).
+    pub mode: PaintMode,
+    /// Brush radius in screen units (C64 hi-res pixels; `[` and `]`).
+    pub size: f32,
+    /// Brush hardness, `0..=1`.
+    pub hardness: f32,
+    /// Brush flow, `0..=1`.
+    pub flow: f32,
+}
+
+impl Default for BrushOptions {
+    fn default() -> Self {
+        Self {
+            mode: PaintMode::Add,
+            size: 6.0,
+            hardness: 0.5,
+            flow: 1.0,
+        }
+    }
+}
+
+/// `X`: Add becomes Subtract and back.
+pub(super) fn swapped(mode: PaintMode) -> PaintMode {
+    match mode {
+        PaintMode::Add => PaintMode::Subtract,
+        PaintMode::Subtract => PaintMode::Add,
+    }
+}
+
+/// The mode a stroke paints in: `mode`, or Subtract while `Alt` is held over Add.
+fn held(mode: PaintMode, alt: bool) -> PaintMode {
+    if alt && mode == PaintMode::Add {
+        PaintMode::Subtract
+    } else {
+        mode
+    }
+}
+
+/// Mask mode, and the options of the mask tools and the Region brush, each its own.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaskState {
     /// Mask mode: the tools edit the selected layer's mask, the overlay shows it.
     pub active: bool,
     /// The mask tool in use; `None` while a steering tool is.
     pub tool: Option<MaskTool>,
-    /// Add or subtract (`X` swaps; `Alt` subtracts while held).
-    pub mode: PaintMode,
-    /// Brush radius in screen units (C64 hi-res pixels).
-    pub size: f32,
-    /// Brush hardness, `0..=1`.
-    pub hardness: f32,
-    /// Brush flow, `0..=1`.
-    pub flow: f32,
+    /// The mask Brush's options.
+    pub brush: BrushOptions,
+    /// The Lasso's Add or Subtract.
+    pub lasso: PaintMode,
+    /// The Region tool's brush (UX §7), not the mask Brush's.
+    pub region: BrushOptions,
     /// Gradient shape and softness.
     pub gradient: (GradientKind, f32),
     /// How a gradient or key combines with what is below it.
@@ -100,10 +140,9 @@ impl Default for MaskState {
         Self {
             active: false,
             tool: None,
-            mode: PaintMode::Add,
-            size: 6.0,
-            hardness: 0.5,
-            flow: 1.0,
+            brush: BrushOptions::default(),
+            lasso: PaintMode::Add,
+            region: BrushOptions::default(),
             gradient: (GradientKind::Linear, 1.0),
             combine: Combine::Max,
             key: (KeyChannel::Colour, 0.1, 0.05),
@@ -162,28 +201,13 @@ pub(super) fn options_bar(
         );
         ui.separator();
         let m = &mut shell.mask;
-        if matches!(tool, MaskTool::Brush | MaskTool::Lasso) {
-            for (mode, name) in [(PaintMode::Add, "Add"), (PaintMode::Subtract, "Subtract")] {
-                if ui
-                    .selectable_label(m.mode == mode, name)
-                    .on_hover_text("X swaps; Alt subtracts while held")
-                    .clicked()
-                {
-                    m.mode = mode;
-                }
-            }
+        match tool {
+            MaskTool::Brush => mode_toggle(&mut m.brush.mode, ui),
+            MaskTool::Lasso => mode_toggle(&mut m.lasso, ui),
+            MaskTool::Gradient | MaskTool::Key => {}
         }
         match tool {
-            MaskTool::Brush => {
-                ui.add(
-                    egui::Slider::new(&mut m.size, 0.5..=64.0)
-                        .text("Size")
-                        .logarithmic(true),
-                )
-                .on_hover_text("[ and ] change it");
-                ui.add(egui::Slider::new(&mut m.hardness, 0.0..=1.0).text("Hardness"));
-                ui.add(egui::Slider::new(&mut m.flow, 0.0..=1.0).text("Flow"));
-            }
+            MaskTool::Brush => brush_sliders(&mut m.brush, ui),
             MaskTool::Lasso => {
                 ui.label(
                     RichText::new("Drag freehand, or click vertices and double-click to close")
@@ -233,6 +257,31 @@ pub(super) fn options_bar(
             selection_buttons(shell, ui, actions);
         }
     });
+}
+
+/// Add · Subtract for the tool whose own mode is `own`.
+fn mode_toggle(own: &mut PaintMode, ui: &mut Ui) {
+    for (mode, name) in [(PaintMode::Add, "Add"), (PaintMode::Subtract, "Subtract")] {
+        if ui
+            .selectable_label(*own == mode, name)
+            .on_hover_text("X swaps; Alt subtracts while held")
+            .clicked()
+        {
+            *own = mode;
+        }
+    }
+}
+
+/// A brush's Size, Hardness and Flow.
+fn brush_sliders(b: &mut BrushOptions, ui: &mut Ui) {
+    ui.add(
+        egui::Slider::new(&mut b.size, 0.5..=64.0)
+            .text("Size")
+            .logarithmic(true),
+    )
+    .on_hover_text("[ and ] change it");
+    ui.add(egui::Slider::new(&mut b.hardness, 0.0..=1.0).text("Hardness"));
+    ui.add(egui::Slider::new(&mut b.flow, 0.0..=1.0).text("Flow"));
 }
 
 /// Mask mode's modifier and raster buttons.
@@ -405,11 +454,6 @@ pub(super) fn interact(
     let to_picture = |p: Pos2| shell.camera.to_picture(view, shell.view, p);
     let alt = ui.input(|inp| inp.modifiers.alt);
     let shift = ui.input(|inp| inp.modifiers.shift);
-    let mode = if alt && shell.mask.mode == PaintMode::Add {
-        PaintMode::Subtract
-    } else {
-        shell.mask.mode
-    };
 
     // A stroke starts where the button went down, not where egui noticed the drag (#263).
     if response.drag_started_by(egui::PointerButton::Primary)
@@ -451,14 +495,14 @@ pub(super) fn interact(
                     .filter_map(|p| to_layer(ws, i, p))
                     .collect();
                 if !points.is_empty() {
-                    let radius = shell.mask.size * layer_per_unit(ws, i);
+                    let b = shell.mask.brush;
                     let cmd = JsonCommand::MaskStroke {
                         layer: layer(shell),
                         points,
-                        radius,
-                        hardness: shell.mask.hardness,
-                        flow: shell.mask.flow,
-                        mode,
+                        radius: b.size * layer_per_unit(ws, i),
+                        hardness: b.hardness,
+                        flow: b.flow,
+                        mode: held(b.mode, alt),
                     };
                     actions.push(Action::Run(cmd));
                 }
@@ -486,7 +530,7 @@ pub(super) fn interact(
                         layer: layer(shell),
                         polygon,
                         value: 1.0,
-                        mode,
+                        mode: held(shell.mask.lasso, alt),
                     }));
                 } else {
                     shell
@@ -604,7 +648,7 @@ pub(super) fn draw(
     if tool == MaskTool::Brush
         && let Some(h) = hover
     {
-        painter.circle_stroke(at(h), shell.mask.size * s, stroke);
+        painter.circle_stroke(at(h), shell.mask.brush.size * s, stroke);
     }
     let line: Vec<Pos2> = shell
         .mask
@@ -637,26 +681,36 @@ pub(super) fn draw(
     }
 }
 
-/// The Region tool's options bar: the brush's size, hardness and flow, Add or Subtract.
-pub(super) fn region_bar(shell: &mut Shell, ui: &mut Ui) {
+/// The Region tool's options bar: its own brush's Add or Subtract, size, hardness and
+/// flow (usability review M7), and a note while the selected region is empty.
+pub(super) fn region_bar(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui) {
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().slider_width = 3.0 * ui.spacing().interact_size.x / 2.0;
         ui.label(RichText::new("Region · Brush").small().strong());
         ui.separator();
-        let m = &mut shell.mask;
-        for (mode, name) in [(PaintMode::Add, "Add"), (PaintMode::Subtract, "Subtract")] {
-            if ui.selectable_label(m.mode == mode, name).clicked() {
-                m.mode = mode;
-            }
+        let b = &mut shell.mask.region;
+        mode_toggle(&mut b.mode, ui);
+        brush_sliders(b, ui);
+        let regions = ws.map(|ws| &ws.doc.session().project().regions);
+        if let Some(r) = regions.and_then(|r| r.get(shell.region))
+            && region_is_empty(r)
+        {
+            ui.separator();
+            ui.label(
+                RichText::new(format!(
+                    "{} is empty: paint on the picture to add to it",
+                    r.name()
+                ))
+                .small()
+                .weak(),
+            );
         }
-        ui.add(
-            egui::Slider::new(&mut m.size, 0.5..=64.0)
-                .text("Size")
-                .logarithmic(true),
-        );
-        ui.add(egui::Slider::new(&mut m.hardness, 0.0..=1.0).text("Hardness"));
-        ui.add(egui::Slider::new(&mut m.flow, 0.0..=1.0).text("Flow"));
     });
+}
+
+/// Nothing painted in the region yet.
+pub(super) fn region_is_empty(r: &convert64_core::region::Region) -> bool {
+    r.mask().values().iter().all(|v| *v <= 0.0)
 }
 
 /// The Region tool on the working view: a drag (or click) paints the selected region's
@@ -699,19 +753,13 @@ pub(super) fn region_interact(
     // A stroke whose brush never reaches the picture paints nothing: no empty region
     // and no "Painted" toast for a click on the border (#242).
     let picture = Rect::from_min_size(Pos2::ZERO, crate::view::SCREEN);
-    if points
-        .iter()
-        .all(|p| picture.distance_to_pos(*p) > shell.mask.size)
-    {
+    let b = shell.mask.region;
+    if points.iter().all(|p| picture.distance_to_pos(*p) > b.size) {
         return;
     }
     let alt = ui.input(|i| i.modifiers.alt);
-    let mode = if alt && shell.mask.mode == PaintMode::Add {
-        PaintMode::Subtract
-    } else {
-        shell.mask.mode
-    };
-    let regions = ws.doc.session().project().regions.len();
+    let project_regions = &ws.doc.session().project().regions;
+    let regions = project_regions.len();
     let mut commands = Vec::new();
     if regions == 0 {
         commands.push(JsonCommand::RegionAdd {
@@ -721,13 +769,22 @@ pub(super) fn region_interact(
         });
         shell.region = 0;
     }
-    let region = RegionRef::Index(shell.region.min(regions.max(1) - 1));
+    let index = shell.region.min(regions.max(1) - 1);
+    // The first stroke of a new or empty region always adds, so it shows (usability
+    // review M7): a Subtract there removes nothing. The bar goes back to Add with it.
+    let fresh = project_regions.get(index).is_none_or(region_is_empty);
+    let mode = if fresh {
+        shell.mask.region.mode = PaintMode::Add;
+        PaintMode::Add
+    } else {
+        held(b.mode, alt)
+    };
     commands.push(JsonCommand::RegionStroke {
-        region,
+        region: RegionRef::Index(index),
         points: points.into_iter().map(v2).collect(),
-        radius: shell.mask.size,
-        hardness: shell.mask.hardness,
-        flow: shell.mask.flow,
+        radius: b.size,
+        hardness: b.hardness,
+        flow: b.flow,
         mode,
     });
     let message = if regions == 0 {
@@ -843,5 +900,111 @@ mod tests {
             })
             .expect("a region stroke");
         assert!(close(points[0], v2(press)), "{:?}", points[0]);
+    }
+
+    /// The modes of the region strokes in `actions`.
+    fn region_modes(actions: &[Action]) -> Vec<PaintMode> {
+        actions
+            .iter()
+            .flat_map(|a| match a {
+                Action::RunAll(cmds, _) => cmds.clone(),
+                _ => Vec::new(),
+            })
+            .filter_map(|c| match c {
+                JsonCommand::RegionStroke { mode, .. } => Some(mode),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// #290 (usability review M7): the first stroke of a new region adds even with the
+    /// Region brush on Subtract, and the bar goes back to Add; so does the first stroke
+    /// on an empty region. A region with something in it gets the brush's own mode.
+    #[test]
+    fn the_first_stroke_of_a_new_region_adds() {
+        let mut ws = workspace();
+        let mut shell = Shell {
+            tool: super::super::Tool::Region,
+            ..Shell::default()
+        };
+        let (press, by) = (egui::pos2(100.0, 60.0), egui::vec2(40.0, 0.0));
+        shell.mask.region.mode = PaintMode::Subtract;
+        let actions = drag_with(&mut shell, &ws, press, by, region_interact);
+        let Some(Action::RunAll(cmds, message)) = actions.first() else {
+            panic!("{actions:?}");
+        };
+        assert!(matches!(cmds[0], JsonCommand::RegionAdd { .. }), "{cmds:?}");
+        assert_eq!(message, "Added Region 1");
+        assert_eq!(region_modes(&actions), vec![PaintMode::Add]);
+        assert_eq!(shell.mask.region.mode, PaintMode::Add);
+
+        // An empty region (Add region) gets an Add first too.
+        ws.doc
+            .run(JsonCommand::RegionAdd {
+                name: "Sky".to_owned(),
+                recipe: Box::default(),
+                index: None,
+            })
+            .unwrap();
+        shell.mask.region.mode = PaintMode::Subtract;
+        let actions = drag_with(&mut shell, &ws, press, by, region_interact);
+        assert_eq!(region_modes(&actions), vec![PaintMode::Add]);
+
+        // Once it has paint, Subtract subtracts.
+        for action in actions {
+            if let Action::RunAll(cmds, _) = action {
+                ws.doc.run_all(cmds).unwrap();
+            }
+        }
+        shell.mask.region.mode = PaintMode::Subtract;
+        let actions = drag_with(&mut shell, &ws, press, by, region_interact);
+        assert_eq!(region_modes(&actions), vec![PaintMode::Subtract]);
+    }
+
+    /// #290: a painted region has an outline from the moment it exists; an empty one has
+    /// nothing to outline, and the Region bar says so instead.
+    #[test]
+    fn a_painted_region_is_outlined() {
+        let mut ws = workspace();
+        let ctx = egui::Context::default();
+        let mut shell = Shell {
+            tool: super::super::Tool::Region,
+            ..Shell::default()
+        };
+        let actions = drag_with(
+            &mut shell,
+            &ws,
+            egui::pos2(100.0, 60.0),
+            egui::vec2(40.0, 0.0),
+            region_interact,
+        );
+        for action in actions {
+            if let Action::RunAll(cmds, _) = action {
+                ws.doc.run_all(cmds).unwrap();
+            }
+        }
+        ws.doc
+            .run(JsonCommand::RegionAdd {
+                name: "Sky".to_owned(),
+                recipe: Box::default(),
+                index: None,
+            })
+            .unwrap();
+        assert!(ws.region_overlay(&ctx).is_some());
+        let outlines = ws.region_outlines();
+        assert_eq!(outlines.len(), 2);
+        assert!(!outlines[0].is_empty(), "Region 1 is outlined");
+        assert!(outlines[1].is_empty(), "Sky is empty");
+        // The outline hugs the stroke: 100,60 to 120,60 with a 6-unit brush.
+        let bounds = outlines[0]
+            .iter()
+            .flatten()
+            .fold(Rect::NOTHING, |r, p| r.union(Rect::from_pos(*p)));
+        assert!(
+            bounds.contains(egui::pos2(110.0, 60.0)) && bounds.width() < 40.0,
+            "{bounds:?}"
+        );
+        let regions = &ws.doc.session().project().regions;
+        assert!(!region_is_empty(&regions[0]) && region_is_empty(&regions[1]));
     }
 }

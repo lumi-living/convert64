@@ -54,6 +54,8 @@ pub struct Workspace {
     /// All regions' masks as one white texture (alpha = the strongest region), 320 × 200,
     /// for the Region tool's tint; with the revision it was made for.
     regions: Option<(u64, TextureHandle)>,
+    /// Each region's outline in screen units, made with the tint (usability review M7).
+    region_outlines: Vec<Vec<[egui::Pos2; 2]>>,
 }
 
 impl std::fmt::Debug for Workspace {
@@ -178,6 +180,7 @@ impl Workspace {
             mask_thumbs: (u64::MAX, Vec::new()),
             mask_overlay: None,
             regions: None,
+            region_outlines: Vec::new(),
         }
     }
 
@@ -449,6 +452,7 @@ impl Workspace {
         let regions = &self.doc.session().project().regions;
         if regions.is_empty() {
             self.regions = None;
+            self.region_outlines.clear();
             return None;
         }
         if self.regions.as_ref().is_none_or(|(r, _)| *r != rev) {
@@ -456,6 +460,10 @@ impl Workspace {
                 convert64_core::region::CANVAS_WIDTH,
                 convert64_core::region::CANVAS_HEIGHT,
             );
+            self.region_outlines = regions
+                .iter()
+                .map(|r| crate::view::mask_outline(r.mask().values(), w, h))
+                .collect();
             let mut alpha = vec![0.0f32; (w * h) as usize];
             for r in regions {
                 for (a, v) in alpha.iter_mut().zip(r.mask().values()) {
@@ -473,6 +481,11 @@ impl Workspace {
             ));
         }
         self.regions.as_ref().map(|(_, t)| t)
+    }
+
+    /// Each region's outline, in screen units, as of the last [`Self::region_overlay`].
+    pub fn region_outlines(&self) -> &[Vec<[egui::Pos2; 2]>] {
+        &self.region_outlines
     }
 
     /// Layer `i`'s mask thumbnail, if it has a mask.

@@ -743,6 +743,13 @@ As built in #289 (2026-10-24): the Transform group's units and controls (usabili
 - **Controls.** The anchor is a 3 × 3 control of 16 px cells; the flips are two icon toggles (Material `flip`, turned a quarter for vertical).
 - **New pictures.** A picture opened in the app starts with Fill (`document::picture_file`, `presets::opened`), or, since #306, at 1:1 when it fits inside 320 × 200 (centred on whole C64 pixels), not `ProjectFile::from_png`'s stretch to 320 × 200, which `convert64 convert` keeps as png2c64's default. For a 16:10 picture of at least 320 × 200 the two are the same transform, so it keeps png2c64's front end (`composite::plain_layer`); any other picture goes through the composite: a larger one uniform and covering the screen, a smaller one at 1:1 on the background. A layer added on top is fitted inside and never enlarged, as before. Projects store their transforms: opening one, a version-2 file migrated by #251 included, is unchanged.
 
+As built in #290 (2026-10-25): the Region flow (usability review M7, UX §7).
+
+- **Per-tool options.** `shell::MaskState` holds a `BrushOptions` (mode, size, hardness, flow) for the mask Brush and another for the Region brush, and the Lasso's own `PaintMode`; `X`, `[` and `]` go through `Shell::paint_mode_mut` / `brush_mut`, which pick the current tool's. Nothing is shared between tools any more.
+- **First stroke.** `mask::region_interact` sends `region_stroke` with `add` when the target region is new (with `region_add` in the same step) or empty (`mask::region_is_empty`: no value above 0), and resets the Region brush to Add. The commands are unchanged.
+- **Outline.** `view::mask_outline` turns a region's 320 × 200 mask into the pixel-edge segments where it crosses 50 %, runs joined; `Workspace::region_overlay` makes them with the tint, per revision, and the working view draws them in the theme's `region` colour, with the stroke in progress as a swath.
+- **Breadcrumb.** `recipe::breadcrumb` heads the Region tool's Recipe tab: `Region 1 ‹ <layer>`, the layer's name a link that picks the Nudge tool, so the tab shows that layer's recipe again.
+
 ### 4.1 Image model (`convert64-core::model`)
 
 The public data model every front-end, solver, reader and writer shares. Constructors enforce sizes and the 0–15 colour range; everything else is the validator's job (§1.3). Deserialising goes through the same constructors.
