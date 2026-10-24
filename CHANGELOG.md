@@ -28,6 +28,9 @@ moved during development, for anyone who tried `main` before the release.
   compare and overlays [#215].
 - Open, save and export: native file dialogs, and a file picker and downloads in the
   browser [#217].
+- The Export panel: rows of format, options and file name with size previews, one
+  Export button, `Shift Cmd E` to export again; the set is saved in the project and run
+  by `convert64 export` and the MCP tool `export_run` [#303].
 - Layers tab: rows, drag to reorder, rename, blend mode, opacity, undo [#219].
 - Recipe tab: adjustments, curves, dither method and strength, colour fitting
   (Adaptive / Force), and the png2c64 divergences under Advanced [#220].
