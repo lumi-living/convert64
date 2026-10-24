@@ -27,6 +27,7 @@ pub fn apply_light(v: &mut egui::Visuals) {
     v.widgets.noninteractive.bg_fill = rgb(0xf8f8f8);
     v.widgets.noninteractive.bg_stroke.color = rgb(0xbebebe);
     v.widgets.noninteractive.fg_stroke.color = rgb(0x505050);
+    v.weak_text_color = Some(rgb(0x606060));
     v.widgets.inactive.weak_bg_fill = rgb(0xe6e6e6);
     v.widgets.inactive.bg_fill = rgb(0xe6e6e6);
     v.widgets.inactive.bg_stroke.color = rgba(0x00000000);
@@ -51,7 +52,7 @@ pub fn apply_light(v: &mut egui::Visuals) {
     v.code_bg_color = rgb(0xe6e6e6);
     v.selection.bg_fill = rgb(0x90d1ff);
     v.selection.stroke.color = rgb(0x00537d);
-    v.hyperlink_color = rgb(0x009bff);
+    v.hyperlink_color = rgb(0x0062bd);
     v.warn_fg_color = rgb(0xff6400);
     v.error_fg_color = rgb(0xff0000);
     v.text_cursor.stroke.color = rgb(0x00537d);
@@ -74,7 +75,8 @@ pub fn apply_dark(v: &mut egui::Visuals) {
     v.widgets.noninteractive.weak_bg_fill = rgb(0x1b1b1b);
     v.widgets.noninteractive.bg_fill = rgb(0x1b1b1b);
     v.widgets.noninteractive.bg_stroke.color = rgb(0x3c3c3c);
-    v.widgets.noninteractive.fg_stroke.color = rgb(0x8c8c8c);
+    v.widgets.noninteractive.fg_stroke.color = rgb(0xaaaaaa);
+    v.weak_text_color = Some(rgb(0x8c8c8c));
     v.widgets.inactive.weak_bg_fill = rgb(0x3c3c3c);
     v.widgets.inactive.bg_fill = rgb(0x3c3c3c);
     v.widgets.inactive.bg_stroke.color = rgba(0x00000000);
@@ -146,7 +148,10 @@ pub fn apply_spacing(s: &mut egui::style::Spacing) {
 /// `egui / Text`: the size and family of every text style.
 pub fn text_styles() -> BTreeMap<TextStyle, FontId> {
     BTreeMap::from([
-        (TextStyle::Small, FontId::new(9.0, FontFamily::Proportional)),
+        (
+            TextStyle::Small,
+            FontId::new(11.0, FontFamily::Proportional),
+        ),
         (TextStyle::Body, FontId::new(12.5, FontFamily::Proportional)),
         (
             TextStyle::Button,
@@ -208,7 +213,7 @@ impl Theme {
         // `status/error` = `visuals.error_fg_color`
         error: rgb(0xff0000),
         // `accent` = `visuals.hyperlink_color`
-        accent: rgb(0x009bff),
+        accent: rgb(0x0062bd),
     };
 
     /// `Convert64 / Semantic`, Dark mode.
