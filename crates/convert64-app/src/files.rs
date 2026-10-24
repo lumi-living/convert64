@@ -1,5 +1,5 @@
-//! Files in and out (#205): native dialogs through `rfd`, the browser's file picker and
-//! downloads in wasm, and files dropped on the window. Results arrive as [`FileEvent`]s
+//! Files in and out (#205): native dialogs through `rfd`, the browser's file picker,
+//! and in wasm saves straight to disk (`crate::web`, #241), and files dropped on the window. Results arrive as [`FileEvent`]s
 //! the app polls once a frame, so the browser's asynchronous picker and the native
 //! dialogs look the same to it.
 
@@ -36,11 +36,45 @@ pub enum FileEvent {
         /// What it is for.
         purpose: Purpose,
     },
-    /// Files written or downloaded, with their sizes in bytes, and the verb for the toast
-    /// ("Exported", "Saved").
-    Saved(Vec<(String, usize)>, &'static str),
+    /// Files written or downloaded, with their sizes in bytes, the verb for the toast
+    /// ("Exported", "Saved") and what they were.
+    Saved(Vec<(String, usize)>, &'static str, SaveTag),
     /// Something went wrong: the message names cause and remedy.
     Failed(String),
+}
+
+/// What a save wrote, so the app can act once it has happened (#241).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveTag {
+    /// Exported files.
+    Export,
+    /// The project, as it was at `revision`; `key` is the autosave's key of it.
+    Project {
+        /// The document revision saved.
+        revision: u64,
+        /// [`crate::autosave::Autosave::snapshot_key`] at the time.
+        key: Option<String>,
+    },
+}
+
+/// `bytes` in human units (usability review C3): `512 B`, `9.8 kB`, `10 kB`, `1.8 MB`
+/// (SI, as file managers show them).
+pub fn human_size(bytes: usize) -> String {
+    let b = bytes as f64;
+    let (v, unit) = if b < 1000.0 {
+        return format!("{bytes} B");
+    } else if b < 999_500.0 {
+        (b / 1000.0, "kB")
+    } else if b < 999_500_000.0 {
+        (b / 1e6, "MB")
+    } else {
+        (b / 1e9, "GB")
+    };
+    if v < 9.95 {
+        format!("{v:.1} {unit}")
+    } else {
+        format!("{v:.0} {unit}")
+    }
 }
 
 /// The inbox of finished file operations.
@@ -161,13 +195,16 @@ impl Files {
             .save_file()
     }
 
-    /// Writes `files` (natively) next to each other in a folder the user picks, or
-    /// downloads them one by one (browser). One file natively gets a Save dialog instead.
+    /// Writes `files` (natively) next to each other in a folder the user picks; one
+    /// file gets a Save dialog instead. In the browser: the Save dialog or a download
+    /// for each (`crate::web::save_files`). `FileEvent::Saved` comes once they are
+    /// written.
     pub fn save_files(
         &self,
         ctx: &egui::Context,
         files: Vec<(String, Vec<u8>)>,
         verb: &'static str,
+        tag: SaveTag,
     ) {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -201,32 +238,31 @@ impl Files {
                     .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
                 saved.push((name, bytes.len()));
             }
-            self.push(FileEvent::Saved(saved, verb));
+            self.push(FileEvent::Saved(saved, verb, tag));
         }
+        // Straight to disk, no overlay (#241): the Save dialog where the browser has
+        // one, else a download.
         #[cfg(target_arch = "wasm32")]
         {
             let this = self.clone();
-            let ctx = ctx.clone();
-            eframe::web_sys::js_sys::futures::spawn_local(async move {
-                let mut saved = Vec::new();
-                for (name, bytes) in files {
-                    // rfd's wasm backend offers the bytes as a download.
-                    let Some(handle) = rfd::AsyncFileDialog::new()
-                        .set_file_name(&name)
-                        .save_file()
-                        .await
-                    else {
-                        return;
-                    };
-                    if let Err(e) = handle.write(&bytes).await {
-                        this.push(FileEvent::Failed(format!("Can't download {name}: {e}.")));
-                        return;
-                    }
-                    saved.push((name, bytes.len()));
-                }
-                this.push(FileEvent::Saved(saved, verb));
-                ctx.request_repaint();
-            });
+            crate::web::save_to_inbox(files, verb, tag, move |e| this.push(e), ctx.clone());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::human_size;
+
+    #[test]
+    fn sizes_read_in_human_units() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(999), "999 B");
+        assert_eq!(human_size(1000), "1.0 kB");
+        assert_eq!(human_size(9_800), "9.8 kB");
+        assert_eq!(human_size(10_003), "10 kB");
+        assert_eq!(human_size(1_817_097), "1.8 MB");
+        assert_eq!(human_size(999_999), "1.0 MB");
+        assert_eq!(human_size(25_400_000), "25 MB");
     }
 }

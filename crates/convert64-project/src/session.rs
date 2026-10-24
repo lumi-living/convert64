@@ -34,6 +34,24 @@ use convert64_core::{Compositor, Editor, Palette, Project, SuperGrid};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// A layer's own source, as [`Session::to_recovery_file`] hands it to its caller.
+#[derive(Clone, Copy, Debug)]
+pub struct RecoverySource<'a> {
+    /// The pixels (one per source: layers sharing pixels share this `Arc`).
+    pub image: &'a Arc<SourceImage>,
+    /// The file bytes the pixels were decoded from, if they came from a file or were
+    /// embedded; `None` for pixels a command made (encode them with
+    /// [`codec::encode_source`]).
+    pub bytes: Option<&'a Arc<Vec<u8>>>,
+    /// The file they were linked from (absolute), if any.
+    pub linked: Option<&'a Path>,
+}
+
+/// How [`Session::project_file`] writes layer `i`'s own source, given where its pixels
+/// came from.
+type SourceFor<'a> =
+    dyn FnMut(usize, &Layer, Option<&Origin>) -> Result<SourceSpec, ProjectError> + 'a;
+
 /// Where a layer's pixels came from, so a saved project can link or embed them.
 #[derive(Clone, Debug)]
 enum Origin {
@@ -204,6 +222,80 @@ impl Session {
     /// it will be saved in. Commands run so far are part of the layers, masks and
     /// steering it holds; it lists no commands.
     pub fn to_project_file(&self, dir: &Path, embed: Embed) -> Result<ProjectFile, ProjectError> {
+        let embedded = |bytes: &[u8]| {
+            SourceSpec::Embedded(file::Embedded {
+                png_base64: crate::base64::encode(bytes),
+            })
+        };
+        let file = self.project_file(&mut |i, l, origin| {
+            Ok(match (origin, embed) {
+                (Some(Origin::Linked(path, _)), Embed::Keep | Embed::None) => {
+                    SourceSpec::Linked(file::Linked {
+                        path: paths::relative(dir, path),
+                    })
+                }
+                (_, Embed::None) => {
+                    return Err(invalid(format!(
+                        "layer {i} ({:?}) has no source file to link; save it embedded",
+                        l.name()
+                    )));
+                }
+                (Some(Origin::Linked(_, bytes) | Origin::Embedded(bytes)), _) => embedded(bytes),
+                (None, _) => embedded(&codec::encode_source(l.source())),
+            })
+        })?;
+        Ok(ProjectFile {
+            palette: match file.palette {
+                PaletteSpec::Vpl(path) => PaletteSpec::Vpl(paths::relative(dir, &path)),
+                other => other,
+            },
+            ..file
+        })
+    }
+
+    /// The project as a recovery file (the app's autosave, #241): each layer's own
+    /// source is linked by the path `link` returns for it, given its pixels, the bytes
+    /// they were loaded from (if any) and the file they were linked from (if any), so
+    /// the caller can store each source once, by content, and never re-encode it. A
+    /// `.vpl` palette is written as its 16 colours, so the file needs nothing but the
+    /// sources. Masks and everything else are as [`Self::to_project_file`] writes them.
+    pub fn to_recovery_file(
+        &self,
+        link: &mut dyn FnMut(RecoverySource<'_>) -> Result<PathBuf, ProjectError>,
+    ) -> Result<ProjectFile, ProjectError> {
+        let file = self.project_file(&mut |_, l, origin| {
+            let (bytes, linked) = match origin {
+                Some(Origin::Linked(path, bytes)) => (Some(bytes), Some(path.as_path())),
+                Some(Origin::Embedded(bytes)) => (Some(bytes), None),
+                None => (None, None),
+            };
+            let path = link(RecoverySource {
+                image: l.source(),
+                bytes,
+                linked,
+            })?;
+            Ok(SourceSpec::Linked(file::Linked { path }))
+        })?;
+        Ok(ProjectFile {
+            palette: match file.palette {
+                PaletteSpec::Vpl(_) => PaletteSpec::Custom(
+                    self.project()
+                        .palette
+                        .rgb_table()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
+                ),
+                other => other,
+            },
+            ..file
+        })
+    }
+
+    /// The project file, each layer's own source as `source` says (a layer sharing an
+    /// earlier layer's pixels says so itself); the palette as given (a `.vpl` path
+    /// absolute).
+    fn project_file(&self, source: &mut SourceFor<'_>) -> Result<ProjectFile, ProjectError> {
         let p = self.project();
         let mut layers = Vec::with_capacity(p.layers.len());
         for (i, l) in p.layers.iter().enumerate() {
@@ -215,28 +307,9 @@ impl Session {
                 .iter()
                 .find(|(s, _)| Arc::ptr_eq(s, l.source()))
                 .map(|(_, o)| o);
-            let embedded = |bytes: &[u8]| {
-                SourceSpec::Embedded(file::Embedded {
-                    png_base64: crate::base64::encode(bytes),
-                })
-            };
-            let source = match (shared, origin, embed) {
-                (Some(layer), _, _) => SourceSpec::Shared(file::Shared { layer }),
-                (None, Some(Origin::Linked(path, _)), Embed::Keep | Embed::None) => {
-                    SourceSpec::Linked(file::Linked {
-                        path: paths::relative(dir, path),
-                    })
-                }
-                (None, _, Embed::None) => {
-                    return Err(invalid(format!(
-                        "layer {i} ({:?}) has no source file to link; save it embedded",
-                        l.name()
-                    )));
-                }
-                (None, Some(Origin::Linked(_, bytes) | Origin::Embedded(bytes)), _) => {
-                    embedded(bytes)
-                }
-                (None, None, _) => embedded(&codec::encode_source(l.source())),
+            let source = match shared {
+                Some(layer) => SourceSpec::Shared(file::Shared { layer }),
+                None => source(i, l, origin)?,
             };
             layers.push(LayerEntry {
                 name: l.name().to_owned(),
@@ -260,10 +333,7 @@ impl Session {
             schema_version: SCHEMA_VERSION,
             target: p.target,
             supersample: self.compositor.grid().n(),
-            palette: match self.palette_spec(&p.palette) {
-                PaletteSpec::Vpl(path) => PaletteSpec::Vpl(paths::relative(dir, &path)),
-                other => other,
-            },
+            palette: self.palette_spec(&p.palette),
             layers,
             regions: p
                 .regions
@@ -839,9 +909,16 @@ impl Session {
     }
 
     /// The super grid the session composites on: the target mode and the supersample
-    /// factor.
+    /// factor. The project's target even before the next composite brings the
+    /// compositor to it: a snapshot taken straight after `mode_set` (or its undo) is
+    /// solved on the new grid (#279).
     pub fn grid(&self) -> convert64_core::SuperGrid {
-        self.compositor.grid()
+        let grid = self.compositor.grid();
+        let target = self.editor.project().target;
+        if grid.target() == target {
+            return grid;
+        }
+        SuperGrid::new(target, grid.n()).expect("mode_set checks the mode")
     }
 
     /// The supersample factor the Source view is drawn at, at least: with the solve on

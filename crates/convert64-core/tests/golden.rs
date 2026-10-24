@@ -301,6 +301,8 @@ fn solved_layer(
     setup(&mut layer);
     let grid = SuperGrid::with_default_factor(mode_of(format)).expect("bitmap grid");
     let mut c = Compositor::new(grid);
+    // The solver's front end (ADR-014 §2): png2amiga's for `--solver png2amiga`.
+    c.set_pipeline(opts.solver.pipeline());
     c.update(&[layer], &[]);
     let frame = c.frame().clone();
     let solution = Solver::new(&Palette::pepto_pal()).solve(&frame, &Steering::new(), None, opts);
@@ -396,9 +398,11 @@ fn judge_variant(
 }
 
 /// ADR-014 §4: the line-art recipe, an opt-in chosen by eye on #273's cause sheet (tile
-/// 13) and made on the reference path: hi-res `none` at gamma 1.5, the layer resampled
-/// with png2amiga's widened Lanczos-3, black point 0.5, and the cells limited to Pepto's
-/// greys (black, dark grey, grey, light grey, white).
+/// 13): hi-res `none` at gamma 1.5, the layer resampled with png2amiga's widened
+/// Lanczos-3, black point 0.5, and the cells limited to Pepto's greys (black, dark grey,
+/// grey, light grey, white), on the png2amiga solver (#276): its brute-force cell pairs
+/// reproduce tile 13, where the reference's global Floyd–Steinberg replacement of each
+/// cell's pair gave 87.6 % of it (`sheet-lineart-recipe.md`).
 mod line_art {
     use super::{BitmapFormat, judge_variant, solved_layer};
     use convert64_core::ColourIndex;
@@ -418,7 +422,10 @@ mod line_art {
             "lineart",
             BitmapFormat::ArtStudio,
             "lineart-recipe",
-            &SolveOptions::default(),
+            &SolveOptions {
+                solver: SolverKind::Png2amiga,
+                ..SolveOptions::default()
+            },
             &|layer| {
                 let greys: ColourSet = GREYS
                     .iter()
@@ -442,7 +449,7 @@ mod line_art {
                 layer.set_resample(Resample::Lanczos);
             },
         );
-        assert_eq!(s.solution.solver, SolverKind::Reference);
+        assert_eq!(s.solution.solver, SolverKind::Png2amiga);
         assert_eq!(s.solution.fallback, None);
         let used: std::collections::BTreeSet<u8> =
             s.output.pixels().iter().map(|c| c.get()).collect();

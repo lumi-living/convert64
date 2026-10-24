@@ -1,13 +1,15 @@
-//! `cargo xtask lineart-sheet` (#273, ADR-014 §4): the line-art recipe, made on the
-//! reference path, next to what it was chosen from.
+//! `cargo xtask lineart-sheet` (#273, #276, ADR-014 §4): the line-art recipe next to what
+//! it was chosen from.
 //!
-//! The recipe: hi-res `none` at gamma 1.5, the layer resampled with png2amiga's widened
+//! #273's recipe: hi-res `none` at gamma 1.5, the layer resampled with png2amiga's widened
 //! Lanczos-3 (`Resample::Lanczos`), png2c64's black point 0.5, and the cells limited to
 //! Pepto's greys (black 0, dark grey 11, grey 12, light grey 15, white 1). It was chosen
 //! by eye on the cause sheet's tile 13, which is the same on png2amiga's port; this
-//! renders it on our png2c64 path (png2c64's port, its front end) instead.
+//! renders it on our png2c64 path (png2c64's port, its front end) instead. #276 moved
+//! the recipe onto the png2amiga solver, which reproduces tile 13; the second sheet shows
+//! that and measures why.
 //!
-//! Two rows, each solved through the product pipeline (compositor and solver):
+//! The first sheet's two rows, each solved through the product pipeline (compositor and solver):
 //!
 //! - **lineart** (the fixture): its source, png2c64's baseline, png2amiga as shipped (its
 //!   committed baseline), the cause sheet's tile 13, and the recipe.
@@ -20,7 +22,10 @@
 //! Each row ends with the recipe's Lanczos alone (no black point, any colour).
 //!
 //! Written: `docs/reference/dither-previews/convert64-sheets/sheet-lineart.png` and
-//! `sheet-lineart.md` (identical-pixel shares and the colours each tile uses).
+//! `sheet-lineart.md` (identical-pixel shares and the colours each tile uses), and #276's
+//! `sheet-lineart-recipe.png` and `sheet-lineart-recipe.md` (source | tile 13 | the new
+//! recipe | the old one, on lineart and the logo, with each tile's share identical to
+//! tile 13; and the difference table, each of #273's choices swapped into tile 13 alone).
 
 use crate::cause_sheet::lineart_tile13;
 use crate::reference_sheet::{identical, png, source};
@@ -66,12 +71,21 @@ const PNG2AMIGA: Setup = Setup {
     ..REFERENCE
 };
 
-/// The line-art recipe (ADR-014 §4) on the reference path.
+/// #273's line-art recipe (ADR-014 §4) on the reference path: the old
+/// `examples/recipes/lineart.toml`.
 const RECIPE: Setup = Setup {
     solver: SolverKind::Reference,
     resample: Resample::Lanczos,
     black_point: 0.5,
     greys_only: true,
+};
+
+/// #276's line-art recipe, `examples/recipes/lineart.toml` now: #273's on the png2amiga
+/// solver (its own front end, so the layer's Lanczos is png2amiga's scaler), which
+/// reproduces the cause sheet's tile 13.
+const NEW_RECIPE: Setup = Setup {
+    solver: SolverKind::Png2amiga,
+    ..RECIPE
 };
 
 /// The recipe without the colour limit.
@@ -86,8 +100,8 @@ const LANCZOS_ONLY: Setup = Setup {
     ..RECIPE_ANY_COLOUR
 };
 
-/// `img` fitted to the hi-res screen and solved through the product pipeline.
-fn solve(img: &RgbaImage, s: Setup) -> Result<RgbImage, String> {
+/// `img` fitted to the hi-res screen and composited for `s` (the frame the solver sees).
+fn compose(img: &RgbaImage, s: Setup) -> Result<Compositor, String> {
     let (w, h) = img.dimensions();
     let src = Arc::new(SourceImage::from_srgba8(w, h, img.as_raw()).map_err(|e| e.to_string())?);
     let mut layer = Layer::new("lineart", src);
@@ -129,6 +143,12 @@ fn solve(img: &RgbaImage, s: Setup) -> Result<RgbImage, String> {
     let mut c = Compositor::new(grid);
     c.set_pipeline(s.solver.pipeline());
     c.update(&[layer], &[]);
+    Ok(c)
+}
+
+/// `img` fitted to the hi-res screen and solved through the product pipeline.
+fn solve(img: &RgbaImage, s: Setup) -> Result<RgbImage, String> {
+    let c = compose(img, s)?;
     let palette = Palette::pepto_pal();
     let opts = SolveOptions {
         solver: s.solver,
@@ -334,14 +354,14 @@ pub(crate) fn run() -> Result<(), String> {
             tile13.clone(),
         ),
         (
-            format!("4. line-art recipe ({} = 3)", pct(&ours, &tile13)),
+            format!("4. #273 recipe ({} = 3)", pct(&ours, &tile13)),
             ours.clone(),
         ),
         ("5. lanczos only".to_owned(), lanczos.clone()),
         ("logo (synthetic): source".to_owned(), thumb(&logo)),
         ("1. png2c64 hires none".to_owned(), logo_ref.clone()),
         ("2. png2amiga as shipped".to_owned(), logo_p2a.clone()),
-        ("3. line-art recipe".to_owned(), logo_ours.clone()),
+        ("3. #273 recipe".to_owned(), logo_ours.clone()),
         ("4. recipe, any colour".to_owned(), logo_any.clone()),
         ("5. lanczos only".to_owned(), logo_lanczos.clone()),
     ];
@@ -351,27 +371,19 @@ pub(crate) fn run() -> Result<(), String> {
     let mut md = String::from(
         "<!-- Written by `cargo xtask lineart-sheet`; do not edit by hand. -->\n\n\
          # Line-art sheet (#273, ADR-014 §4)\n\n\
-         [sheet-lineart.png](sheet-lineart.png). The line-art recipe: hi-res `none`, gamma \
-         1.5, Lanczos resampling, black point 0.5, cells limited to Pepto's greys (0, 11, \
-         12, 15, 1), on the reference path (png2c64's port and front end). Tile 13 of the \
-         cause sheet is the same recipe on png2amiga's port. Shares are of the 320 × 200 \
+         [sheet-lineart.png](sheet-lineart.png). #273's line-art recipe: hi-res `none`, \
+         gamma 1.5, Lanczos resampling, black point 0.5, cells limited to Pepto's greys (0, \
+         11, 12, 15, 1), on the reference path (png2c64's port and front end). Tile 13 of \
+         the cause sheet is the same on png2amiga's port. Since #276 the recipe \
+         (`examples/recipes/lineart.toml`) runs on the png2amiga solver and is tile 13: \
+         [sheet-lineart-recipe.md](sheet-lineart-recipe.md). Shares are of the 320 × 200 \
          pixels through Pepto; no SSIMULACRA2.\n\n\
          ## lineart\n\n| Pair | Identical |\n|---|---|\n",
     );
     for (a, an, b, bn) in [
-        (&ours, "4. line-art recipe", &tile13, "3. tile 13"),
-        (
-            &ours,
-            "4. line-art recipe",
-            &baseline,
-            "1. png2c64 baseline",
-        ),
-        (
-            &ours,
-            "4. line-art recipe",
-            &shipped,
-            "2. png2amiga as shipped",
-        ),
+        (&ours, "4. #273 recipe", &tile13, "3. tile 13"),
+        (&ours, "4. #273 recipe", &baseline, "1. png2c64 baseline"),
+        (&ours, "4. #273 recipe", &shipped, "2. png2amiga as shipped"),
         (&tile13, "3. tile 13", &baseline, "1. png2c64 baseline"),
         (
             &shipped,
@@ -399,7 +411,7 @@ pub(crate) fn run() -> Result<(), String> {
         ("1. png2c64 baseline", &baseline),
         ("2. png2amiga as shipped", &shipped),
         ("3. tile 13", &tile13),
-        ("4. line-art recipe", &ours),
+        ("4. #273 recipe", &ours),
         ("5. lanczos only", &lanczos),
     ] {
         let _ = writeln!(md, "- {name}: {}", colours(img));
@@ -412,14 +424,14 @@ pub(crate) fn run() -> Result<(), String> {
          fixture has coloured outline art.\n\n| Pair | Identical |\n|---|---|\n",
     );
     for (a, an, b, bn) in [
-        (&logo_ours, "3. line-art recipe", &logo_ref, "1. png2c64"),
+        (&logo_ours, "3. #273 recipe", &logo_ref, "1. png2c64"),
         (&logo_any, "4. recipe, any colour", &logo_ref, "1. png2c64"),
         (&logo_p2a, "2. png2amiga", &logo_ref, "1. png2c64"),
         (
             &logo_any,
             "4. recipe, any colour",
             &logo_ours,
-            "3. line-art recipe",
+            "3. #273 recipe",
         ),
         (&logo_lanczos, "5. lanczos only", &logo_ref, "1. png2c64"),
     ] {
@@ -429,7 +441,7 @@ pub(crate) fn run() -> Result<(), String> {
     for (name, img) in [
         ("1. png2c64", &logo_ref),
         ("2. png2amiga", &logo_p2a),
-        ("3. line-art recipe", &logo_ours),
+        ("3. #273 recipe", &logo_ours),
         ("4. recipe, any colour", &logo_any),
         ("5. lanczos only", &logo_lanczos),
     ] {
@@ -437,5 +449,376 @@ pub(crate) fn run() -> Result<(), String> {
     }
     std::fs::write(out.join("sheet-lineart.md"), &md).map_err(|e| e.to_string())?;
     print!("{md}");
+    print!("\n{}", recipe_sheet(&out, &src, &tile13, &logo)?);
     Ok(())
+}
+
+/// The ports' hi-res `none`, one piece at a time, for #276's difference table: each
+/// variant is tile 13 with one difference from #273's recipe swapped in.
+mod swap {
+    use super::GREYS;
+    use crate::cause_sheet::{Fixture, Scaler, draw, palette};
+    use convert64_core::solve::png2amiga_ref::{self as p2a, c64, colour::PNG2C64_MATHS};
+    use convert64_core::solve::png2c64_ref::{self as p2c, quantize};
+    use image::RgbImage;
+    use std::sync::atomic::Ordering;
+
+    /// Pixels of the hi-res screen.
+    const PIXELS: usize = 320 * 200;
+    /// Cells of the hi-res screen.
+    const CELLS: usize = 40 * 25;
+
+    /// Every cell limited to Pepto's greys, or free.
+    fn rules(greys: bool) -> Vec<quantize::CellRule> {
+        if !greys {
+            return Vec::new();
+        }
+        let candidates = GREYS.iter().fold(0u16, |m, &g| m | (1 << g));
+        vec![
+            quantize::CellRule {
+                candidates,
+                required: 0,
+            };
+            CELLS
+        ]
+    }
+
+    /// Which preprocessing (front-end maths) a variant uses.
+    #[derive(Clone, Copy)]
+    pub(super) enum Maths {
+        /// png2amiga's `preprocess::apply` (its fast cube root and fused multiply-adds).
+        Png2amiga,
+        /// png2c64's `preprocess::apply` (correctly rounded, no fma).
+        Png2c64,
+    }
+
+    /// The fixture scaled with `scaler` and preprocessed with `maths` at `gamma` and
+    /// black point `bp`: the prepared 320 × 200 picture.
+    pub(super) fn front(
+        f: &Fixture,
+        scaler: Scaler,
+        maths: Maths,
+        gamma: f32,
+        bp: f32,
+    ) -> p2c::Image {
+        let mut im = f.scaled(scaler);
+        match maths {
+            Maths::Png2amiga => p2a::preprocess::apply(
+                &mut im,
+                &p2a::preprocess::Settings {
+                    gamma,
+                    black_point: bp,
+                    ..p2a::preprocess::Settings::default()
+                },
+            ),
+            Maths::Png2c64 => p2c::preprocess::apply(
+                &mut im,
+                &p2c::preprocess::Settings {
+                    gamma,
+                    black_point: bp,
+                    ..p2c::preprocess::Settings::default()
+                },
+            ),
+        }
+        im
+    }
+
+    /// png2amiga's hi-res encoder on `im` at `none`: each cell's pair by brute force
+    /// with `metric`, then each pixel the nearer of the two (error clamp `clamp`, which
+    /// `none` does not diffuse).
+    pub(super) fn p2a_none(
+        im: &p2c::Image,
+        metric: c64::Metric,
+        clamp: f32,
+        greys: bool,
+    ) -> RgbImage {
+        let px = vec![
+            p2a::dither::PxSettings {
+                method: p2a::dither::Method::None,
+                strength: 1.0,
+                error_clamp: clamp,
+                origin: (0, 0),
+            };
+            PIXELS
+        ];
+        let hooks = c64::Hooks {
+            rules: rules(greys),
+            ..c64::Hooks::default()
+        };
+        draw(&c64::encode(
+            im,
+            &palette(),
+            p2a::Mode::Hires,
+            &px,
+            metric,
+            true,
+            &hooks,
+        ))
+    }
+
+    /// Tile 13 with png2c64's colour maths everywhere (`PNG2C64_MATHS`: the front end
+    /// and the encoder).
+    pub(super) fn p2a_none_p2c_maths(f: &Fixture) -> RgbImage {
+        PNG2C64_MATHS.store(true, Ordering::Relaxed);
+        let out = p2a_none(
+            &front(f, Scaler::Lanczos, Maths::Png2amiga, 1.5, 0.5),
+            c64::Metric::Mse,
+            0.35,
+            true,
+        );
+        PNG2C64_MATHS.store(false, Ordering::Relaxed);
+        out
+    }
+
+    /// png2c64's hi-res cell stage on `im`: its 120-pair `mse` search, then (`fs`) its
+    /// global Floyd–Steinberg replacement (each cell's two most used colours of an FS
+    /// dither of the whole picture), each pixel the nearer of the cell's two. Without
+    /// `fs`, the search alone (a zero ordered bias on every pixel, which moves nothing
+    /// and skips the replacement).
+    pub(super) fn p2c_none(im: &p2c::Image, greys: bool, fs: bool) -> RgbImage {
+        let bias = vec![if fs { None } else { Some(0.0) }; PIXELS];
+        let hooks = quantize::Hooks {
+            rules: rules(greys),
+            ..quantize::Hooks::default()
+        };
+        draw(&quantize::quantize_px(
+            im,
+            &p2c::colour::palette_linear(&p2c::colour::PEPTO_HEX),
+            quantize::Mode::Hires,
+            &bias,
+            &hooks,
+        ))
+    }
+}
+
+/// One row of #276's difference table.
+struct Diff {
+    /// What differs.
+    what: &'static str,
+    /// What tile 13 does.
+    tile13: &'static str,
+    /// What #273's recipe did.
+    old: &'static str,
+    /// Tile 13 with #273's choice swapped in.
+    swapped: RgbImage,
+}
+
+/// #276: `sheet-lineart-recipe.png` (source | tile 13 | the new recipe | the old recipe,
+/// on lineart and on the logo) and `sheet-lineart-recipe.md` (the difference table,
+/// each difference swapped into tile 13 alone, and the recipes' shares).
+fn recipe_sheet(
+    out: &std::path::Path,
+    src: &RgbaImage,
+    tile13: &RgbImage,
+    logo: &RgbaImage,
+) -> Result<String, String> {
+    use crate::cause_sheet::{Fixture, Scaler};
+    use convert64_core::solve::png2amiga_ref::c64::Metric as P2aMetric;
+    use convert64_core::solve::png2c64_ref::Image as RefImage;
+    use swap::Maths;
+
+    let new = solve(src, NEW_RECIPE)?;
+    let old = solve(src, RECIPE)?;
+    let golden = png(&repo_root().join("fixtures/lineart/expected_lineart-recipe.png"))?;
+    let f = Fixture::load("lineart", true)?;
+    let t13 = swap::front(&f, Scaler::Lanczos, Maths::Png2amiga, 1.5, 0.5);
+    let rebuilt = swap::p2a_none(&t13, P2aMetric::Mse, 0.35, true);
+    let frame = |s: Setup| -> Result<RefImage, String> {
+        let c = compose(src, s)?;
+        Ok(RefImage::new(320, 200, c.frame().colour().to_vec()))
+    };
+    // #273's front end: the compositor's Lanczos and png2c64's preprocessing.
+    let old_front = frame(RECIPE)?;
+    // The new recipe's: png2amiga's own front end (`Pipeline::Png2amiga`).
+    let new_front = frame(NEW_RECIPE)?;
+    let diffs = [
+        Diff {
+            what: "Solver: cell pair (hi-res `none`)",
+            tile13: "png2amiga's port: brute force of the 120 pairs by the cell metric, each \
+                     pixel the nearer of the two",
+            old: "png2c64's port: the same 120-pair search, then its global Floyd–Steinberg \
+                  replacement (each cell's two most used colours, within the greys, of an FS \
+                  dither of the whole picture against all 16)",
+            swapped: swap::p2c_none(&t13, true, true),
+        },
+        Diff {
+            what: "Solver: png2c64's search alone",
+            tile13: "(as above)",
+            old: "png2c64's 120-pair search without the FS replacement: not a png2c64 option, \
+                  measured to locate the difference",
+            swapped: swap::p2c_none(&t13, true, false),
+        },
+        Diff {
+            what: "Front end: scaler and preprocessing",
+            tile13: "png2amiga's `prepare`: its widened Lanczos-3, then gamma, black point and \
+                     the OKLab round trip in png2amiga's maths (fast cube root, fused \
+                     multiply-adds)",
+            old: "the compositor on the png2c64 pipeline: the same widened Lanczos-3 \
+                  (`Resample::Lanczos`), then png2c64's gamma, black point and round trip \
+                  (correctly rounded cube root, no fma)",
+            swapped: swap::p2a_none(&old_front, P2aMetric::Mse, 0.35, true),
+        },
+        Diff {
+            what: "Front end: preprocessing maths alone",
+            tile13: "png2amiga's `preprocess::apply` after png2amiga's scaler",
+            old: "png2c64's `preprocess::apply` (the same steps in the same order) after \
+                  png2amiga's scaler",
+            swapped: swap::p2a_none(
+                &swap::front(&f, Scaler::Lanczos, Maths::Png2c64, 1.5, 0.5),
+                P2aMetric::Mse,
+                0.35,
+                true,
+            ),
+        },
+        Diff {
+            what: "Colour maths everywhere",
+            tile13: "png2amiga's OKLab in the front end and the encoder",
+            old: "png2c64's OKLab in both (`PNG2C64_MATHS`)",
+            swapped: swap::p2a_none_p2c_maths(&f),
+        },
+        Diff {
+            what: "Black point (for scale: off)",
+            tile13: "0.5, after the gamma and before the round trip: OKLab L ← clamp((L − \
+                     0.5) / (1 − 0.5), 0, 1), png2amiga's `apply_levels`",
+            old: "0.5, same place, same formula: png2c64's `apply_levels` (`levels_px`); only \
+                  the maths differ (row above)",
+            swapped: swap::p2a_none(
+                &swap::front(&f, Scaler::Lanczos, Maths::Png2amiga, 1.5, 0.0),
+                P2aMetric::Mse,
+                0.35,
+                true,
+            ),
+        },
+        Diff {
+            what: "Grey limit (for scale: off)",
+            tile13: "every cell limited to 0, 11, 12, 15, 1 (`CellRule`)",
+            old: "the same indices (the recipe's allowed colours, as `CellRule`s)",
+            swapped: swap::p2a_none(&t13, P2aMetric::Mse, 0.35, false),
+        },
+        Diff {
+            what: "Cell metric (for scale: `blur`)",
+            tile13: "`mse`: each pixel's squared OKLab distance to the nearer of the pair",
+            old: "`mse` (png2c64 has no other); png2amiga's own default is `blur`",
+            swapped: swap::p2a_none(&t13, P2aMetric::Blur, 0.35, true),
+        },
+        Diff {
+            what: "Gamma (for scale: 1)",
+            tile13: "1.5 (png2c64's default)",
+            old: "1.5; png2amiga's own default is 1",
+            swapped: swap::p2a_none(
+                &swap::front(&f, Scaler::Lanczos, Maths::Png2amiga, 1.0, 0.5),
+                P2aMetric::Mse,
+                0.35,
+                true,
+            ),
+        },
+        Diff {
+            what: "Error clamp",
+            tile13: "0.35 (png2amiga's default)",
+            old: "none (a recipe's 0); `none` diffuses no error",
+            swapped: swap::p2a_none(&t13, P2aMetric::Mse, f32::INFINITY, true),
+        },
+        Diff {
+            what: "Front end and solver together",
+            tile13: "(tile 13)",
+            old: "#273's front end and png2c64's cell stage: #273's recipe rebuilt from the \
+                  ports",
+            swapped: swap::p2c_none(&old_front, true, true),
+        },
+        Diff {
+            what: "#273's front end, png2c64's search alone",
+            tile13: "(tile 13)",
+            old: "what the png2c64 path would need to come close: a new divergence that skips \
+                  the FS replacement",
+            swapped: swap::p2c_none(&old_front, true, false),
+        },
+        Diff {
+            what: "The new recipe's frame, png2amiga's encoder",
+            tile13: "(tile 13)",
+            old: "the compositor on `Pipeline::Png2amiga` (what `--solver png2amiga` solves)",
+            swapped: swap::p2a_none(&new_front, P2aMetric::Mse, 0.35, true),
+        },
+    ];
+
+    // The logo through tile 13's settings on png2amiga's port, and both recipes.
+    let lf = Fixture::from_image(logo, true);
+    let logo13 = swap::p2a_none(
+        &swap::front(&lf, Scaler::Lanczos, Maths::Png2amiga, 1.5, 0.5),
+        P2aMetric::Mse,
+        0.35,
+        true,
+    );
+    let logo_new = solve(logo, NEW_RECIPE)?;
+    let logo_old = solve(logo, RECIPE)?;
+
+    let pct = |a: &RgbImage, b: &RgbImage| format!("{:.3} %", identical(a, b));
+    let tiles = vec![
+        ("lineart: source".to_owned(), thumb(src)),
+        ("cause tile 13 (100 %)".to_owned(), tile13.clone()),
+        (format!("new recipe ({})", pct(&new, tile13)), new.clone()),
+        (format!("old recipe ({})", pct(&old, tile13)), old.clone()),
+        ("logo (synthetic): source".to_owned(), thumb(logo)),
+        ("tile 13 settings (100 %)".to_owned(), logo13.clone()),
+        (
+            format!("new recipe ({})", pct(&logo_new, &logo13)),
+            logo_new.clone(),
+        ),
+        (
+            format!("old recipe ({})", pct(&logo_old, &logo13)),
+            logo_old.clone(),
+        ),
+    ];
+    save(
+        &sheet_with(&tiles, 4),
+        &out.join("sheet-lineart-recipe.png"),
+    )?;
+
+    let mut md = String::from(
+        "<!-- Written by `cargo xtask lineart-sheet`; do not edit by hand. -->\n\n\
+         # Line-art recipe sheet (#276)\n\n\
+         [sheet-lineart-recipe.png](sheet-lineart-recipe.png): the source, the cause sheet's \
+         tile 13 (Jaakko's choice), the new line-art recipe (`examples/recipes/lineart.toml`: \
+         hi-res `none`, gamma 1.5, black point 0.5, cells limited to Pepto's greys 0, 11, 12, \
+         15, 1, on `--solver png2amiga`) and the old one (#273: the same flags on the \
+         reference path), each labelled with its share of the 320 × 200 pixels identical to \
+         tile 13. The logo row is the line-art sheet's synthetic logo through the same: the \
+         recipe is for black-and-white line art only, since it fills coloured shapes black. \
+         No SSIMULACRA2.\n\n",
+    );
+    let _ = writeln!(
+        md,
+        "| Picture | new recipe vs tile 13 | old recipe vs tile 13 |\n|---|---|---|\n\
+         | lineart | {} | {} |\n| logo (tile 13's settings on the port) | {} | {} |\n",
+        pct(&new, tile13),
+        pct(&old, tile13),
+        pct(&logo_new, &logo13),
+        pct(&logo_old, &logo13),
+    );
+    let _ = writeln!(
+        md,
+        "Checks: tile 13 rebuilt here from the ports is {} identical to the cause sheet's; \
+         the recipe's golden (`fixtures/lineart/expected_lineart-recipe.png`) is {} \
+         identical to tile 13.\n\n\
+         ## What tile 13 does that #273's recipe did not\n\n\
+         Each row puts #273's choice into tile 13 alone, on lineart, and gives the result's \
+         share of pixels identical to tile 13. Rows marked *for scale* change something the \
+         two share, to show how much it weighs. Only the cell pair matters: png2c64's \
+         global Floyd–Steinberg replacement is the whole gap.\n\n\
+         | Difference | Tile 13 (png2amiga's port) | #273's recipe (png2c64 path) | Tile 13 \
+         with #273's, identical to tile 13 |\n|---|---|---|---|",
+        pct(&rebuilt, tile13),
+        pct(&golden, tile13),
+    );
+    for d in &diffs {
+        let _ = writeln!(
+            md,
+            "| {} | {} | {} | {} |",
+            d.what,
+            d.tile13,
+            d.old,
+            pct(&d.swapped, tile13),
+        );
+    }
+    std::fs::write(out.join("sheet-lineart-recipe.md"), &md).map_err(|e| e.to_string())?;
+    Ok(md)
 }

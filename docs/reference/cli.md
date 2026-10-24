@@ -106,14 +106,15 @@ Scores run to 100: 90 is visually lossless, 70 high, 50 fair, 30 low, and a dith
 
 ### The line-art recipe
 
-An opt-in for black-and-white line art ([ADR-014](../adr/ADR-014-png2c64-stays-reference.md) §4): hi-res `none` at gamma 1.5, Lanczos resampling, black point 0.5 and the cells limited to Pepto's greys, solved by the reference:
+An opt-in for black-and-white line art ([ADR-014](../adr/ADR-014-png2c64-stays-reference.md) §4): hi-res `none` at gamma 1.5, Lanczos resampling, black point 0.5 and the cells limited to Pepto's greys, solved by the png2amiga solver. It reproduces the cause sheet's tile 13, which Jaakko chose by eye, to the pixel (#276):
 
 ```sh
 convert64 convert lineart.png --mode hires --dither none --gamma 1.5 \
-    --resample lanczos --black-point 0.5 --allowed 0,11,12,15,1 -o lineart.art
+    --resample lanczos --black-point 0.5 --allowed 0,11,12,15,1 \
+    --solver png2amiga -o lineart.art
 ```
 
-The same as a batch manifest is [`examples/recipes/lineart.toml`](../../examples/recipes/lineart.toml) (`convert64 batch art/ --manifest examples/recipes/lineart.toml`). It does not suit coloured art: the black point turns dark colours black and the colour limit turns everything grey ([sheet-lineart.png](dither-previews/convert64-sheets/sheet-lineart.png)).
+The same as a batch manifest is [`examples/recipes/lineart.toml`](../../examples/recipes/lineart.toml) (`convert64 batch art/ --manifest examples/recipes/lineart.toml`). On the reference (without `--solver png2amiga`) it is 87.6 % of tile 13 and darker: png2c64 replaces each hi-res cell's pair with the most used colours of a global Floyd–Steinberg dither, which spreads grey lines into black and white ([sheet-lineart-recipe.md](dither-previews/convert64-sheets/sheet-lineart-recipe.md)). It does not suit coloured art: the black point turns dark colours black and the colour limit turns everything grey, so coloured shapes fill black ([sheet-lineart-recipe.png](dither-previews/convert64-sheets/sheet-lineart-recipe.png)).
 
 A `Makefile` rule:
 
