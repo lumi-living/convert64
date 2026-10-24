@@ -261,6 +261,8 @@ struct Batch {
     started: f64,
     tiles: usize,
     render_ms: f64,
+    /// When every visible card first had its thumbnail, ms after `started` (#275).
+    visible_ms: Option<f64>,
 }
 
 /// The picker's thumbnails: sources, the solver, the render queue and the textures.
@@ -276,6 +278,9 @@ pub struct MethodThumbs {
     batch: Option<Batch>,
     /// This frame's wanted thumbnails, collected while drawing ([`Self::want`]).
     wanted: std::cell::RefCell<Vec<ThumbJob>>,
+    /// How many visible cards this frame drew without their thumbnail
+    /// ([`Self::want_visible`]); `None`: the picker was not drawn.
+    visible_missing: std::cell::Cell<Option<usize>>,
     /// Which source the cards show.
     pub source: PreviewSource,
 }
@@ -316,6 +321,7 @@ impl MethodThumbs {
             settings: std::cell::RefCell::new(None),
             batch: None,
             wanted: std::cell::RefCell::new(Vec::new()),
+            visible_missing: std::cell::Cell::new(None),
             source: PreviewSource::default(),
         }
     }
@@ -385,11 +391,13 @@ impl MethodThumbs {
             && self.renderer.queued() == (0, None)
         {
             clock::log(&format!(
-                "convert64: rendered {} method thumbnails ({:?}) in {:.1} ms, {:.1} ms of solving (#260)",
+                "convert64: rendered {} method thumbnails ({:?}) in {:.1} ms, {:.1} ms of solving, the visible cards' after {} (#260)",
                 b.tiles,
                 self.source,
                 clock::now_ms() - b.started,
-                b.render_ms
+                b.render_ms,
+                b.visible_ms
+                    .map_or_else(|| "—".to_owned(), |ms| format!("{ms:.1} ms")),
             ));
             self.batch = None;
         }
@@ -465,6 +473,7 @@ impl MethodThumbs {
                 started: clock::now_ms(),
                 tiles: 0,
                 render_ms: 0.0,
+                visible_ms: None,
             });
         }
         self.renderer.set_queue(queue);
@@ -476,10 +485,27 @@ impl MethodThumbs {
         self.wanted.borrow_mut().extend(jobs);
     }
 
+    /// How many of this frame's visible cards were drawn without their thumbnail
+    /// (while drawing the picker). The first frame of a batch with none logs the time
+    /// to the first screen of cards (#275).
+    pub fn want_visible(&self, missing: usize) {
+        self.visible_missing.set(Some(missing));
+    }
+
     /// Queues this frame's wanted thumbnails in place of the last frame's (after
     /// drawing): what no card asked for this frame is cancelled.
     pub fn flush(&mut self) {
         let jobs = std::mem::take(&mut *self.wanted.borrow_mut());
+        if let (Some(b), Some(0)) = (&mut self.batch, self.visible_missing.take())
+            && b.visible_ms.is_none()
+        {
+            let ms = clock::now_ms() - b.started;
+            b.visible_ms = Some(ms);
+            clock::log(&format!(
+                "convert64: the visible method thumbnails ({} rendered) in {ms:.1} ms (#275)",
+                b.tiles
+            ));
+        }
         self.request(jobs);
     }
 

@@ -633,6 +633,105 @@ mod tests {
         }
     }
 
+    /// #275: png2amiga's 32 methods png2c64 lacks are the reference's, on png2c64's
+    /// pipeline: a frame of each is `png2c64_ref::amiga::convert` (the hook #280's sheets
+    /// were judged on) run on the frame's colours, bit for bit, in both modes, with no
+    /// fallback; the output is legal.
+    #[test]
+    fn png2amiga_s_methods_are_the_reference_s_on_png2c64_s_pipeline() {
+        use super::super::png2c64_ref::quantize::Mode as RefMode;
+        use super::super::png2c64_ref::{Image, amiga, colour};
+        let s = Solver::new(&Palette::pepto_pal());
+        let pal = colour::palette_of(&Palette::pepto_pal());
+        let kinds: Vec<DitherKind> = DitherKind::ALL
+            .into_iter()
+            .filter(|k| k.is_png2amiga_only())
+            .collect();
+        assert_eq!(kinds.len(), 32);
+        for (mode, rm) in [
+            (Mode::MulticolorBitmap, RefMode::Multicolor),
+            (Mode::HiresBitmap, RefMode::Hires),
+        ] {
+            for &kind in &kinds {
+                let f = frame(mode, kind);
+                let sol = s.solve(&f, &Steering::new(), None, &SolveOptions::default());
+                assert_eq!(sol.solver, SolverKind::Reference, "{mode} {kind:?}");
+                assert_eq!(sol.fallback, None, "{mode} {kind:?}");
+                let (w, h) = rm.screen();
+                let im = Image::new(w, h, f.colour().to_vec());
+                let port = amiga::convert(
+                    &im,
+                    &pal,
+                    rm,
+                    super::super::reference::amiga_method(kind).unwrap(),
+                    f.attributes().pixels()[0].strength,
+                    Recipe::default().error_clamp(),
+                );
+                let ours: Vec<u8> = indices(&sol).iter().map(|c| c.get()).collect();
+                assert_eq!(ours, port.indices(), "{mode} {kind:?}");
+                assert_eq!(validate(&sol.image.to_indexed()), Ok(()));
+            }
+        }
+    }
+
+    /// #275: png2amiga's methods mix with png2c64's in one frame and keep the reference's
+    /// hooks: a locked cell is copied through, and the interactive fast path re-solves
+    /// only the dirty cells.
+    #[test]
+    fn png2amiga_s_methods_keep_the_reference_s_hooks() {
+        use crate::geom::CellSet;
+        use crate::model::CellPos;
+        let s = Solver::new(&Palette::pepto_pal());
+        for kind in [
+            DitherKind::Bayer5,
+            DitherKind::StructureFs,
+            DitherKind::TriTone,
+        ] {
+            let f = frame(Mode::MulticolorBitmap, DitherKind::Checker);
+            let first = s.solve(&f, &Steering::new(), None, &SolveOptions::default());
+            let g = frame(Mode::MulticolorBitmap, kind);
+            let mut steering = Steering::new();
+            let cell = CellPos::new(3, 4);
+            steering.set_lock(cell, true);
+            let locked = s.solve(&g, &steering, Some(&first), &SolveOptions::default());
+            assert_eq!(locked.solver, SolverKind::Reference);
+            let (a, b) = (first.image.to_indexed(), locked.image.to_indexed());
+            for y in 32..40 {
+                for x in 12..16 {
+                    let i = y * 160 + x;
+                    assert_eq!(a.pixels()[i], b.pixels()[i], "{kind:?} ({x}, {y})");
+                }
+            }
+            assert_eq!(validate(&b), Ok(()));
+            let mut dirty = CellSet::EMPTY;
+            dirty.insert_rect(10, 5, 14, 9);
+            let fast = s.solve(
+                &g,
+                &Steering::new(),
+                Some(&first),
+                &SolveOptions {
+                    mode: SolveMode::Interactive { dirty },
+                    ..SolveOptions::default()
+                },
+            );
+            assert_eq!(fast.solver, SolverKind::Reference);
+            assert_eq!(fast.background, first.background);
+            for y in 0..25 {
+                for x in 0..40 {
+                    let c = CellPos::new(x, y);
+                    if !dirty.contains(c) {
+                        assert_eq!(
+                            cell_bytes(&fast.image, c),
+                            cell_bytes(&first.image, c),
+                            "{kind:?} {c}"
+                        );
+                    }
+                }
+            }
+            assert_eq!(validate(&fast.image.to_indexed()), Ok(()));
+        }
+    }
+
     #[test]
     fn frames_the_reference_cannot_solve_fall_back_to_native() {
         let s = Solver::new(&Palette::pepto_pal());
@@ -738,10 +837,12 @@ mod tests {
                 .as_deref()
                 .is_some_and(|w| w.contains("png2amiga"))
         );
-        // png2amiga has the optimal checker, png2c64 has not: the reference goes native.
+        // png2amiga has the optimal checker, png2c64 has not: the reference runs it on
+        // png2c64's pipeline (#275), the png2amiga solver as png2amiga does.
         let f = frame(Mode::MulticolorBitmap, DitherKind::OptChecker);
         let sol = s.solve(&f, &Steering::new(), None, &SolveOptions::default());
-        assert_eq!(sol.solver, SolverKind::Native);
+        assert_eq!(sol.solver, SolverKind::Reference);
+        assert_eq!(sol.fallback, None);
         let sol = s.solve(&f, &Steering::new(), None, &p2a);
         assert_eq!(sol.solver, SolverKind::Png2amiga);
         // Neither has three-row Sierra: native, both reasons given.

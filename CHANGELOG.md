@@ -74,6 +74,8 @@ moved during development, for anyone who tried `main` before the release.
 - Large shrinks sampled from a cached mip chain [#257].
 - png2amiga's C64 path as a comparison solver, `--solver png2amiga` (ADR-014) [#273], and
   a line-art recipe on it [#283].
+- png2amiga's 32 C64 dither methods that png2c64 lacks, on png2c64's pipeline in the
+  reference solver: 90 methods in the picker [#280].
 
 #### Files, CLI and MCP
 
@@ -118,6 +120,12 @@ moved during development, for anyone who tried `main` before the release.
 - Deleting a layer shows a toast with Undo, and the Delete keys act only from the canvas
   or the Layers tab [#256].
 - Version-2 projects migrate to the 1× default on load [#251].
+- The Recipe tab runs in the order of use (Dither recipe first; Transform, Mask and
+  Advanced collapsed, remembered per user); Mode, Palette and Background moved to a row
+  under the result header [#301].
+- Transform in screen pixels (W × H of the 320 × 200 screen); Fit · Fill · 1:1 · 2:1
+  presets; a newly opened picture gets Fill; flip toggles and a larger anchor control
+  [#305].
 - Faster compositing and solving with unchanged output [#125, #136, #146]; no 4× Source
   composite while dragging [#269].
 

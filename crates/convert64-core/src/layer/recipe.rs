@@ -206,9 +206,11 @@ pub enum DitherKind {
     Truchet,
     /// Error diffusion, png2amiga's Floyd–Steinberg with the residual carried in OKLab.
     FloydSteinbergOklab,
-    /// png2amiga's Gilbert-curve diffusion; on its C64 path a plain nearest pick (it has no kernel there).
+    /// png2amiga's Gilbert-curve diffusion; on C64, png2amiga runs it as a nearest pick
+    /// (it has no kernel there), and so does the reference.
     Gilbert,
-    /// png2amiga's direct binary search; on its C64 path a plain nearest pick (it has no kernel there).
+    /// png2amiga's direct binary search; on C64, png2amiga runs it as a nearest pick (it
+    /// has no kernel there), and so does the reference.
     Dbs,
     /// Error diffusion, Floyd–Steinberg with a Laplacian-modulated threshold (keeps edges).
     StructureFs,
@@ -450,9 +452,10 @@ impl DitherKind {
         }
     }
 
-    /// Whether this is one of the 32 methods only png2amiga has (#261): the png2amiga
-    /// solver's. On the reference (png2c64's port) they go to the native solver, which runs
-    /// [`Self::native`]'s stand-in, until each is judged on our pipeline (ADR-014 §6).
+    /// Whether this is one of the 32 methods png2amiga has and png2c64 lacks (#261). The
+    /// reference solver runs them on png2c64's pipeline (#275, ADR-014 §6:
+    /// `solve::png2c64_ref::amiga`); the png2amiga solver runs png2amiga's own versions;
+    /// the native solver runs [`Self::native`]'s stand-in.
     pub const fn is_png2amiga_only(self) -> bool {
         matches!(
             self,
@@ -491,12 +494,13 @@ impl DitherKind {
         )
     }
 
-    /// The kind the native solver runs for this one (#261). The kinds only png2amiga has
-    /// are the reference's; on the native solver its threshold patterns are used as they
-    /// are (`solve::ordered::threshold`), and the others stand in for the nearest native
-    /// method: the Floyd–Steinberg variants for Floyd–Steinberg, `gilbert` and `dbs` for
-    /// no dither (as png2amiga's C64 path runs them), `yliluoma` for `yliluoma2`, the
-    /// optimal pairs and plans for `pair`, `tri-tone` for `knoll`.
+    /// The kind the native solver (`--solver native`, or a frame the reference hands it)
+    /// runs for this one (#261). The reference and png2amiga solvers run png2amiga's 32
+    /// kinds themselves (#275); on the native solver png2amiga's threshold patterns are
+    /// used as they are (`solve::ordered::threshold`), and the others stand in for the
+    /// nearest native method: the Floyd–Steinberg variants for Floyd–Steinberg, `gilbert`
+    /// and `dbs` for no dither (as png2amiga's C64 path runs them), `yliluoma` for
+    /// `yliluoma2`, the optimal pairs and plans for `pair`, `tri-tone` for `knoll`.
     pub const fn native(self) -> Self {
         match self {
             Self::FloydSteinbergOklab | Self::StructureFs | Self::ContrastFs => {

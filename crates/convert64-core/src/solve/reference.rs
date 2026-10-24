@@ -6,8 +6,10 @@
 //! (the layers' adjustments already applied any gamma): every pixel is converted to
 //! OKLab and back and clamped, as png2c64 does. Each pixel's recipe (attribute map) gives
 //! its png2c64 method, strength, error clamp, `adaptive` and pattern anchor; with one
-//! recipe for the whole frame the result is png2c64's. Frames the reference cannot
-//! solve yet fall back to the native solver ([`unsupported`] says why).
+//! recipe for the whole frame the result is png2c64's. png2amiga's 32 methods that
+//! png2c64 lacks run on this pipeline too, as [`super::png2c64_ref::amiga`] runs them
+//! (#275). Frames the reference cannot solve yet fall back to the native solver
+//! ([`unsupported`] says why).
 //!
 //! **Hooks** (#181 step 6), each inactive by default so the output stays png2c64's:
 //! - pins, allow/deny and the recipes' allowed colours constrain a cell's search
@@ -21,7 +23,7 @@
 
 use super::png2c64_ref::dither::{Method as RefMethod, PxSettings};
 use super::png2c64_ref::quantize::{Cell, CellRule, Hooks, Mode as RefMode, Screen};
-use super::png2c64_ref::{Image, colour, convert_px, preprocess};
+use super::png2c64_ref::{Image, amiga, colour, preprocess};
 use super::report::{CellReport, ClashReport, Dropped};
 use super::solver::{Background, Solution, SolveMode, SolveOptions, SolverKind};
 use super::steering::Steering;
@@ -81,11 +83,25 @@ const fn ref_mode(mode: Mode) -> Option<RefMode> {
     }
 }
 
+/// png2amiga's method for one of its 32 kinds png2c64 lacks
+/// ([`DitherKind::is_png2amiga_only`]), which the reference runs on png2c64's pipeline
+/// (#275, [`amiga`]); `None` for every other kind.
+pub fn amiga_method(kind: DitherKind) -> Option<super::png2amiga_ref::dither::Method> {
+    if kind.is_png2amiga_only() {
+        super::reference_png2amiga::ref_method(kind)
+    } else {
+        None
+    }
+}
+
 /// Why a recipe's pixels need the native solver, if they do.
 fn recipe_unsupported(r: &Recipe) -> Option<String> {
     let m = r.method();
-    if ref_method(m.kind).is_none() {
-        return Some(format!("method {:?} is not one of png2c64's", m.kind));
+    if ref_method(m.kind).is_none() && amiga_method(m.kind).is_none() {
+        return Some(format!(
+            "method {:?} is neither png2c64's nor one of png2amiga's on its pipeline",
+            m.kind
+        ));
     }
     if m.orientation != Orientation::Auto {
         return Some(format!("orientation {:?}", m.orientation));
@@ -189,6 +205,20 @@ pub(crate) fn solve(
             })
             .collect(),
     };
+    // png2amiga's methods (#275), per pixel; png2c64's method there is `none`.
+    let mut on_amiga: Vec<Option<super::png2amiga_ref::dither::Method>> = attrs
+        .pixels()
+        .iter()
+        .map(|a| {
+            amiga_method(
+                attrs
+                    .recipe(a.source)
+                    .unwrap_or(&default_recipe)
+                    .method()
+                    .kind,
+            )
+        })
+        .collect();
     let mut px: Vec<PxSettings> = attrs
         .pixels()
         .iter()
@@ -203,7 +233,9 @@ pub(crate) fn solve(
                 _ => (0, 0),
             };
             PxSettings {
-                method: ref_method(r.method().kind).expect("checked by `unsupported`"),
+                method: ref_method(r.method().kind)
+                    .or(amiga_method(r.method().kind).map(|_| RefMethod::None))
+                    .expect("checked by `unsupported`"),
                 strength: a.strength,
                 // Our recipes' 0 means "no clamp"; png2c64 would clamp everything to 0.
                 error_clamp: if r.error_clamp() > 0.0 {
@@ -220,6 +252,7 @@ pub(crate) fn solve(
     for (i, s) in px.iter_mut().enumerate() {
         if frozen[cell_of(i)] {
             s.method = RefMethod::None;
+            on_amiga[i] = None;
         }
     }
     let fixed: Vec<Option<Cell>> = match previous {
@@ -246,7 +279,7 @@ pub(crate) fn solve(
         divergences: opts.divergences,
     };
     let pal = colour::palette_of(palette);
-    let screen = convert_px(&image, &pal, mode, &px, true, &hooks);
+    let screen = amiga::convert_px(&image, &pal, mode, &px, &on_amiga, true, &hooks);
     assemble(frame, &image, &pal, &screen, SolverKind::Reference)
 }
 
