@@ -129,6 +129,8 @@ moved during development, for anyone who tried `main` before the release.
 - Transform in screen pixels (W × H of the 320 × 200 screen); Fit · Fill · 1:1 · 2:1
   presets; a newly opened picture gets Fill; flip toggles and a larger anchor control
   [#305].
+- A newly opened picture that fits inside the 320 × 200 screen opens at 1:1, centred on
+  whole C64 pixels; a larger one at Fill [#309].
 - Faster compositing and solving with unchanged output [#125, #136, #146]; no 4× Source
   composite while dragging [#269].
 
