@@ -648,7 +648,7 @@ As built in #78 (2026-10-13): the mask tools (UX §7a, ADR-008).
 
 As built in #209 (2026-10-13): palette, shortcuts, states and accessibility basics (UX §8, §11, §12).
 
-- **Picture group** at the top of the Recipe tab (Figma `Recipe tab`): mode, palette (Pepto PAL, Pepto NTSC, Colodore, or a VICE `.vpl` file: `palette_set`, linked natively, through the session's store in the browser) and the background (`background_pin`: Auto or one of the 16 swatches; the solver's pick is ringed in the text colour, a pinned one thicker in the accent, so not by colour alone). A palette change re-solves in full.
+- **Picture group** at the top of the Recipe tab (Figma `Recipe tab`; since #288 the result's picture row): mode, palette (Pepto PAL, Pepto NTSC, Colodore, or a VICE `.vpl` file: `palette_set`, linked natively, through the session's store in the browser) and the background (`background_pin`: Auto or one of the 16 swatches; the solver's pick is ringed in the text colour, a pinned one thicker in the accent, so not by colour alone). A palette change re-solves in full.
 - **Shortcuts.** Every UX §8 shortcut outside the Transform tool (#197) is wired and shown in the menus; single keys are ignored while a text field has focus. New here: `H` (hand: a primary drag pans) and bare `1` (100 %). A table-driven test checks that each shortcut asks for its action.
 - **States** (§11): the empty state (#203); a full solve running over 200 ms shows "Solving full search… n s" with **Pause** in the status bar and fades the result slightly; Pause cancels the solve and **Resume** restarts it. When clashes exist and the overlay is off, the status bar suggests "Show clashes (Shift C)" once, dismissible. File errors (open, mask, palette, save) sit inline in the status bar in the error colour; a click shows the details and Dismiss — no modal. Export success is a toast (#205).
 - **Accessibility** (§12): the working view and the result panel carry `WidgetInfo` names for screen readers; the tab order is egui's; pins, locks, clashes and the chosen background are marked by glyphs, outlines, rings and text as well as colour. Glyphs missing from Inter (`✕`, `⇄`) were replaced by the icon font or words.
@@ -730,6 +730,11 @@ As built in #287 (2026-10-24): the export set and the Export panel (UX §6b; usa
   - MCP: `export_set` and `export_run`.
   - App: the panel's rows, + and Export; `Cmd E` and `Shift Cmd E`; a dialog blocking `Q`, `Shift C` and the rest until `Esc` closes it.
   - `parity.rs` runs `export_set`'s example through the CLI and the MCP server.
+
+As built in #288 (2026-10-24): the Recipe tab in the order of use and the picture-wide settings with the result (usability review M5, UX §4.3, §6).
+
+- **Picture row.** Mode, Palette and Background moved from the top of the Recipe tab (#209's picture group) to a row under the result header (`shell::dock`): the mode dropdown (the only one now), the palette dropdown and a compact background dropdown (a 12 px swatch with `Auto` or the pinned colour's name; inside, Auto and the 16 swatches, open until a click outside). The commands are unchanged: `mode_set`, `palette_set`, `background_pin`.
+- **Recipe tab.** A layer header (32 px thumbnail, name, `Layer 1 of 2 · w × h px`), then the groups in `recipe::GROUP_ORDER`: Dither recipe, Colour fitting, Adjustments, Sharpen, Transform, Mask, Advanced; a region's recipe keeps the same order. Which groups are open is `shell::RecipeGroups`: Transform, Mask and Advanced start collapsed, a click on a heading opens or closes the group for every layer and region, and the user's choices are kept in eframe's storage under `recipe_groups` (JSON), not in the project. Screenshot runs start from the defaults and take `--open-group` / `--close-group <title>`.
 
 ### 4.1 Image model (`convert64-core::model`)
 

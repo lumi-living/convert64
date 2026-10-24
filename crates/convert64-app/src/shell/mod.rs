@@ -30,6 +30,7 @@ use convert64_core::mode::Mode;
 pub use crate::view::ViewMode;
 pub use mask::{MaskState, MaskTool};
 pub use method_picker::{PickerState, RecipeTarget};
+pub use recipe::{GROUP_ORDER, RecipeGroups};
 
 /// The four steering tools (`docs/UX.md` §7), in toolbar order. Nudge (`V`, Move in
 /// Photoshop and Figma) is the default: a stray click with it selects a layer and
@@ -313,6 +314,9 @@ pub struct Shell {
     /// The last cell the pointer was over on the picture: the picker's Picture
     /// thumbnails are cropped there.
     pub last_cell: Option<convert64_core::model::CellPos>,
+    /// Which Recipe groups are open: the user's choice, kept in the app's storage
+    /// (#288).
+    pub groups: RecipeGroups,
 }
 
 impl Default for Shell {
@@ -366,6 +370,7 @@ impl Default for Shell {
             picker: PickerState::default(),
             dock_left: None,
             last_cell: None,
+            groups: RecipeGroups::default(),
         }
     }
 }

@@ -1,5 +1,6 @@
-//! The right dock (Figma `SidePanel::right / dock`): the result header and the C64 result
-//! (fixed, never scrolls away), then the Recipe, Layers and Export tabs. Without a project
+//! The right dock (Figma `SidePanel::right / dock`): the result header, the picture row
+//! (mode, palette and background, #288) and the C64 result (fixed, never scrolls away),
+//! then the Recipe, Layers and Export tabs. Without a project
 //! every group is there but disabled (`docs/UX.md` §11).
 
 use super::status::mode_name;
@@ -8,7 +9,11 @@ use crate::icons;
 use crate::theme::{MEDIUM, Theme, layout};
 use crate::view::{Compare, SCREEN, cell_rect};
 use crate::workspace::Workspace;
+use convert64_core::command::BackgroundPin;
 use convert64_core::mode::Mode;
+use convert64_core::solve::Background;
+use convert64_core::{ColourIndex, Palette};
+use convert64_project::{JsonCommand, PaletteSpec};
 use egui::{Button, Rect, RichText, Ui, pos2};
 
 /// The result's inset in the panel, as fractions of its size (Figma `Result 320×200 @1×`:
@@ -27,7 +32,10 @@ pub(super) fn show(
     let margin = ui.spacing().window_margin;
     egui::Frame::NONE
         .inner_margin(egui::Margin::symmetric(margin.left, 0))
-        .show(ui, |ui| result_header(shell, ws, ui, actions));
+        .show(ui, |ui| {
+            result_header(shell, ws, ui);
+            picture_row(ws, ui, actions);
+        });
     result(shell, ws, ui);
     egui::Frame::NONE
         .inner_margin(egui::Margin::symmetric(margin.left, 0))
@@ -45,37 +53,14 @@ pub(super) fn show(
     });
 }
 
-/// `Result Header`: the title, the mode dropdown, the colour-limited cell count (a button
-/// to the worst one) and the compare and fit buttons.
-fn result_header(
-    shell: &mut Shell,
-    ws: Option<&Workspace>,
-    ui: &mut Ui,
-    actions: &mut Vec<Action>,
-) {
+/// `Result Header`: the title, the method picker's preview, the colour-limited cell count
+/// (a button to the worst one) and the compare and fit buttons.
+fn result_header(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui) {
     // Figma's header is 26 px: the toolbar's height less its edge stroke and padding.
     let size = egui::vec2(ui.available_width(), layout::TOOLBAR_HEIGHT - 2.0);
     let row = egui::Layout::left_to_right(egui::Align::Center);
     ui.allocate_ui_with_layout(size, row, |ui| {
         ui.label(RichText::new("Result").family(egui::FontFamily::Name(MEDIUM.into())));
-        let current = ws.map(|ws| ws.doc.mode());
-        ui.add_enabled_ui(ws.is_some(), |ui| {
-            let text = current.map_or("—", mode_name);
-            egui::ComboBox::from_id_salt("result_mode")
-                .selected_text(RichText::new(text).small())
-                .width(0.0)
-                .show_ui(ui, |ui| {
-                    for mode in MODES {
-                        if ui
-                            .selectable_label(current == Some(mode), mode_name(mode))
-                            .clicked()
-                            && current != Some(mode)
-                        {
-                            actions.push(Action::SetMode(mode));
-                        }
-                    }
-                });
-        });
         // The method picker's live preview (UX §6a).
         if let Some(p) = ws.and_then(|ws| ws.preview.as_ref()) {
             let accent = Theme::current(ui.ctx()).accent;
@@ -117,6 +102,239 @@ fn result_header(
             }
         });
     });
+}
+
+/// The picture row's height (UX §3, §4.3): a compact control's.
+const PICTURE_ROW_HEIGHT: f32 = 22.0;
+
+/// The picture row under the header (UX §4.3, usability review M5, #288): the
+/// picture-wide Mode, Palette and Background, as compact dropdowns. The Recipe tab has
+/// none of them.
+fn picture_row(ws: Option<&Workspace>, ui: &mut Ui, actions: &mut Vec<Action>) {
+    let size = egui::vec2(ui.available_width(), PICTURE_ROW_HEIGHT);
+    let row = egui::Layout::left_to_right(egui::Align::Center);
+    ui.allocate_ui_with_layout(size, row, |ui| {
+        ui.add_enabled_ui(ws.is_some(), |ui| {
+            mode_dropdown(ws, ui, actions);
+            palette_dropdown(ws, ui, actions);
+            background_dropdown(ws, ui, actions);
+        });
+    });
+}
+
+/// The Mode dropdown: the only Mode control (#288).
+fn mode_dropdown(ws: Option<&Workspace>, ui: &mut Ui, actions: &mut Vec<Action>) {
+    let current = ws.map(|ws| ws.doc.mode());
+    let text = current.map_or("—", mode_name);
+    egui::ComboBox::from_id_salt("result_mode")
+        .selected_text(RichText::new(text).small())
+        .width(0.0)
+        .show_ui(ui, |ui| {
+            for mode in MODES {
+                if ui
+                    .selectable_label(current == Some(mode), mode_name(mode))
+                    .clicked()
+                    && current != Some(mode)
+                {
+                    actions.push(Action::SetMode(mode));
+                }
+            }
+        })
+        .response
+        .on_hover_text("Mode: the C64 graphics mode");
+}
+
+/// The palettes the Palette dropdown offers before the `.vpl` file.
+fn palette_presets() -> [(PaletteSpec, Palette, &'static str); 3] {
+    [
+        (PaletteSpec::PeptoPal, Palette::pepto_pal(), "Pepto PAL"),
+        (PaletteSpec::PeptoNtsc, Palette::pepto_ntsc(), "Pepto NTSC"),
+        (
+            PaletteSpec::Colodore,
+            Palette::colodore(50.0, 100.0, 50.0),
+            "Colodore",
+        ),
+    ]
+}
+
+/// The Palette dropdown: the presets and a VICE palette file.
+fn palette_dropdown(ws: Option<&Workspace>, ui: &mut Ui, actions: &mut Vec<Action>) {
+    let palette = ws.map(|ws| ws.doc.palette());
+    let presets = palette_presets();
+    let current = palette.map_or_else(
+        || "—".to_owned(),
+        |palette| {
+            presets
+                .iter()
+                .find(|(_, p, _)| p == palette)
+                .map_or_else(|| palette.name().to_owned(), |(_, _, n)| (*n).to_owned())
+        },
+    );
+    egui::ComboBox::from_id_salt("result_palette")
+        .selected_text(RichText::new(current).small())
+        .width(0.0)
+        .show_ui(ui, |ui| {
+            for (spec, p, name) in presets {
+                let on = palette == Some(&p);
+                if ui.selectable_label(on, name).clicked() && !on {
+                    actions.push(Action::Run(JsonCommand::PaletteSet { palette: spec }));
+                }
+            }
+            ui.separator();
+            if ui.button("VICE palette file (.vpl)…").clicked() {
+                actions.push(Action::LoadPalette);
+            }
+        })
+        .response
+        .on_hover_text("Palette: the colours the result is solved and shown in");
+}
+
+/// The background setting and the colour the result has: the pinned one, or the
+/// solver's pick under Auto.
+fn shown_background(ws: &Workspace) -> (Background, Option<ColourIndex>) {
+    let bg = ws.doc.session().project().solve.background;
+    let solved = ws.solution.as_ref().and_then(|s| s.background);
+    let shown = match bg {
+        Background::Fixed(c) => Some(c),
+        Background::Auto => solved,
+    };
+    (bg, shown)
+}
+
+/// The Background dropdown's button text: `Auto` while the solver picks, else the
+/// pinned colour's name.
+fn background_text(bg: Background) -> String {
+    match bg {
+        Background::Auto => "Auto".to_owned(),
+        Background::Fixed(c) => c.name().to_owned(),
+    }
+}
+
+/// The Background dropdown (UX §4.3): a swatch and `Auto` or the colour's name; it opens
+/// on *Auto* and the 16 colours, and stays open until a click outside.
+fn background_dropdown(ws: Option<&Workspace>, ui: &mut Ui, actions: &mut Vec<Action>) {
+    let theme = Theme::current(ui.ctx());
+    let (bg, shown) = ws.map_or((Background::Auto, None), shown_background);
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(background_text(bg), font, egui::Color32::PLACEHOLDER);
+    let pad = ui.spacing().button_padding;
+    let swatch = 12.0;
+    let arrow = ui.spacing().icon_width;
+    let width = pad.x + swatch + 4.0 + galley.size().x + 4.0 + arrow + pad.x;
+    let height = ui.spacing().interact_size.y;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
+    let response = response.on_hover_text(match (bg, shown) {
+        (Background::Auto, Some(c)) => format!("Background: Auto, the solver picked {c}"),
+        (Background::Auto, None) => "Background: Auto, the solver picks".to_owned(),
+        (Background::Fixed(c), _) => format!("Background: {c}, pinned"),
+    });
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, ui.is_enabled(), "Background")
+    });
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&response);
+        let painter = ui.painter();
+        painter.rect(
+            rect,
+            visuals.corner_radius,
+            visuals.weak_bg_fill,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+        let s = Rect::from_center_size(
+            pos2(rect.left() + pad.x + swatch / 2.0, rect.center().y),
+            egui::vec2(swatch, swatch),
+        );
+        match (ws, shown) {
+            (Some(ws), Some(c)) => {
+                let rgb = ws.doc.palette().rgb(c);
+                painter.rect_filled(s, 1.0, egui::Color32::from_rgb(rgb.r, rgb.g, rgb.b));
+                // Pinned: the accent ring; the solver's pick: the text colour's.
+                let ring = if matches!(bg, Background::Fixed(_)) {
+                    theme.accent
+                } else {
+                    visuals.fg_stroke.color
+                };
+                painter.rect_stroke(s, 1.0, (1.0, ring), egui::StrokeKind::Outside);
+            }
+            _ => {
+                painter.rect_stroke(s, 1.0, visuals.fg_stroke, egui::StrokeKind::Inside);
+            }
+        }
+        let text_pos = pos2(s.right() + 4.0, rect.center().y - galley.size().y / 2.0);
+        painter.galley(text_pos, galley, visuals.text_color());
+        let a = Rect::from_center_size(
+            pos2(rect.right() - pad.x - arrow / 2.0, rect.center().y),
+            egui::vec2(arrow, arrow) * 0.5,
+        );
+        painter.add(egui::Shape::convex_polygon(
+            vec![a.left_top(), a.right_top(), a.center_bottom()],
+            visuals.fg_stroke.color,
+            egui::Stroke::NONE,
+        ));
+    }
+    let Some(ws) = ws else {
+        return;
+    };
+    egui::Popup::from_toggle_button_response(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| background_grid(ws, bg, ui, actions));
+}
+
+/// The Background dropdown's contents: *Auto* and the 16 colours, the pinned one ringed
+/// in the accent colour and the solver's pick in the text colour (not by colour alone:
+/// the rings' widths differ too).
+fn background_grid(ws: &Workspace, bg: Background, ui: &mut Ui, actions: &mut Vec<Action>) {
+    let pin = |background| Action::Run(JsonCommand::BackgroundPin(BackgroundPin { background }));
+    let solved = ws.solution.as_ref().and_then(|s| s.background);
+    let mut auto = bg == Background::Auto;
+    if ui.checkbox(&mut auto, "Auto (the solver picks)").changed() {
+        actions.push(pin(if auto {
+            Background::Auto
+        } else {
+            Background::Fixed(solved.unwrap_or(ColourIndex::ALL[0]))
+        }));
+    }
+    let side = layout::SWATCH_SIZE;
+    let palette = ws.doc.palette();
+    let accent = Theme::current(ui.ctx()).accent;
+    ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
+    for row in ColourIndex::ALL.chunks(8) {
+        ui.horizontal(|ui| {
+            for &c in row {
+                let (rect, resp) =
+                    ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
+                let rgb = palette.rgb(c);
+                ui.painter()
+                    .rect_filled(rect, 1.0, egui::Color32::from_rgb(rgb.r, rgb.g, rgb.b));
+                let pinned = bg == Background::Fixed(c);
+                if pinned || solved == Some(c) {
+                    let (w, colour) = if pinned {
+                        (2.5, accent)
+                    } else {
+                        (1.5, ui.visuals().text_color())
+                    };
+                    ui.painter()
+                        .rect_stroke(rect, 1.0, (w, colour), egui::StrokeKind::Outside);
+                }
+                let tip = format!(
+                    "Background {c}{}",
+                    if pinned {
+                        " (pinned)"
+                    } else if solved == Some(c) {
+                        " (solver's pick)"
+                    } else {
+                        ""
+                    }
+                );
+                if resp.on_hover_text(tip).clicked() && !pinned {
+                    actions.push(pin(Background::Fixed(c)));
+                }
+            }
+        });
+    }
 }
 
 /// The C64 result at 1× with its border (`layout::RESULT_HEIGHT` tall, the dock's

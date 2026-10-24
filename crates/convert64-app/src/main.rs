@@ -16,6 +16,9 @@ const THEME_KEY: &str = "theme";
 /// The storage key of the method picker's *Preview on* choice (UX §6a: remembered).
 const PREVIEW_SOURCE_KEY: &str = "method_preview_source";
 
+/// The storage key of the Recipe groups the user opened or closed (UX §6, #288).
+const RECIPE_GROUPS_KEY: &str = "recipe_groups";
+
 /// Top-level UI state; every frame is drawn from the held document.
 #[derive(Debug, Default)]
 struct App {
@@ -66,6 +69,9 @@ impl App {
             .and_then(|s| convert64_app::thumbs::PreviewSource::parse(&s))
         {
             app.shell.picker.source = source;
+        }
+        if let Some(stored) = cc.storage.and_then(|s| s.get_string(RECIPE_GROUPS_KEY)) {
+            app.shell.groups = convert64_app::shell::RecipeGroups::from_storage(&stored);
         }
         let ctx = cc.egui_ctx.clone();
         app.scheduler
@@ -779,6 +785,7 @@ impl eframe::App for App {
             PREVIEW_SOURCE_KEY,
             self.shell.picker.source.as_str().to_owned(),
         );
+        storage.set_string(RECIPE_GROUPS_KEY, self.shell.groups.to_storage());
     }
 }
 
@@ -787,7 +794,8 @@ impl eframe::App for App {
 /// [--tab recipe|layers|export] [--command <json>]… [--zoom <n>] [--centre <x>,<y>]
 /// [--mask] [--tool <name>] [--drag <x0>,<y0>:<x1>,<y1>] [--export <dir>]
 /// [--dock-scroll <points>] [--hide-ui] [--delete-layer]
-/// [--method-picker gradient|picture] [--restore-bar] [--quit-prompt]`: draws a few frames, saves the window as a PNG and
+/// [--method-picker gradient|picture] [--restore-bar] [--quit-prompt]
+/// [--open-group <title>]… [--close-group <title>]…`: draws a few frames, saves the window as a PNG and
 /// quits. The PR screenshots come from it (#203).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
@@ -886,6 +894,9 @@ mod screenshot {
         pub(super) restore_bar: bool,
         /// `--quit-prompt`: the question a quit with unsaved changes asks (#241).
         pub(super) quit_prompt: bool,
+        /// `--open-group <title>` / `--close-group <title>` (repeatable): Recipe groups
+        /// opened or closed, from the defaults (#288).
+        pub(super) groups: Vec<(String, bool)>,
         frame: u32,
     }
 
@@ -925,6 +936,7 @@ mod screenshot {
             let mut method_picker = None;
             let mut restore_bar = false;
             let mut quit_prompt = false;
+            let mut groups = Vec::new();
             while let Some(arg) = args.next() {
                 let mut value = || args.next().ok_or(format!("{arg} needs a value"));
                 match arg.as_str() {
@@ -946,6 +958,8 @@ mod screenshot {
                     "--hide-ui" => hide_ui = true,
                     "--restore-bar" => restore_bar = true,
                     "--quit-prompt" => quit_prompt = true,
+                    "--open-group" => groups.push((value()?, true)),
+                    "--close-group" => groups.push((value()?, false)),
                     "--method-picker" => method_picker = Some(value()?),
                     "--tool" => tool = Some(value()?),
                     "--drag" => {
@@ -1019,6 +1033,7 @@ mod screenshot {
                     method_picker,
                     restore_bar,
                     quit_prompt,
+                    groups,
                     frame: 0,
                 }),
             })
@@ -1129,6 +1144,10 @@ fn main() -> eframe::Result {
             if let Some(request) = request {
                 // Draw from defaults, not from what earlier runs stored.
                 cc.egui_ctx.memory_mut(|m| m.data = Default::default());
+                app.shell.groups = convert64_app::shell::RecipeGroups::default();
+                for (title, open) in &request.groups {
+                    app.shell.groups.set_open(title, *open);
+                }
                 if request.result {
                     app.shell.view = convert64_app::shell::ViewMode::Result;
                 }
