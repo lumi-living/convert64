@@ -131,22 +131,37 @@ impl Preset {
     }
 
     /// The preset `t` is at, if any (scale and position, within a rounding error).
+    /// Where presets give the same transform (a 320 × 200 source is at 1:1, Fill and Fit
+    /// at once), the most specific one: 1:1 or 2:1, then Fill, then Fit (#306).
     pub fn matching(t: &Transform, size: (u32, u32), mode: Mode) -> Option<Self> {
         let close =
             |a: Vec2, b: Vec2, eps: f32| (a.x - b.x).abs() <= eps && (a.y - b.y).abs() <= eps;
-        Self::ALL.into_iter().find(|p| {
-            let scale = p.scale(size);
-            close(t.scale(), scale, 1e-5 * scale.x.max(scale.y))
-                && close(t.translate(), p.translate(size, scale, mode), 1e-3)
-        })
+        [Self::OneToOne, Self::TwoToOne, Self::Fill, Self::Fit]
+            .into_iter()
+            .find(|p| {
+                let scale = p.scale(size);
+                close(t.scale(), scale, 1e-5 * scale.x.max(scale.y))
+                    && close(t.translate(), p.translate(size, scale, mode), 1e-3)
+            })
     }
 }
 
-/// The transform a picture opened in the app gives its first layer (UX §6 item 1, #289):
-/// [`Preset::Fill`], so the scale is uniform and the screen covered. A 16:10 picture's
-/// is the same as png2c64's stretch to 320 × 200, so it keeps png2c64's front end.
+/// The preset a picture opened in the app gets (UX §6 item 1, #289, #306): [`Preset::OneToOne`]
+/// when it fits inside the screen, so a small picture is neither enlarged nor blurred,
+/// and [`Preset::Fill`] otherwise, uniform with the screen covered.
+pub fn opening(size: (u32, u32)) -> Preset {
+    if size.0 as f32 <= SCREEN.0 && size.1 as f32 <= SCREEN.1 {
+        Preset::OneToOne
+    } else {
+        Preset::Fill
+    }
+}
+
+/// The transform a picture opened in the app gives its first layer: [`opening`]'s preset.
+/// A 16:10 picture of at least 320 × 200 gets png2c64's stretch to 320 × 200, so it keeps
+/// png2c64's front end.
 pub fn opened(size: (u32, u32), mode: Mode) -> Transform {
-    Preset::Fill
+    opening(size)
         .apply(&Transform::IDENTITY, size, mode)
         .unwrap_or(Transform::IDENTITY)
 }
@@ -350,22 +365,86 @@ mod tests {
         assert_eq!(Preset::matching(&stretch, size, mode), None);
     }
 
-    /// A picture opens with a uniform scale: Fill.
+    /// A picture opens with a uniform scale: Fill when it is larger than the screen.
     #[test]
     fn an_opened_picture_has_a_uniform_scale() {
-        for size in [(1024, 637), (480, 640), (64, 40), (3000, 1000)] {
+        for size in [
+            (1024, 637),
+            (480, 640),
+            (640, 400),
+            (400, 150),
+            (3000, 1000),
+        ] {
             let o = opened(size, Mode::MulticolorBitmap);
             assert_eq!(o.scale().x, o.scale().y, "{size:?}");
-            // Fill (on a 16:10 source Fit, the same transform, is found first).
-            let m = Preset::matching(&o, size, Mode::MulticolorBitmap).expect("a preset");
+            assert_eq!(opening(size), Preset::Fill, "{size:?}");
             assert_eq!(
-                m.apply(&Transform::IDENTITY, size, Mode::MulticolorBitmap),
-                Some(o)
+                Preset::matching(&o, size, Mode::MulticolorBitmap),
+                Some(Preset::Fill),
+                "{size:?}"
             );
             assert_eq!(
                 Preset::Fill.apply(&Transform::IDENTITY, size, Mode::MulticolorBitmap),
                 Some(o)
             );
+        }
+    }
+
+    /// #306: a picture that fits inside the screen opens at 1:1, centred on whole C64
+    /// pixels, in both modes; a larger one in either dimension at Fill.
+    #[test]
+    fn a_small_picture_opens_at_1_to_1() {
+        for mode in MODES {
+            for (size, at) in [
+                ((160, 100), (80.0, 50.0)),
+                ((320, 200), (0.0, 0.0)),
+                ((64, 40), (128.0, 80.0)),
+                ((320, 1), (0.0, 99.0)),
+                (
+                    (1, 200),
+                    (
+                        if mode == Mode::HiresBitmap {
+                            159.0
+                        } else {
+                            158.0
+                        },
+                        0.0,
+                    ),
+                ),
+                (
+                    (101, 51),
+                    (
+                        if mode == Mode::HiresBitmap {
+                            109.0
+                        } else {
+                            108.0
+                        },
+                        74.0,
+                    ),
+                ),
+            ] {
+                assert_eq!(opening(size), Preset::OneToOne, "{size:?}");
+                let o = opened(size, mode);
+                assert_eq!(o.scale(), Vec2::new(1.0, 1.0), "{size:?} {mode:?}");
+                assert_eq!(o.translate(), Vec2::new(at.0, at.1), "{size:?} {mode:?}");
+                assert_eq!(o.translate().x % pixel_width(mode), 0.0);
+                assert_eq!(o.translate().y.fract(), 0.0);
+                // The group shows 1:1, also where it is Fill and Fit too (320 × 200).
+                assert_eq!(
+                    Preset::matching(&o, size, mode),
+                    Some(Preset::OneToOne),
+                    "{size:?} {mode:?}"
+                );
+            }
+            assert_eq!(
+                opened((320, 200), mode),
+                Preset::Fill
+                    .apply(&Transform::IDENTITY, (320, 200), mode)
+                    .unwrap()
+            );
+        }
+        for size in [(321, 200), (320, 201), (400, 150), (1024, 637)] {
+            assert_eq!(opening(size), Preset::Fill, "{size:?}");
         }
     }
 }
