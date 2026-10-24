@@ -108,7 +108,10 @@ pub(super) fn show(
             && shell.mask.tool.is_none()
             && let Some(l) = ws.doc.session().project().layers.get(shell.layer)
         {
-            ui.label(small(super::transform::readout(&l.transform())));
+            ui.label(small(super::transform::readout(
+                &l.transform(),
+                l.source().size(),
+            )));
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

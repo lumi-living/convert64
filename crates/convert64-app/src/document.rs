@@ -36,6 +36,19 @@ pub fn is_project(name: &str) -> bool {
     lower.ends_with(".convert64") || lower.ends_with(".json")
 }
 
+/// The project a picture opened in the app starts as: `convert64 convert picture.png`'s
+/// (multicolor, the default recipe and palette), but with the layer at a uniform scale,
+/// Fill (UX §6 item 1, usability review M6, #289), where the CLI stretches it to
+/// 320 × 200 as png2c64 does. A 16:10 picture gets the same transform either way. A
+/// project file stores its transforms, so opening one changes nothing.
+fn picture_file(name: &str, path: &Path, size: (u32, u32)) -> ProjectFile {
+    let mut file = ProjectFile::from_png(Mode::MulticolorBitmap, name, path, size);
+    for layer in &mut file.layers {
+        layer.transform = crate::presets::opened(size, file.target);
+    }
+    file
+}
+
 impl Document {
     /// Opens a picture or a project from its bytes. `path` (native) is where the file
     /// is: a project's linked files are then read relative to it, and Save writes back
@@ -48,8 +61,7 @@ impl Document {
                 let stem = path
                     .file_stem()
                     .map_or_else(|| name.to_owned(), |s| s.to_string_lossy().into_owned());
-                let file =
-                    ProjectFile::from_png(Mode::MulticolorBitmap, &stem, path, source.size());
+                let file = picture_file(&stem, path, source.size());
                 let session = Session::from_project(file, Path::new(""))?;
                 return Ok(Self::new(name, session, None));
             }
@@ -237,14 +249,13 @@ impl Document {
         })
     }
 
-    /// A new project of one PNG, scaled to fill the screen, in multicolor with the
-    /// default recipe and palette (what `convert64 convert picture.png` makes).
+    /// A new project of one PNG in multicolor with the default recipe and palette, the
+    /// picture at a uniform scale covering the screen ([`picture_file`]).
     pub fn from_png(name: &str, png: &[u8]) -> Result<Self, ProjectError> {
         let source = convert64_project::codec::decode_source(png, name)?;
         let store = Arc::new(MemoryStore::new());
         store.insert(name, png.to_vec());
-        let file =
-            ProjectFile::from_png(Mode::MulticolorBitmap, name, Path::new(name), source.size());
+        let file = picture_file(name, Path::new(name), source.size());
         let project = format!("{name}.convert64");
         store.insert(&project, file.to_json());
         let session = Session::open_in(Box::new(store), Path::new(&project))?;
@@ -472,6 +483,87 @@ mod tests {
             .flat_map(|i| [(i % 64 * 4) as u8, (i / 64 * 6) as u8, 128, 255])
             .collect();
         encode_rgba8(64, 40, rgba)
+    }
+
+    /// A `w` × `h` grey ramp.
+    fn png_sized(w: u32, h: u32) -> Vec<u8> {
+        let rgba = (0..w * h)
+            .flat_map(|i| [(i % w * 255 / w) as u8, 100, 100, 255])
+            .collect();
+        encode_rgba8(w, h, rgba)
+    }
+
+    /// #289 (usability review M6): a picture opens at a uniform scale, Fill, in the
+    /// browser (bytes only) and natively (a path) alike.
+    #[test]
+    fn an_opened_picture_has_a_uniform_scale() {
+        use crate::presets::Preset;
+        for (w, h) in [(48, 40), (40, 64), (1024, 637)] {
+            let bytes = png_sized(w, h);
+            let mut docs = vec![Document::from_png("pic.png", &bytes).unwrap()];
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let dir = std::env::temp_dir()
+                    .join(format!("convert64-app-uniform-{}-{w}", std::process::id()));
+                std::fs::create_dir_all(&dir).unwrap();
+                let path = dir.join("pic.png");
+                std::fs::write(&path, &bytes).unwrap();
+                docs.push(Document::open("pic.png", &bytes, Some(&path)).unwrap());
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+            for doc in docs {
+                let t = doc.session().project().layers[0].transform();
+                assert_eq!(t.scale().x, t.scale().y, "{w}×{h}: {t:?}");
+                assert_eq!(
+                    Preset::matching(&t, (w, h), doc.mode()),
+                    Some(Preset::Fill),
+                    "{w}×{h}: {t:?}"
+                );
+                // The screen is covered.
+                let (sw, sh) = crate::presets::screen_size(&t, (w, h));
+                assert!(sw >= 320.0 - 1e-3 && sh >= 200.0 - 1e-3, "{sw} × {sh}");
+            }
+        }
+    }
+
+    /// #289: a 16:10 picture's Fill is png2c64's stretch to 320 × 200, what the CLI
+    /// makes, so it keeps png2c64's front end.
+    #[test]
+    fn a_16_10_picture_opens_as_the_cli_makes_it() {
+        let doc = Document::from_png("ramp.png", &png()).unwrap();
+        let cli = ProjectFile::from_png(Mode::MulticolorBitmap, "ramp", Path::new("x"), (64, 40));
+        assert_eq!(
+            doc.session().project().layers[0].transform(),
+            cli.layers[0].transform
+        );
+    }
+
+    /// #289: projects store their transforms, so an old one (a version-2 file, #251's
+    /// migration) opens with its own, png2c64's stretch included, not with Fill.
+    #[test]
+    fn a_project_keeps_its_transform() {
+        let mut doc = Document::from_png("pic.png", &png_sized(48, 40)).unwrap();
+        let stretch = convert64_core::Transform::new(
+            convert64_core::Vec2::ZERO,
+            convert64_core::Vec2::new(320.0 / 48.0, 200.0 / 40.0),
+            false,
+            false,
+        )
+        .unwrap();
+        doc.run(JsonCommand::LayerSetTransform {
+            layer: convert64_project::LayerRef::Index(0),
+            transform: stretch,
+            snap: None,
+        })
+        .unwrap();
+        let current = doc.project_json(Path::new(""), Embed::All).unwrap();
+        let v2 = current
+            .replace(r#""schema_version": 3,"#, r#""schema_version": 2,"#)
+            .replace(r#""supersample": 1,"#, r#""supersample": 4,"#);
+        for text in [current, v2] {
+            let old = Document::open("old.convert64", text.as_bytes(), None).unwrap();
+            assert_eq!(old.session().project().layers[0].transform(), stretch);
+        }
     }
 
     #[test]

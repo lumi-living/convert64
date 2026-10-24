@@ -7,6 +7,7 @@ pub mod drag;
 pub mod export;
 pub mod files;
 pub mod icons;
+pub mod presets;
 pub mod scheduler;
 pub mod shell;
 pub mod theme;

@@ -31,6 +31,7 @@ pub use crate::view::ViewMode;
 pub use export_dialog::ExportDialog;
 pub use mask::{MaskState, MaskTool};
 pub use method_picker::{PickerState, RecipeTarget};
+pub use recipe::{GROUP_ORDER, RecipeGroups};
 
 /// The four steering tools (`docs/UX.md` §7), in toolbar order. Nudge (`V`, Move in
 /// Photoshop and Figma) is the default: a stray click with it selects a layer and
@@ -314,6 +315,9 @@ pub struct Shell {
     /// The bindings that differ between the native and the browser build (#286): what
     /// the shortcuts bind and the menus show.
     pub keys: shortcuts::Keymap,
+    /// Which Recipe groups are open: the user's choice, kept in the app's storage
+    /// (#288).
+    pub groups: RecipeGroups,
 }
 
 impl Default for Shell {
@@ -368,6 +372,7 @@ impl Default for Shell {
             dock_left: None,
             last_cell: None,
             keys: shortcuts::Keymap::CURRENT,
+            groups: RecipeGroups::default(),
         }
     }
 }
