@@ -539,6 +539,7 @@ pub(super) fn popover(
                                 ui.add_space(4.0);
                             }
                             // Visible cards first, the rest after.
+                            ws.method_thumbs.want_visible(visible.len());
                             jobs.extend(visible);
                             jobs.extend(hidden);
                         });
