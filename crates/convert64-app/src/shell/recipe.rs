@@ -2534,7 +2534,7 @@ mod tests {
     fn the_transform_group_shows_screen_pixels_and_presets() {
         let ctx = egui::Context::default();
         crate::theme::install(&ctx);
-        // 64 × 40, opened: Fill, which on a 16:10 picture is 5 × 5, the whole screen.
+        // 64 × 40, opened: 1:1, as it fits inside the screen (#306).
         let mut ws = workspace(Sharpen::default());
         let mut groups = RecipeGroups::default();
         groups.set_open("Transform", true);
@@ -2555,11 +2555,11 @@ mod tests {
                 .map(|(_, r)| *r)
                 .unwrap_or_else(|| panic!("no {text:?} on the row: {texts:?}"))
         };
-        let w = on_row("320.00", row);
-        let h = on_row("200.00", row);
+        let w = on_row("64.00", row);
+        let h = on_row("40.00", row);
         assert!(row.right() < w.left() && w.right() < h.left());
-        let pct = find(&texts, "500.00 % × 500.00 % of the source");
-        let mc = find(&texts, "160.0 multicolor px wide");
+        let pct = find(&texts, "100.00 % × 100.00 % of the source");
+        let mc = find(&texts, "32.0 multicolor px wide");
         assert!(row.bottom() < pct.top() && pct.bottom() <= mc.top());
         assert!(mc.bottom() < find(&texts, "Rotate").top());
         let presets = find(&texts, "Presets");
@@ -2570,15 +2570,15 @@ mod tests {
         assert!(tab.left() > WINDOW - layout::DOCK_WIDTH, "{tab:?}");
         assert!(texts.iter().all(|(_, r)| r.right() <= WINDOW), "{texts:?}");
 
-        // 1:1 is one source pixel per screen pixel, centred on whole multicolor pixels.
+        // Fill on a 16:10 picture is 5 × 5 from the top left, the whole screen.
         let mut asked = Vec::new();
-        for events in click(buttons[2].center()) {
+        for events in click(buttons[1].center()) {
             asked.extend(frame(&ctx, &mut shell, &mut ws, events).1);
         }
-        let one = transforms(&asked);
-        assert_eq!(one.len(), 1, "{asked:?}");
-        assert_eq!(one[0].scale(), convert64_core::Vec2::new(1.0, 1.0));
-        assert_eq!(one[0].translate(), convert64_core::Vec2::new(128.0, 80.0));
+        let fill = transforms(&asked);
+        assert_eq!(fill.len(), 1, "{asked:?}");
+        assert_eq!(fill[0].scale(), convert64_core::Vec2::new(5.0, 5.0));
+        assert_eq!(fill[0].translate(), convert64_core::Vec2::ZERO);
 
         // The flips are two icon toggles beside the Flip label; the first is horizontal.
         let flip = find(&texts, "Flip");
