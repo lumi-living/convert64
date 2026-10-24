@@ -45,9 +45,10 @@ pub fn is_project(name: &str) -> bool {
 
 /// The project a picture opened in the app starts as: `convert64 convert picture.png`'s
 /// (multicolor, the default recipe and palette), but with the layer at a uniform scale,
-/// Fill (UX §6 item 1, usability review M6, #289), where the CLI stretches it to
-/// 320 × 200 as png2c64 does. A 16:10 picture gets the same transform either way. A
-/// project file stores its transforms, so opening one changes nothing.
+/// where the CLI stretches it to 320 × 200 as png2c64 does: 1:1 when it fits inside the
+/// screen (#306), Fill otherwise (UX §6 item 1, usability review M6, #289). A 16:10
+/// picture of at least 320 × 200 gets the same transform either way. A project file
+/// stores its transforms, so opening one changes nothing.
 fn picture_file(name: &str, path: &Path, size: (u32, u32)) -> ProjectFile {
     let mut file = ProjectFile::from_png(Mode::MulticolorBitmap, name, path, size);
     for layer in &mut file.layers {
@@ -257,7 +258,8 @@ impl Document {
     }
 
     /// A new project of one PNG in multicolor with the default recipe and palette, the
-    /// picture at a uniform scale covering the screen ([`picture_file`]).
+    /// picture at 1:1 if it fits inside the screen and covering it otherwise
+    /// ([`picture_file`]).
     pub fn from_png(name: &str, png: &[u8]) -> Result<Self, ProjectError> {
         let source = convert64_project::codec::decode_source(png, name)?;
         let store = Arc::new(MemoryStore::new());
@@ -514,25 +516,32 @@ mod tests {
         assert!(SAMPLE.len() < 400_000, "{} bytes", SAMPLE.len());
     }
 
-    /// #289 (usability review M6): a picture opens at a uniform scale, Fill, in the
-    /// browser (bytes only) and natively (a path) alike.
+    /// The documents a picture of `bytes` opens as: in the browser (bytes only) and
+    /// natively (a path).
+    fn opened_docs(w: u32, h: u32, bytes: &[u8]) -> Vec<Document> {
+        let mut docs = vec![Document::from_png("pic.png", bytes).unwrap()];
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let dir = std::env::temp_dir().join(format!(
+                "convert64-app-opened-{}-{w}x{h}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("pic.png");
+            std::fs::write(&path, bytes).unwrap();
+            docs.push(Document::open("pic.png", bytes, Some(&path)).unwrap());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        docs
+    }
+
+    /// #289 (usability review M6): a picture larger than the screen opens at a uniform
+    /// scale, Fill, in the browser (bytes only) and natively (a path) alike.
     #[test]
     fn an_opened_picture_has_a_uniform_scale() {
         use crate::presets::Preset;
-        for (w, h) in [(48, 40), (40, 64), (1024, 637)] {
-            let bytes = png_sized(w, h);
-            let mut docs = vec![Document::from_png("pic.png", &bytes).unwrap()];
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let dir = std::env::temp_dir()
-                    .join(format!("convert64-app-uniform-{}-{w}", std::process::id()));
-                std::fs::create_dir_all(&dir).unwrap();
-                let path = dir.join("pic.png");
-                std::fs::write(&path, &bytes).unwrap();
-                docs.push(Document::open("pic.png", &bytes, Some(&path)).unwrap());
-                let _ = std::fs::remove_dir_all(&dir);
-            }
-            for doc in docs {
+        for (w, h) in [(400, 150), (330, 640), (1024, 637)] {
+            for doc in opened_docs(w, h, &png_sized(w, h)) {
                 let t = doc.session().project().layers[0].transform();
                 assert_eq!(t.scale().x, t.scale().y, "{w}×{h}: {t:?}");
                 assert_eq!(
@@ -547,16 +556,59 @@ mod tests {
         }
     }
 
+    /// #306: a picture that fits inside the screen opens at 1:1, centred on whole C64
+    /// pixels, and the Transform group shows 1:1; it stays on whole pixels in hi-res.
+    /// 320 × 200 is 1:1 and Fill at once.
+    #[test]
+    fn a_small_picture_opens_at_1_to_1() {
+        use crate::presets::Preset;
+        for ((w, h), at) in [((160, 100), (80.0, 50.0)), ((320, 200), (0.0, 0.0))] {
+            for mut doc in opened_docs(w, h, &png_sized(w, h)) {
+                for mode in [Mode::MulticolorBitmap, Mode::HiresBitmap] {
+                    if doc.mode() != mode {
+                        doc.run(JsonCommand::ModeSet(convert64_core::command::ModeSet {
+                            mode,
+                        }))
+                        .unwrap();
+                    }
+                    let t = doc.session().project().layers[0].transform();
+                    assert_eq!(t.scale(), convert64_core::Vec2::new(1.0, 1.0), "{w}×{h}");
+                    assert_eq!(t.translate(), convert64_core::Vec2::new(at.0, at.1));
+                    assert_eq!(t.translate().x % crate::presets::pixel_width(mode), 0.0);
+                    assert_eq!(
+                        Preset::matching(&t, (w, h), mode),
+                        Some(Preset::OneToOne),
+                        "{w}×{h} {mode:?}"
+                    );
+                }
+            }
+        }
+        let full = Document::from_png("pic.png", &png_sized(320, 200)).unwrap();
+        let t = full.session().project().layers[0].transform();
+        assert_eq!(
+            Preset::Fill.apply(
+                &convert64_core::Transform::IDENTITY,
+                (320, 200),
+                full.mode()
+            ),
+            Some(t)
+        );
+    }
+
     /// #289: a 16:10 picture's Fill is png2c64's stretch to 320 × 200, what the CLI
-    /// makes, so it keeps png2c64's front end.
+    /// makes, so it keeps png2c64's front end. Since #306 only one of at least 320 × 200
+    /// opens at Fill; a smaller one opens at 1:1.
     #[test]
     fn a_16_10_picture_opens_as_the_cli_makes_it() {
-        let doc = Document::from_png("ramp.png", &png()).unwrap();
-        let cli = ProjectFile::from_png(Mode::MulticolorBitmap, "ramp", Path::new("x"), (64, 40));
-        assert_eq!(
-            doc.session().project().layers[0].transform(),
-            cli.layers[0].transform
-        );
+        for (w, h) in [(320, 200), (640, 400)] {
+            let doc = Document::from_png("ramp.png", &png_sized(w, h)).unwrap();
+            let cli = ProjectFile::from_png(Mode::MulticolorBitmap, "ramp", Path::new("x"), (w, h));
+            assert_eq!(
+                doc.session().project().layers[0].transform(),
+                cli.layers[0].transform,
+                "{w}×{h}"
+            );
+        }
     }
 
     /// #289: projects store their transforms, so an old one (a version-2 file, #251's
