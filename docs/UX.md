@@ -246,9 +246,17 @@ Three tools in the toolbar, all operate on the preview, all additive to the proj
 |---|---|---|---|---|
 | **Pin** colour set | `P` | pin the cell's current colour set; `Alt`-click to pin one colour only (from the status-bar swatch or the palette strip) | pin a rectangle of cells | pinned cells get a small pin glyph at top-right; status bar: "Pinned 7 cells" |
 | **Lock** cell | `L` | freeze the cell's output exactly as solved | lock a rectangle | lock glyph; locked cells are skipped by re-solve and drawn with a faint hatch when the Colour-limited cells overlay is on |
-| **Region** override | `R` | — | paint a soft mask that carries its own recipe (dither/metric/allowed colours) | region shows as a tinted outline; its recipe editor opens in the Recipe panel as a pseudo-layer: Dither recipe, then Colour fitting, in the layer form's order and open or closed as there (§6) |
+| **Region** override | `R` | — | paint a soft mask that carries its own recipe (dither/metric/allowed colours); the first stroke of a new or empty region always adds (below) | the regions show tinted, each outlined in the `region` colour (the selected one thicker) from the moment it exists; its recipe editor opens in the Recipe panel as a pseudo-layer under a breadcrumb (below): Dither recipe, then Colour fitting, in the layer form's order and open or closed as there (§6) |
 | **Nudge** (move) | `V` | select layer under cursor | move the layer in sub-pixel steps | X/Y readout in status bar; the solver re-runs on drop |
 | **Transform** (scale / rotate) | `Cmd T` or `S` | select layer; shows its (rotated) bounding box with 8 handles and the anchor | corner = uniform scale (hold `Shift` for free aspect), edge = one axis, just outside a corner = rotate (hold `Shift` for 15° steps), inside = move, `Alt` = about the centre, drag the anchor to move the pivot; scroll wheel over the box = ±1 %; hold `Cmd` to invert the current Snap for this drag | live X/Y, W × H in screen px and the angle in the status bar, all sub-pixel; Interactive solve during drag, Full on release; `Enter` commits, `Esc` reverts the whole drag (one undo step) |
+
+**Tool options are kept per tool** (usability review M7, #290). The Region brush, the mask Brush and the Lasso (§7a) each keep their own Add/Subtract, and the two brushes their own Size, Hardness and Flow; `X`, `[` and `]` change the current tool's only. Picking a tool never carries another tool's options over: the Region brush used to share the mask brush's, so after an `X` there its first stroke was a Subtract on an empty region and showed nothing.
+
+**The Region flow** (usability review M7, #290):
+- *Options bar:* `Region · Brush`, then Add · Subtract, Size, Hardness, Flow: the Region brush's own options.
+- *The first stroke of a new region always adds*, whatever Add/Subtract says, so it always shows. That is the stroke that makes Region 1 when there is none, and the first one on an empty region (one made with **Add region**). The bar goes back to Add with it, so it shows what the stroke did.
+- *Outline:* each region is outlined in the `region` colour, along the edge where its mask crosses 50 %, over its tint; the selected region at 2 px, the others at 1 px. While a stroke is painted, its swath shows in the `region` colour before the release. A region with nothing painted yet has no edge to draw, so the options bar says *Region 1 is empty: paint on the picture to add to it* instead.
+- *Breadcrumb:* the Recipe tab opens with **Region 1 ‹ source**: the region in the heading style, then `‹` and the selected layer's name as a link. A click on the layer's name goes back to that layer's recipe and to the Nudge tool (`V`), the way out the review missed (its tooltip: *Back to source's recipe (V)*). With no region yet it reads **Regions ‹ source**. The region list, **Add region** and the recipe follow.
 
 Right-click on any cell: a small menu — *Pin colours · Lock · Clear pin/lock · Jump to worst neighbour · Copy cell colours*. `Cmd/Ctrl Shift ]` jumps to the next-worst cell, `[` to the previous.
 
@@ -299,7 +307,7 @@ Mask thumbnails in the Layers panel (§5) show the raster with modifiers applied
 | Rotate selected layer ±0.1° / ±1° | `Cmd Alt [` `]` / with `Shift` | ours |
 | Scale selected layer ±1 % / ±10 % | `Cmd` + `[` `]` / with `Shift` (±10 % only with the Transform tool; otherwise `Shift Cmd [` `]` walk the worst cells) | ours |
 | Mask mode on/off; mask tools Brush, Lasso, Gradient, Key | `M`; `B`, `W`, `G`, `K` | Photoshop (`B`, `G`), ours (`M`, `W`, `K`) |
-| Brush size down / up; swap Add/Subtract | `[` / `]`; `X` | Photoshop |
+| Brush size down / up; swap Add/Subtract (the current tool's own, §7) | `[` / `]`; `X` | Photoshop |
 | Show mask alone | `Alt`-click mask thumbnail | Photoshop |
 | Grid / Colour-limited cells / Border | `Cmd '` / `Shift C` / `Cmd B` | Affinity/Pixelmator for grid; ours |
 | Hold-to-compare (flips to the other image) | `\` (hold) | Photoshop |
