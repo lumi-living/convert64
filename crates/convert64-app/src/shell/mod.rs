@@ -28,7 +28,7 @@ use crate::workspace::Workspace;
 use convert64_core::mode::Mode;
 
 pub use crate::view::ViewMode;
-pub use mask::{MaskState, MaskTool};
+pub use mask::{BrushOptions, MaskState, MaskTool};
 pub use method_picker::{PickerState, RecipeTarget};
 pub use recipe::{GROUP_ORDER, RecipeGroups};
 
@@ -488,6 +488,28 @@ impl Shell {
         }
     }
 
+    /// The current tool's own Add/Subtract, if it has one: the mask Brush's, the
+    /// Lasso's or the Region brush's (usability review M7).
+    pub fn paint_mode_mut(&mut self) -> Option<&mut convert64_core::mask::PaintMode> {
+        match self.mask.tool {
+            Some(MaskTool::Brush) => Some(&mut self.mask.brush.mode),
+            Some(MaskTool::Lasso) => Some(&mut self.mask.lasso),
+            Some(MaskTool::Gradient | MaskTool::Key) => None,
+            None => self.brush_mut().map(|b| &mut b.mode),
+        }
+    }
+
+    /// The current tool's own brush, if it has one: the mask Brush's or the Region
+    /// tool's.
+    pub fn brush_mut(&mut self) -> Option<&mut BrushOptions> {
+        match self.mask.tool {
+            Some(MaskTool::Brush) => Some(&mut self.mask.brush),
+            Some(_) => None,
+            None if self.tool == Tool::Region => Some(&mut self.mask.region),
+            None => None,
+        }
+    }
+
     /// Keeps the camera as set instead of fitting after an open (screenshots).
     pub fn keep_camera(&mut self) {
         self.fit_pending = false;
@@ -635,7 +657,7 @@ impl Shell {
             if self.tool == Tool::Region && self.mask.tool.is_none() {
                 egui::Panel::top("region_options")
                     .exact_size(layout::TOOLBAR_HEIGHT)
-                    .show(ui, |ui| mask::region_bar(self, ui));
+                    .show(ui, |ui| mask::region_bar(self, ws.as_deref(), ui));
             }
             if self.mask.tool.is_some() {
                 egui::Panel::top("mask_options")
@@ -952,18 +974,21 @@ impl Shell {
                 self.mask.tool = None;
                 self.mask.polygon.clear();
             }
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::X) {
-                use convert64_core::mask::PaintMode;
-                self.mask.mode = match self.mask.mode {
-                    PaintMode::Add => PaintMode::Subtract,
-                    PaintMode::Subtract => PaintMode::Add,
-                };
+            // X, [ and ] change the current tool's own options (usability review M7).
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::X)
+                && let Some(mode) = self.paint_mode_mut()
+            {
+                *mode = mask::swapped(*mode);
             }
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::OpenBracket) {
-                self.mask.size = (self.mask.size / 1.25).max(0.5);
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::OpenBracket)
+                && let Some(b) = self.brush_mut()
+            {
+                b.size = (b.size / 1.25).max(0.5);
             }
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::CloseBracket) {
-                self.mask.size = (self.mask.size * 1.25).min(64.0);
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::CloseBracket)
+                && let Some(b) = self.brush_mut()
+            {
+                b.size = (b.size * 1.25).min(64.0);
             }
             // Arrows nudge the selected layer: 10 px with Shift, 0.25 px with Alt (UX §6).
             if widget_focused {
@@ -1293,6 +1318,44 @@ mod tests {
             let (shell, _) = frame(Shell::default(), vec![key(k, shift_cmd)]);
             assert!(!shell.chrome_hidden && shell.dock_hidden, "{k:?}");
         }
+    }
+
+    /// #290 (usability review M7): every tool keeps its own options. `X` on the mask
+    /// Brush no longer makes the Region brush subtract, and `]` grows only the current
+    /// tool's brush; the Lasso has its own Add/Subtract too.
+    #[test]
+    fn tool_options_do_not_leak_between_tools() {
+        use convert64_core::mask::PaintMode;
+        let none = egui::Modifiers::NONE;
+        let press = |shell, k| frame(shell, vec![key(k, none)]).0;
+        // The mask Brush (with mask mode off it builds a selection): X makes it subtract.
+        let shell = press(Shell::default(), egui::Key::B);
+        let shell = press(shell, egui::Key::X);
+        let shell = press(shell, egui::Key::CloseBracket);
+        assert_eq!(shell.mask.brush.mode, PaintMode::Subtract);
+        let grown = shell.mask.brush.size;
+        assert!(grown > 6.0);
+        // The Region brush still adds, at its own size.
+        let shell = press(shell, egui::Key::R);
+        assert_eq!(shell.tool, Tool::Region);
+        assert_eq!(shell.mask.region, BrushOptions::default());
+        // Its X and [ change only its own options.
+        let shell = press(shell, egui::Key::X);
+        let shell = press(shell, egui::Key::OpenBracket);
+        assert_eq!(shell.mask.region.mode, PaintMode::Subtract);
+        assert!(shell.mask.region.size < 6.0);
+        assert_eq!(shell.mask.brush.mode, PaintMode::Subtract);
+        assert_eq!(shell.mask.brush.size, grown);
+        // The Lasso has its own Add/Subtract; X there leaves both brushes alone.
+        let shell = press(shell, egui::Key::W);
+        assert_eq!(shell.mask.lasso, PaintMode::Add);
+        let shell = press(shell, egui::Key::X);
+        assert_eq!(shell.mask.lasso, PaintMode::Subtract);
+        let shell = press(shell, egui::Key::B);
+        let shell = press(shell, egui::Key::X);
+        assert_eq!(shell.mask.brush.mode, PaintMode::Add);
+        assert_eq!(shell.mask.region.mode, PaintMode::Subtract);
+        assert_eq!(shell.mask.lasso, PaintMode::Subtract);
     }
 
     /// Holding `Cmd \` hides the UI; it does not flip the working view as a bare `\` does.

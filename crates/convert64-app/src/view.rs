@@ -292,10 +292,76 @@ pub fn cell_rect(grid: convert64_core::SuperGrid, cell: (u32, u32)) -> Rect {
     Rect::from_min_size(pos2(cell.0 as f32 * w, cell.1 as f32 * h), vec2(w, h))
 }
 
+/// The edge of a `w` × `h` mask (row by row, one value per unit) where it crosses 50 %,
+/// as segments along the pixel edges in mask units, a run of edges joined into one
+/// segment: what the Region tool outlines (usability review M7). Outside the mask
+/// counts as empty, so a region touching the picture's edge is closed there.
+pub fn mask_outline(values: &[f32], w: u32, h: u32) -> Vec<[Pos2; 2]> {
+    let (w, h) = (w as i64, h as i64);
+    let inside =
+        |x: i64, y: i64| x >= 0 && y >= 0 && x < w && y < h && values[(y * w + x) as usize] >= 0.5;
+    let mut out = Vec::new();
+    // Horizontal edges: between row y - 1 and row y.
+    for y in 0..=h {
+        let mut run: Option<i64> = None;
+        for x in 0..=w {
+            let edge = x < w && inside(x, y - 1) != inside(x, y);
+            match (edge, run) {
+                (true, None) => run = Some(x),
+                (false, Some(x0)) => {
+                    out.push([pos2(x0 as f32, y as f32), pos2(x as f32, y as f32)]);
+                    run = None;
+                }
+                _ => {}
+            }
+        }
+    }
+    // Vertical edges: between column x - 1 and column x.
+    for x in 0..=w {
+        let mut run: Option<i64> = None;
+        for y in 0..=h {
+            let edge = y < h && inside(x - 1, y) != inside(x, y);
+            match (edge, run) {
+                (true, None) => run = Some(y),
+                (false, Some(y0)) => {
+                    out.push([pos2(x as f32, y0 as f32), pos2(x as f32, y as f32)]);
+                    run = None;
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use convert64_core::SuperGrid;
+
+    /// #290: a 2 × 3 block's outline is its four sides, each one segment; an empty
+    /// mask has none.
+    #[test]
+    fn a_mask_outline_is_the_edge_at_half() {
+        let (w, h) = (6, 5);
+        let mut values = vec![0.0; 30];
+        for (x, y) in [(1, 1), (2, 1), (1, 2), (2, 2), (1, 3), (2, 3)] {
+            values[y * w + x] = 0.8;
+        }
+        values[0] = 0.4; // under 50 %: outside
+        let mut segments = mask_outline(&values, w as u32, h as u32);
+        segments.sort_by(|a, b| (a[0].y, a[0].x).partial_cmp(&(b[0].y, b[0].x)).unwrap());
+        assert_eq!(
+            segments,
+            vec![
+                [pos2(1.0, 1.0), pos2(3.0, 1.0)],
+                [pos2(1.0, 1.0), pos2(1.0, 4.0)],
+                [pos2(3.0, 1.0), pos2(3.0, 4.0)],
+                [pos2(1.0, 4.0), pos2(3.0, 4.0)],
+            ]
+        );
+        assert!(mask_outline(&[0.0; 30], 6, 5).is_empty());
+    }
     use convert64_core::mode::Mode;
 
     fn view() -> Rect {

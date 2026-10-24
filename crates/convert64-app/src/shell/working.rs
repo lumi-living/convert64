@@ -149,13 +149,8 @@ pub(super) fn show(
         let tint = Theme::current(ui.ctx()).region.gamma_multiply(0.45);
         painter.image(tex, picture, uv, tint);
     }
-    if shell.tool == super::Tool::Region
-        && shell.mask.tool.is_none()
-        && let Some(h) = response.hover_pos()
-    {
-        let s = shell.camera.scale(shell.view);
-        let accent = Theme::current(ui.ctx()).accent;
-        painter.circle_stroke(h, shell.mask.size * s, (1.5, accent));
+    if shell.tool == super::Tool::Region && shell.mask.tool.is_none() {
+        region_feedback(shell, ws, &painter, view, response.hover_pos());
     }
     // The quick-mask overlay (UX §7a): over the picture, in the view mode's geometry.
     if let Some(tex) = shell.mask_overlay {
@@ -186,6 +181,50 @@ pub(super) fn show(
 }
 
 /// Pan (`Space` + drag, middle drag, scroll) and zoom (pinch, `Cmd` + wheel) in the view.
+/// The Region tool's feedback (UX §7, usability review M7): each region outlined in the
+/// `region` colour (the selected one thicker), the stroke being painted as a swath in
+/// that colour before its release, and the brush under the pointer.
+fn region_feedback(
+    shell: &Shell,
+    ws: &Workspace,
+    painter: &Painter,
+    view: Rect,
+    hover: Option<Pos2>,
+) {
+    let picture = shell.camera.picture_rect(view, shell.view);
+    let s = shell.camera.scale(shell.view);
+    let at = |p: Pos2| picture.min + p.to_vec2() * s;
+    let theme = Theme::current(painter.ctx());
+    let mut shapes = Vec::new();
+    for (k, outline) in ws.region_outlines().iter().enumerate() {
+        let width = if k == shell.region { 2.0 } else { 1.0 };
+        let stroke = Stroke::new(width, theme.region);
+        shapes.extend(
+            outline
+                .iter()
+                .map(|[a, b]| egui::Shape::line_segment([at(*a), at(*b)], stroke)),
+        );
+    }
+    painter.extend(shapes);
+    let radius = shell.mask.region.size * s;
+    let swath = theme.region.gamma_multiply(0.45);
+    match shell.mask.stroke.as_slice() {
+        [] => {}
+        [p] => {
+            painter.circle_filled(at(*p), radius, swath);
+        }
+        points => {
+            painter.add(egui::Shape::line(
+                points.iter().map(|p| at(*p)).collect(),
+                Stroke::new(2.0 * radius, swath),
+            ));
+        }
+    }
+    if let Some(h) = hover {
+        painter.circle_stroke(h, radius, (1.5, theme.accent));
+    }
+}
+
 fn navigate(shell: &mut Shell, ui: &Ui, response: &egui::Response, view: Rect) {
     let mode = shell.view;
     let (scroll, zoom, space) = ui.input(|i| {
