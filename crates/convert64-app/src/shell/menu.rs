@@ -105,7 +105,7 @@ pub(super) fn show(
             }
             if cfg!(not(target_arch = "wasm32")) {
                 ui.separator();
-                if item(ui, "Quit", Some(&s::QUIT), true) {
+                if item(ui, "Quit", shell.keys.quit.as_ref(), true) {
                     actions.push(Action::Quit);
                 }
             }
@@ -123,8 +123,14 @@ pub(super) fn show(
         });
         ui.menu_button("View", |ui| view_menu(shell, ui, actions));
         ui.menu_button("Layer", |ui| {
-            let layer = LayerRef::Index(shell.layer);
-            if item(ui, "New Layer from File…", Some(&s::NEW_LAYER), open) {
+            let layer = convert64_project::LayerRef::Index(shell.layer);
+            // The browser's binding in the browser, Shift Cmd L (#286).
+            if item(
+                ui,
+                "New Layer from File…",
+                Some(&shell.keys.new_layer),
+                open,
+            ) {
                 actions.push(Action::NewLayer);
             }
             if item(ui, "Duplicate", Some(&s::DUPLICATE_LAYER), open) {

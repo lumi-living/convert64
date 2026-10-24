@@ -314,6 +314,9 @@ pub struct Shell {
     /// The last cell the pointer was over on the picture: the picker's Picture
     /// thumbnails are cropped there.
     pub last_cell: Option<convert64_core::model::CellPos>,
+    /// The bindings that differ between the native and the browser build (#286): what
+    /// the shortcuts bind and the menus show.
+    pub keys: shortcuts::Keymap,
     /// Which Recipe groups are open: the user's choice, kept in the app's storage
     /// (#288).
     pub groups: RecipeGroups,
@@ -372,6 +375,7 @@ impl Default for Shell {
             picker: PickerState::default(),
             dock_left: None,
             last_cell: None,
+            keys: shortcuts::Keymap::CURRENT,
             groups: RecipeGroups::default(),
             recipe_clipboard: None,
         }
@@ -810,7 +814,9 @@ impl Shell {
             if i.consume_shortcut(&s::BORDER) {
                 self.overlays.border = !self.overlays.border;
             }
-            if i.consume_shortcut(&s::QUIT) {
+            if let Some(quit) = self.keys.quit
+                && i.consume_shortcut(&quit)
+            {
                 actions.push(Action::Quit);
             }
             if i.consume_shortcut(&s::OPEN) {
@@ -822,7 +828,7 @@ impl Shell {
             } else if i.consume_shortcut(&s::UNDO) {
                 actions.push(Action::Undo);
             }
-            if i.consume_shortcut(&s::NEW_LAYER) {
+            if i.consume_shortcut(&self.keys.new_layer) || i.consume_shortcut(&s::NEW_LAYER_ALT) {
                 actions.push(Action::NewLayer);
             }
             if i.consume_shortcut(&s::DUPLICATE_LAYER) {
@@ -874,7 +880,9 @@ impl Shell {
             if i.consume_shortcut(&s::SCALE_DOWN) {
                 self.scale_request = Some(1.0 / 1.01);
             }
-            if i.consume_shortcut(&s::TRANSFORM) {
+            if let Some(transform) = self.keys.transform
+                && i.consume_shortcut(&transform)
+            {
                 self.tool = Tool::Transform;
                 self.mask.tool = None;
                 self.mask.active = false;
@@ -1988,6 +1996,41 @@ mod tests {
         assert_eq!(shell.camera.source_zoom, 3.0);
         assert!(shell.overlays.grid && shell.overlays.clashes);
         assert_eq!(shell.compare, Compare::Split);
+    }
+
+    /// #286: under the browser's keymap the keys a browser keeps do nothing (the browser
+    /// acts on them first) and the alternatives work: `Shift Cmd L` adds a layer, `S`
+    /// picks Transform. Natively `Cmd T` and `Shift Cmd N` keep working, and
+    /// `Shift Cmd L` too.
+    #[test]
+    fn the_browser_keymap_binds_the_alternatives() {
+        let web = || Shell {
+            keys: shortcuts::Keymap::WEB,
+            ..Shell::default()
+        };
+        for r in shortcuts::BROWSER_RESERVED {
+            let (shell, actions) = frame(web(), vec![key(r.logical_key, r.modifiers)]);
+            assert!(actions.is_empty(), "{r:?}: {actions:?}");
+            assert_eq!(shell.tool, Tool::Nudge, "{r:?}");
+        }
+        let shift_cmd = egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT);
+        let (_, actions) = frame(web(), vec![key(egui::Key::L, shift_cmd)]);
+        assert_eq!(actions, vec![Action::NewLayer]);
+        let (shell, _) = frame(web(), vec![key(egui::Key::S, egui::Modifiers::NONE)]);
+        assert_eq!(shell.tool, Tool::Transform);
+
+        let native = || Shell {
+            keys: shortcuts::Keymap::NATIVE,
+            ..Shell::default()
+        };
+        let (shell, _) = frame(native(), vec![key(egui::Key::T, egui::Modifiers::COMMAND)]);
+        assert_eq!(shell.tool, Tool::Transform);
+        for k in [egui::Key::N, egui::Key::L] {
+            let (_, actions) = frame(native(), vec![key(k, shift_cmd)]);
+            assert_eq!(actions, vec![Action::NewLayer], "{k:?}");
+        }
+        let (_, actions) = frame(native(), vec![key(egui::Key::Q, egui::Modifiers::COMMAND)]);
+        assert_eq!(actions, vec![Action::Quit]);
     }
 
     /// #287, UX §8: while a dialog is open (the quit question) no shortcut acts behind

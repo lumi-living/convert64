@@ -250,7 +250,7 @@ Three tools in the toolbar, all operate on the preview, all additive to the proj
 | **Lock** cell | `L` | freeze the cell's output exactly as solved | lock a rectangle | lock glyph; locked cells are skipped by re-solve and drawn with a faint hatch when the Colour-limited cells overlay is on |
 | **Region** override | `R` | — | paint a soft mask that carries its own recipe (dither/metric/allowed colours) | region shows as a tinted outline; its recipe editor opens in the Recipe panel as a pseudo-layer: Dither recipe, then Colour fitting, in the layer form's order and open or closed as there (§6) |
 | **Nudge** (move) | `V` | select layer under cursor | move the layer in sub-pixel steps | X/Y readout in status bar; the solver re-runs on drop |
-| **Transform** (scale / rotate) | `Cmd T` or `S` | select layer; shows its (rotated) bounding box with 8 handles and the anchor, in Source mode only (§4.1) | corner = uniform scale (hold `Shift` for free aspect), edge = one axis, just outside a corner = rotate (hold `Shift` for 15° steps), inside = move, `Alt` = about the centre, drag the anchor to move the pivot; scroll wheel over the box = ±1 %; hold `Cmd` to invert the current Snap for this drag | live X/Y, W × H in screen px and the angle in the status bar, all sub-pixel; Interactive solve during drag, Full on release; `Enter` commits, `Esc` reverts the whole drag (one undo step) |
+| **Transform** (scale / rotate) | `S`, or `Cmd T` natively (§8) | select layer; shows its (rotated) bounding box with 8 handles and the anchor, in Source mode only (§4.1) | corner = uniform scale (hold `Shift` for free aspect), edge = one axis, just outside a corner = rotate (hold `Shift` for 15° steps), inside = move, `Alt` = about the centre, drag the anchor to move the pivot; scroll wheel over the box = ±1 %; hold `Cmd` to invert the current Snap for this drag | live X/Y, W × H in screen px and the angle in the status bar, all sub-pixel; Interactive solve during drag, Full on release; `Enter` commits, `Esc` reverts the whole drag (one undo step) |
 
 Right-click on any cell: a small menu — *Pin colours · Lock · Clear pin/lock · Jump to worst neighbour · Copy cell colours*. `Cmd/Ctrl Shift ]` jumps to the next-worst cell, `[` to the previous.
 
@@ -293,12 +293,12 @@ Mask thumbnails in the Layers panel (§5) show the raster with modifiers applied
 | Working view: Source ⇄ Result | `Q` | ours (unused by the Photoshop family for anything we need) |
 | Jump to result at cursor | click the result panel | Photoshop Navigator |
 | Pan | `Space` + drag, `H` | all |
-| New layer from file / Duplicate / Delete | `Shift Cmd N` / `Cmd J` / `Delete` | Photoshop family |
+| New layer from file / Duplicate / Delete | `Shift Cmd N` (browser: `Shift Cmd L`; both work natively) / `Cmd J` / `Delete` | Photoshop family; the browser's ours |
 | Layer via mask / via cut (with a selection) | `Cmd J` / `Shift Cmd J` | Photoshop *Layer via copy / cut* |
 | Toggle layer visibility | `Cmd ,` ; click eye | Photoshop/Pixelmator |
 | Nudge 1 / 10 / 0.25 px | `←↑↓→` / `Shift+` / `Alt+` | editors / ours |
 | Tools: Nudge, Pin, Lock, Region | `V`, `P`, `L`, `R` | single-key tools (Photoshop style) |
-| Transform (scale / rotate) layer | `Cmd T` / `S` | Photoshop free transform / ours |
+| Transform (scale / rotate) layer | `Cmd T` (native only) / `S` | Photoshop free transform / ours |
 | Snap: Off → C64 pixel → Cell | `Shift Cmd ;` | Photoshop snap toggle |
 | Rotate selected layer ±0.1° / ±1° | `Cmd Alt [` `]` / with `Shift` | ours |
 | Scale selected layer ±1 % / ±10 % | `Cmd` + `[` `]` / with `Shift` (±10 % only with the Transform tool; otherwise `Shift Cmd [` `]` walk the worst cells) | ours |
@@ -314,6 +314,16 @@ Mask thumbnails in the Layers panel (§5) show the raster with modifiers applied
 | Command palette | `Cmd K` (v2) | PhotoCraft, every modern tool |
 
 Deliberately avoided: `Ctrl+Y` as the only redo (GIMP-only), `1`–`6` zoom levels (Aseprite-only), Pixelmator's Save-As/Duplicate swap.
+
+**Keys the browser keeps** (usability review M3, #286). A browser does not give a page some keys: Chrome opens a tab on `Cmd T`, a window on `Cmd N` and an incognito window on `Shift Cmd N`. It closes the tab on `Cmd W` and the window on `Shift Cmd W`, and reopens a closed tab on `Shift Cmd T`. On macOS `Cmd Q` quits it. Outside an installed PWA or fullscreen keyboard lock the page never sees these keys. The browser build therefore binds none of them, and its menus and tooltips show the binding that works there:
+
+| Action | Native | Browser | Why this one |
+|---|---|---|---|
+| New layer from file | `Shift Cmd N` (also `Shift Cmd L`) | `Shift Cmd L` | L for layer, and unbound before. `Alt Cmd N` was the other candidate, but on Windows `Ctrl Alt` is AltGr, which types a letter on many layouts (`ń` on Polish) |
+| Transform tool | `Cmd T` or `S` | `S` | `S` already picks it on both |
+| Quit | `Cmd Q` | — | a page cannot quit; closing the tab is the browser's |
+
+`Cmd N` and `Cmd W` were never bound. In the browser a slip onto `Cmd W` (or a reload) meets the unsaved-changes guard first (§11, #241), and the autosave offers the session again on the next visit.
 
 ## 9. Words
 

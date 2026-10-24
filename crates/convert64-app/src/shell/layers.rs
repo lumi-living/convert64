@@ -345,7 +345,7 @@ fn strip(shell: &mut Shell, layers: &[Layer], ui: &mut Ui, actions: &mut Vec<Act
         let b = |glyph| Button::new(icon(glyph)).frame(false);
         if ui
             .add(b(icons::ADD))
-            .on_hover_text(tip("New layer from file", &super::shortcuts::NEW_LAYER))
+            .on_hover_text(tip("New layer from file", &shell.keys.new_layer))
             .clicked()
         {
             actions.push(Action::NewLayer);
