@@ -7,8 +7,14 @@ use crate::files::FileEvent;
 use eframe::wasm_bindgen::closure::Closure;
 use eframe::wasm_bindgen::{JsCast as _, JsValue};
 use eframe::web_sys::js_sys::{self, Array, Function, Object, Promise, Reflect, Uint8Array};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+
+thread_local! {
+    /// The folder the export set last went into (a `FileSystemDirectoryHandle`), for
+    /// Export Again while the page is open (UX §6b, #287).
+    static EXPORT_DIR: RefCell<Option<JsValue>> = const { RefCell::new(None) };
+}
 
 /// `target[name]`.
 pub(crate) fn get(target: &JsValue, name: &str) -> Result<JsValue, JsValue> {
@@ -231,18 +237,7 @@ async fn save_with(
                 let written = if let [(_, data)] = files {
                     write_handle(&handle, data).await
                 } else {
-                    let mut r = Ok(());
-                    for (name, data) in files {
-                        let opts = object(&[("create", true.into())]);
-                        r = match call_async(&handle, "getFileHandle", &[name.into(), opts]).await {
-                            Ok(file) => write_handle(&file, data).await,
-                            Err(e) => Err(e),
-                        };
-                        if r.is_err() {
-                            break;
-                        }
-                    }
-                    r
+                    write_into(&handle, files).await
                 };
                 return written.map(|()| Outcome::Written).map_err(|e| describe(&e));
             }
@@ -258,6 +253,85 @@ async fn save_with(
         download(name, data).map_err(|e| describe(&e))?;
     }
     Ok(Outcome::Downloaded)
+}
+
+/// Writes each of `files` into `dir`, a `FileSystemDirectoryHandle`.
+async fn write_into(dir: &JsValue, files: &[(String, Vec<u8>)]) -> Result<(), JsValue> {
+    for (name, data) in files {
+        let opts = object(&[("create", true.into())]);
+        let file = call_async(dir, "getFileHandle", &[name.into(), opts]).await?;
+        write_handle(&file, data).await?;
+    }
+    Ok(())
+}
+
+/// What an export wrote: the folder's name (when it went into one) and each file's
+/// name and size, or `None` if the user cancelled.
+type Exported = Option<(Option<String>, Vec<(String, usize)>)>;
+
+/// Writes the export set's `files` with no overlay (UX §6b, #287): into a folder the
+/// user picks (`showDirectoryPicker`, Chromium), with `again` the folder of the last
+/// export while the page is open, otherwise, or if the picker is refused, one download
+/// per file. The picker is asked for here, synchronously, so it still has the user's
+/// key press or click.
+pub fn export_files(
+    files: Vec<(String, Vec<u8>)>,
+    again: bool,
+    done: impl FnOnce(Result<Exported, String>) + 'static,
+) {
+    let w = window();
+    let remembered = if again {
+        EXPORT_DIR.with(|d| d.borrow().clone())
+    } else {
+        None
+    };
+    let picker = if remembered.is_none() && has_method(&w, "showDirectoryPicker") {
+        let opts = object(&[
+            ("mode", "readwrite".into()),
+            ("id", "convert64-export".into()),
+        ]);
+        call(&w, "showDirectoryPicker", &[opts]).ok()
+    } else {
+        None
+    };
+    js_sys::futures::spawn_local(async move {
+        let sizes: Vec<(String, usize)> = files.iter().map(|(n, b)| (n.clone(), b.len())).collect();
+        let dir = match (remembered, picker) {
+            (Some(dir), _) => Some(dir),
+            (None, Some(promise)) => match settle(promise).await {
+                Ok(dir) => Some(dir),
+                Err(e) if error_name(&e) == "AbortError" => return done(Ok(None)),
+                // No user activation left, or the picker is not allowed here: download.
+                Err(e) => {
+                    crate::scheduler::clock::log(&format!(
+                        "convert64: folder picker refused ({}); downloading instead",
+                        describe(&e)
+                    ));
+                    None
+                }
+            },
+            (None, None) => None,
+        };
+        let Some(dir) = dir else {
+            let downloaded = files
+                .iter()
+                .try_for_each(|(name, data)| download(name, data))
+                .map_err(|e| describe(&e));
+            return done(downloaded.map(|()| Some((None, sizes))));
+        };
+        match write_into(&dir, &files).await {
+            Ok(()) => {
+                let folder = get(&dir, "name").ok().and_then(|n| n.as_string());
+                EXPORT_DIR.with(|d| *d.borrow_mut() = Some(dir));
+                done(Ok(Some((folder, sizes))));
+            }
+            Err(e) => {
+                // Asked again next time.
+                EXPORT_DIR.with(|d| *d.borrow_mut() = None);
+                done(Err(describe(&e)));
+            }
+        }
+    });
 }
 
 /// [`save_files`] reporting to the app's file inbox as `FileEvent`s.

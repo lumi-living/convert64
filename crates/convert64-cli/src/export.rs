@@ -1,5 +1,6 @@
-//! `convert64 export`: solve a project, or every project in a directory, and write
-//! assembler source (KickAssembler, ACME, 64tass, ca65) or a C header with its data.
+//! `convert64 export`: solve a project, or every project in a directory, and write its
+//! export set (#287) or, with `--asm`, assembler source (KickAssembler, ACME, 64tass,
+//! ca65) or a C header with its data.
 
 use crate::convert::{self, Overrides};
 use crate::report::{Fail, Run};
@@ -94,7 +95,12 @@ fn projects(input: &Path) -> Result<Vec<PathBuf>, Fail> {
 /// Runs `export`: the worst project's exit code.
 pub(crate) fn run(run: &mut Run, job: &ExportJob<'_>) -> Result<u8, Fail> {
     run.set("input", job.input.display().to_string());
-    let targets = assemblers(job.asm)?;
+    // No --asm: each project's export set.
+    let targets = if job.asm.is_empty() {
+        Vec::new()
+    } else {
+        assemblers(job.asm)?
+    };
     run.set(
         "assemblers",
         targets.iter().map(|a| a.id()).collect::<Vec<_>>(),
@@ -108,12 +114,7 @@ pub(crate) fn run(run: &mut Run, job: &ExportJob<'_>) -> Result<u8, Fail> {
     let mut reports = Vec::with_capacity(list.len());
     for project in &list {
         let name = job.name.map_or_else(
-            || {
-                project.file_stem().map_or_else(
-                    || "picture".to_owned(),
-                    |s| s.to_string_lossy().into_owned(),
-                )
-            },
+            || convert64_cli::export_set::default_stem(project),
             str::to_owned,
         );
         let mut r = Run::new("export", true);
@@ -136,15 +137,19 @@ pub(crate) fn run(run: &mut Run, job: &ExportJob<'_>) -> Result<u8, Fail> {
                 run.wrote(Path::new(f));
             }
         }
-        run.say(format!(
-            "{} -> {} ({})",
-            project.display(),
-            job.out.display(),
+        let what = if targets.is_empty() {
+            "export set".to_owned()
+        } else {
             targets
                 .iter()
                 .map(|a| a.id())
                 .collect::<Vec<_>>()
                 .join(", ")
+        };
+        run.say(format!(
+            "{} -> {} ({what})",
+            project.display(),
+            job.out.display(),
         ));
         reports.push(v);
     }
@@ -162,6 +167,9 @@ fn export_one(
     r.set("input", project.display().to_string());
     let (mut session, _) = convert::load(r, project, job.overrides, None)?;
     r.set("mode", session.target());
+    if targets.is_empty() {
+        return export_set(r, job, &mut session, name);
+    }
     let sol = r.time("solve", || session.solve(true).clone());
     let s2 = r.time("ssimulacra2", || session.ssimulacra2());
     let opts = EmitOptions::new(name).with_data(job.data.style());
@@ -182,5 +190,32 @@ fn export_one(
         }
     }
     r.set("sources", Value::Array(sources));
+    convert::finish_solve(r, &sol, s2, false, job.max_clashes)
+}
+
+/// The project's export set (#287) into `--out`: the files the app's Export panel writes.
+fn export_set(
+    r: &mut Run,
+    job: &ExportJob<'_>,
+    session: &mut convert64_project::Session,
+    name: &str,
+) -> Result<u8, Fail> {
+    r.set(
+        "exports",
+        session
+            .project()
+            .exports
+            .iter()
+            .map(|e| e.format.id())
+            .collect::<Vec<_>>(),
+    );
+    let files = r
+        .time("solve", || convert64_cli::export_set::files(session, name))
+        .map_err(Fail::input)?;
+    for (file, bytes) in &files {
+        r.write(&job.out.join(file), bytes)?;
+    }
+    let sol = session.solution().expect("solved").clone();
+    let s2 = r.time("ssimulacra2", || session.ssimulacra2());
     convert::finish_solve(r, &sol, s2, false, job.max_clashes)
 }

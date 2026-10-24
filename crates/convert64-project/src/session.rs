@@ -195,6 +195,7 @@ impl Session {
                 palette: palette.clone(),
                 solve: file.solve,
                 snap: file.snap,
+                exports: file.exports,
             }),
             compositor: Compositor::new(grid),
             preview: None,
@@ -347,6 +348,7 @@ impl Session {
             steering: SteeringSpec::from_steering(&p.steering),
             solve: p.solve.clone(),
             snap: p.snap,
+            exports: p.exports.clone(),
             commands: Vec::new(),
             migrated_from: None,
         })
@@ -661,6 +663,7 @@ impl Session {
             JsonCommand::BackgroundPin(c) => Command::BackgroundPin(c),
             JsonCommand::SolveSet(c) => Command::SolveSet(c),
             JsonCommand::SnapSet(c) => Command::SnapSet(c),
+            JsonCommand::ExportSet(c) => Command::ExportSet(c),
             JsonCommand::MaskSourceRemove { layer, index } => {
                 Command::MaskSourceRemove(MaskSourceRemove {
                     layer: self.resolve(&layer)?,

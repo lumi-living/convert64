@@ -6,8 +6,8 @@
 
 use crate::file::{PaletteSpec, SourceSpec};
 use convert64_core::command::{
-    AdjustmentsChange, BackgroundPin, CellAllow, CellClear, CellDeny, CellLock, CellPin, ModeSet,
-    ModifierChange, RecipeChange, Selection, SnapSet, SolveSet,
+    AdjustmentsChange, BackgroundPin, CellAllow, CellClear, CellDeny, CellLock, CellPin, ExportSet,
+    ModeSet, ModifierChange, RecipeChange, Selection, SnapSet, SolveSet,
 };
 use convert64_core::geom::Vec2;
 use convert64_core::layer::{Adjustments, Blend, Downscale, Recipe, Resample, Snap, Transform};
@@ -297,6 +297,8 @@ pub enum JsonCommand {
     SolveSet(SolveSet),
     /// Set what transform commands snap to.
     SnapSet(SnapSet),
+    /// Replace the export set (#287).
+    ExportSet(ExportSet),
     /// Remove one entry of a layer mask's sources list.
     MaskSourceRemove {
         /// Layer.
@@ -636,6 +638,20 @@ mod tests {
             }),
             JsonCommand::SnapSet(SnapSet {
                 snap: Snap::C64Pixel,
+            }),
+            JsonCommand::ExportSet(ExportSet {
+                exports: vec![
+                    convert64_core::export::ExportEntry::new(
+                        convert64_core::export::ExportFormat::Picture,
+                    ),
+                    convert64_core::export::ExportEntry {
+                        zoom: 4,
+                        name: Some("title@4x".into()),
+                        ..convert64_core::export::ExportEntry::new(
+                            convert64_core::export::ExportFormat::Png,
+                        )
+                    },
+                ],
             }),
             JsonCommand::MaskSourceRemove {
                 layer: LayerRef::Index(0),

@@ -145,6 +145,21 @@ fn source_entry_schema() -> Value {
     )
 }
 
+/// One row of the export set (#287).
+pub fn export_entry_schema() -> Value {
+    use convert64_core::export::{ExportFormat, MAX_ZOOM};
+    let formats: Vec<&str> = ExportFormat::ALL.iter().map(|f| f.id()).collect();
+    object_schema(
+        json!({
+            "format": enum_schema(&formats, "picture (Koala .kla in multicolor, Art Studio .art in hi-res), prg (self-displaying), raw (the .bin set and its manifest), kickass, acme, 64tass, ca65, c (source code), png (preview)"),
+            "name": { "type": "string", "minLength": 1, "description": "The files' base name, no extension; absent, the project's name" },
+            "zoom": { "type": "integer", "minimum": 1, "maximum": MAX_ZOOM, "default": 2, "description": "PNG zoom (png only)" },
+            "data": enum_schema(&["bytes", "include-raw", "include-picture"], "How source code carries the picture data (source formats only; default bytes)")
+        }),
+        &["format"],
+    )
+}
+
 fn enum_schema(values: &[&str], description: &str) -> Value {
     json!({ "type": "string", "enum": values, "description": description })
 }
@@ -565,6 +580,14 @@ pub fn command_schema(name: &str) -> Option<Value> {
             json!({ "snap": transform_snap_schema("What layer_set_transform and layer_rotate round to: off, whole target pixels and 0.5° (c64-pixel), or cells and 15° (cell)") }),
             &["snap"],
         ),
+        "export_set" => object_schema(
+            json!({ "exports": {
+                "type": "array",
+                "description": "The rows, in order; [] clears the set",
+                "items": export_entry_schema()
+            } }),
+            &["exports"],
+        ),
         "mask_source_remove" => object_schema(
             json!({
                 "layer": layer(),
@@ -716,6 +739,10 @@ pub fn example(name: &str) -> Option<Value> {
             json!({ "solver": "png2amiga", "refine": true, "background_rule": "search", "hysteresis": 0.97 })
         }
         "snap_set" => json!({ "snap": "c64-pixel" }),
+        "export_set" => json!({ "exports": [
+            { "format": "picture" }, { "format": "prg" },
+            { "format": "kickass", "data": "include-raw" },
+            { "format": "png", "zoom": 4, "name": "title@4x" } ] }),
         "mask_source_remove" => json!({ "layer": 1, "index": 0 }),
         "mask_source_set_combine" => json!({ "layer": 1, "index": 0, "combine": "min" }),
         "region_add" => json!({ "name": "faces", "index": 1,

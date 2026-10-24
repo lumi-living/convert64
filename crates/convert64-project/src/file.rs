@@ -89,6 +89,11 @@ pub struct ProjectFile {
     /// `c64-pixel` or `cell`.
     #[serde(default, skip_serializing_if = "is_off")]
     pub snap: Snap,
+    /// The export set (#287): rows of format, options and file name that the app's
+    /// Export panel, `Shift Cmd E` and `convert64 export` write. Written only when not
+    /// empty; set by `export_set`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exports: Vec<convert64_core::export::ExportEntry>,
     /// Registry commands run in order after loading (a recipe file's commands).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<JsonCommand>,
@@ -520,6 +525,7 @@ impl ProjectFile {
             steering: SteeringSpec::default(),
             solve: SolveSpec::default(),
             snap: Snap::Off,
+            exports: Vec::new(),
             commands: Vec::new(),
             migrated_from: None,
         }
@@ -554,6 +560,7 @@ impl ProjectFile {
             steering: SteeringSpec::default(),
             solve: r.solve,
             snap: Snap::Off,
+            exports: Vec::new(),
             commands: r.commands,
             migrated_from: None,
         }
@@ -894,6 +901,48 @@ mod tests {
         assert_eq!(ProjectFile::parse(&text).unwrap(), q);
         let bad = r#"{"schema_version":2,"target":"hires-bitmap","layers":[],"snap":"grid"}"#;
         assert!(ProjectFile::parse(bad).is_err());
+    }
+
+    /// #287: the export set is optional and written only when not empty, so a file
+    /// without it reads and writes exactly as before; each row writes only what differs
+    /// from its defaults, and an unknown format or option is refused.
+    #[test]
+    fn the_export_set_is_optional_and_round_trips() {
+        use convert64_core::export::{ExportData, ExportEntry, ExportFormat};
+        let old = r#"{"schema_version":3,"target":"multicolor-bitmap","layers":[]}"#;
+        let p = ProjectFile::parse(old).unwrap();
+        assert!(p.exports.is_empty());
+        assert!(!p.to_json().contains("exports"));
+        let mut q = p.clone();
+        q.exports = vec![
+            ExportEntry::new(ExportFormat::Picture),
+            ExportEntry::new(ExportFormat::Prg),
+            ExportEntry {
+                data: ExportData::IncludeRaw,
+                ..ExportEntry::new(ExportFormat::KickAssembler)
+            },
+            ExportEntry {
+                zoom: 4,
+                name: Some("title@4x".into()),
+                ..ExportEntry::new(ExportFormat::Png)
+            },
+        ];
+        let text = q.to_json();
+        assert!(text.contains(r#""format": "picture""#), "{text}");
+        assert!(text.contains(r#""data": "include-raw""#), "{text}");
+        assert!(text.contains(r#""zoom": 4"#), "{text}");
+        assert_eq!(text.matches("zoom").count(), 1, "{text}");
+        assert_eq!(ProjectFile::parse(&text).unwrap(), q);
+        for bad in [
+            r#"[{"format":"koala"}]"#,
+            r#"[{"format":"png","scale":2}]"#,
+            r#"[{"format":"kickass","data":"inline"}]"#,
+        ] {
+            let file = format!(
+                r#"{{"schema_version":3,"target":"multicolor-bitmap","layers":[],"exports":{bad}}}"#
+            );
+            assert!(ProjectFile::parse(&file).is_err(), "{bad}");
+        }
     }
 
     /// #235: a layer's `downscale` is written only when it is not `auto`, so files

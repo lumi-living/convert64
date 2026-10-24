@@ -39,6 +39,9 @@ pub enum FileEvent {
     /// Files written or downloaded, with their sizes in bytes, the verb for the toast
     /// ("Exported", "Saved") and what they were.
     Saved(Vec<(String, usize)>, &'static str, SaveTag),
+    /// The export set went into this folder (its name), for Export Again's note
+    /// (UX §6b). Comes before the export's `Saved`.
+    ExportFolder(String),
     /// Something went wrong: the message names cause and remedy.
     Failed(String),
 }
@@ -81,6 +84,9 @@ pub fn human_size(bytes: usize) -> String {
 #[derive(Debug, Clone, Default)]
 pub struct Files {
     inbox: Arc<Mutex<Vec<FileEvent>>>,
+    /// The folder the export set last went into (native), for Export Again.
+    #[cfg(not(target_arch = "wasm32"))]
+    export_dir: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl Files {
@@ -193,6 +199,76 @@ impl Files {
             .set_file_name(suggested)
             .add_filter(filter.0, filter.1)
             .save_file()
+    }
+
+    /// Forgets the folder the export set last went into: a newly opened project asks
+    /// again (natively; the browser's handle stays with the page).
+    pub fn forget_export_folder(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            *self.export_dir.lock().expect("export folder") = None;
+        }
+    }
+
+    /// Writes the export set's `files` into a folder (UX §6b, #287): natively one the
+    /// user picks, or with `again` the last one without asking; in the browser through
+    /// the direct save path (#241): a folder picked with `showDirectoryPicker`, the same
+    /// one again with `again`, else one download per file (`crate::web::export_files`).
+    /// `FileEvent::ExportFolder` and then `FileEvent::Saved` come once they are written.
+    pub fn export_files(&self, ctx: &egui::Context, files: Vec<(String, Vec<u8>)>, again: bool) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = ctx;
+            let last = self.export_dir.lock().expect("export folder").clone();
+            let dir = match last {
+                Some(dir) if again => Some(dir),
+                last => {
+                    let mut dialog = rfd::FileDialog::new().set_title("Export to folder");
+                    if let Some(dir) = last {
+                        dialog = dialog.set_directory(dir);
+                    }
+                    dialog.pick_folder()
+                }
+            };
+            let Some(dir) = dir else { return };
+            *self.export_dir.lock().expect("export folder") = Some(dir.clone());
+            let mut saved = Vec::with_capacity(files.len());
+            for (name, bytes) in files {
+                let path = dir.join(&name);
+                if let Err(e) = std::fs::write(&path, &bytes) {
+                    self.push(FileEvent::Failed(format!(
+                        "Can't write {}: {e}. Export to another folder.",
+                        path.display()
+                    )));
+                    return;
+                }
+                saved.push((name, bytes.len()));
+            }
+            let folder = dir.file_name().map_or_else(
+                || dir.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            self.push(FileEvent::ExportFolder(folder));
+            self.push(FileEvent::Saved(saved, "Exported", SaveTag::Export));
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let this = self.clone();
+            let ctx = ctx.clone();
+            crate::web::export_files(files, again, move |result| {
+                match result {
+                    Ok(Some((folder, saved))) => {
+                        if let Some(folder) = folder {
+                            this.push(FileEvent::ExportFolder(folder));
+                        }
+                        this.push(FileEvent::Saved(saved, "Exported", SaveTag::Export));
+                    }
+                    Ok(None) => {}
+                    Err(e) => this.push(FileEvent::Failed(format!("Can't export: {e}."))),
+                }
+                ctx.request_repaint();
+            });
+        }
     }
 
     /// Writes `files` (natively) next to each other in a folder the user picks; one
