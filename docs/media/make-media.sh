@@ -5,7 +5,8 @@
 # Needs ImageMagick (`magick`), `sips` (macOS) and VICE's `x64sc` on PATH. The screenshot
 # windows open on screen and see the real mouse pointer: keep it off them, or a hover
 # tooltip lands in the picture. The crops assume a 2× (Retina) display, where
-# `--screenshot` writes 3456 × 2010 (`--size` is ignored on macOS).
+# `--screenshot` writes 3456 × 1992 (`--size` is ignored on macOS); the nudge crop finds
+# the picture itself, the picker crop is fixed.
 set -eu
 cd "$(git rev-parse --show-toplevel)"
 OUT=docs/media
@@ -34,7 +35,7 @@ done
 # 2. The method picker on the gradient preview, cropped to the picker.
 for t in dark light; do
   $APP $SRC --screenshot "$TMP/picker-$t.png" --theme $t --method-picker gradient
-  magick "$TMP/picker-$t.png" -crop 1354x1746+1464+156 +repage -resize 50% "$OUT/method-picker-$t.png"
+  magick "$TMP/picker-$t.png" -crop 1350x1722+1465+158 +repage -resize 50% "$OUT/method-picker-$t.png"
 done
 
 # 3. Sub-pixel nudge: the layer moved right in quarter-pixel steps (canvas pixels; a
@@ -47,7 +48,13 @@ for x in 0 0.25 0.5 0.75 1 0.75 0.5 0.25; do
   f=$(printf '%s/nudge-%02d.png' "$TMP" $i)
   $APP $SRC --screenshot "$f.full.png" --theme dark --view result \
     --command "{\"command\":\"layer_nudge\",\"layer\":0,\"by\":{\"x\":$x,\"y\":0}}"
-  magick "$f.full.png" -crop 1280x800+768+996 +repage -filter point -resize 50% \
+  if [ $i -eq 0 ]; then
+    # The picture's top-left corner: the working view below the toolbar, trimmed of
+    # its plain surround (2560 × 1600 at 400 %).
+    read PX PY <<<"$(magick "$f.full.png" -crop 2800x1800+0+105 +repage -format '%X %Y' -trim info: | tr -d '+')"
+    PY=$((PY + 105))
+  fi
+  magick "$f.full.png" -crop 1280x800+$((PX + 80 * 8))+$((PY + 95 * 8)) +repage -filter point -resize 50% \
     -background '#1b1b1b' -gravity south -splice 0x36 \
     -font $FONT -pointsize 20 -fill '#f0f0f0' -annotate +0+7 "Layer X  +$(printf '%.2f' $x) px" "$f"
   i=$((i + 1))
