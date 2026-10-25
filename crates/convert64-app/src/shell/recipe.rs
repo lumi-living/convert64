@@ -310,7 +310,7 @@ pub(super) fn show(shell: &mut Shell, ws: &Workspace, ui: &mut Ui, actions: &mut
         adjustments(&mut f, shell, ws, layer, ui);
         sharpen(&mut f, layer.adjustments().sharpen, ui);
         transform_group(&mut f, shell, ws, layer, ui);
-        mask_group(&mut f, shell, ws, layer, ui);
+        mask_group(&mut f, shell, layer, ui);
         advanced(&mut f, layer, &project.solve, ui);
     }
     shell.groups = f.groups;
@@ -1511,20 +1511,20 @@ fn flip_toggle(ui: &mut Ui, on: bool, vertical: bool) -> Response {
 
 /// The Mask group (UX §6 item 3): modifiers, the sources list and Edit mask; a layer
 /// without a mask shows one button, Add mask.
-fn mask_group(f: &mut Form, shell: &mut Shell, ws: &Workspace, layer: &Layer, ui: &mut Ui) {
+fn mask_group(f: &mut Form, shell: &mut Shell, layer: &Layer, ui: &mut Ui) {
     use convert64_core::command::ModifierChange;
     use convert64_core::mask::{MaskSource, Modifiers, SnapToCells};
     let Some(mask) = layer.mask() else {
         let _ = group(f, ui, "Mask", false, |f, ui| {
             ui.label(
-                RichText::new("No mask: the whole layer shows.")
+                RichText::new("No mask: the whole layer shows. Start one from:")
                     .small()
                     .weak(),
             );
-            if ui.button("Add mask").clicked() {
-                let layers = &ws.doc.session().project().layers;
-                f.actions.push(super::layers::add_mask(layers, f.layer));
-            }
+            // Photoshop's Reveal all / Hide all, so the first stroke shows (M8).
+            ui.horizontal(|ui| {
+                super::mask::new_mask_buttons(shell, layer, ui, f.actions);
+            });
             false
         });
         return;
@@ -2496,7 +2496,7 @@ mod tests {
             assert!(tiny.is_empty(), "{theme:?}: smaller than Small: {tiny:?}");
             let visuals = crate::theme::style(theme).visuals;
             for hint in [
-                "No mask: the whole layer shows.",
+                "No mask: the whole layer shows. Start one from:",
                 "Adaptive lets the solver reassign cell colours for the lowest error.",
             ] {
                 let (_, size, colour) = texts
