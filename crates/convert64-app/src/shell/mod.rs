@@ -654,18 +654,12 @@ impl Shell {
                 .show(ui, |ui| {
                     toolbar::show(self, ws.as_deref(), ui, &mut actions)
                 });
-            if self.tool == Tool::Region && self.mask.tool.is_none() {
-                egui::Panel::top("region_options")
-                    .exact_size(layout::TOOLBAR_HEIGHT)
-                    .show(ui, |ui| mask::region_bar(self, ws.as_deref(), ui));
-            }
-            if self.mask.tool.is_some() {
-                egui::Panel::top("mask_options")
-                    .exact_size(layout::TOOLBAR_HEIGHT)
-                    .show(ui, |ui| {
-                        mask::options_bar(self, ws.as_deref(), ui, &mut actions)
-                    });
-            }
+            // The options row is always there, so nothing jumps (usability review M8).
+            egui::Panel::top("options_bar")
+                .exact_size(layout::TOOLBAR_HEIGHT)
+                .show(ui, |ui| {
+                    toolbar::options_bar(self, ws.as_deref(), ui, &mut actions)
+                });
             if let Some(text) = &self.restore_offer {
                 egui::Panel::top("restore_bar")
                     .exact_size(layout::TOOLBAR_HEIGHT)

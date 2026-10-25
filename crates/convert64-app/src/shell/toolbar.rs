@@ -157,3 +157,55 @@ pub(super) fn show(
         });
     });
 }
+
+/// The options bar (UX §3, usability review M8): one row under the toolbar, always
+/// there, so nothing jumps when a tool or mask mode changes. It shows the current
+/// tool's options: the mask tools' and the Region brush's, Pin and Lock's usage, or
+/// with Nudge and Transform the selected layer's transform readout. Empty with no
+/// picture.
+pub(super) fn options_bar(
+    shell: &mut Shell,
+    ws: Option<&Workspace>,
+    ui: &mut Ui,
+    actions: &mut Vec<Action>,
+) {
+    let Some(ws) = ws else { return };
+    ui.horizontal_centered(|ui| {
+        super::mask::narrow_sliders(ui);
+        if shell.mask.tool.is_some() {
+            super::mask::options_bar(shell, Some(ws), ui, actions);
+            return;
+        }
+        let name = |text: &str| RichText::new(text).small().strong();
+        let hint = |text: &str| RichText::new(text).small().weak();
+        match shell.tool {
+            Tool::Region => super::mask::region_bar(shell, Some(ws), ui),
+            Tool::Pin => {
+                ui.label(name("Pin"));
+                ui.separator();
+                ui.label(hint(
+                    "Click a cell to keep its colours, drag for a rectangle; Alt-click keeps one colour",
+                ));
+            }
+            Tool::Lock => {
+                ui.label(name("Lock"));
+                ui.separator();
+                ui.label(hint(
+                    "Click a cell to freeze it as solved, drag for a rectangle; again to unlock",
+                ));
+            }
+            Tool::Nudge | Tool::Transform => {
+                ui.label(name(if shell.tool == Tool::Nudge {
+                    "Move"
+                } else {
+                    "Transform"
+                }));
+                ui.separator();
+                if let Some(l) = ws.doc.session().project().layers.get(shell.layer) {
+                    let readout = super::transform::readout(&l.transform(), l.source().size());
+                    ui.label(RichText::new(format!("Layer {} · {readout}", l.name())).small());
+                }
+            }
+        }
+    });
+}

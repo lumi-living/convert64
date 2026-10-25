@@ -574,8 +574,9 @@ mod tests {
             let size = egui::vec2(1280.0, 900.0);
             frame(&ctx, &mut shell, Some(&mut ws), size, vec![]);
             let (texts, _) = frame(&ctx, &mut shell, Some(&mut ws), size, vec![]);
+            // Menu bar, toolbar, options bar (#311), then the header.
             let header =
-                |t: &super::super::ui_test::Text| t.rect.top() < 3.0 * layout::TOOLBAR_HEIGHT;
+                |t: &super::super::ui_test::Text| t.rect.top() < 4.0 * layout::TOOLBAR_HEIGHT;
             let count = texts
                 .iter()
                 .find(|t| header(t) && t.text == super::super::status::limited_cells(n))

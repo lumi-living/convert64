@@ -147,16 +147,7 @@ pub(super) fn show(
         }
         separator(ui);
         field(ui, "", &format!("{:>4}%", shell.camera.percent(shell.view)));
-        if shell.tool == super::Tool::Transform
-            && shell.mask.tool.is_none()
-            && let Some(l) = ws.doc.session().project().layers.get(shell.layer)
-        {
-            separator(ui);
-            ui.label(small(super::transform::readout(
-                &l.transform(),
-                l.source().size(),
-            )));
-        }
+        // The transform readout is in the options bar (usability review M8).
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let now = ui.input(|i| i.time);
