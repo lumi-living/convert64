@@ -30,6 +30,14 @@ pub struct Document {
     redo_steps: Vec<usize>,
 }
 
+/// `name` without its extension: what a picture's layer is called (`source.png` →
+/// `source`).
+fn file_stem(name: &str) -> String {
+    Path::new(name)
+        .file_stem()
+        .map_or_else(|| name.to_owned(), |s| s.to_string_lossy().into_owned())
+}
+
 /// Whether `name` is a project file rather than a picture.
 pub fn is_project(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
@@ -234,11 +242,9 @@ impl Document {
             false,
         )
         .map_err(|e| ProjectError::Invalid(e.to_string()))?;
-        let stem = Path::new(name)
-            .file_stem()
-            .map_or_else(|| name.to_owned(), |s| s.to_string_lossy().into_owned());
+        let name = self.free_name(&file_stem(name));
         self.run(JsonCommand::LayerAdd {
-            name: stem,
+            name,
             source: spec,
             index: None,
             visible: true,
@@ -257,11 +263,29 @@ impl Document {
         let source = convert64_project::codec::decode_source(png, name)?;
         let store = Arc::new(MemoryStore::new());
         store.insert(name, png.to_vec());
-        let file = picture_file(name, Path::new(name), source.size());
+        // The layer is named by the file stem, as natively (usability review m7).
+        let mut file = picture_file(name, Path::new(name), source.size());
+        for layer in &mut file.layers {
+            layer.name = file_stem(name);
+        }
         let project = format!("{name}.convert64");
         store.insert(&project, file.to_json());
         let session = Session::open_in(Box::new(store), Path::new(&project))?;
         Ok(Self::new(name, session, None))
+    }
+
+    /// `stem`, or if a layer already has that name the first free `stem 2`, `stem 3`…
+    /// (UX §5, usability review m7: two `source.png` became "source" and "source.png").
+    pub fn free_name(&self, stem: &str) -> String {
+        let layers = &self.session.project().layers;
+        let taken = |n: &str| layers.iter().any(|l| l.name() == n);
+        if !taken(stem) {
+            return stem.to_owned();
+        }
+        (2..)
+            .map(|k| format!("{stem} {k}"))
+            .find(|n| !taken(n))
+            .expect("a free number")
     }
 
     /// The session, for reading.
@@ -477,6 +501,28 @@ pub fn result_rgba(solution: &Solution, palette: &Palette, grid: SuperGrid) -> (
 
 #[cfg(test)]
 mod tests {
+    /// Usability review m7: a picture's layer is named by its file stem whether it came
+    /// with a path or as bytes, and a name already in the stack gets the next number.
+    #[test]
+    fn layers_are_named_by_file_stem_with_a_number_on_a_clash() {
+        let rgba = (0..16 * 10).flat_map(|i| [i as u8, 90, 200, 255]).collect();
+        let png = convert64_project::codec::encode_rgba8(16, 10, rgba);
+        let mut doc = Document::open("source.png", &png, None).unwrap();
+        doc.add_layer("source.png", &png, None).unwrap();
+        doc.add_layer("source.png", &png, None).unwrap();
+        doc.add_layer("sky.png", &png, None).unwrap();
+        let names: Vec<_> = doc
+            .session()
+            .project()
+            .layers
+            .iter()
+            .map(|l| l.name().to_owned())
+            .collect();
+        assert_eq!(names, ["source", "source 2", "source 3", "sky"]);
+        assert_eq!(doc.free_name("sky"), "sky 2");
+        assert_eq!(doc.free_name("ground"), "ground");
+    }
+
     use super::*;
     use convert64_project::codec::encode_rgba8;
 

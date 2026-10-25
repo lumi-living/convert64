@@ -98,3 +98,6 @@ pub const STEP_UP: Icon = m::ICON_KEYBOARD_ARROW_UP;
 pub const STEP_DOWN: Icon = m::ICON_KEYBOARD_ARROW_DOWN;
 /// Method picker: the search field.
 pub const SEARCH: Icon = m::ICON_SEARCH;
+
+/// A menu item that is on (View › Border, the overlays, Theme; usability review m5).
+pub const CHECK: Icon = m::ICON_CHECK;
