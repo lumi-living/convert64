@@ -32,7 +32,7 @@ pub(super) fn show(
 ) {
     let Some(ws) = ws else {
         shell.hover = None;
-        empty(ui);
+        empty(ui, actions);
         return;
     };
     let view = ui.max_rect();
@@ -489,22 +489,46 @@ fn crosshair(painter: &Painter, p: Pos2, colour: Color32) {
     painter.line_segment([p - vec2(0.0, 8.0), p + vec2(0.0, 8.0)], s);
 }
 
-/// The empty state (UX §11): what to do first.
-fn empty(ui: &mut Ui) {
+/// The empty state's sentence (UX §5).
+pub(super) const EMPTY_TEXT: &str =
+    "Drop an image here or open one. Convert64 shows the C64 result as soon as it loads.";
+
+/// The empty state (UX §5, §11; usability review M10, #292): what to do first, and two
+/// ways to do it: the primary **Open image…** and the **Try a sample picture** link.
+fn empty(ui: &mut Ui, actions: &mut Vec<super::Action>) {
+    use crate::theme::layout::{ICON_SIZE, TOOLBAR_HEIGHT};
     let open = crate::shell::shortcuts::format(ui.ctx(), &super::shortcuts::OPEN);
-    ui.centered_and_justified(|ui| {
-        ui.vertical_centered(|ui| {
-            let block = 3.0 * crate::theme::layout::TOOLBAR_HEIGHT;
-            ui.add_space((ui.available_height() - block).max(0.0) / 2.0);
-            ui.label(
-                icon(icons::ADD_IMAGE)
-                    .size(2.0 * crate::theme::layout::ICON_SIZE)
-                    .weak(),
-            );
-            ui.label(RichText::new("Open an image or a .convert64 project").strong());
-            ui.label(RichText::new(format!("File › Open… ({open}), or drop a file here")).weak());
-        });
-    });
+    let rect = ui.max_rect();
+    let glyph = 2.0 * ICON_SIZE;
+    let button = vec2(160.0, TOOLBAR_HEIGHT);
+    // The glyph, two lines of text, the button and the link, centred as one block.
+    let block = glyph + 3.0 * TOOLBAR_HEIGHT + button.y;
+    let column = Rect::from_center_size(rect.center(), vec2(rect.width().min(420.0), block));
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(column)
+            .layout(egui::Layout::top_down(egui::Align::Center)),
+        |ui| {
+            ui.label(icon(icons::ADD_IMAGE).size(glyph).weak());
+            ui.add(egui::Label::new(RichText::new(EMPTY_TEXT)).wrap());
+            ui.add_space(ui.spacing().item_spacing.y * 2.0);
+            let primary = super::primary_button(ui, "Open image…");
+            if ui
+                .add_sized(button, primary)
+                .on_hover_text(format!("Open a picture or a .convert64 project ({open})"))
+                .clicked()
+            {
+                actions.push(super::Action::Open);
+            }
+            if ui
+                .link("Try a sample picture")
+                .on_hover_text("Open the title painting that comes with Convert64")
+                .clicked()
+            {
+                actions.push(super::Action::OpenSample);
+            }
+        },
+    );
 }
 
 #[cfg(test)]

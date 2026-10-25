@@ -108,13 +108,7 @@ pub(super) fn show(shell: &mut Shell, ws: &Workspace, ui: &mut Ui, actions: &mut
     };
     // The panel's one primary button: the selection fill, strong text (dark on the
     // light theme's pale accent, light on the dark theme's deep one), label centred.
-    let visuals = ui.visuals();
-    let primary = Button::new(
-        RichText::new(text)
-            .strong()
-            .color(visuals.strong_text_color()),
-    )
-    .fill(visuals.selection.bg_fill);
+    let primary = super::primary_button(ui, text);
     let enabled = n > 0 && ready && !clash;
     let why = if n == 0 {
         "Add a format first"

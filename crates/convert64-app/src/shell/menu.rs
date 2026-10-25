@@ -121,7 +121,7 @@ pub(super) fn show(
             ui.separator();
             copy_paste(shell, ws, ui, actions);
         });
-        ui.menu_button("View", |ui| view_menu(shell, ui, actions));
+        ui.menu_button("View", |ui| view_menu(shell, open, ui, actions));
         ui.menu_button("Layer", |ui| {
             let layer = convert64_project::LayerRef::Index(shell.layer);
             // The browser's binding in the browser, Shift Cmd L (#286).
@@ -176,7 +176,7 @@ pub(super) fn show(
     });
 }
 
-fn view_menu(shell: &mut Shell, ui: &mut Ui, actions: &mut Vec<Action>) {
+fn view_menu(shell: &mut Shell, open: bool, ui: &mut Ui, actions: &mut Vec<Action>) {
     for mode in [ViewMode::Source, ViewMode::Result] {
         if toggle(
             ui,
@@ -201,16 +201,17 @@ fn view_menu(shell: &mut Shell, ui: &mut Ui, actions: &mut Vec<Action>) {
         }
     });
     ui.separator();
-    if plain(ui, "Zoom In", Some(&s::ZOOM_IN), true) {
+    // Zoom waits for a picture, as the toolbar's does (UX §5, #292).
+    if plain(ui, "Zoom In", Some(&s::ZOOM_IN), open) {
         shell.zoom_step(true);
     }
-    if plain(ui, "Zoom Out", Some(&s::ZOOM_OUT), true) {
+    if plain(ui, "Zoom Out", Some(&s::ZOOM_OUT), open) {
         shell.zoom_step(false);
     }
-    if plain(ui, "Zoom to Fit", Some(&s::ZOOM_FIT), true) {
+    if plain(ui, "Zoom to Fit", Some(&s::ZOOM_FIT), open) {
         shell.fit();
     }
-    if plain(ui, "Actual Pixels", Some(&s::ZOOM_100), true) {
+    if plain(ui, "Actual Pixels", Some(&s::ZOOM_100), open) {
         shell.camera.actual(shell.view);
     }
     ui.separator();
