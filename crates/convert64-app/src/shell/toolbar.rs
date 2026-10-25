@@ -79,7 +79,10 @@ pub(super) fn show(
                 let mut tip = format!("{} ({}", tool.label(), tool.key().name());
                 // Transform's Cmd T beside its S, where the platform has it (#286).
                 if let Some(s) = shell.keys.transform.filter(|_| tool == Tool::Transform) {
-                    tip.push_str(&format!(" or {}", ui.ctx().format_shortcut(&s)));
+                    tip.push_str(&format!(
+                        " or {}",
+                        crate::shell::shortcuts::format(ui.ctx(), &s)
+                    ));
                 }
                 tip.push(')');
                 let on = open && shell.tool == tool && shell.mask.tool.is_none();
@@ -92,7 +95,12 @@ pub(super) fn show(
         snap_menu(ws, ui, actions);
         ui.separator();
         let ctx = ui.ctx().clone();
-        let tip = |label: &str, shortcut| format!("{label} ({})", ctx.format_shortcut(shortcut));
+        let tip = |label: &str, shortcut| {
+            format!(
+                "{label} ({})",
+                crate::shell::shortcuts::format(&ctx, shortcut)
+            )
+        };
         if button(
             ui,
             icons::ZOOM_IN,

@@ -799,7 +799,7 @@ impl eframe::App for App {
 /// [--mask] [--tool <name>] [--drag <x0>,<y0>:<x1>,<y1>] [--export <dir>]
 /// [--dock-scroll <points>] [--hide-ui] [--delete-layer]
 /// [--method-picker gradient|picture] [--restore-bar] [--quit-prompt]
-/// [--open-group <title>]… [--close-group <title>]…`: draws a few frames, saves the window as a PNG and
+/// [--open-group <title>]… [--close-group <title>]… [--hover <x>,<y>]`: draws a few frames, saves the window as a PNG and
 /// quits. The PR screenshots come from it (#203).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
@@ -901,6 +901,12 @@ mod screenshot {
         /// `--open-group <title>` / `--close-group <title>` (repeatable): Recipe groups
         /// opened or closed, from the defaults (#288).
         pub(super) groups: Vec<(String, bool)>,
+        /// `--hover <x>,<y>`: the pointer rests there (window points), for the status
+        /// bar's cell readout and hover states (m4).
+        pub(super) hover: Option<egui::Pos2>,
+        /// `--size` was given: the window is also resized to it once it is open, since
+        /// macOS may ignore the size it was created with (m8).
+        resize: bool,
         frame: u32,
     }
 
@@ -941,6 +947,8 @@ mod screenshot {
             let mut restore_bar = false;
             let mut quit_prompt = false;
             let mut groups = Vec::new();
+            let mut hover = None;
+            let mut resize = false;
             while let Some(arg) = args.next() {
                 let mut value = || args.next().ok_or(format!("{arg} needs a value"));
                 match arg.as_str() {
@@ -965,6 +973,14 @@ mod screenshot {
                     "--open-group" => groups.push((value()?, true)),
                     "--close-group" => groups.push((value()?, false)),
                     "--method-picker" => method_picker = Some(value()?),
+                    "--hover" => {
+                        let v = value()?;
+                        let (x, y) = v.split_once(',').ok_or("--hover is <x>,<y>")?;
+                        hover = Some(egui::pos2(
+                            x.parse().map_err(|_| "--hover: bad x")?,
+                            y.parse().map_err(|_| "--hover: bad y")?,
+                        ));
+                    }
                     "--tool" => tool = Some(value()?),
                     "--drag" => {
                         let v = value()?;
@@ -1003,6 +1019,7 @@ mod screenshot {
                             w.parse().map_err(|_| "--size: bad width")?,
                             h.parse().map_err(|_| "--size: bad height")?,
                         ];
+                        resize = true;
                     }
                     _ if !arg.starts_with("--") && open.is_none() => {
                         open = Some(PathBuf::from(arg))
@@ -1038,6 +1055,8 @@ mod screenshot {
                     restore_bar,
                     quit_prompt,
                     groups,
+                    hover,
+                    resize,
                     frame: 0,
                 }),
             })
@@ -1046,6 +1065,11 @@ mod screenshot {
         /// Called before every frame: adds `--drag`'s pointer events, one step a frame,
         /// once the first frame has been drawn.
         pub(super) fn inject(&mut self, raw: &mut egui::RawInput) {
+            if let Some(p) = self.hover
+                && self.frame > 0
+            {
+                raw.events.push(egui::Event::PointerMoved(p));
+            }
             let Some((from, to)) = self.drag else { return };
             if self.frame == 0 || self.drag_frame >= DRAG_FRAMES {
                 return;
@@ -1077,8 +1101,13 @@ mod screenshot {
                 return;
             }
             self.frame += 1;
+            if self.resize && self.frame == 1 {
+                let [w, h] = self.size;
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
+            }
             let drag = if self.drag.is_some() { DRAG_FRAMES } else { 0 };
-            if self.frame == SETTLE_FRAMES + drag {
+            let resized = if self.resize { SETTLE_FRAMES } else { 0 };
+            if self.frame == SETTLE_FRAMES + drag + resized {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             }
             ctx.request_repaint();
@@ -1226,6 +1255,10 @@ fn main() -> eframe::Result {
                 };
                 if let Some(preference) = request.theme {
                     app.set_theme(&cc.egui_ctx, preference);
+                }
+                if request.drag.is_some() {
+                    // A click that opens a menu: shown open, not half way through its fade.
+                    cc.egui_ctx.all_styles_mut(|s| s.animation_time = 0.0);
                 }
                 if request.quit_prompt {
                     app.shell.quit_prompt = app.unsaved_name();

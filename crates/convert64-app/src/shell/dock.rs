@@ -20,6 +20,26 @@ use egui::{Button, Rect, RichText, Ui, pos2};
 /// the bitmap sits 16 px in from the sides and 12 px from the top and bottom).
 const RESULT_INSET: egui::Vec2 = egui::vec2(16.0 / 320.0, 12.0 / 200.0);
 
+/// Below this window height (points) the result collapses to a strip (UX §4.3, §14 Q1;
+/// usability review m8: at 1024 × 640 the form had about 300 px under the result).
+pub(super) const COLLAPSE_BELOW: f32 = 800.0;
+
+/// The collapsed result's scale: 160 × 100.
+const COLLAPSED_SCALE: f32 = 0.5;
+
+/// The border above and below the collapsed result, in points.
+const COLLAPSED_BORDER: f32 = 6.0;
+
+/// The result panel's height in a window `window_height` tall: the Figma 1× panel, or
+/// below [`COLLAPSE_BELOW`] the 160 × 100 picture and its border (112).
+pub(super) fn result_height(window_height: f32) -> f32 {
+    if window_height < COLLAPSE_BELOW {
+        SCREEN.y * COLLAPSED_SCALE + 2.0 * COLLAPSED_BORDER
+    } else {
+        layout::RESULT_HEIGHT
+    }
+}
+
 /// The modes the solver solves, in the header's dropdown.
 const MODES: [Mode; 2] = [Mode::MulticolorBitmap, Mode::HiresBitmap];
 
@@ -60,16 +80,8 @@ fn result_header(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui) {
     let size = egui::vec2(ui.available_width(), layout::TOOLBAR_HEIGHT - 2.0);
     let row = egui::Layout::left_to_right(egui::Align::Center);
     ui.allocate_ui_with_layout(size, row, |ui| {
-        ui.label(RichText::new("Result").family(egui::FontFamily::Name(MEDIUM.into())));
-        // The method picker's live preview (UX §6a).
-        if let Some(p) = ws.and_then(|ws| ws.preview.as_ref()) {
-            let accent = Theme::current(ui.ctx()).accent;
-            ui.label(
-                RichText::new(format!("Preview: {}", p.name))
-                    .small()
-                    .color(accent),
-            );
-        }
+        // The right-hand part first; the title and the preview take what is left, so
+        // the preview never draws over the count (UX §4.3).
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             let enabled = ws.is_some();
@@ -100,6 +112,18 @@ fn result_header(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui) {
                     shell.show_worst(ws);
                 }
             }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let title = RichText::new("Result").family(egui::FontFamily::Name(MEDIUM.into()));
+                ui.add(egui::Label::new(title).extend());
+                // The method picker's live preview (UX §6a), cut short to fit.
+                if let Some(p) = ws.and_then(|ws| ws.preview.as_ref()) {
+                    let accent = Theme::current(ui.ctx()).accent;
+                    let text = format!("Preview: {}", p.name);
+                    let label = RichText::new(&text).small().color(accent);
+                    ui.add(egui::Label::new(label).truncate())
+                        .on_hover_text(text);
+                }
+            });
         });
     });
 }
@@ -343,7 +367,9 @@ fn background_grid(ws: &Workspace, bg: Background, ui: &mut Ui, actions: &mut Ve
 /// centres the working view there (switching a Source view to Result, UX §3).
 fn result(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui) {
     let theme = Theme::current(ui.ctx());
-    let size = egui::vec2(ui.available_width(), layout::RESULT_HEIGHT);
+    let window = ui.ctx().content_rect().height();
+    let collapsed = window < COLLAPSE_BELOW;
+    let size = egui::vec2(ui.available_width(), result_height(window));
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
@@ -365,12 +391,18 @@ fn result(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui) {
         return;
     };
     painter.rect_filled(rect, 0.0, ws.border_colour());
-    // The screen inside the border, fitted at 320:200 and never above 1×.
-    let inner = rect.shrink2(rect.size() * RESULT_INSET);
-    let scale = (inner.width() / SCREEN.x)
-        .min(inner.height() / SCREEN.y)
-        .min(1.0);
-    let screen = Rect::from_center_size(inner.center(), SCREEN * scale);
+    // The screen inside the border, fitted at 320:200 and never above 1×; collapsed, at
+    // half size (never above what the dock's width holds).
+    let scale = if collapsed {
+        let inner = rect.shrink2(egui::vec2(RESULT_INSET.x * rect.width(), COLLAPSED_BORDER));
+        (inner.width() / SCREEN.x).min(COLLAPSED_SCALE)
+    } else {
+        let inner = rect.shrink2(rect.size() * RESULT_INSET);
+        (inner.width() / SCREEN.x)
+            .min(inner.height() / SCREEN.y)
+            .min(1.0)
+    };
+    let screen = Rect::from_center_size(rect.center(), SCREEN * scale);
     match ws.result_texture() {
         Some(tex) => {
             let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
@@ -485,7 +517,7 @@ fn tab_content(shell: &mut Shell, ws: Option<&Workspace>, ui: &mut Ui, actions: 
 
 /// The dock's line before a picture is open: "Open an image (Cmd O) to see the recipe."
 pub(super) fn empty_text(ctx: &egui::Context, what: &str) -> String {
-    let open = ctx.format_shortcut(&super::shortcuts::OPEN);
+    let open = crate::shell::shortcuts::format(ctx, &super::shortcuts::OPEN);
     format!("Open an image ({open}) to see {what}.")
 }
 
@@ -521,6 +553,109 @@ mod tests {
             }
         };
         ws
+    }
+
+    /// Found by the release-prep run: with the method picker open and the pointer on a
+    /// card, `Preview: …` was drawn on top of `Colour-limited cells: N`. The preview now
+    /// takes only the space left of the count, cut short with `…` (UX §4.3).
+    #[test]
+    fn the_preview_label_never_covers_the_count() {
+        use super::super::ui_test::frame;
+        let mut ws = solved();
+        let n = ws.clashes().unwrap();
+        ws.preview = Some(crate::workspace::MethodPreview {
+            name: "Riemersma (Hilbert curve, 16-colour history, with a long name to cut)",
+            committed: None,
+            was_solving: false,
+        });
+        for theme in [egui::Theme::Light, egui::Theme::Dark] {
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx);
+            ctx.set_theme(theme);
+            let mut shell = Shell::default();
+            let size = egui::vec2(1280.0, 900.0);
+            frame(&ctx, &mut shell, Some(&mut ws), size, vec![]);
+            let (texts, _) = frame(&ctx, &mut shell, Some(&mut ws), size, vec![]);
+            // Menu bar, toolbar, options bar (#311), then the header.
+            let header =
+                |t: &super::super::ui_test::Text| t.rect.top() < 4.0 * layout::TOOLBAR_HEIGHT;
+            let count = texts
+                .iter()
+                .find(|t| header(t) && t.text == super::super::status::limited_cells(n))
+                .expect("the count in the header");
+            let preview = texts
+                .iter()
+                .find(|t| header(t) && t.text.starts_with("Preview:"))
+                .expect("the preview in the header");
+            assert!(
+                preview.rect.right() <= count.rect.left(),
+                "{theme:?}: preview {:?} over count {:?}",
+                preview.rect,
+                count.rect
+            );
+            // The name is far wider than the space: what is drawn stops short of the count.
+            let font = egui::TextStyle::Small.resolve(&ctx.global_style());
+            let full = ctx.fonts_mut(|f| {
+                f.layout_no_wrap(preview.text.clone(), font, egui::Color32::WHITE)
+                    .size()
+                    .x
+            });
+            assert!(preview.rect.width() < full, "{theme:?}: not cut short");
+        }
+    }
+
+    /// Usability review m4: the status bar's parts are set off by `·`, its numbers are
+    /// in the monospace font and padded, and the cell's swatches are labelled.
+    #[test]
+    fn the_status_bar_separates_and_labels_its_parts() {
+        let ws = solved();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut shell = Shell {
+            hover: Some(egui::pos2(13.0, 9.0)),
+            ..Shell::default()
+        };
+        let mut sections = Vec::new();
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                super::super::status::show(&mut shell, Some(&ws), ui, &mut Vec::new());
+            });
+            output.textures_delta.clear();
+            sections.clear();
+            for s in &output.shapes {
+                if let egui::Shape::Text(t) = &s.shape {
+                    for sec in &t.galley.job.sections {
+                        let r = sec.byte_range.start.0..sec.byte_range.end.0;
+                        let family = sec.format.font_id.family.clone();
+                        sections.push((t.galley.job.text[r].to_owned(), family));
+                    }
+                }
+            }
+        }
+        let texts: Vec<&str> = sections.iter().map(|(t, _)| t.as_str()).collect();
+        let mono = |s: &str| {
+            sections
+                .iter()
+                .any(|(t, f)| t == s && *f == egui::FontFamily::Monospace)
+        };
+        // Screen point 13,9: cell 1,1 and multicolor pixel 6,9, padded, monospace.
+        assert!(mono(" 1, 1"), "{texts:?}");
+        assert!(mono("  6,  9"), "{texts:?}");
+        assert!(
+            texts.contains(&super::super::status::CELL_COLOURS),
+            "{texts:?}"
+        );
+        assert!(
+            texts.iter().filter(|t| **t == "·").count() >= 5,
+            "{texts:?}"
+        );
+        // The error and the zoom are separate texts with a `·` between them.
+        let error = texts.iter().position(|t| *t == "error ").expect("error");
+        let zoom = texts.iter().position(|t| t.ends_with('%')).expect("zoom");
+        assert!(
+            zoom > error + 1 && texts[error + 2..zoom].contains(&"·"),
+            "{texts:?}"
+        );
     }
 
     /// #243: the result panel shows no dots until the overlay is turned on.

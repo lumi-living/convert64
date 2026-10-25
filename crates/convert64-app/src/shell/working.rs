@@ -51,8 +51,7 @@ pub(super) fn show(
         shell.camera.fit(view, ViewMode::Source, border);
         shell.camera.fit(view, ViewMode::Result, border);
     }
-    let wheel_scales = shell.tool == super::Tool::Transform
-        && shell.mask.tool.is_none()
+    let wheel_scales = shell.transform_handles()
         && response
             .hover_pos()
             .is_some_and(|p| super::transform::over_box(shell, ws, view, p));
@@ -61,7 +60,7 @@ pub(super) fn show(
     }
     if shell.hand {
         // The hand tool only pans.
-    } else if shell.mask.tool.is_none() && shell.tool == super::Tool::Transform {
+    } else if shell.transform_handles() {
         super::transform::interact(shell, ws, ui, &response, view, actions);
         super::tools::interact(shell, ws, ui, &response, view, actions);
     } else if shell.mask.tool.is_none() && shell.tool == super::Tool::Region {
@@ -160,7 +159,7 @@ pub(super) fn show(
         painter.image(tex, picture, uv, Color32::WHITE);
     }
     super::tools::draw_drag(shell, ws, &painter, view);
-    if shell.mask.tool.is_none() && shell.tool == super::Tool::Transform {
+    if shell.transform_handles() {
         super::transform::draw(shell, ws, &painter, view);
     }
     let hover = response
@@ -498,7 +497,7 @@ pub(super) const EMPTY_TEXT: &str =
 /// ways to do it: the primary **Open image…** and the **Try a sample picture** link.
 fn empty(ui: &mut Ui, actions: &mut Vec<super::Action>) {
     use crate::theme::layout::{ICON_SIZE, TOOLBAR_HEIGHT};
-    let open = ui.ctx().format_shortcut(&super::shortcuts::OPEN);
+    let open = crate::shell::shortcuts::format(ui.ctx(), &super::shortcuts::OPEN);
     let rect = ui.max_rect();
     let glyph = 2.0 * ICON_SIZE;
     let button = vec2(160.0, TOOLBAR_HEIGHT);
@@ -559,6 +558,56 @@ mod tests {
         assert!(
             (moved.x - 20.0).abs() < 1e-3 && (moved.y - 10.0).abs() < 1e-3,
             "{moved:?}"
+        );
+    }
+
+    /// Usability review m3 (UX §4.1): the Transform tool's box and 8 handles are drawn in
+    /// Source mode only; in Result mode, or while `\` shows the result, there are none.
+    #[test]
+    fn transform_handles_are_drawn_in_source_mode_only() {
+        let rgba = (0..64 * 40)
+            .flat_map(|i| [(i % 64 * 4) as u8, 90, 90, 255])
+            .collect();
+        let png = convert64_project::codec::encode_rgba8(64, 40, rgba);
+        let ws = Workspace::new(crate::document::Document::from_png("ramp.png", &png).unwrap());
+        let handles = |view: ViewMode, flip: bool| {
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx);
+            let mut shell = Shell {
+                tool: super::super::Tool::Transform,
+                view,
+                flip_held: flip,
+                ..Shell::default()
+            };
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 700.0))),
+                ..Default::default()
+            };
+            let mut actions = Vec::new();
+            let mut output = ctx.run_ui(input, |ui| show(&mut shell, ui, Some(&ws), &mut actions));
+            output.textures_delta.clear();
+            fn count(shape: &egui::Shape) -> usize {
+                match shape {
+                    egui::Shape::Rect(r) if r.rect.size() == vec2(7.0, 7.0) => 1,
+                    egui::Shape::Vec(v) => v.iter().map(count).sum(),
+                    _ => 0,
+                }
+            }
+            let n: usize = output.shapes.iter().map(|s| count(&s.shape)).sum();
+            (n, shell.transform_handles())
+        };
+        // Each handle is a filled square and its outline: 8 handles, 16 squares.
+        assert_eq!(handles(ViewMode::Source, false), (16, true));
+        assert_eq!(handles(ViewMode::Result, false), (0, false));
+        assert_eq!(
+            handles(ViewMode::Source, true),
+            (0, false),
+            "\\ shows the result"
+        );
+        assert_eq!(
+            handles(ViewMode::Result, true),
+            (16, true),
+            "\\ shows the source"
         );
     }
 

@@ -27,9 +27,48 @@ fn at(i: usize) -> LayerRef {
     LayerRef::Index(i)
 }
 
-/// The recipe in short form for the badge, e.g. `FS 100%`, and in full for its tooltip,
-/// e.g. `floyd-steinberg 100% · Oklab · Adaptive` (UX §5).
-pub(super) fn recipe_text(layer: &Layer) -> (String, String) {
+/// A metric's name as the Recipe form shows it (UX §6).
+fn metric_name(m: convert64_core::layer::Metric) -> &'static str {
+    use convert64_core::layer::Metric;
+    match m {
+        Metric::Oklab => "OKLab",
+        Metric::Cielab => "CIELAB",
+        Metric::PeptoYuv => "Pepto YUV",
+        Metric::Rgb => "RGB",
+    }
+}
+
+/// A fitting mode's name (UX §6).
+fn fit_name(f: convert64_core::layer::FitMode) -> &'static str {
+    use convert64_core::layer::FitMode;
+    match f {
+        FitMode::Adaptive => "Adaptive",
+        FitMode::Force => "Force",
+    }
+}
+
+/// The row's subtitle, the recipe in short form (UX §5): `FS 80% · OKLab · Force`, then
+/// `· 50% opacity` below full opacity; and its tooltip, with the method's CLI id:
+/// `floyd-steinberg 80% · OKLab · Force` (usability review m7).
+pub(super) fn subtitle(layer: &Layer) -> (String, String) {
+    let r = layer.recipe();
+    let (short, id) = recipe_text(layer);
+    let tail = format!("{} · {}", metric_name(r.metric()), fit_name(r.fit_mode()));
+    let pct = (r.strength() * 100.0).round();
+    let opacity = (layer.opacity() * 100.0).round();
+    let opacity = if opacity < 100.0 {
+        format!(" · {opacity:.0}% opacity")
+    } else {
+        String::new()
+    };
+    (
+        format!("{short} {pct}% · {tail}{opacity}"),
+        format!("{id} {pct}% · {tail}{opacity}"),
+    )
+}
+
+/// The method in short form, e.g. `FS`, and its CLI id, e.g. `floyd-steinberg`.
+fn recipe_text(layer: &Layer) -> (String, String) {
     let r = layer.recipe();
     let id = serde_json::to_value(r.method().kind)
         .ok()
@@ -47,11 +86,7 @@ pub(super) fn recipe_text(layer: &Layer) -> (String, String) {
                 .replace('-', " ")
         }
     };
-    let pct = (r.strength() * 100.0).round();
-    (
-        format!("{short} {pct}%"),
-        format!("{id} {pct}% · {:?} · {:?}", r.metric(), r.fit_mode()),
-    )
+    (short, id)
 }
 
 pub(super) fn show(shell: &mut Shell, ws: &Workspace, ui: &mut Ui, actions: &mut Vec<Action>) {
@@ -96,16 +131,20 @@ pub(super) fn show(shell: &mut Shell, ws: &Workspace, ui: &mut Ui, actions: &mut
         let value_box = 3.0 * ui.spacing().interact_size.x / 2.0;
         ui.spacing_mut().slider_width =
             (ui.available_width() - value_box).max(ui.spacing().interact_size.x);
-        let slider = ui
-            .add(
-                egui::Slider::new(&mut pct, 0.0..=100.0)
-                    .suffix("%")
-                    .integer(),
-            )
-            .on_hover_text("Opacity");
+        let slider = ui.add(
+            egui::Slider::new(&mut pct, 0.0..=100.0)
+                .suffix("%")
+                .integer(),
+        );
+        // Shift-drag: fine steps (UX §6, m9).
+        let fine = super::fine_slider(ui, &slider, before, 0.0..=100.0, 0);
+        if let Some(fine) = fine {
+            pct = fine;
+        }
+        let slider = slider.on_hover_text(format!("Opacity\n{}", super::recipe::FINE_TIP));
         // `integer()` snaps 33.3 % to 33: only a real move is an edit, or the value
         // would be re-sent every frame.
-        let moved = slider.changed() && (pct - before).abs() > 0.5;
+        let moved = (slider.changed() || fine.is_some()) && (pct - before).abs() > 0.5;
         if moved {
             let cmd = JsonCommand::LayerSetOpacity {
                 layer: at(shell.layer),
@@ -169,7 +208,7 @@ fn row(
 ) {
     let layer = &ws.doc.session().project().layers[i];
     let is_selected = shell.layer == i;
-    let size = egui::vec2(ui.available_width(), layout::LAYER_ROW_HEIGHT);
+    let size = egui::vec2(ui.available_width(), row_height(ui));
     ui.allocate_ui_with_layout(
         size,
         egui::Layout::left_to_right(egui::Align::Center),
@@ -217,24 +256,35 @@ fn row(
                     .on_hover_text("The mask moves with the layer");
                 mask_thumb(shell, ws, i, ui);
             }
-            // Right-aligned parts first, so the name truncates into what is left.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(format!("{:.0}%", layer.opacity() * 100.0))
-                        .small()
-                        .weak(),
+            // The name over the subtitle, both cut short with `…` to the row's width:
+            // nothing sits to their right to be clipped (usability review m7).
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                name(shell, layer, i, ui, actions);
+                let (text, tip) = subtitle(layer);
+                let mut text = RichText::new(text).small();
+                // Secondary text, but not on the selection's fill, where weak text is
+                // not guaranteed its contrast (#293).
+                if !is_selected {
+                    text = text.weak();
+                }
+                let sub = ui.add(
+                    egui::Label::new(text)
+                        .truncate()
+                        .sense(egui::Sense::click()),
                 );
-                let (short, long) = recipe_text(layer);
-                let badge = egui::Frame::NONE
-                    .fill(ui.visuals().faint_bg_color)
-                    .corner_radius(ui.visuals().widgets.inactive.corner_radius)
-                    .inner_margin(egui::Margin::symmetric(4, 1))
-                    .show(ui, |ui| ui.label(RichText::new(short).small()));
-                badge.response.on_hover_text(long);
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    name(shell, layer, i, ui, actions);
-                });
+                if sub.clicked() {
+                    shell.layer = i;
+                }
+                sub.on_hover_text(tip);
             });
+            // A click on the rest of the row selects it too.
+            if ui
+                .allocate_response(ui.available_size(), egui::Sense::click())
+                .clicked()
+            {
+                shell.layer = i;
+            }
         },
     );
 }
@@ -274,13 +324,14 @@ fn name(shell: &mut Shell, layer: &Layer, i: usize, ui: &mut Ui, actions: &mut V
     if label.double_clicked() {
         shell.renaming = Some((i, layer.name().to_owned()));
     }
-    // A click on the rest of the row selects it too.
-    if ui
-        .allocate_response(ui.available_size(), egui::Sense::click())
-        .clicked()
-    {
-        shell.layer = i;
-    }
+}
+
+/// A row's height: the Figma `Layer Row`'s, or the name and subtitle lines if taller.
+fn row_height(ui: &Ui) -> f32 {
+    let lines = ui.text_style_height(&egui::TextStyle::Body)
+        + ui.text_style_height(&egui::TextStyle::Small)
+        + 4.0;
+    layout::LAYER_ROW_HEIGHT.max(lines)
 }
 
 /// The bottom icon strip: New from file, Duplicate, Layer via mask, Add mask, Delete.
@@ -289,7 +340,7 @@ fn strip(shell: &mut Shell, layers: &[Layer], ui: &mut Ui, actions: &mut Vec<Act
         ui.spacing_mut().item_spacing.x = 2.0;
         let ctx = ui.ctx().clone();
         let tip = |label: &str, s: &egui::KeyboardShortcut| {
-            format!("{label} ({})", ctx.format_shortcut(s))
+            format!("{label} ({})", crate::shell::shortcuts::format(&ctx, s))
         };
         let b = |glyph| Button::new(icon(glyph)).frame(false);
         if ui
@@ -326,7 +377,9 @@ fn strip(shell: &mut Shell, layers: &[Layer], ui: &mut Ui, actions: &mut Vec<Act
         if add.clicked() {
             actions.push(add_mask(shell, layers));
         }
-        let delete = ui.add(b(icons::DELETE)).on_hover_text("Delete (⌫)");
+        let delete = ui
+            .add(b(icons::DELETE))
+            .on_hover_text(tip("Delete layer", &super::shortcuts::DELETE_LAYER));
         if delete.clicked() {
             actions.push(Action::Run(JsonCommand::LayerRemove {
                 layer: at(shell.layer),

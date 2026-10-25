@@ -35,7 +35,7 @@ pub(super) fn limited_cells_tip(ctx: &egui::Context) -> String {
         "Cells where the solver wanted more colours than the mode allows, so it used the \
          closest ones it may. The picture is still legal and exports as it is. {} shows \
          them.",
-        ctx.format_shortcut(&super::shortcuts::CLASHES)
+        crate::shell::shortcuts::format(ctx, &super::shortcuts::CLASHES)
     )
 }
 
@@ -43,8 +43,36 @@ pub(super) fn limited_cells_tip(ctx: &egui::Context) -> String {
 pub(super) fn show_limited_cells(ctx: &egui::Context) -> String {
     format!(
         "Show colour-limited cells ({})",
-        ctx.format_shortcut(&super::shortcuts::CLASHES)
+        crate::shell::shortcuts::format(ctx, &super::shortcuts::CLASHES)
     )
+}
+
+/// The label before the cell's colour swatches (usability review m4).
+pub(super) const CELL_COLOURS: &str = "colours";
+
+/// The `·` between the status bar's parts (usability review m4: "error 0.282350%" ran
+/// the error into the zoom).
+fn separator(ui: &mut Ui) {
+    ui.label(RichText::new("·").small().weak());
+}
+
+/// A labelled number: `label` in the bar's font, then `value` in the monospace font at
+/// the same size, so its digits are all one width (usability review m4).
+fn field(ui: &mut Ui, label: &str, value: &str) -> egui::Response {
+    use egui::text::{LayoutJob, TextFormat};
+    let size = egui::TextStyle::Small.resolve(ui.style()).size;
+    let colour = ui.visuals().text_color();
+    let mut job = LayoutJob::default();
+    if !label.is_empty() {
+        let font = egui::FontId::proportional(size);
+        job.append(&format!("{label} "), 0.0, TextFormat::simple(font, colour));
+    }
+    job.append(
+        value,
+        0.0,
+        TextFormat::simple(egui::FontId::monospace(size), colour),
+    );
+    ui.label(job)
 }
 
 /// A solve running longer than this (seconds) shows progress and Pause (UX §11).
@@ -67,43 +95,58 @@ pub(super) fn show(
         let grid = ws.doc.grid();
         let (w, h) = grid.target_size();
         ui.label(small(format!("{} {w}×{h}", mode_name(ws.doc.mode()))));
+        separator(ui);
         let view = match shell.compare {
             Compare::Off => shell.shown().label().to_owned(),
             c => format!("{} · {}", shell.view.label(), c.label()),
         };
         ui.label(small(view));
         if let Some((px, cell)) = shell.hover.and_then(|p| target_at(grid, p)) {
-            ui.label(small(format!(
-                "cell {},{} · px {},{}",
-                cell.0, cell.1, px.0, px.1
-            )));
+            // Padded to the widest value, in the monospace font: the line holds still as
+            // the pointer moves (usability review m4).
+            separator(ui);
+            field(ui, "cell", &format!("{:>2},{:>2}", cell.0, cell.1));
+            separator(ui);
+            field(ui, "px", &format!("{:>3},{:>3}", px.0, px.1));
             let info = ws.cell_info(cell);
-            let side = layout::SWATCH_SIZE * 0.75;
-            ui.spacing_mut().item_spacing.x = 2.0;
-            for c in &info.colours {
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
-                ui.painter().rect_filled(rect, 1.0, *c);
-                ui.painter().rect_stroke(
-                    rect,
-                    1.0,
-                    ui.visuals().widgets.noninteractive.bg_stroke,
-                    egui::StrokeKind::Inside,
-                );
+            if !info.colours.is_empty() {
+                separator(ui);
+                ui.label(small(CELL_COLOURS.to_owned()));
+                let side = layout::SWATCH_SIZE * 0.75;
+                let gap = ui.spacing().item_spacing.x;
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (c, name) in info.colours.iter().zip(&info.names) {
+                    let (rect, response) =
+                        ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 1.0, *c);
+                    ui.painter().rect_stroke(
+                        rect,
+                        1.0,
+                        ui.visuals().widgets.noninteractive.bg_stroke,
+                        egui::StrokeKind::Inside,
+                    );
+                    response.on_hover_text(*name);
+                }
+                // Back to the bar's gap (`ui.style()` holds the 2 px set above).
+                ui.spacing_mut().item_spacing.x = gap;
+                ui.add_space(gap - 2.0);
             }
-            ui.spacing_mut().item_spacing.x = ui.style().spacing.item_spacing.x;
             if let Some(e) = info.error {
-                ui.label(small(format!("error {e:.3}")));
+                separator(ui);
+                field(ui, "error", &format!("{e:.3}"));
             }
             let theme = Theme::current(ui.ctx());
             if info.pinned {
+                separator(ui);
                 ui.label(small("pinned".to_owned()).color(theme.pin));
             }
             if info.locked {
+                separator(ui);
                 ui.label(small("locked".to_owned()).color(theme.lock));
             }
         }
-        ui.label(small(format!("{}%", shell.camera.percent(shell.view))));
+        separator(ui);
+        field(ui, "", &format!("{:>4}%", shell.camera.percent(shell.view)));
         // The transform readout is in the options bar (usability review M8).
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
