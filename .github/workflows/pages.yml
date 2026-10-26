@@ -35,7 +35,7 @@ jobs:
       # rust-toolchain.toml already lists the wasm32-unknown-unknown target.
       - name: Install pinned toolchain
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           key: pages
       - name: Install trunk
