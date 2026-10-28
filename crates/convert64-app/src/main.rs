@@ -800,7 +800,8 @@ impl eframe::App for App {
 /// [--dock-scroll <points>] [--hide-ui] [--delete-layer]
 /// [--method-picker gradient|picture] [--restore-bar] [--quit-prompt]
 /// [--open-group <title>]… [--close-group <title>]… [--hover <x>,<y>]`: draws a few frames, saves the window as a PNG and
-/// quits. The PR screenshots come from it (#203).
+/// quits. The PR screenshots come from it (#203). Keys and the mouse do nothing while
+/// it runs: only the arguments decide what it shows (#318).
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot {
     use std::path::PathBuf;
@@ -922,7 +923,11 @@ mod screenshot {
     impl Request {
         /// The command line: `[picture.png] [--screenshot <file.png> …]`.
         pub(super) fn from_args() -> Result<Args, String> {
-            let mut args = std::env::args().skip(1);
+            Self::parse(std::env::args().skip(1))
+        }
+
+        /// [`Self::from_args`] on `args`, the program name left out.
+        pub(super) fn parse(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
             let mut open = None;
             let mut layers = Vec::new();
             let mut request = None;
@@ -1062,9 +1067,21 @@ mod screenshot {
             })
         }
 
-        /// Called before every frame: adds `--drag`'s pointer events, one step a frame,
-        /// once the first frame has been drawn.
+        /// Called before every frame: drops the window's own input, then adds `--drag`'s
+        /// pointer events, one step a frame, once the first frame has been drawn.
+        ///
+        /// The window is real and opens focused, so without this a key pressed or the
+        /// mouse moved while it is up lands in the app: a `Backspace` typed elsewhere
+        /// deleted the layer (#318). Only the arguments decide what the screenshot shows.
         pub(super) fn inject(&mut self, raw: &mut egui::RawInput) {
+            raw.events.retain(|e| {
+                matches!(
+                    e,
+                    egui::Event::Screenshot { .. } | egui::Event::WindowFocused(_)
+                )
+            });
+            raw.hovered_files.clear();
+            raw.dropped_files.clear();
             if let Some(p) = self.hover
                 && self.frame > 0
             {
@@ -1127,6 +1144,148 @@ mod screenshot {
                 }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::Request;
+        use egui::{Event, Key, Modifiers, PointerButton, pos2, vec2};
+
+        fn request(args: &[&str]) -> Request {
+            Request::parse(args.iter().map(|a| a.to_string()))
+                .unwrap()
+                .screenshot
+                .unwrap()
+        }
+
+        fn key(key: Key) -> Event {
+            Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }
+        }
+
+        /// What the OS hands a focused window: keys typed for another app, text, the
+        /// real mouse, a wheel notch, a file dragged over it.
+        fn os_input() -> egui::RawInput {
+            let events = vec![
+                key(Key::Backspace),
+                key(Key::Delete),
+                Event::Text("x".into()),
+                Event::PointerMoved(pos2(300.0, 300.0)),
+                Event::PointerButton {
+                    pos: pos2(300.0, 300.0),
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::COMMAND,
+                },
+                Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: vec2(0.0, 1.0),
+                    modifiers: Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                },
+                Event::WindowFocused(true),
+                Event::Screenshot {
+                    viewport_id: egui::ViewportId::ROOT,
+                    user_data: Default::default(),
+                    image: Default::default(),
+                },
+            ];
+            let mut raw = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            raw.hovered_files.push(Default::default());
+            raw
+        }
+
+        /// #318: a `Backspace` pressed while a screenshot run's window was up deleted the
+        /// layer ("Deleted layer 'small' · Undo"). The window's own input is dropped; the
+        /// screenshot, focus and the arguments' synthetic events get through.
+        #[test]
+        fn a_screenshot_run_ignores_the_keyboard_and_mouse() {
+            // The #306 run that lost its layer.
+            let mut r = request(&[
+                "small.png",
+                "--theme",
+                "dark",
+                "--size",
+                "1280x800",
+                "--tab",
+                "Recipe",
+                "--zoom",
+                "400",
+                "--centre",
+                "160,100",
+                "--screenshot",
+                "after-dark.png",
+            ]);
+            for frame in 0..3 {
+                r.frame = frame;
+                let mut raw = os_input();
+                r.inject(&mut raw);
+                assert!(
+                    matches!(
+                        raw.events[..],
+                        [Event::WindowFocused(true), Event::Screenshot { .. }]
+                    ),
+                    "frame {frame}: {:?}",
+                    raw.events
+                );
+                assert!(raw.hovered_files.is_empty());
+
+                // What the app's frame sees: no key, no pointer.
+                let ctx = egui::Context::default();
+                ctx.run_ui(raw, |_| {}).textures_delta.clear();
+                ctx.input(|i| {
+                    assert!(!i.key_pressed(Key::Backspace) && !i.key_pressed(Key::Delete));
+                    assert!(i.events.iter().all(|e| !matches!(e, Event::Text(_))));
+                    assert!(i.pointer.latest_pos().is_none());
+                    assert!(!i.pointer.any_pressed());
+                });
+            }
+        }
+
+        /// `--hover` and `--drag` still move and press the pointer, and only they do.
+        #[test]
+        fn a_screenshot_run_keeps_its_own_pointer_events() {
+            let mut r = request(&[
+                "small.png",
+                "--hover",
+                "10,20",
+                "--drag",
+                "1,2:9,2",
+                "--screenshot",
+                "x.png",
+            ]);
+            r.frame = 1;
+            let mut raw = os_input();
+            r.inject(&mut raw);
+            let pointer: Vec<_> = raw
+                .events
+                .iter()
+                .filter(|e| matches!(e, Event::PointerMoved(_) | Event::PointerButton { .. }))
+                .collect();
+            assert_eq!(
+                pointer,
+                [
+                    &Event::PointerMoved(pos2(10.0, 20.0)),
+                    &Event::PointerMoved(pos2(1.0, 2.0))
+                ]
+            );
+            r.inject(&mut raw);
+            assert!(raw.events.contains(&Event::PointerButton {
+                pos: pos2(1.0, 2.0),
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }));
+            assert!(!raw.events.iter().any(|e| matches!(e, Event::Key { .. })));
         }
     }
 }
