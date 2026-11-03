@@ -34,4 +34,5 @@ Each epic is a GitHub issue labelled `epic`; child issues are GitHub sub-issues 
 - **E13 FLI** (#13) — FLI solver with FLI-bug columns, `.fli` export, PRG displayer.
 - **E14 PAL preview shader** (#14) — chroma/luma blur, scanlines, opt-in.
 - **E15 Interlace modes** (#15) — IFLI/MCI/NUFLI with flicker-blend preview.
+- **Raster backgrounds** (#323) — background colour per row band ($D021 per raster line), solved or fixed per band; Koala + row table + raster PRG. Not an epic yet.
 - **E16 Integrations** (#16) — CharPad `.ctm`, D64 wrapper, C64 Ultimate HTTP push, Aseprite bridge, import C64 files as locked layers, layered PSD/OpenRaster import via `photocraft-psd`.
