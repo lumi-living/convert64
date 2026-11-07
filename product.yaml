@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=https://office.lumiliving.com/schemas/product.yaml.json
+key: convert64
+name: Convert64
+stage: building
+owner: jaakko
+kind: tool
+upside: 2
+confidence: 0.3
+weeks_to_sellable: 3
+readiness:
+  definition:
+    importance: 3
+    readiness: 2
+  core:
+    importance: 3
+    readiness: 2
+  quality:
+    importance: 2
+    readiness: 2
+  operability:
+    importance: 2
+    readiness: 1
+  commercial:
+    importance: 2
+    readiness: 0
+  gtm:
+    importance: 2
+    readiness: 1
+blockers:
+  - "No pricing or revenue model for a public MIT repo (ADR-004): paid binaries, pay-what-you-want or donations"
+  - "Release 0.1 not cut: packaging tool choice, Windows/Linux targets, GitHub Pages not enabled (#9)"
+  - "No payment path, terms or support policy; VAT decision (lumi-living/backoffice#41)"
+  - "README status still says \"Nothing runs yet\"; CSDb and forum posts are unposted drafts (#9)"
+  - "No Semgrep, Gitleaks, Trivy or cargo-deny in CI; no security review"
+updated: 2026-11-07
