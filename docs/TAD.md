@@ -138,7 +138,7 @@ As built in E4 (2026-10-11): the compositor and attribute map ([ADR-002](adr/ADR
 - **`geom`.** `Vec2`, `PxRect`, `CellSet` (the 40 × 25 cells), and `SuperGrid { n, target }`. `SuperGrid` is the only type that knows the multicolor 2:1 aspect.
 - **Canvas space.** Layers are placed in a 320 × 200 square-pixel canvas. Target space is 320 × 200 or 160 × 200, and super space is n × target.
 - **`layer`.**
-  - `SourceImage` holds f32 linear straight-alpha RGBA, decoded once through an sRGB LUT and shared by `Arc`.
+  - `SourceImage` holds f32 linear straight-alpha RGBA, decoded once through an sRGB LUT and shared by `Arc`. `convert64_project::codec::decode_source` keeps the decoded depth (#327): an 8-bit image goes through `SourceImage::from_srgba8` as before (png2c64's 8-bit table, and `srgb8` kept for png2c64's front end when opaque); a 16-bit PNG goes through `from_srgba16`, a 65 536-entry table built on first use (`palette::srgb16_to_linear`, exactly inverted by `linear_to_srgb16`), with no `srgb8`, so it takes the general path (ADR-012). `encode_source`, used for pixels with no original file, writes such a source back as 16-bit RGBA, so an embedded save and load is lossless. Only PNG decoding is enabled (`image`'s `png` feature).
   - `Transform { translate, scale, flip_h, flip_v }` is axis-aligned with scale > 0.
   - `Layer { name, source, transform, opacity, blend: Blend, visible, mask, adjustments, recipe }`.
   - `Recipe { method: Method { kind, orientation }, strength, phase, metric, allowed, fit_mode }`.

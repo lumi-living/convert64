@@ -101,6 +101,9 @@ pub struct SourceImage {
     /// The 8-bit sRGB colour it was decoded from, when it came from 8-bit bytes and is
     /// fully opaque: png2c64's front end (#190) starts from these bytes.
     srgb8: Option<Arc<[[u8; 3]]>>,
+    /// Decoded from 16-bit data (#327): saved again as 16-bit where it has to be
+    /// encoded.
+    bits16: bool,
     /// The premultiplied pixels' mip levels built so far (#235): derived, never saved,
     /// shared by every layer and compositor holding this source.
     mips: MipCache<[f32; 4]>,
@@ -147,8 +150,51 @@ impl SourceImage {
             height,
             pixels,
             srgb8,
+            bits16: false,
             mips: MipCache::default(),
         })
+    }
+
+    /// Decodes 16-bit sRGB RGBA values (row-major, 4 per pixel, straight alpha, as a
+    /// PNG decoder returns them, #327): colour through the sRGB transfer function per
+    /// value (no 8-bit table), alpha linearly. It has no [`Self::srgb8`]: png2c64's front
+    /// end starts from 8-bit bytes, so a 16-bit source takes the general path (ADR-012).
+    pub fn from_srgba16(width: u32, height: u32, rgba: &[u16]) -> Result<Self, LayerError> {
+        let len = Self::check_size(width, height)?;
+        if rgba.len() != len * 4 {
+            return Err(LayerError::WrongLength {
+                what: "RGBA values",
+                expected: len * 4,
+                found: rgba.len(),
+            });
+        }
+        let to_linear = crate::palette::srgb16_to_linear;
+        let pixels = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| {
+                [
+                    to_linear(p[0]),
+                    to_linear(p[1]),
+                    to_linear(p[2]),
+                    f32::from(p[3]) / f32::from(u16::MAX),
+                ]
+            })
+            .collect();
+        Ok(Self {
+            width,
+            height,
+            pixels,
+            srgb8: None,
+            bits16: true,
+            mips: MipCache::default(),
+        })
+    }
+
+    /// Whether it was decoded from 16-bit data ([`Self::from_srgba16`]).
+    pub const fn is_16_bit(&self) -> bool {
+        self.bits16
     }
 
     /// The 8-bit sRGB colour of a fully opaque source decoded from bytes, row-major.
@@ -183,6 +229,7 @@ impl SourceImage {
             height,
             pixels,
             srgb8: None,
+            bits16: false,
             mips: MipCache::default(),
         })
     }
