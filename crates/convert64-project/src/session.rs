@@ -1098,11 +1098,13 @@ impl Session {
         Self::load(file, base, Box::new(crate::FsStore))
     }
 
-    /// Saves the project to `path` (see [`Self::to_project_file`]).
+    /// Saves the project to `path` (see [`Self::to_project_file`]), through a temporary
+    /// file renamed into place ([`crate::store::write_atomic`], #328).
     pub fn save(&self, path: &Path, embed: Embed) -> Result<(), ProjectError> {
         let dir = path.parent().map(Path::to_owned).unwrap_or_default();
         let text = self.to_project_file(&dir, embed)?.to_json();
-        std::fs::write(path, text).map_err(|e| ProjectError::Io(path.to_owned(), e.to_string()))
+        crate::store::write_atomic(path, text.as_bytes())
+            .map_err(|e| ProjectError::Io(path.to_owned(), e.to_string()))
     }
 
     /// Writes [`Self::evaluated_mask`] as a 16-bit greyscale PNG.

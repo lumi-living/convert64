@@ -272,9 +272,11 @@ impl Files {
     }
 
     /// Writes `files` (natively) next to each other in a folder the user picks; one
-    /// file gets a Save dialog instead. In the browser: the Save dialog or a download
-    /// for each (`crate::web::save_files`). `FileEvent::Saved` comes once they are
-    /// written.
+    /// file gets a Save dialog instead. Natively each goes through a temporary file
+    /// renamed into place (`convert64_project::store::write_atomic`, #328), so a failed
+    /// save leaves the project file as it was. In the browser: the Save dialog or a
+    /// download for each (`crate::web::save_files`). `FileEvent::Saved` comes once
+    /// they are written.
     pub fn save_files(
         &self,
         ctx: &egui::Context,
@@ -302,7 +304,7 @@ impl Files {
                 if let Some(dir) = path.parent() {
                     let _ = std::fs::create_dir_all(dir);
                 }
-                if let Err(e) = std::fs::write(&path, &bytes) {
+                if let Err(e) = convert64_project::store::write_atomic(&path, &bytes) {
                     self.push(FileEvent::Failed(format!(
                         "Can't write {}: {e}.",
                         path.display()
