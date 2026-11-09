@@ -150,6 +150,10 @@ As built in E4 (2026-10-11): the compositor and attribute map ([ADR-002](adr/ADR
 - **`region::Region`.** A canvas-space mask plus a `Recipe`.
 - **`composite`.** `Compositor`, `Canvas`, `TargetFrame` (straight linear RGB, coverage, `AttributeMap`), `AttrSource` and `debug_colour`.
 - **`command`.** `Project { layers, regions }`, `Command`, `Editor`, `REGISTRY` and `Dirty`.
+- **Undo history budget (#332).** `Editor` holds its history within a `HistoryBudget { bytes, steps }`. `Editor::history_bytes` estimates what the undo and redo stacks hold: every memento and command with what it owns (whole masks, saved tiles, removed layers and regions, stroke points). Each source pixel buffer counts once, however many steps share its `Arc`; a source the project still shows counts too, so the estimate errs high.
+  - **Trimming.** After `execute` and `redo`, the oldest undo steps are dropped while the history is over either limit. The redo stack counts towards the bytes but is never trimmed, since it only holds commands. The newest step always stays, so the bound is the budget or that one step, whichever is larger.
+  - **Defaults.** `HistoryBudget::WEB` (64 MiB and 500 steps) is the default and the browser's. `HistoryBudget::NATIVE` (512 MiB and 2000 steps) is what the native app sets on every `Document`. Front-ends set it with `Editor::set_history_budget`, through `Session::editor_mut`.
+  - **The app.** `Document` drops its own oldest undo steps that the editor no longer holds whole, so Undo stops at the oldest step it still has all of and never half-undoes a group.
 
 **Behaviour**
 - **Supersampling.** The default factor is 1× (1–8) since ADR-012; it was 4×. Project files saved before it (`schema_version` 2, which wrote 4) are migrated to 1× on load and saved as version 3; the CLI's `notes` and the app's status bar say so once (#236, [project-file.md](reference/project-file.md#versions)).
@@ -632,7 +636,7 @@ As built in #208 (2026-10-13): the steering tools (UX §7).
 - **Pin** (`P`): a click pins the cell's current colour set (`cell_pin`, `full`); a drag pins a rectangle, each cell to its own set, as one undo step (`Document::run_all`); `Alt`-click pins only the colour under the cursor. **Lock** (`L`): click or rectangle `cell_lock`; on cells that are all locked it unlocks. **Nudge** (`V`): a click selects the topmost visible layer under the cursor, a drag moves it sub-pixel (`layer_nudge` as one gesture: fast path while dragging, full solve on release); the arrow keys nudge the selected layer 1 px, 10 px with `Shift`, 0.25 px with `Alt`.
 - **Feedback.** Pinned and locked cells are outlined in the `pin` and `lock` colours with the glyph at the top right once a cell is 16 pt; a drag shows its rectangle; a toast says "Pinned 7 cells".
 - **Right-click** a cell: Pin colours, Lock/Unlock, Clear pin/lock (`cell_clear`), Jump to worst neighbour, Copy cell colours (hex). `Shift Cmd ]` / `[` walk the clash report's worst-first order.
-- **Undo steps.** `Document` keeps its own undo steps over the editor's history, so a group of commands (a rectangle of pins) undoes and redoes as one.
+- **Undo steps.** `Document` keeps its own undo steps over the editor's history, so a group of commands (a rectangle of pins) undoes and redoes as one. When the history budget drops the oldest commands (#332), `Document` forgets the steps it no longer holds whole.
 - **Not here.** The Region tool (`R`) paints a mask carrying its own recipe: the registry has no region commands yet, so it arrives with the mask tools (#78), which add them with CLI and MCP parity.
 - **Screenshots** take `--command <json>` (registry commands run after opening), `--zoom` and `--centre`.
 
