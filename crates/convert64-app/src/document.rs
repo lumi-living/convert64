@@ -100,7 +100,8 @@ impl Document {
     }
 
     fn new(name: &str, session: Session, path: Option<PathBuf>) -> Self {
-        Self {
+        #[cfg_attr(target_arch = "wasm32", expect(unused_mut, reason = "native only"))]
+        let mut doc = Self {
             name: name.to_owned(),
             session,
             revision: 0,
@@ -109,7 +110,13 @@ impl Document {
             gesture: None,
             undo_steps: Vec::new(),
             redo_steps: Vec::new(),
-        }
+        };
+        // The browser keeps the core's default budget (#332).
+        #[cfg(not(target_arch = "wasm32"))]
+        doc.session
+            .editor_mut()
+            .set_history_budget(convert64_core::command::HistoryBudget::NATIVE);
+        doc
     }
 
     /// The name without its extension, for saved and exported files.
@@ -331,8 +338,28 @@ impl Document {
             self.undo_steps.push(done);
             self.redo_steps.clear();
             self.revision += 1;
+            self.forget_dropped_steps();
         }
         Ok(())
+    }
+
+    /// Forgets the oldest undo steps the editor no longer holds whole: its history
+    /// budget drops the oldest commands (#332), and a step of several commands must not
+    /// be half undone, so Undo stops at the oldest step it still has all of.
+    fn forget_dropped_steps(&mut self) {
+        let held = self.session.editor_mut().undo_len();
+        let mut sum = 0;
+        let kept = self
+            .undo_steps
+            .iter()
+            .rev()
+            .take_while(|&&n| {
+                sum += n;
+                sum <= held
+            })
+            .count();
+        let dropped = self.undo_steps.len() - kept;
+        self.undo_steps.drain(..dropped);
     }
 
     /// Runs a command that is part of the drag `gesture` (any id unique to the control):
@@ -352,6 +379,7 @@ impl Document {
         self.redo_steps.clear();
         self.gesture = Some(gesture);
         self.revision += 1;
+        self.forget_dropped_steps();
         Ok(())
     }
 
@@ -397,6 +425,7 @@ impl Document {
         }
         self.undo_steps.push(n);
         self.revision += 1;
+        self.forget_dropped_steps();
         Ok(true)
     }
 
@@ -546,6 +575,45 @@ mod tests {
             .flat_map(|i| [(i % w * 255 / w) as u8, 100, 100, 255])
             .collect();
         encode_rgba8(w, h, rgba)
+    }
+
+    /// #332: when the editor's history budget drops its oldest commands, Undo stops at
+    /// the oldest step it still holds whole (a step of several commands is never half
+    /// undone), and the Undo menu says so.
+    #[test]
+    fn undo_stops_at_the_oldest_step_the_history_kept() {
+        use convert64_core::command::HistoryBudget;
+        use convert64_project::LayerRef;
+        let mut doc = Document::open("p.png", &png(), None).unwrap();
+        // About four whole-mask steps of a 64 × 40 layer.
+        doc.session.editor_mut().set_history_budget(HistoryBudget {
+            bytes: 50_000,
+            steps: 500,
+        });
+        let raster = |d: &Document| {
+            d.session().project().layers[0]
+                .mask()
+                .map(|m| m.raster().values().to_vec())
+        };
+        let mut before = Vec::new();
+        for g in 0..10 {
+            before.push(raster(&doc));
+            let clear = |k: u32| JsonCommand::MaskClear {
+                layer: LayerRef::Index(0),
+                value: (g * 3 + k) as f32 / 40.0,
+            };
+            doc.run_all(vec![clear(0), clear(1), clear(2)]).unwrap();
+        }
+        let mut undone = 0;
+        while doc.undo() {
+            undone += 1;
+            assert_eq!(raster(&doc), before[10 - undone], "undo {undone}");
+        }
+        assert!((1..10).contains(&undone), "{undone} steps undone");
+        assert_eq!(doc.history(), (false, true));
+        // Everything undone redoes.
+        while doc.redo().unwrap() {}
+        assert_eq!(raster(&doc).unwrap()[0], 29.0 / 40.0);
     }
 
     /// #292: the bundled sample is the `title` painting at 640 × 398, and opens as a

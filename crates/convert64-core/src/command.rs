@@ -2157,12 +2157,47 @@ impl Memento {
     }
 }
 
+/// How much undo history an [`Editor`] keeps (#332): an estimate of the bytes it holds
+/// ([`Editor::history_bytes`], the redo stack included) and, as a backstop, a number of
+/// undo steps. Past either, the oldest steps are dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HistoryBudget {
+    /// Bytes the history may hold, by [`Editor::history_bytes`]'s estimate.
+    pub bytes: usize,
+    /// Undo steps it may hold.
+    pub steps: usize,
+}
+
+impl HistoryBudget {
+    /// The browser build's budget, and the default: 64 MiB and 500 steps. A wasm32 tab
+    /// has a few GiB at most and no swap, and the sources, composites and solves need
+    /// most of it; 64 MiB is about 70 whole-mask steps on a full-screen 320 × 200 grid
+    /// at 4×, or a few hundred brush strokes.
+    pub const WEB: Self = Self {
+        bytes: 64 << 20,
+        steps: 500,
+    };
+
+    /// A native front-end's budget: 512 MiB and 2000 steps.
+    pub const NATIVE: Self = Self {
+        bytes: 512 << 20,
+        steps: 2000,
+    };
+}
+
+impl Default for HistoryBudget {
+    fn default() -> Self {
+        Self::WEB
+    }
+}
+
 /// A project with its undo/redo history. Every mutation goes through [`Self::execute`].
 #[derive(Clone, Debug, Default)]
 pub struct Editor {
     project: Project,
     done: Vec<(Command, Memento)>,
     undone: Vec<Command>,
+    budget: HistoryBudget,
 }
 
 impl Editor {
@@ -2172,7 +2207,85 @@ impl Editor {
             project,
             done: Vec::new(),
             undone: Vec::new(),
+            budget: HistoryBudget::default(),
         }
+    }
+
+    /// The history's budget.
+    pub const fn history_budget(&self) -> HistoryBudget {
+        self.budget
+    }
+
+    /// Sets the history's budget, dropping the oldest steps now if it is over it.
+    pub fn set_history_budget(&mut self, budget: HistoryBudget) {
+        self.budget = budget;
+        self.trim();
+    }
+
+    /// An estimate of the bytes the undo and redo history holds: every memento and
+    /// command with what it owns (whole masks, tiles, removed layers and regions,
+    /// points), each source pixel buffer once however many steps share its `Arc`. A
+    /// source the project still shows counts too, so the estimate errs high.
+    pub fn history_bytes(&self) -> usize {
+        let (sizes, sources) = self.sizes();
+        sizes.iter().map(|e| e.own).sum::<usize>() + sources.values().map(|s| s.1).sum::<usize>()
+    }
+
+    /// Every history entry's size, undo steps oldest first and then the redo stack, and
+    /// the sources they hold: (address, (entries holding it, bytes)).
+    fn sizes(
+        &self,
+    ) -> (
+        Vec<EntrySize>,
+        std::collections::BTreeMap<usize, (usize, usize)>,
+    ) {
+        let sizes: Vec<EntrySize> = self
+            .done
+            .iter()
+            .map(|(c, m)| {
+                let mut e = EntrySize::default();
+                e.own = c.bytes(&mut e) + m.bytes(&mut e);
+                e
+            })
+            .chain(self.undone.iter().map(|c| {
+                let mut e = EntrySize::default();
+                e.own = c.bytes(&mut e);
+                e
+            }))
+            .collect();
+        let mut sources = std::collections::BTreeMap::new();
+        for e in &sizes {
+            for &(at, bytes) in &e.sources {
+                sources.entry(at).or_insert((0, bytes)).0 += 1;
+            }
+        }
+        (sizes, sources)
+    }
+
+    /// Drops the oldest undo steps while the history is over its budget (#332). The
+    /// newest step always stays, so the history holds at most the budget or that one
+    /// step, whichever is larger.
+    fn trim(&mut self) {
+        let over_steps = self.done.len().saturating_sub(self.budget.steps.max(1));
+        let (sizes, mut sources) = self.sizes();
+        let mut total = sizes.iter().map(|e| e.own).sum::<usize>()
+            + sources.values().map(|s| s.1).sum::<usize>();
+        let mut drop = 0;
+        while drop < self.done.len().saturating_sub(1)
+            && (drop < over_steps || total > self.budget.bytes)
+        {
+            let e = &sizes[drop];
+            total -= e.own;
+            for (at, _) in &e.sources {
+                let held = sources.get_mut(at).expect("counted above");
+                held.0 -= 1;
+                if held.0 == 0 {
+                    total -= held.1;
+                }
+            }
+            drop += 1;
+        }
+        self.done.drain(..drop);
     }
 
     /// The project.
@@ -2185,12 +2298,14 @@ impl Editor {
         self.project
     }
 
-    /// Runs a command; on success it joins the undo history and clears redo. A failed
-    /// command changes nothing.
+    /// Runs a command; on success it joins the undo history and clears redo, and the
+    /// oldest steps go if the history is over its budget. A failed command changes
+    /// nothing.
     pub fn execute(&mut self, cmd: Command) -> Result<Dirty, CommandError> {
         let (memento, dirty) = cmd.apply(&mut self.project)?;
         self.done.push((cmd, memento));
         self.undone.clear();
+        self.trim();
         Ok(dirty)
     }
 
@@ -2208,6 +2323,7 @@ impl Editor {
         let undone = std::mem::take(&mut self.undone);
         let result = self.execute(cmd);
         self.undone = undone;
+        self.trim();
         Some(result)
     }
 
@@ -2232,6 +2348,138 @@ impl Editor {
                 _ => 0,
             })
             .sum()
+    }
+}
+
+/// One history entry's estimated size (#332): the bytes it owns, and the sources it
+/// holds as (address, bytes), which [`Editor::history_bytes`] counts once each.
+#[derive(Default)]
+struct EntrySize {
+    own: usize,
+    sources: Vec<(usize, usize)>,
+}
+
+impl EntrySize {
+    fn source(&mut self, s: &std::sync::Arc<crate::layer::SourceImage>) {
+        let bytes = size_of_val(s.pixels()) + s.srgb8().map_or(0, size_of_val);
+        self.sources.push((std::sync::Arc::as_ptr(s).addr(), bytes));
+    }
+
+    /// A layer's own bytes; its source is noted.
+    fn layer(&mut self, l: &Layer) -> usize {
+        self.source(l.source());
+        size_of::<Layer>() + l.name().len() + l.mask().map_or(0, mask_bytes)
+    }
+}
+
+/// A raster's values.
+fn raster_bytes(r: &MaskRaster) -> usize {
+    size_of_val(r.values())
+}
+
+/// A mask's raster and sources list.
+fn mask_bytes(m: &Mask) -> usize {
+    raster_bytes(m.raster()) + size_of_val(m.sources())
+}
+
+/// A region with its canvas mask.
+fn region_bytes(r: &Region) -> usize {
+    size_of::<Region>() + r.name().len() + raster_bytes(r.mask())
+}
+
+/// Saved raster tiles.
+fn tiles_bytes(tiles: &[Tile]) -> usize {
+    tiles
+        .iter()
+        .map(|t| size_of::<Tile>() + t.len() * size_of::<f32>())
+        .sum()
+}
+
+/// An export set's rows.
+fn exports_bytes(rows: &[crate::export::ExportEntry]) -> usize {
+    size_of_val(rows)
+        + rows
+            .iter()
+            .filter_map(|r| r.name.as_ref())
+            .map(String::len)
+            .sum::<usize>()
+}
+
+/// A steering map entry: the key, the value and a B-tree node's share.
+const STEERING_ENTRY: usize = 64;
+
+impl Memento {
+    /// What it holds beyond its own size; sources go to `e`.
+    fn bytes(&self, e: &mut EntrySize) -> usize {
+        size_of::<Self>()
+            + match self {
+                Self::Tiles { tiles, .. } | Self::RegionTiles { tiles, .. } => tiles_bytes(tiles),
+                Self::Mask { before, .. } => before.as_ref().map_or(0, mask_bytes),
+                Self::Inserted { original_mask, .. } => original_mask
+                    .as_ref()
+                    .and_then(Option::as_ref)
+                    .map_or(0, mask_bytes),
+                Self::Steering(s, _) => size_of::<Steering>() + s.entries() * STEERING_ENTRY,
+                Self::Prop { before, .. } => match before {
+                    Prop::Name(n) => n.len(),
+                    Prop::Adjustments(_) => size_of::<Adjustments>(),
+                    Prop::Recipe(_) => size_of::<Recipe>(),
+                    _ => 0,
+                },
+                Self::Removed { layer, .. } => e.layer(layer),
+                Self::Setting(s) => match s {
+                    Setting::Palette(_) => size_of::<Palette>(),
+                    Setting::Solve(_) => size_of::<SolveSettings>(),
+                    Setting::Exports(rows) => exports_bytes(rows),
+                    _ => 0,
+                },
+                Self::RegionRemoved { region, .. } => region_bytes(region),
+                Self::RegionProp { before, .. } => match before {
+                    RegionProp::Name(n) => n.len(),
+                    RegionProp::Recipe(_) => size_of::<Recipe>(),
+                },
+                Self::Moved { .. } | Self::RegionInserted { .. } | Self::RegionMoved { .. } => 0,
+            }
+    }
+}
+
+impl Command {
+    /// What it holds beyond its own size; sources go to `e`.
+    fn bytes(&self, e: &mut EntrySize) -> usize {
+        fn cells<T>(cells: &[CellPos], colours: &[T]) -> usize {
+            size_of_val(cells) + size_of_val(colours)
+        }
+        size_of::<Self>()
+            + match self {
+                Self::MaskStroke(c) => size_of_val(c.points.as_slice()),
+                Self::MaskFill(c) => size_of_val(c.polygon.as_slice()),
+                Self::MaskLoad(c) => raster_bytes(&c.raster),
+                Self::LayerViaMask(c) => {
+                    c.selection
+                        .polygons
+                        .iter()
+                        .map(|p| size_of::<Vec<Vec2>>() + size_of_val(p.as_slice()))
+                        .sum::<usize>()
+                        + size_of_val(c.selection.sources.as_slice())
+                }
+                Self::CellPin(c) => cells(&c.cells, &c.colours),
+                Self::CellAllow(c) => cells(&c.cells, &c.colours),
+                Self::CellDeny(c) => cells(&c.cells, &c.colours),
+                Self::CellLock(c) => cells::<()>(&c.cells, &[]),
+                Self::CellClear(c) => cells::<()>(&c.cells, &[]),
+                Self::LayerAdd(c) => e.layer(&c.layer),
+                Self::LayerRename(c) => c.name.len(),
+                Self::AdjustmentsSet(_) => size_of::<AdjustmentsSet>(),
+                Self::RecipeSet(_) => size_of::<RecipeSet>(),
+                Self::PaletteSet(_) => size_of::<PaletteSet>(),
+                Self::ExportSet(c) => exports_bytes(&c.exports),
+                Self::RegionAdd(c) => size_of::<RegionAdd>() + c.name.len(),
+                Self::RegionRename(c) => c.name.len(),
+                Self::RegionSetRecipe(_) => size_of::<RegionSetRecipe>(),
+                Self::RegionStroke(c) => size_of_val(c.points.as_slice()),
+                Self::RegionFill(c) => size_of_val(c.polygon.as_slice()),
+                _ => 0,
+            }
     }
 }
 
@@ -2292,6 +2540,156 @@ mod tests {
             flow: 0.6,
             mode: PaintMode::Subtract,
         })
+    }
+
+    /// A stroke at a place that moves with `i`, so the strokes differ.
+    fn stroke_at(i: usize) -> Command {
+        let x = (i * 37 % 260) as f32 + 20.0;
+        let y = (i * 53 % 160) as f32 + 20.0;
+        Command::MaskStroke(MaskStroke {
+            layer: 0,
+            points: vec![Vec2::new(x, y), Vec2::new(x + 15.0, y + 9.0)],
+            radius: 8.0,
+            hardness: 0.5,
+            flow: 0.7,
+            mode: if i.is_multiple_of(2) {
+                PaintMode::Add
+            } else {
+                PaintMode::Subtract
+            },
+        })
+    }
+
+    /// #332: a thousand strokes and whole-mask edits keep the history within its byte
+    /// budget, the oldest steps going first, and every step kept still undoes byte for
+    /// byte, back to the oldest one kept.
+    #[test]
+    fn a_long_session_stays_within_the_history_budget() {
+        let budget = HistoryBudget {
+            bytes: 2 << 20,
+            steps: 10_000,
+        };
+        let mut e = Editor::new(project());
+        e.set_history_budget(budget);
+        // The last 64 states: enough, since far fewer steps fit in 2 MiB.
+        let mut states = std::collections::VecDeque::from([e.project().clone()]);
+        for i in 0..1000 {
+            let cmd = if i % 10 == 9 {
+                Command::MaskClear(MaskClear {
+                    layer: 0,
+                    value: (i % 7) as f32 / 7.0,
+                })
+            } else {
+                stroke_at(i)
+            };
+            e.execute(cmd).unwrap();
+            assert!(
+                e.history_bytes() <= budget.bytes,
+                "step {i}: {} bytes",
+                e.history_bytes()
+            );
+            states.push_back(e.project().clone());
+            if states.len() > 64 {
+                states.pop_front();
+            }
+        }
+        let kept = e.undo_len();
+        assert!((2..64).contains(&kept), "{kept} steps kept");
+        states.pop_back();
+        // What the mask holds, byte for byte (its change counter moves on with every
+        // edit, undo included, so whole projects are not compared).
+        let held = |p: &Project| {
+            let m = p.layers[0].mask().expect("a mask from the first step on");
+            (
+                m.raster().values().to_vec(),
+                m.sources().to_vec(),
+                m.modifiers(),
+            )
+        };
+        for k in 0..kept {
+            e.undo().unwrap();
+            assert!(
+                held(e.project()) == held(states.back().unwrap()),
+                "undo {k} of {kept}"
+            );
+            states.pop_back();
+        }
+        assert_eq!(e.undo(), None, "undo stops at the oldest step kept");
+        // Everything undone sits on the redo stack, and it is counted.
+        assert!(e.history_bytes() <= budget.bytes);
+        assert_eq!(e.redo_len(), kept);
+    }
+
+    /// #332: the step count is a backstop under the byte budget.
+    #[test]
+    fn the_history_keeps_at_most_its_steps() {
+        let mut e = Editor::new(project());
+        e.set_history_budget(HistoryBudget {
+            bytes: usize::MAX,
+            steps: 50,
+        });
+        for i in 0..200 {
+            e.execute(stroke_at(i)).unwrap();
+        }
+        assert_eq!(e.undo_len(), 50);
+        // Lowering the budget drops the oldest at once.
+        e.set_history_budget(HistoryBudget {
+            bytes: usize::MAX,
+            steps: 10,
+        });
+        assert_eq!(e.undo_len(), 10);
+    }
+
+    /// #332: a step larger than the whole budget stays until the next one, so the last
+    /// thing done can always be undone.
+    #[test]
+    fn the_newest_step_stays_even_over_the_budget() {
+        let mut e = Editor::new(project());
+        e.set_history_budget(HistoryBudget {
+            bytes: 1000,
+            steps: 500,
+        });
+        let base = e.project().clone();
+        e.execute(Command::MaskClear(MaskClear {
+            layer: 0,
+            value: 0.5,
+        }))
+        .unwrap();
+        assert_eq!(e.undo_len(), 1);
+        e.undo().unwrap();
+        assert_eq!(e.project(), &base);
+        e.redo().unwrap().unwrap();
+        e.execute(stroke(0)).unwrap();
+        assert_eq!(e.undo_len(), 1);
+    }
+
+    /// #332: the redo stack counts, and a source two removed layers share counts once.
+    #[test]
+    fn redo_counts_and_a_shared_source_counts_once() {
+        let mut e = Editor::new(project());
+        let grid = MaskRaster::filled(300, 200, 0.25).unwrap();
+        let raster = size_of_val(grid.values());
+        for _ in 0..3 {
+            e.execute(Command::MaskLoad(MaskLoad {
+                layer: 0,
+                raster: grid.clone(),
+            }))
+            .unwrap();
+        }
+        while e.undo().is_some() {}
+        assert_eq!(e.redo_len(), 3);
+        assert!(e.history_bytes() >= 3 * raster, "{}", e.history_bytes());
+
+        let mut e = Editor::new(stack());
+        let source = size_of_val(e.project().layers[0].source().pixels());
+        e.execute(Command::LayerRemove(LayerRemove { layer: 1 }))
+            .unwrap();
+        let one = e.history_bytes();
+        assert!(one >= source, "{one}");
+        e.execute(Command::LayerRemove(LayerRemove { layer: 0 }))
+            .unwrap();
+        let two = e.history_bytes();
+        assert!(two - one < source / 10, "{one} then {two}");
     }
 
     #[test]

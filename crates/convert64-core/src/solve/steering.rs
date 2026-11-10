@@ -127,6 +127,12 @@ impl Steering {
         }
     }
 
+    /// Entries in its per-cell maps (pins, allow and deny), for the undo history's
+    /// size estimate (#332).
+    pub(crate) fn entries(&self) -> usize {
+        self.pins.len() + self.allow.len() + self.deny.len()
+    }
+
     /// Pinned cells and their pins, in cell order (for reports and serialisation).
     pub fn pins(&self) -> impl Iterator<Item = (CellPos, Pin)> + '_ {
         self.pins.iter().map(|(c, p)| (*c, *p))
