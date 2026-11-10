@@ -35,8 +35,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.2
       - name: cargo fmt
         run: cargo fmt --all --check
+      # --all-targets lints the tests and benches too (#329).
       - name: cargo clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       # The app theme is generated from design/tokens.json (#195); fail if the
       # committed crates/convert64-app/src/theme/generated.rs is stale.
       - name: cargo xtask tokens --check
@@ -57,6 +58,13 @@ jobs:
         run: |
           cargo test -p convert64-core --test png2amiga_parity -- --nocapture
           cargo test -p convert64-cli --test png2amiga_convert -- --nocapture
+      # #329: the core's sequential path, the one the browser build runs. `cargo test
+      # --workspace` builds one core with the CLI's and MCP server's `parallel` (rayon)
+      # turned on; testing the core alone builds it without, parity tests included, so
+      # they prove the web path gives the same pixels.
+      - name: cargo test core (no parallel)
+        if: runner.os == 'Linux'
+        run: cargo test -p convert64-core
       # The No Glory title screen builds from make with the CLI alone (#167); `cargo
       # test` has just built target/debug/convert64. Windows runners have no make.
       - name: make check (examples/no-glory)

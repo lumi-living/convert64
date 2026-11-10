@@ -10,16 +10,6 @@ updates:
         update-types: ["minor", "patch"]
     labels: ["enhancement"]
 
-  - package-ecosystem: npm
-    directory: /
-    schedule:
-      interval: weekly
-      day: monday
-    groups:
-      npm-minor-patch:
-        update-types: ["minor", "patch"]
-    labels: ["enhancement"]
-
   - package-ecosystem: github-actions
     directory: /
     schedule:

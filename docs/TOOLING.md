@@ -9,7 +9,7 @@
 | Web build | `trunk` targeting `wasm32-unknown-unknown` (`trunk serve` in `crates/convert64-app`) |
 | MCP | `rmcp` (official Rust MCP SDK), stdio transport |
 | Release | `cargo-dist` for native binaries (`release.yml` on tags; `dist-build.yml` for manual test builds via workflow_dispatch); GitHub Pages for the web build (`pages.yml`, workflow_dispatch only: `trunk build --release --public-url /convert64/`, checked locally by `tests/web/pages-smoke.mjs`; needs Settings › Pages › Source "GitHub Actions") |
-| CI | `ci.yml`: jobs `rust` (fmt, clippy, test on ubuntu/macos/windows) and `wasm` (core wasm32 check + `trunk build`); all four contexts are required on `main` |
+| CI | `ci.yml`: jobs `rust` (fmt, clippy on all targets, test on ubuntu/macos/windows; on Linux also the core alone, without its `parallel` feature, #329) and `wasm` (core wasm32 check + `trunk build`); all four contexts are required on `main` |
 | Snapshots | `insta` (`cargo insta review`) |
 | Verification | VICE `x64sc` for every exported picture; a C64 Ultimate or real hardware when available |
 
