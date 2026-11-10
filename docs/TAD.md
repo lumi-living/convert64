@@ -189,6 +189,7 @@ As built in E4 (2026-10-11): the compositor and attribute map ([ADR-002](adr/ADR
 - **`MaskClear { value }`** sets the raster to one value (ADR-008's "reset").
 - **`LayerViaMask` with `cut`** inverts the selection on the original through its modifiers, because modifiers are super-grid operations.
 - **The MCP server** is a small synchronous JSON-RPC implementation on `serde_json` rather than `rmcp`, because `rmcp` needs `tokio`, which is not listed above. Moving to `rmcp` changes the transport only.
+- **A panicking tool is one failed call (#17).** `Server::handle` runs each `tools/call` under `std::panic::catch_unwind`. A panic (a wrong `expect` deep in the core) answers with a tool error (`isError: true`) naming the tool and the panic message, and saying the open project may be inconsistent, so the agent can save it under a new name or reopen it. The server keeps running; before, the process exited and the client saw the pipe close. Nothing restores the last good project state yet.
 - **Regions live in canvas space**, not on the composite's super grid. They stay put when layers move and survive a mode switch.
 
 **Benchmark (#87, #98, #139)**
