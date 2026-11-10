@@ -146,7 +146,7 @@ impl Server {
                     .get("arguments")
                     .cloned()
                     .unwrap_or_else(|| json!({}));
-                let result = match self.call(name, args) {
+                let result = match self.call_caught(name, args) {
                     Ok(text) => {
                         json!({ "content": [{ "type": "text", "text": text }], "isError": false })
                     }
@@ -166,6 +166,24 @@ impl Server {
             .ok_or_else(|| "no project is open; call project_open first".to_owned())
     }
 
+    /// [`Self::call`], with a panic caught and answered as a tool error (#17): one
+    /// failed call, not the server's end and the session's with it. The project may be
+    /// left part-way through the command, and the message says so.
+    fn call_caught(&mut self, name: &str, args: Value) -> Result<String, String> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.call(name, args)))
+            .unwrap_or_else(|panic| {
+                let what = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_owned())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "no message".to_owned());
+                Err(format!(
+                    "internal error in {name}: {what}. The open project may be inconsistent: \
+                     save it under a new name or open it again before going on."
+                ))
+            })
+    }
+
     /// Runs a tool; `Err` becomes an MCP tool error (`isError: true`).
     pub fn call(&mut self, name: &str, args: Value) -> Result<String, String> {
         let str_arg = |k: &str| -> Result<String, String> {
@@ -175,6 +193,9 @@ impl Server {
                 .ok_or_else(|| format!("missing string argument {k:?}"))
         };
         match name {
+            // A tool that panics, as a wrong `expect` deep in the core would (#17).
+            #[cfg(test)]
+            "test_panic" => panic!("a test tool panicked"),
             "project_open" | "recipe_open" => {
                 let path = str_arg("path")?;
                 let s = Session::open(Path::new(&path)).map_err(|e| e.to_string())?;
@@ -387,6 +408,36 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(r["result"]["isError"], true);
+    }
+
+    /// #17: a tool that panics answers with a tool error instead of ending the server,
+    /// and the server goes on answering.
+    #[test]
+    fn a_panicking_tool_is_a_tool_error_not_the_end() {
+        let mut s = Server::default();
+        let r = s
+            .handle(&req(
+                1,
+                "tools/call",
+                json!({ "name": "test_panic", "arguments": {} }),
+            ))
+            .unwrap();
+        assert_eq!(r["result"]["isError"], true);
+        let text = r["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("a test tool panicked"), "{text}");
+        assert!(text.contains("may be inconsistent"), "{text}");
+        assert_eq!(
+            s.handle(&req(2, "ping", json!({}))).unwrap()["result"],
+            json!({})
+        );
+        let r = s
+            .handle(&req(
+                3,
+                "tools/call",
+                json!({ "name": "undo", "arguments": {} }),
+            ))
+            .unwrap();
+        assert_eq!(r["result"]["isError"], true, "{r}");
     }
 
     /// #236: opening a version-2 project says once that it now composites at 1×.
