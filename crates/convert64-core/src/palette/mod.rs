@@ -339,6 +339,53 @@ pub fn linear_to_srgb8(v: f32) -> u8 {
     srgb_tables().thresholds.partition_point(|&t| t <= v) as u8
 }
 
+/// Lookup tables for 16-bit sRGB (#327), as [`SrgbTables`] for 8 bits: the linear
+/// value of every 16-bit value and the thresholds halfway between neighbours. Built on
+/// first use (512 kB), so 8-bit work never pays for them.
+struct Srgb16Tables {
+    to_linear: Box<[f32]>,
+    thresholds: Box<[f32]>,
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the tables are f32 by design; computed in f64 once"
+)]
+fn srgb16_tables() -> &'static Srgb16Tables {
+    static TABLES: std::sync::OnceLock<Srgb16Tables> = std::sync::OnceLock::new();
+    TABLES.get_or_init(|| {
+        let max = f64::from(u16::MAX);
+        Srgb16Tables {
+            to_linear: (0..=u16::MAX)
+                .map(|i| convert::srgb_to_linear(f64::from(i) / max) as f32)
+                .collect(),
+            thresholds: (0..u16::MAX)
+                .map(|i| convert::srgb_to_linear((f64::from(i) + 0.5) / max) as f32)
+                .collect(),
+        }
+    })
+}
+
+/// A 16-bit gamma-encoded sRGB channel as linear light `0..=1` (a table lookup, #327).
+pub fn srgb16_to_linear(v: u16) -> f32 {
+    srgb16_tables().to_linear[usize::from(v)]
+}
+
+/// Linear light to the nearest 16-bit sRGB value, rounding in gamma-encoded space.
+///
+/// Exact inverse of [`srgb16_to_linear`] for all 65 536 values; out-of-range and NaN
+/// inputs clamp (NaN to 0), as [`linear_to_srgb8`] does.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the partition point of 65 535 thresholds is at most 65 535"
+)]
+pub fn linear_to_srgb16(v: f32) -> u16 {
+    if v.is_nan() {
+        return 0;
+    }
+    srgb16_tables().thresholds.partition_point(|&t| t <= v) as u16
+}
+
 impl Default for Palette {
     /// Pepto (PAL), the default preset (`docs/PDD.md`).
     fn default() -> Self {
@@ -413,6 +460,26 @@ mod tests {
         assert_eq!(super::linear_to_srgb8(2.0), 255);
         assert_eq!(super::linear_to_srgb8(f32::NAN), 0);
         assert_eq!(super::srgb8_to_linear(255), 1.0);
+    }
+
+    #[test]
+    fn srgb16_round_trips_all_65536_values() {
+        for v in 0..=u16::MAX {
+            assert_eq!(
+                super::linear_to_srgb16(super::srgb16_to_linear(v)),
+                v,
+                "{v}"
+            );
+        }
+        assert_eq!(super::linear_to_srgb16(-1.0), 0);
+        assert_eq!(super::linear_to_srgb16(2.0), u16::MAX);
+        assert_eq!(super::linear_to_srgb16(f32::NAN), 0);
+        assert_eq!(super::srgb16_to_linear(u16::MAX), 1.0);
+        // Every 8-bit value, widened, lands on the same linear value as the 8-bit table.
+        for v in 0..=255u8 {
+            let wide = super::srgb16_to_linear(u16::from(v) * 257);
+            assert!((wide - super::srgb8_to_linear(v)).abs() < 1e-6, "{v}");
+        }
     }
 
     #[test]
